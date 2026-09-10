@@ -1,0 +1,111 @@
+"""AskMira API entry point."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.api.v1 import api_router
+from app.api.v1.routers import scim as scim_router
+from app.core.config import settings
+from app.db.session import engine
+
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
+logger = logging.getLogger("askmira")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Fail loudly at boot if the database is unreachable.
+
+    Better than surfacing it as a 500 on the first request a customer makes.
+    """
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logger.info("Database connection established")
+    except SQLAlchemyError:
+        logger.exception("Database unreachable at startup")
+        if settings.is_production:
+            raise
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(
+    title=f"{settings.APP_NAME} API",
+    description=(
+        "Culture-analytics-first HRMS for the Indian mid-market. "
+        "Auth is self-issued JWT; Supabase supplies Postgres only."
+    ),
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if not settings.is_production else None,
+    redoc_url="/redoc" if not settings.is_production else None,
+    openapi_url="/openapi.json" if not settings.is_production else None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Flatten Pydantic errors into one readable line.
+
+    The frontend shows `detail` directly in a toast, so it has to be a sentence
+    rather than a nested error tree.
+    """
+    problems = [
+        f"{'.'.join(str(part) for part in err['loc'][1:])}: {err['msg']}" for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": "; ".join(problems) or "Invalid request"},
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    """Never leak SQL or schema detail to a client."""
+    logger.exception("Database error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "A database error occurred. Please try again."},
+    )
+
+
+@app.get("/health", tags=["meta"])
+async def health() -> dict[str, str]:
+    """Liveness probe. Does not touch the database."""
+    return {"status": "ok", "app": settings.APP_NAME, "environment": settings.ENVIRONMENT}
+
+
+@app.get("/health/db", tags=["meta"])
+async def health_db() -> dict[str, str]:
+    """Readiness probe. Confirms the database actually answers."""
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "reachable"}
+
+
+app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+# SCIM lives at /scim/v2, outside the versioned prefix: clients expect that
+# exact path and several will not let you configure another.
+app.include_router(scim_router.router)
