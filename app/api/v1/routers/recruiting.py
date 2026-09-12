@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.recruiting import CostComponentEnum, ShareChannelEnum
 from app.models.user import UserRole
@@ -171,6 +172,11 @@ async def share_link(
     that. A referral flow that requires uploading a CV to a portal gets used
     once.
     """
+    permissions.require_self_or_hr(
+        user,
+        referrer_employee_id,
+        detail="A share link can only carry your own name as the referrer.",
+    )
     return await recruiting.generate_share_link(
         session,
         user,
@@ -195,6 +201,11 @@ async def submit_referral(
     400 with the reason where the referrer is not eligible; a duplicate is
     accepted and marked, with the winning referral and its date named.
     """
+    permissions.require_self_or_hr(
+        user,
+        body.referrer_employee_id,
+        detail="You can only submit a referral in your own name.",
+    )
     return await recruiting.submit_referral(
         session,
         user,

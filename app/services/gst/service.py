@@ -45,8 +45,10 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.expenses import ExpenseClaim
 from app.models.gst import (
     GstBlockedCategory,
     GstCreditReview,
@@ -1013,3 +1015,25 @@ def gst_posture() -> dict[str, Any]:
             "value; nothing chases the vendor.",
         ],
     }
+
+
+async def require_own_expense_claim(
+    session: AsyncSession, user: User, expense_claim_id: uuid.UUID
+) -> None:
+    """Outside finance, a GST invoice is captured against the caller's own claim.
+
+    Deliberately not inside `capture_credit`: capture never refuses on anything
+    about the invoice, and whether this person may attach it is an access
+    decision rather than a verdict. The router asks this first.
+    """
+    if permissions.is_hr(user):
+        return
+    owner = await session.scalar(
+        tenant_scoped(
+            select(ExpenseClaim.employee_id).where(ExpenseClaim.id == expense_claim_id),
+            ExpenseClaim,
+            user,
+        )
+    )
+    if owner is None or owner != user.employee_id:
+        raise permissions.forbidden("That expense claim is not yours.")

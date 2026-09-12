@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.expenses import (
     CityTierEnum,
@@ -345,6 +346,9 @@ async def capture_claim(
     exists for: policy that only appears at approval is a document, not a
     control.
     """
+    permissions.require_self_or_hr(
+        user, body.employee_id, detail="You can only file expense claims for yourself."
+    )
     return await expenses.capture_claim(
         session,
         user,
@@ -443,6 +447,9 @@ async def create_travel_request(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
+    permissions.require_self_or_hr(
+        user, body.employee_id, detail="You can only raise travel requests for yourself."
+    )
     row = await expenses.create_travel_request(
         session,
         user,

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.tax import (
     DeclarationStatus,
@@ -165,24 +166,10 @@ class SnapshotRead(BaseModel):
 
 
 def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
-    """Whose declaration this touches.
-
-    An employee acts on their own; payroll may act on anyone's.
-    """
-    if supplied is None:
-        if user.employee_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Your login is not linked to an employee record",
-            )
-        return user.employee_id
-
-    if supplied != user.employee_id and user.role not in PAYROLL_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only manage your own tax declarations",
-        )
-    return supplied
+    """Whose declaration record this touches: the caller's own, unless HR."""
+    return permissions.resolve_employee(
+        user, supplied, detail="You can only manage your own tax declarations"
+    )
 
 
 # ── Windows ─────────────────────────────────────────────────────────────────
@@ -361,6 +348,7 @@ async def submit_declaration(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Declaration not found"
         )
+    _resolve_employee(user, declaration.employee_id)
     if declaration.status is DeclarationStatus.LOCKED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -469,6 +457,7 @@ async def upload_proof(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Declaration not found"
         )
+    _resolve_employee(user, declaration.employee_id)
 
     try:
         await tax_service.assert_window_open(

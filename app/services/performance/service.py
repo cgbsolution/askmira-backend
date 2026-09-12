@@ -49,6 +49,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
@@ -226,6 +227,16 @@ async def record_check_in(
     ).scalar_one_or_none()
     if plan is None:
         raise _not_found("No such PIP in this tenant.")
+    # The trail is evidence. A check-in is recorded by the employee's manager,
+    # HR, or whoever opened the plan - never by the person on it.
+    opened_it = plan.initiated_by_user_id == user.id
+    if not opened_it or plan.employee_id == user.employee_id:
+        await permissions.require_manager_or_hr(
+            session,
+            user,
+            plan.employee_id,
+            detail="Check-ins are recorded by the employee's manager or HR.",
+        )
 
     try:
         pip_engine.record_check_in(

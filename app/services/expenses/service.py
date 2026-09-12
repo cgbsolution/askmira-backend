@@ -40,6 +40,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
@@ -852,6 +853,9 @@ async def submit_claim(
     claim = (await session.execute(stmt)).scalar_one_or_none()
     if claim is None:
         raise _not_found("No such claim in this tenant.")
+    permissions.require_self_or_hr(
+        user, claim.employee_id, detail="You can only submit your own expense claims."
+    )
     if claim.status is not ExpenseClaimStatusEnum.DRAFT:
         raise _bad_request(
             f"This claim is already {claim.status.value}. Submitting it again "

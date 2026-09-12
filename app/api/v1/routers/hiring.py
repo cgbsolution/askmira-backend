@@ -14,8 +14,9 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, tenant_scoped
 from app.models.hiring import Candidate, CandidateStage, Requisition, RequisitionStatus
 from app.schemas.common import Page
@@ -89,6 +90,27 @@ async def list_candidates(
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[CandidateRead]:
     stmt = tenant_scoped(select(Candidate), Candidate, user)
+    if not permissions.is_hr(user):
+        # Candidates are people who have not joined, with a phone number and a
+        # fit score. Outside HR only the requisition's hiring manager or
+        # recruiter sees them.
+        permissions.require_role(
+            user,
+            permissions.MANAGER_ROLES,
+            detail=(
+                "Candidates are visible to HR and to the hiring manager on "
+                "the requisition."
+            ),
+        )
+        me = permissions.own_employee_id(user)
+        mine = tenant_scoped(
+            select(Requisition.id).where(
+                or_(Requisition.hiring_manager_id == me, Requisition.recruiter_id == me)
+            ),
+            Requisition,
+            user,
+        )
+        stmt = stmt.where(Candidate.requisition_id.in_(mine))
     if requisition_id:
         stmt = stmt.where(Candidate.requisition_id == requisition_id)
     if stage:

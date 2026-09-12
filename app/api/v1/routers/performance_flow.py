@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.performance_flow import EmployeeInputStateEnum, OverageModeEnum
 from app.models.user import UserRole
@@ -295,6 +296,11 @@ async def budget_view(
     Not role-gated to HR: the manager doing the allocating is the person who
     needs it, and allocating blind is what this exists to prevent.
     """
+    permissions.require_role(
+        user,
+        permissions.MANAGER_ROLES,
+        detail="Increment budgets are visible to managers and HR.",
+    )
     return await performance.budget_view(
         session, user, cycle_id=cycle_id, department_id=department_id
     )
@@ -312,6 +318,12 @@ async def recommend_increment(
     Returns 409 when a hard-stop budget would be exceeded, and 400 when the
     percentage is outside its rating band with no written justification.
     """
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        body.employee_id,
+        detail="Increments are recommended by the employee's manager or HR.",
+    )
     return await performance.recommend_increment(
         session,
         user,

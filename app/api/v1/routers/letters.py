@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from app.core import permissions
 from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.audit import AuditAction
@@ -305,7 +306,14 @@ async def list_letters(
     stmt = tenant_scoped(
         select(IssuedLetter).order_by(IssuedLetter.issued_at.desc()), IssuedLetter, user
     )
-    if employee_id:
+    if not permissions.is_hr(user):
+        # An issued letter is somebody's offer, appointment or relieving
+        # letter, usually with their salary in it.
+        own = permissions.resolve_employee(
+            user, employee_id, detail="You can only see your own letters."
+        )
+        stmt = stmt.where(IssuedLetter.employee_id == own)
+    elif employee_id:
         stmt = stmt.where(IssuedLetter.employee_id == employee_id)
     return [LetterRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
 
@@ -313,6 +321,9 @@ async def list_letters(
 @router.get("/letters/{letter_id}/pdf")
 async def download_pdf(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
     letter, intact = await letter_service.verify_letter(session, user, letter_id)
+    permissions.require_self_or_hr(
+        user, letter.employee_id, detail="You can only open your own letters."
+    )
     if not intact:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -344,6 +355,9 @@ async def download_pdf(letter_id: uuid.UUID, user: CurrentUser, session: DbSessi
 async def verify(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict:
     """Confirm stored content still matches the hash recorded at issuance."""
     letter, intact = await letter_service.verify_letter(session, user, letter_id)
+    permissions.require_self_or_hr(
+        user, letter.employee_id, detail="You can only open your own letters."
+    )
     return {
         "reference_number": letter.reference_number,
         "content_hash": letter.content_hash,

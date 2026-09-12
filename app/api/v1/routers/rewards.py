@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.rewards import TaxTreatmentEnum
 from app.models.user import UserRole
@@ -240,6 +241,11 @@ async def award_points(
     remaining allocation. The expiry disclosure is in the response so it appears
     at the point of award rather than in a policy document.
     """
+    permissions.require_role(
+        user, permissions.MANAGER_ROLES, detail="Points are awarded by managers and HR."
+    )
+    if body.employee_id == user.employee_id:
+        raise permissions.forbidden("You cannot award points to yourself.")
     return await rewards.award_points(
         session,
         user,
@@ -261,6 +267,9 @@ async def redeem_points(
     request: Request,
 ) -> dict[str, Any]:
     """Spend points, valued at the rate of the lots actually consumed."""
+    permissions.require_self_or_hr(
+        user, body.employee_id, detail="You can only redeem your own points."
+    )
     return await rewards.redeem_points(
         session,
         user,
@@ -400,6 +409,9 @@ async def employee_statement(
     produces an unexplained deduction has spent money to make somebody feel
     worse.
     """
+    permissions.require_self_or_hr(
+        user, employee_id, detail="You can only see your own rewards statement."
+    )
     return await rewards.employee_statement(
         session,
         user,

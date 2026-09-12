@@ -7,11 +7,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.culture import Club, Shoutout, ShoutoutVisibility
+from app.models.employee import Employee
 from app.schemas.common import Page
 from app.services import audit
 
@@ -61,6 +63,7 @@ async def list_shoutouts(
     stmt = tenant_scoped(select(Shoutout), Shoutout, user).order_by(
         Shoutout.is_pinned.desc(), Shoutout.created_at.desc()
     )
+    stmt = stmt.where(await _visible_shoutouts(session, user))
     rows = (
         await session.scalars(stmt.offset((page - 1) * page_size).limit(page_size))
     ).all()
@@ -129,3 +132,36 @@ async def list_clubs(user: CurrentUser, session: DbSession) -> list[ClubRead]:
 # the compliance SME first — FS-CUL-02 requires that a submitter's identity is
 # never stored anywhere a case handler can retrieve it, which is a data-model
 # decision, not an access-control one.
+
+
+async def _visible_shoutouts(session: DbSession, user: CurrentUser):
+    """Which shoutouts this person may see.
+
+    COMPANY is everybody's. DEPARTMENT is the recipient's department, the two
+    people in it, and HR. PRIVATE is the two people in it and nobody else.
+    """
+    me = user.employee_id
+    conditions = [Shoutout.visibility == ShoutoutVisibility.COMPANY]
+    if me is not None:
+        conditions += [Shoutout.from_employee_id == me, Shoutout.to_employee_id == me]
+    if permissions.is_hr(user):
+        conditions.append(Shoutout.visibility == ShoutoutVisibility.DEPARTMENT)
+    elif me is not None:
+        department = await session.scalar(
+            tenant_scoped(
+                select(Employee.department_id).where(Employee.id == me), Employee, user
+            )
+        )
+        if department is not None:
+            colleagues = tenant_scoped(
+                select(Employee.id).where(Employee.department_id == department),
+                Employee,
+                user,
+            )
+            conditions.append(
+                and_(
+                    Shoutout.visibility == ShoutoutVisibility.DEPARTMENT,
+                    Shoutout.to_employee_id.in_(colleagues),
+                )
+            )
+    return or_(*conditions)

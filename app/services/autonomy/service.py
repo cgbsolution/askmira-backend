@@ -22,6 +22,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.autonomy import (
@@ -749,8 +750,17 @@ async def transparency_surface(
             "reverted": counts.get("reverted", 0),
         },
         "reversals_recorded": reversal_count,
-        "pending_queue": (await queue(session, user, now=moment))["proposals"],
-        "decision_stats": await decision_stats(session, user),
+        # The queue carries each proposal's subject, change and reasoning -
+        # somebody's salary, somebody's rating. Counts are for everybody; the
+        # queue and the decision record are for the people who decide.
+        "pending_queue": (
+            (await queue(session, user, now=moment))["proposals"]
+            if permissions.is_hr(user)
+            else []
+        ),
+        "decision_stats": (
+            await decision_stats(session, user) if permissions.is_hr(user) else None
+        ),
         "not_built": [
             "No agent creates proposals in production — the agent layer is not "
             "built. Every proposal here was created by a test or a manual call.",

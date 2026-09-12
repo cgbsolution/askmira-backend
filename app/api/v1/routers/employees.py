@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.schemas.common import Page
@@ -69,7 +70,28 @@ async def get_employee(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> EmployeeRead:
     employee = await employee_service.get_employee(session, user, employee_id)
-    return EmployeeRead.model_validate(employee)
+    record = EmployeeRead.model_validate(employee)
+    if employee.id == user.employee_id or permissions.is_hr(user):
+        return record
+    # A colleague's profile is the directory view. Nobody outside HR sees
+    # another person's date of birth, phone, personal email, gender or custom
+    # fields; a line manager also keeps the employment fields for their own
+    # reporting line.
+    hidden: dict[str, object] = {
+        "personal_email": None,
+        "phone": None,
+        "date_of_birth": None,
+        "gender": None,
+        "custom_fields": {},
+    }
+    if not await permissions.is_line_manager_of(session, user, employee.id):
+        hidden |= {
+            "grade": None,
+            "probation_end_date": None,
+            "notice_period_days": None,
+            "date_of_exit": None,
+        }
+    return record.model_copy(update=hidden)
 
 
 @router.patch(

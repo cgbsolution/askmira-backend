@@ -23,6 +23,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.dpdp import DataPrincipalRequest
@@ -787,7 +788,10 @@ async def trust_centre(session: AsyncSession, user: User) -> dict[str, Any]:
     return {
         **trust_centre_taxonomy(),
         "your_policies": (await list_policies(session, user)),
-        "open_legal_holds": [
+        "open_legal_holds_count": len(holds),
+        # A hold's reason can name a dispute. Everybody sees that holds exist;
+        # HR sees why.
+        "open_legal_holds": [] if not permissions.is_hr(user) else [
             {
                 "reason": hold.reason,
                 "placed_at": hold.placed_at.isoformat(),

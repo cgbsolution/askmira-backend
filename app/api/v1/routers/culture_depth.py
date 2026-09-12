@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.culture_depth import (
     PlanScopeEnum,
@@ -213,6 +214,14 @@ async def tag_value(
     session: DbSession,
     user: CurrentUser,
 ) -> dict[str, Any]:
+    permissions.require_role(
+        user,
+        permissions.MANAGER_ROLES,
+        detail=(
+            "Values are tagged by managers and HR; colleagues recognise each "
+            "other through shoutouts."
+        ),
+    )
     row = await culture.tag_value(
         session,
         user,
@@ -284,6 +293,9 @@ async def nominate(
     flag - a status left open after the closing date would accept late entries
     and the jury would score a different field from the advertised one.
     """
+    permissions.require_self_or_hr(
+        user, body.nominator_employee_id, detail="You can only nominate in your own name."
+    )
     row = await culture.nominate(
         session,
         user,
@@ -420,6 +432,11 @@ async def submit_response(
     that this person responded, so reminders stop. The two share nothing but the
     survey.
     """
+    permissions.require_self(
+        user,
+        body.employee_id,
+        detail="A survey can only be answered by the person it was sent to.",
+    )
     return await culture.submit_response(
         session,
         user,
@@ -471,6 +488,11 @@ async def create_plan(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
+    permissions.require_role(
+        user,
+        permissions.MANAGER_ROLES,
+        detail="Action plans are created by managers and HR.",
+    )
     row = await culture.create_plan(
         session,
         user,
@@ -576,6 +598,11 @@ async def acknowledge(
     user: CurrentUser,
 ) -> dict[str, Any]:
     """Record that somebody read this version of this text."""
+    permissions.require_self(
+        user,
+        body.employee_id,
+        detail="Only the person an announcement was sent to can acknowledge it.",
+    )
     return await culture.acknowledge(
         session,
         user,
@@ -617,6 +644,9 @@ async def set_event_privacy(
     Both flags default to off. A birthday is personal data and a feed post is a
     disclosure the employee did not choose.
     """
+    permissions.require_self_or_hr(
+        user, body.employee_id, detail="You can only change your own privacy settings."
+    )
     row = await culture.set_event_privacy(
         session,
         user,

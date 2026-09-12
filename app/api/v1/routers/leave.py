@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, tenant_scoped
 from app.models.leave import Holiday, LeaveRequest, LeaveRequestStatus, LeaveType
 from app.schemas.common import Page
@@ -103,6 +104,16 @@ async def list_leave_requests(
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[LeaveRequestRead]:
     stmt = tenant_scoped(select(LeaveRequest), LeaveRequest, user)
+    # Leave reasons are routinely medical. The list is the caller's own
+    # requests, a manager's reporting line, or - for HR - everybody's.
+    visible = await permissions.visible_employee_ids(session, user)
+    if visible is not None:
+        if employee_id is not None and employee_id not in visible:
+            raise permissions.forbidden(
+                "You can only see leave requests for yourself or for people "
+                "who report to you."
+            )
+        stmt = stmt.where(LeaveRequest.employee_id.in_(visible))
     if employee_id:
         stmt = stmt.where(LeaveRequest.employee_id == employee_id)
     if request_status:

@@ -36,6 +36,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.culture_depth import (
@@ -529,6 +530,22 @@ async def jury_view(
     that received every score and rendered part of it would leave the anchoring
     rule one template change away from being gone.
     """
+    if not permissions.is_hr(user):
+        cycle = (
+            await session.execute(
+                tenant_scoped(
+                    select(AwardCycle)
+                    .join(AwardNomination, AwardNomination.cycle_id == AwardCycle.id)
+                    .where(AwardNomination.id == nomination_id),
+                    AwardCycle,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if cycle is None or str(user.id) not in list(cycle.juror_user_ids or []):
+            raise permissions.forbidden(
+                "Only jurors on this cycle and HR can open its jury view."
+            )
     stmt = tenant_scoped(
         select(AwardNomination).where(AwardNomination.id == nomination_id),
         AwardNomination,
@@ -1065,6 +1082,8 @@ async def complete_plan(
     if row is None:
         raise _not_found("No such action plan in this tenant.")
 
+    if not permissions.is_hr(user) and row.owner_employee_id != user.employee_id:
+        raise permissions.forbidden("Only the plan's owner or HR can mark it complete.")
     allowed, reason = plan_engine.can_complete(
         await _engine_plan(session, user, row)
     )

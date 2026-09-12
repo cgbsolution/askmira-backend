@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.gst import GstEligibilityEnum
 from app.models.user import UserRole
@@ -237,6 +238,19 @@ async def capture_credit(
     supply all produce a stored row with a verdict and a reason — the expense
     behind it is real either way.
     """
+    if not permissions.is_hr(user):
+        # Employees capture a GST invoice against their own expense claim; the
+        # company-level register is finance's.
+        if body.employee_id is not None:
+            permissions.require_self_or_hr(
+                user, body.employee_id, detail="You can only capture invoices for yourself."
+            )
+        if body.expense_claim_id is None:
+            raise permissions.forbidden(
+                "Outside finance, a GST invoice is captured against one of your "
+                "own expense claims."
+            )
+        await gst.require_own_expense_claim(session, user, body.expense_claim_id)
     return await gst.capture_credit(
         session,
         user,

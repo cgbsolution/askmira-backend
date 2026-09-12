@@ -420,7 +420,7 @@ async def require_step_up(
     last_verified: datetime | None = None
     if session_id is not None:
         row = await session.get(UserSession, session_id)
-        if row is not None and row.tenant_id == user.tenant_id:
+        if row is not None and row.tenant_id == user.tenant_id and row.user_id == user.id:
             last_verified = row.step_up_verified_at
 
     if access.is_step_up_fresh(last_verified_at=last_verified, now=moment):
@@ -482,6 +482,9 @@ async def satisfy_challenge(
     )
     challenge = (await session.execute(stmt)).scalar_one_or_none()
     if challenge is None:
+        raise _not_found("No such step-up challenge.")
+    if challenge.user_id != user.id:
+        # Satisfying somebody else's challenge would lift their step-up.
         raise _not_found("No such step-up challenge.")
 
     if succeeded:

@@ -13694,3 +13694,195 @@ def test_the_bi_posture_discloses_what_is_not_wired() -> None:
             "an export, nothing schedules one, and no licensed dataset is "
             "loaded."
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# In-tenant access: every ungated endpoint has a rule, and the rule is in the code
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `tenant_scoped` keeps companies apart. These keep colleagues apart: an
+# endpoint with no role gate is reachable by everybody in the tenant, and about
+# thirty of them trusted an employee id taken from the request. Each is now
+# declared in `app/core/access_policy.py`, and these tests hold that
+# declaration to the code.
+
+_UNGATED_ROUTES: dict | None = None
+
+
+def _ungated_routes() -> dict:
+    global _UNGATED_ROUTES
+    if _UNGATED_ROUTES is not None:
+        return _UNGATED_ROUTES
+
+    from fastapi.routing import APIRoute
+
+    from app.core.deps import get_current_user
+    from app.main import app
+    from app.models.user import UserRole
+
+    def walk(dep, found):
+        if dep.call is get_current_user:
+            found["auth"] = True
+        if getattr(dep.call, "__name__", "") == "_check" and dep.call.__closure__:
+            for cell in dep.call.__closure__:
+                value = cell.cell_contents
+                if (
+                    isinstance(value, tuple)
+                    and value
+                    and all(isinstance(r, UserRole) for r in value)
+                ):
+                    found["roles"] = True
+        for sub in dep.dependencies:
+            walk(sub, found)
+
+    routes = {}
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        found = {"auth": False, "roles": False}
+        walk(route.dependant, found)
+        if found["auth"] and not found["roles"]:
+            for method in sorted(route.methods):
+                routes[f"{method} {route.path.removeprefix('/api/v1')}"] = route
+    _UNGATED_ROUTES = routes
+    return routes
+
+
+def _source_reached(route) -> str:
+    """The handler's source plus every app function it calls directly."""
+    import inspect
+    import textwrap
+
+    handler = route.endpoint
+    handler_src = inspect.getsource(handler)
+    parts = [handler_src]
+    for node in ast.walk(ast.parse(textwrap.dedent(handler_src))):
+        if not isinstance(node, ast.Call):
+            continue
+        target = None
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            owner = handler.__globals__.get(node.func.value.id)
+            target = getattr(owner, node.func.attr, None) if owner is not None else None
+        elif isinstance(node.func, ast.Name):
+            target = handler.__globals__.get(node.func.id)
+        if inspect.isfunction(target) and (target.__module__ or "").startswith("app."):
+            parts.append(inspect.getsource(target))
+    return "\n".join(parts)
+
+
+def _person_params(route) -> set[str]:
+    """Parameter and body-field names that identify a person."""
+    import inspect
+    import typing
+
+    from pydantic import BaseModel
+
+    names = {p.name for p in (*route.dependant.path_params, *route.dependant.query_params)}
+    for annotation in typing.get_type_hints(route.endpoint).values():
+        if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+            names |= set(annotation.model_fields)
+    return {
+        n
+        for n in names
+        if n in {"employee_id", "user_id"} or n.endswith(("_employee_id", "_user_id"))
+    }
+
+
+def test_every_ungated_endpoint_is_declared_with_a_rule() -> None:
+    """A new endpoint cannot ship without a role gate by omission."""
+    from app.core.access_policy import UNGATED_ENDPOINTS
+
+    live = set(_ungated_routes())
+    declared = set(UNGATED_ENDPOINTS)
+    missing = sorted(live - declared)
+    stale = sorted(declared - live)
+    assert not missing, (
+        f"{missing} are reachable by every signed-in person in the tenant and are "
+        "not declared in app/core/access_policy.py. Add a role gate, or declare "
+        "the rule that makes them safe."
+    )
+    assert not stale, (
+        f"{stale} are declared as ungated but no longer are, or no longer exist. "
+        "Remove them so the declaration stays a description of the code."
+    )
+
+
+def test_every_declared_rule_is_a_known_rule() -> None:
+    from app.core.access_policy import RULES, UNGATED_ENDPOINTS
+
+    unknown = {
+        key: value
+        for key, value in UNGATED_ENDPOINTS.items()
+        if value.split(":", 1)[0] not in RULES
+    }
+    assert not unknown, f"Unknown access rules: {unknown}"
+
+
+def test_a_permissions_rule_goes_through_app_core_permissions() -> None:
+    """Declaring "self or HR" is not the same as checking it."""
+    from app.core.access_policy import UNGATED_ENDPOINTS
+
+    routes = _ungated_routes()
+    offenders = [
+        key
+        for key, value in UNGATED_ENDPOINTS.items()
+        if value.startswith("permissions:")
+        and key in routes
+        and "permissions." not in _source_reached(routes[key])
+    ]
+    assert not offenders, (
+        f"{offenders} are declared as checked through app.core.permissions, but "
+        "neither the handler nor anything it calls uses it. The check the "
+        "declaration promises is not in the code."
+    )
+
+
+def test_an_own_rule_acts_on_the_callers_identity() -> None:
+    from app.core.access_policy import UNGATED_ENDPOINTS
+
+    routes = _ungated_routes()
+    markers = ("user.id", "user.employee_id", "model_validate(user)")
+    offenders = [
+        key
+        for key, value in UNGATED_ENDPOINTS.items()
+        if value.startswith("own:")
+        and key in routes
+        and not any(m in _source_reached(routes[key]) for m in markers)
+    ]
+    assert not offenders, (
+        f"{offenders} are declared as acting on the caller's own identity, but "
+        "nothing reached from them reads the caller's id."
+    )
+
+
+def test_a_reference_endpoint_takes_no_person_id() -> None:
+    """Reference material is about nobody in particular. An endpoint that takes
+    an employee id is about somebody, and needs a real rule."""
+    from app.core.access_policy import UNGATED_ENDPOINTS
+
+    routes = _ungated_routes()
+    offenders = {
+        key: sorted(_person_params(routes[key]))
+        for key, value in UNGATED_ENDPOINTS.items()
+        if value.startswith("reference:") and key in routes and _person_params(routes[key])
+    }
+    assert not offenders, (
+        f"{offenders} are declared as reference material but accept a person id. "
+        "Whoever sends that id is choosing whose record is touched."
+    )
+
+
+def test_a_scoped_rule_names_a_check_that_is_really_there() -> None:
+    from app.core.access_policy import UNGATED_ENDPOINTS
+
+    routes = _ungated_routes()
+    offenders = []
+    for key, value in UNGATED_ENDPOINTS.items():
+        if not value.startswith("scoped:") or key not in routes:
+            continue
+        marker = value.split(":", 2)[1].strip()
+        if not marker or marker not in _source_reached(routes[key]):
+            offenders.append((key, marker))
+    assert not offenders, (
+        f"{offenders}: the named check is not in the handler or anything it calls."
+    )

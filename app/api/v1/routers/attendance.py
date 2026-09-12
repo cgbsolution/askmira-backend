@@ -11,10 +11,11 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.attendance import (
     AttendanceDay,
@@ -183,24 +184,10 @@ class AttendanceSummaryResponse(BaseModel):
 
 
 def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
-    """Whose attendance this touches.
-
-    An employee may only act on their own record; HR may act on anyone's.
-    """
-    if supplied is None:
-        if user.employee_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Your login is not linked to an employee record",
-            )
-        return user.employee_id
-
-    if supplied != user.employee_id and user.role not in HR_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only record attendance for yourself",
-        )
-    return supplied
+    """Whose attendance record this touches: the caller's own, unless HR."""
+    return permissions.resolve_employee(
+        user, supplied, detail="You can only record attendance for yourself"
+    )
 
 
 @router.post("/punch", response_model=PunchRead, status_code=status.HTTP_201_CREATED)

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.exit_benefits import (
@@ -178,19 +179,10 @@ class EncashmentRead(BaseModel):
 
 
 def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
-    if supplied is None:
-        if user.employee_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Your login is not linked to an employee record",
-            )
-        return user.employee_id
-    if supplied != user.employee_id and user.role not in PAYROLL_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only manage your own encashment requests",
-        )
-    return supplied
+    """Whose encashment record this touches: the caller's own, unless HR."""
+    return permissions.resolve_employee(
+        user, supplied, detail="You can only manage your own encashment requests"
+    )
 
 
 # ── Gratuity configuration ──────────────────────────────────────────────────
