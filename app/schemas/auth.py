@@ -120,3 +120,10 @@ class AuthResponse(TokenPair):
 
     user: UserRead
     tenant: TenantRead
+
+
+class SessionRead(BaseModel):
+    """The signed-in user and their workspace, for the web app's session bootstrap."""
+
+    user: UserRead
+    tenant: TenantRead
