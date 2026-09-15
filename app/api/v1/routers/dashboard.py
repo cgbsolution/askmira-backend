@@ -20,6 +20,7 @@ from app.core.deps import CurrentUser, DbSession, tenant_scoped
 from app.models.culture import Shoutout
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import LeaveRequest, LeaveRequestStatus
+from app.services.leave import service as leave_service
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -74,15 +75,9 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
         )
     )
 
-    pending = await session.scalar(
-        tenant_scoped(
-            select(func.count(LeaveRequest.id)).where(
-                LeaveRequest.status == LeaveRequestStatus.PENDING
-            ),
-            LeaveRequest,
-            user,
-        )
-    )
+    # Requests waiting on *this* person, not every pending request in the
+    # company: "3 requests waiting on you" has to be true for whoever reads it.
+    pending = await leave_service.pending_for(session, user)
 
     shoutouts = await session.scalar(
         tenant_scoped(

@@ -28,6 +28,7 @@ import string
 import sys
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -40,6 +41,7 @@ from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
+from app.models.leave import Holiday, LeavePolicy, LeaveType
 from app.models.org import Department, LegalEntity, Location
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -178,6 +180,101 @@ async def get_or_create_org(session, tenant: Tenant):
     return entity, location, departments
 
 
+#: (code, name, is_paid, allows_half_day, requires_document, is_statutory,
+#:  annual quota, accrual frequency, max carry forward, min notice days)
+#: Quotas follow the Karnataka Shops and Commercial Establishments Act minimums
+#: for the Bengaluru office (18 earned, 12 sick) and the Maternity Benefit Act
+#: (26 weeks). Casual leave is a common company practice, not a statutory one.
+LEAVE_CATALOGUE = (
+    ("EL", "Earned Leave", True, True, False, False, "18", "monthly", "30", 7),
+    ("CL", "Casual Leave", True, True, False, False, "8", "annual", "0", 1),
+    ("SL", "Sick Leave", True, True, False, False, "12", "annual", "0", 0),
+    ("ML", "Maternity Leave", True, False, True, True, "182", "on_joining", "0", 0),
+)
+
+#: Fixed-date holidays only. Festivals that follow the lunar calendar (Ugadi,
+#: Diwali, Eid and so on) move every year and are added by HR from the state
+#: government's gazette notification, not guessed here.
+FIXED_HOLIDAYS = (
+    ("01-26", "Republic Day", None),
+    ("05-01", "May Day", "KA"),
+    ("08-15", "Independence Day", None),
+    ("10-02", "Gandhi Jayanti", None),
+    ("11-01", "Kannada Rajyotsava", "KA"),
+    ("12-25", "Christmas", None),
+)
+
+
+async def seed_time_off(session, tenant: Tenant) -> dict[str, int]:
+    """Leave types, a catch-all policy for each, and this year's fixed holidays."""
+    types_created = policies_created = holidays_created = 0
+    year = date.today().year
+    for code, name, paid, half, document, statutory, quota, accrual, carry, notice in (
+        LEAVE_CATALOGUE
+    ):
+        leave_type = await session.scalar(
+            select(LeaveType).where(LeaveType.tenant_id == tenant.id, LeaveType.code == code)
+        )
+        if leave_type is None:
+            leave_type = LeaveType(
+                tenant_id=tenant.id,
+                code=code,
+                name=name,
+                is_paid=paid,
+                allows_half_day=half,
+                requires_document=document,
+                is_statutory=statutory,
+            )
+            session.add(leave_type)
+            await session.flush()
+            types_created += 1
+
+        has_policy = await session.scalar(
+            select(LeavePolicy.id).where(
+                LeavePolicy.tenant_id == tenant.id, LeavePolicy.leave_type_id == leave_type.id
+            )
+        )
+        if has_policy is None:
+            session.add(
+                LeavePolicy(
+                    tenant_id=tenant.id,
+                    leave_type_id=leave_type.id,
+                    name=f"{name} - all employees",
+                    annual_quota_days=Decimal(quota),
+                    accrual_frequency=accrual,
+                    max_carry_forward_days=Decimal(carry),
+                    min_notice_days=notice,
+                    effective_from=date(2024, 1, 1),
+                )
+            )
+            policies_created += 1
+
+    for month_day, name, state_code in FIXED_HOLIDAYS:
+        holiday_date = date.fromisoformat(f"{year}-{month_day}")
+        exists = await session.scalar(
+            select(Holiday.id).where(
+                Holiday.tenant_id == tenant.id, Holiday.holiday_date == holiday_date
+            )
+        )
+        if exists is None:
+            session.add(
+                Holiday(
+                    tenant_id=tenant.id,
+                    name=name,
+                    holiday_date=holiday_date,
+                    year=year,
+                    state_code=state_code,
+                )
+            )
+            holidays_created += 1
+    await session.flush()
+    return {
+        "leave_types": types_created,
+        "leave_policies": policies_created,
+        "holidays": holidays_created,
+    }
+
+
 async def seed(reset_passwords: bool) -> list[tuple[Person, str | None]]:
     # Refuse before writing anything if the login form would reject an address.
     for person in PEOPLE:
@@ -257,6 +354,8 @@ async def seed(reset_passwords: bool) -> list[tuple[Person, str | None]]:
             await session.flush()
             results.append((person, password))
 
+        time_off = await seed_time_off(session, tenant)
+
         await audit.record(
             session,
             tenant_id=tenant.id,
@@ -269,7 +368,11 @@ async def seed(reset_passwords: bool) -> list[tuple[Person, str | None]]:
                 + (", passwords reset" if reset_passwords else "")
                 + "."
             ),
-            changes={"created": created, "passwords_reset": reset_passwords},
+            changes={
+                "created": created,
+                "passwords_reset": reset_passwords,
+                "time_off": time_off,
+            },
         )
         await session.commit()
         return results
