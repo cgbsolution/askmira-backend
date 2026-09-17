@@ -1,193 +1,84 @@
-"""Attendance endpoints (slice 02).
+"""Attendance, shifts, rosters and period locks (slice 02).
 
-There is deliberately no PATCH or DELETE for a punch. Corrections go through
+There is deliberately no PATCH, PUT or DELETE for a punch. Corrections go through
 regularisation, which leaves both the original observation and the correction
 visible.
+
+Who may call what:
+
+- Everybody: punch, read their own days and punches, raise and withdraw their
+  own regularisations. Taking an employee id from the request goes through
+  `permissions.resolve_employee`, so only HR may name somebody else.
+- Managers and HR: the regularisation queue (a manager's reporting line, all of
+  it for HR, never their own) and team exceptions.
+- HR: shifts, rosters, assignments, work locations, imports, recompute and the
+  summary. Locking and unlocking a payroll period: tenant and HR admins.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import UTC, date, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.core import permissions
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.attendance import (
-    AttendanceDay,
-    AttendancePeriodLock,
-    AttendanceStatus,
-    PunchDirection,
-    PunchSource,
-    RegularisationStatus,
-)
-from app.models.employee import Employee, EmploymentStatus
+from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.attendance import RegularisationStatus
 from app.models.user import UserRole
+from app.schemas.attendance import (
+    AssignmentEnd,
+    AssignmentRead,
+    AttendanceDayRead,
+    AttendanceExceptionReport,
+    AttendanceSummaryResponse,
+    LockRead,
+    LockRequest,
+    MyAttendancePeriod,
+    PunchCreate,
+    PunchImportRequest,
+    PunchImportResult,
+    PunchRead,
+    RecomputeRequest,
+    RecomputeResult,
+    RegularisationCreate,
+    RegularisationDecision,
+    RegularisationQueueItem,
+    RegularisationRead,
+    RosterAssignmentCreate,
+    RosterCreate,
+    RosterRead,
+    RosterUpdate,
+    ShiftAssignmentCreate,
+    ShiftCreate,
+    ShiftRead,
+    ShiftUpdate,
+    UnlockRequest,
+    WorkLocationCreate,
+    WorkLocationRead,
+)
+from app.services.attendance import csv_import, review, setup
 from app.services.attendance import service as attendance_service
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-
-
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class PunchCreate(BaseModel):
-    employee_id: uuid.UUID | None = Field(
-        default=None,
-        description="Omit to punch for yourself. Only HR may punch for someone else.",
-    )
-    punched_at: datetime | None = Field(
-        default=None, description="Defaults to now. Supplied by device imports."
-    )
-    direction: PunchDirection
-    source: PunchSource = PunchSource.WEB
-    device_id: str | None = None
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
-
-
-class PunchRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: uuid.UUID
-    punched_at: datetime
-    direction: PunchDirection
-    source: PunchSource
-    outside_geofence: bool
-    nearest_location_metres: int | None
-
-
-class PunchImportRow(BaseModel):
-    """One normalised row from a device export.
-
-    Slice 04 covers speaking to devices directly; this accepts already
-    normalised data so an import can happen today.
-    """
-
-    employee_code: str
-    punched_at: datetime
-    direction: PunchDirection
-    device_id: str | None = None
-
-
-class PunchImportRequest(BaseModel):
-    rows: list[PunchImportRow] = Field(min_length=1, max_length=5000)
-
-
-class PunchImportResult(BaseModel):
-    imported: int
-    skipped_unknown_employee: list[str]
-
-
-class AttendanceDayRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: uuid.UUID
-    attendance_date: date
-    status: AttendanceStatus
-    payable_fraction: Decimal
-    worked_minutes: int
-    first_in: datetime | None
-    last_out: datetime | None
-    late_by_minutes: int
-    early_by_minutes: int
-    is_regularised: bool
-    computation_note: str | None
-
-
-class RecomputeRequest(BaseModel):
-    employee_ids: list[uuid.UUID] | None = None
-    start: date
-    end: date
-
-
-class RegularisationCreate(BaseModel):
-    employee_id: uuid.UUID | None = None
-    attendance_date: date
-    requested_status: AttendanceStatus
-    reason: str = Field(min_length=3, max_length=1000)
-
-
-class RegularisationDecision(BaseModel):
-    approve: bool
-    note: str | None = Field(default=None, max_length=1000)
-
-
-class RegularisationRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: uuid.UUID
-    attendance_date: date
-    requested_status: AttendanceStatus
-    reason: str
-    status: RegularisationStatus
-    decided_at: datetime | None
-
-
-class LockRequest(BaseModel):
-    period_start: date
-    period_end: date
-
-
-class UnlockRequest(BaseModel):
-    reason: str = Field(min_length=3, max_length=500)
-
-
-class LockRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    period_start: date
-    period_end: date
-    locked_at: datetime
-    unlocked_at: datetime | None
-    unlock_reason: str | None
-
-
-class EmployeeAttendanceSummary(BaseModel):
-    employee_id: uuid.UUID
-    employee_code: str
-    employee_name: str
-    payable_days: Decimal
-    lop_days: Decimal
-    present_days: int
-    half_days: int
-    absent_days: int
-    on_leave_days: int
-    late_count: int
-    needs_regularisation: int
-
-
-class AttendanceSummaryResponse(BaseModel):
-    """The screen HR Ops looks at before running payroll.
-
-    `is_locked` is on the response because it is the gate: payroll will refuse
-    until it is true.
-    """
-
-    period_start: date
-    period_end: date
-    is_locked: bool
-    employees: list[EmployeeAttendanceSummary]
+ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
 
 
 # ── Punching ────────────────────────────────────────────────────────────────
-
-
-def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
-    """Whose attendance record this touches: the caller's own, unless HR."""
-    return permissions.resolve_employee(
-        user, supplied, detail="You can only record attendance for yourself"
-    )
 
 
 @router.post("/punch", response_model=PunchRead, status_code=status.HTTP_201_CREATED)
@@ -196,26 +87,58 @@ async def punch(
 ) -> PunchRead:
     """Record a punch.
 
-    A punch outside every configured geofence is stored with
-    `outside_geofence = true` rather than rejected.
+    Outside every configured geofence it is stored with `outside_geofence = true`
+    rather than rejected. Coordinates are kept on the punch columns only — the
+    raw payload records what was asserted, not where the person was.
     """
-    from datetime import UTC
-
-    employee_id = _resolve_employee(user, payload.employee_id)
+    employee_id = permissions.resolve_employee(
+        user, payload.employee_id, detail="You can only record attendance for yourself"
+    )
+    source = attendance_service.punch_source_for(
+        user,
+        employee_id=employee_id,
+        punched_at=payload.punched_at,
+        source=payload.source,
+        device_id=payload.device_id,
+        has_coordinates=payload.latitude is not None,
+    )
     record = await attendance_service.record_punch(
         session,
         user,
         employee_id=employee_id,
         punched_at=payload.punched_at or datetime.now(UTC),
         direction=payload.direction,
-        source=payload.source,
+        source=source,
         device_id=payload.device_id,
         latitude=payload.latitude,
         longitude=payload.longitude,
-        raw_payload=payload.model_dump(mode="json"),
+        raw_payload={
+            "direction": payload.direction.value,
+            "source": source.value,
+            "recorded_by_user_id": str(user.id),
+            "time_supplied_by_client": payload.punched_at is not None,
+            "had_coordinates": payload.latitude is not None,
+        },
         request=request,
     )
     return PunchRead.model_validate(record)
+
+
+@router.get("/punches", response_model=list[PunchRead])
+async def list_punches(
+    user: CurrentUser,
+    session: DbSession,
+    employee_id: uuid.UUID | None = None,
+    date_from: date = Query(alias="from"),
+    date_to: date = Query(alias="to"),
+) -> list[PunchRead]:
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own punches"
+    )
+    rows = await review.list_punches(
+        session, user, employee_id=target, start=date_from, end=date_to
+    )
+    return [PunchRead.model_validate(row) for row in rows]
 
 
 @router.post(
@@ -226,43 +149,80 @@ async def punch(
 async def import_punches(
     payload: PunchImportRequest, user: CurrentUser, session: DbSession, request: Request
 ) -> PunchImportResult:
-    """Bulk import of normalised device data.
-
-    An unknown employee code is reported rather than failing the whole batch —
-    a device export routinely contains a few stale ids, and rejecting the
-    batch means nobody's attendance loads.
-    """
-    codes = {row.employee_code for row in payload.rows}
-    stmt = tenant_scoped(
-        select(Employee.id, Employee.employee_code).where(Employee.employee_code.in_(codes)),
-        Employee,
-        user,
-    )
-    by_code = {code: eid for eid, code in (await session.execute(stmt)).all()}
-
-    imported = 0
-    for row in payload.rows:
-        employee_id = by_code.get(row.employee_code)
-        if employee_id is None:
-            continue
-        await attendance_service.record_punch(
-            session,
-            user,
-            employee_id=employee_id,
+    """Bulk import of normalised device data. Unknown codes are reported per row."""
+    rows = [
+        attendance_service.ImportRow(
+            row=index,
+            employee_code=row.employee_code,
             punched_at=row.punched_at,
             direction=row.direction,
-            source=PunchSource.IMPORT,
             device_id=row.device_id,
-            raw_payload=row.model_dump(mode="json"),
-            commit=False,
+            raw=row.model_dump(mode="json"),
         )
-        imported += 1
+        for index, row in enumerate(payload.rows, start=1)
+    ]
+    result = await attendance_service.import_punch_rows(session, user, rows, request=request)
+    return PunchImportResult.model_validate(result)
 
-    await session.commit()
-    return PunchImportResult(
-        imported=imported,
-        skipped_unknown_employee=sorted(codes - set(by_code)),
+
+@router.post(
+    "/import/csv",
+    response_model=PunchImportResult,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def import_punch_csv(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+    assumed_timezone: str = Form(default="Asia/Kolkata", max_length=64),
+) -> PunchImportResult:
+    """A CSV of punches: `employee_code,punched_at,direction[,device_id]`.
+
+    Validated by its bytes (size, text, UTF-8, header), not by its name or the
+    content type the browser claimed. Bad rows come back with their row number.
+    """
+    raw = await file.read(csv_import.MAX_BYTES + 1)
+    try:
+        text = csv_import.decode_csv(raw)
+        parsed, errors = csv_import.parse_punch_csv(
+            text, timezone_name=assumed_timezone, now=datetime.now(UTC)
+        )
+    except csv_import.CsvTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except csv_import.CsvImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    rows = [
+        attendance_service.ImportRow(
+            row=p.row,
+            employee_code=p.employee_code,
+            punched_at=p.punched_at,
+            direction=p.direction,
+            device_id=p.device_id,
+            raw={
+                "row": p.row,
+                "employee_code": p.employee_code,
+                "punched_at_utc": p.punched_at.isoformat(),
+                "direction": p.direction.value,
+                "device_id": p.device_id,
+                "_import": {
+                    "format": "csv",
+                    "assumed_timezone": assumed_timezone,
+                    "timezone_was_assumed": p.timezone_assumed,
+                },
+            },
+        )
+        for p in parsed
+    ]
+    result = await attendance_service.import_punch_rows(
+        session, user, rows, errors=[e.as_dict() for e in errors], request=request
     )
+    return PunchImportResult.model_validate(result)
 
 
 # ── Computed days ───────────────────────────────────────────────────────────
@@ -276,26 +236,37 @@ async def list_days(
     date_from: date = Query(alias="from"),
     date_to: date = Query(alias="to"),
 ) -> list[AttendanceDayRead]:
-    target = _resolve_employee(user, employee_id)
-    stmt = tenant_scoped(
-        select(AttendanceDay)
-        .where(
-            AttendanceDay.employee_id == target,
-            AttendanceDay.attendance_date >= date_from,
-            AttendanceDay.attendance_date <= date_to,
-        )
-        .order_by(AttendanceDay.attendance_date),
-        AttendanceDay,
-        user,
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own attendance"
     )
-    return [AttendanceDayRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    rows = await review.list_days(session, user, employee_id=target, start=date_from, end=date_to)
+    return [AttendanceDayRead.model_validate(row) for row in rows]
 
 
-@router.post("/recompute", dependencies=[Depends(require_roles(*HR_ROLES))])
+@router.get("/period", response_model=MyAttendancePeriod)
+async def my_period(
+    user: CurrentUser,
+    session: DbSession,
+    employee_id: uuid.UUID | None = None,
+    date_from: date = Query(alias="from"),
+    date_to: date = Query(alias="to"),
+) -> MyAttendancePeriod:
+    """Days and totals for one person — payable days and LOP worked out here."""
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own attendance"
+    )
+    return await review.my_period(session, user, employee_id=target, start=date_from, end=date_to)
+
+
+@router.post(
+    "/recompute",
+    response_model=RecomputeResult,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
 async def recompute(
     payload: RecomputeRequest, user: CurrentUser, session: DbSession, request: Request
-) -> dict[str, int]:
-    """Recompute a date range. Idempotent — running twice changes nothing."""
+) -> RecomputeResult:
+    """Recompute a date range. Idempotent; refused inside a locked period."""
     written = await attendance_service.recompute_range(
         session,
         user,
@@ -304,7 +275,34 @@ async def recompute(
         end=payload.end,
         request=request,
     )
-    return {"days_computed": written}
+    return RecomputeResult(days_computed=written)
+
+
+@router.get(
+    "/summary",
+    response_model=AttendanceSummaryResponse,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def summary(
+    user: CurrentUser, session: DbSession, period_start: date, period_end: date
+) -> AttendanceSummaryResponse:
+    """Payable days, LOP and exceptions per employee, with the lock state payroll reads."""
+    return await review.period_summaries(session, user, start=period_start, end=period_end)
+
+
+@router.get(
+    "/exceptions",
+    response_model=AttendanceExceptionReport,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def exceptions(
+    user: CurrentUser,
+    session: DbSession,
+    date_from: date = Query(alias="from"),
+    date_to: date = Query(alias="to"),
+) -> AttendanceExceptionReport:
+    """Days to look at: a manager's reporting line, or everybody for HR."""
+    return await review.exceptions_report(session, user, start=date_from, end=date_to)
 
 
 # ── Regularisation ──────────────────────────────────────────────────────────
@@ -318,7 +316,9 @@ async def recompute(
 async def raise_regularisation(
     payload: RegularisationCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> RegularisationRead:
-    employee_id = _resolve_employee(user, payload.employee_id)
+    employee_id = permissions.resolve_employee(
+        user, payload.employee_id, detail="You can only regularise your own attendance"
+    )
     record = await attendance_service.raise_regularisation(
         session,
         user,
@@ -326,7 +326,49 @@ async def raise_regularisation(
         attendance_date=payload.attendance_date,
         requested_status=payload.requested_status,
         reason=payload.reason,
+        requested_first_in=payload.requested_first_in,
+        requested_last_out=payload.requested_last_out,
         request=request,
+    )
+    return RegularisationRead.model_validate(record)
+
+
+@router.get("/regularisations", response_model=list[RegularisationRead])
+async def list_regularisations(
+    user: CurrentUser,
+    session: DbSession,
+    employee_id: uuid.UUID | None = None,
+    status_filter: RegularisationStatus | None = Query(default=None, alias="status"),
+) -> list[RegularisationRead]:
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own regularisations"
+    )
+    rows = await review.list_regularisations(
+        session, user, employee_id=target, status_filter=status_filter
+    )
+    return [RegularisationRead.model_validate(row) for row in rows]
+
+
+@router.get(
+    "/regularisations/pending",
+    response_model=list[RegularisationQueueItem],
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def pending_regularisations(
+    user: CurrentUser, session: DbSession
+) -> list[RegularisationQueueItem]:
+    """Waiting on the caller: their reporting line, or all for HR. Never their own."""
+    return await review.pending_regularisations(session, user)
+
+
+@router.post(
+    "/regularisations/{regularisation_id}/cancel", response_model=RegularisationRead
+)
+async def cancel_regularisation(
+    regularisation_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> RegularisationRead:
+    record = await attendance_service.cancel_regularisation(
+        session, user, regularisation_id, request=request
     )
     return RegularisationRead.model_validate(record)
 
@@ -334,7 +376,7 @@ async def raise_regularisation(
 @router.patch(
     "/regularisation/{regularisation_id}",
     response_model=RegularisationRead,
-    dependencies=[Depends(require_roles(*HR_ROLES, UserRole.MANAGER))],
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
 )
 async def decide_regularisation(
     regularisation_id: uuid.UUID,
@@ -343,7 +385,7 @@ async def decide_regularisation(
     session: DbSession,
     request: Request,
 ) -> RegularisationRead:
-    """Approve or reject. An approval recomputes the affected day."""
+    """Approve or reject. The person's manager or HR; never your own."""
     record = await attendance_service.decide_regularisation(
         session,
         user,
@@ -362,7 +404,7 @@ async def decide_regularisation(
     "/lock",
     response_model=LockRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def lock_period(
     payload: LockRequest, user: CurrentUser, session: DbSession, request: Request
@@ -377,7 +419,7 @@ async def lock_period(
 @router.post(
     "/lock/{lock_id}/unlock",
     response_model=LockRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def unlock_period(
     lock_id: uuid.UUID,
@@ -387,122 +429,184 @@ async def unlock_period(
     request: Request,
 ) -> LockRead:
     """Reopen a period. Audited, naming the actor and the reason."""
-    lock = await attendance_service.unlock_period(
-        session, user, lock_id, payload.reason, request
-    )
+    lock = await attendance_service.unlock_period(session, user, lock_id, payload.reason, request)
     return LockRead.model_validate(lock)
 
 
 @router.get("/locks", response_model=list[LockRead])
 async def list_locks(user: CurrentUser, session: DbSession) -> list[LockRead]:
-    stmt = tenant_scoped(
-        select(AttendancePeriodLock).order_by(AttendancePeriodLock.period_start.desc()),
-        AttendancePeriodLock,
-        user,
-    )
-    return [LockRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    return [LockRead.model_validate(row) for row in await review.list_locks(session, user)]
 
 
-# ── Summary ─────────────────────────────────────────────────────────────────
+# ── Shifts ──────────────────────────────────────────────────────────────────
 
 
 @router.get(
-    "/summary",
-    response_model=AttendanceSummaryResponse,
+    "/shifts",
+    response_model=list[ShiftRead],
     dependencies=[Depends(require_roles(*HR_ROLES))],
 )
-async def summary(
+async def list_shifts(
+    user: CurrentUser, session: DbSession, include_inactive: bool = False
+) -> list[ShiftRead]:
+    rows = await setup.list_shifts(session, user, include_inactive=include_inactive)
+    return [ShiftRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/shifts",
+    response_model=ShiftRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def create_shift(
+    payload: ShiftCreate, user: CurrentUser, session: DbSession, request: Request
+) -> ShiftRead:
+    return ShiftRead.model_validate(await setup.create_shift(session, user, payload, request))
+
+
+@router.put(
+    "/shifts/{shift_id}",
+    response_model=ShiftRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def update_shift(
+    shift_id: uuid.UUID,
+    payload: ShiftUpdate,
     user: CurrentUser,
     session: DbSession,
-    period_start: date,
-    period_end: date,
-) -> AttendanceSummaryResponse:
-    """Payable days, LOP and exceptions per employee.
+    request: Request,
+) -> ShiftRead:
+    return ShiftRead.model_validate(
+        await setup.update_shift(session, user, shift_id, payload, request)
+    )
 
-    This is what HR Ops reviews before running payroll, so it reports the lock
-    state alongside the numbers — the numbers are not actionable until the
-    period is locked.
-    """
-    employees = (
-        await session.scalars(
-            tenant_scoped(
-                select(Employee)
-                .where(
-                    Employee.deleted_at.is_(None),
-                    Employee.status != EmploymentStatus.PRE_JOINING,
-                )
-                .order_by(Employee.employee_code),
-                Employee,
-                user,
-            )
-        )
-    ).all()
 
-    days = (
-        await session.scalars(
-            tenant_scoped(
-                select(AttendanceDay).where(
-                    AttendanceDay.attendance_date >= period_start,
-                    AttendanceDay.attendance_date <= period_end,
-                ),
-                AttendanceDay,
-                user,
-            )
-        )
-    ).all()
+# ── Rosters ─────────────────────────────────────────────────────────────────
 
-    by_employee: dict[uuid.UUID, list[AttendanceDay]] = {}
-    for day in days:
-        by_employee.setdefault(day.employee_id, []).append(day)
 
-    rows: list[EmployeeAttendanceSummary] = []
-    for employee in employees:
-        employee_days = by_employee.get(employee.id, [])
-        payable = sum(
-            (Decimal(str(d.payable_fraction)) for d in employee_days), start=Decimal(0)
-        )
-        lop = sum(
-            (
-                Decimal(1) - Decimal(str(d.payable_fraction))
-                for d in employee_days
-                if d.status not in {AttendanceStatus.HOLIDAY, AttendanceStatus.WEEK_OFF}
-            ),
-            start=Decimal(0),
-        )
-        rows.append(
-            EmployeeAttendanceSummary(
-                employee_id=employee.id,
-                employee_code=employee.employee_code,
-                employee_name=employee.full_name,
-                payable_days=payable,
-                lop_days=lop,
-                present_days=sum(
-                    1 for d in employee_days if d.status is AttendanceStatus.PRESENT
-                ),
-                half_days=sum(
-                    1 for d in employee_days if d.status is AttendanceStatus.HALF_DAY
-                ),
-                absent_days=sum(
-                    1
-                    for d in employee_days
-                    if d.status in {AttendanceStatus.ABSENT, AttendanceStatus.LOP}
-                ),
-                on_leave_days=sum(
-                    1 for d in employee_days if d.status is AttendanceStatus.ON_LEAVE
-                ),
-                late_count=sum(1 for d in employee_days if d.late_by_minutes > 0),
-                needs_regularisation=sum(
-                    1
-                    for d in employee_days
-                    if d.status is AttendanceStatus.NEEDS_REGULARISATION
-                ),
-            )
-        )
+@router.get(
+    "/rosters",
+    response_model=list[RosterRead],
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def list_rosters(user: CurrentUser, session: DbSession) -> list[RosterRead]:
+    return [RosterRead.model_validate(row) for row in await setup.list_rosters(session, user)]
 
-    lock = await attendance_service.active_lock_covering(session, user, period_start, period_end)
-    return AttendanceSummaryResponse(
-        period_start=period_start,
-        period_end=period_end,
-        is_locked=lock is not None,
-        employees=rows,
+
+@router.post(
+    "/rosters",
+    response_model=RosterRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def create_roster(
+    payload: RosterCreate, user: CurrentUser, session: DbSession, request: Request
+) -> RosterRead:
+    return RosterRead.model_validate(await setup.create_roster(session, user, payload, request))
+
+
+@router.put(
+    "/rosters/{roster_id}",
+    response_model=RosterRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def update_roster(
+    roster_id: uuid.UUID,
+    payload: RosterUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> RosterRead:
+    return RosterRead.model_validate(
+        await setup.update_roster(session, user, roster_id, payload, request)
+    )
+
+
+# ── Assignments ─────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/assignments",
+    response_model=list[AssignmentRead],
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def list_assignments(
+    user: CurrentUser, session: DbSession, employee_id: uuid.UUID | None = None
+) -> list[AssignmentRead]:
+    return await setup.list_assignments(session, user, employee_id=employee_id)
+
+
+@router.post(
+    "/shift-assignments",
+    response_model=AssignmentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def assign_shift(
+    payload: ShiftAssignmentCreate, user: CurrentUser, session: DbSession, request: Request
+) -> AssignmentRead:
+    """Effective-dated. The previous open assignment closes the day before."""
+    return await setup.assign_shift(session, user, payload, request)
+
+
+@router.post(
+    "/roster-assignments",
+    response_model=AssignmentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def assign_roster(
+    payload: RosterAssignmentCreate, user: CurrentUser, session: DbSession, request: Request
+) -> AssignmentRead:
+    return await setup.assign_roster(session, user, payload, request)
+
+
+@router.post(
+    "/assignments/{kind}/{assignment_id}/end",
+    response_model=AssignmentRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def end_assignment(
+    kind: Literal["shift", "roster"],
+    assignment_id: uuid.UUID,
+    payload: AssignmentEnd,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> AssignmentRead:
+    return await setup.end_assignment(
+        session,
+        user,
+        kind=kind,
+        assignment_id=assignment_id,
+        effective_to=payload.effective_to,
+        request=request,
+    )
+
+
+# ── Work locations ──────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/work-locations",
+    response_model=list[WorkLocationRead],
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def list_work_locations(user: CurrentUser, session: DbSession) -> list[WorkLocationRead]:
+    rows = await setup.list_work_locations(session, user)
+    return [WorkLocationRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/work-locations",
+    response_model=WorkLocationRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def create_work_location(
+    payload: WorkLocationCreate, user: CurrentUser, session: DbSession, request: Request
+) -> WorkLocationRead:
+    return WorkLocationRead.model_validate(
+        await setup.create_work_location(session, user, payload, request)
     )

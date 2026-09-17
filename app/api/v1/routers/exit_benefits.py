@@ -16,7 +16,6 @@ from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.exit_benefits import (
     EncashmentPolicy,
-    EncashmentRequest,
     EncashmentStatus,
     ExitReason,
     GratuityAccrual,
@@ -75,9 +74,11 @@ class GratuityConfigRead(BaseModel):
     max_exempt_amount: Decimal
     max_payable_amount: Decimal | None
     service_rounding: ServiceRounding
+    unpaid_leave_break_threshold_days: int | None
     include_notice_period_in_service: bool
     eligibility_waived_reasons: list[str]
     is_approved: bool
+    approved_at: datetime | None
 
 
 class AccrualRunRequest(BaseModel):
@@ -89,6 +90,9 @@ class AccrualRead(BaseModel):
 
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
+    department_id: uuid.UUID | None = None
     as_of_date: date
     service_days: int
     service_years: Decimal
@@ -110,6 +114,8 @@ class PayoutRead(BaseModel):
 
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
     exit_date: date
     exit_reason: ExitReason
     service_years: Decimal
@@ -143,8 +149,12 @@ class EncashmentPolicyRead(BaseModel):
     encashable_in_service: bool
     max_days_per_year: Decimal | None
     cap_days: Decimal | None
+    min_balance_after_encashment: Decimal
+    formula_basis: list[str]
     days_per_month_divisor: int
     exempt_on_retirement: bool
+    retirement_exemption_ceiling: Decimal | None
+    in_service_fully_taxable: bool
     active: bool
 
 
@@ -165,6 +175,8 @@ class EncashmentRead(BaseModel):
 
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
     leave_type_code: str
     financial_year: str
     days_requested: Decimal
@@ -175,7 +187,25 @@ class EncashmentRead(BaseModel):
     taxable_amount: Decimal
     is_exit_encashment: bool
     status: EncashmentStatus
+    decision_note: str | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
     working: dict
+
+
+async def _named(session, user, reads: list, *, department: bool = False) -> list:
+    """Fill employee code and name (and department) on read models, in one query."""
+    people = await exit_service.employee_details(
+        session, user, {read.employee_id for read in reads}
+    )
+    for read in reads:
+        person = people.get(read.employee_id)
+        if person is not None:
+            read.employee_code = person.employee_code
+            read.employee_name = person.full_name
+            if department:
+                read.department_id = person.department_id
+    return reads
 
 
 def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
@@ -330,7 +360,18 @@ async def list_accruals(
         GratuityAccrual,
         user,
     )
-    return [AccrualRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    reads = [AccrualRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    return await _named(session, user, reads, department=True)
+
+
+@router.get(
+    "/gratuity/accrual-dates",
+    response_model=list[date],
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def accrual_dates(user: CurrentUser, session: DbSession) -> list[date]:
+    """Dates an accrual has been run for, newest first."""
+    return await exit_service.accrual_dates(session, user)
 
 
 @router.get(
@@ -370,7 +411,7 @@ async def compute_payout(
         unpaid_leave_days=payload.unpaid_leave_days,
         request=request,
     )
-    return PayoutRead.model_validate(payout)
+    return (await _named(session, user, [PayoutRead.model_validate(payout)]))[0]
 
 
 @router.get(
@@ -384,7 +425,8 @@ async def list_payouts(user: CurrentUser, session: DbSession) -> list[PayoutRead
         GratuityPayout,
         user,
     )
-    return [PayoutRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    reads = [PayoutRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    return await _named(session, user, reads)
 
 
 # ── Encashment ──────────────────────────────────────────────────────────────
@@ -469,7 +511,7 @@ async def request_encashment(
         is_exit=False,
         request=request,
     )
-    return EncashmentRead.model_validate(record)
+    return (await _named(session, user, [EncashmentRead.model_validate(record)]))[0]
 
 
 @router.get("/encashment/requests", response_model=list[EncashmentRead])
@@ -479,18 +521,12 @@ async def list_encashments(
     employee_id: uuid.UUID | None = None,
     pending_only: bool = False,
 ) -> list[EncashmentRead]:
-    stmt = tenant_scoped(
-        select(EncashmentRequest).order_by(EncashmentRequest.created_at.desc()),
-        EncashmentRequest,
-        user,
+    """Encashments: yours, your reporting line's if you manage, or everyone's for HR."""
+    rows = await exit_service.list_encashments(
+        session, user, employee_id=employee_id, pending_only=pending_only
     )
-    if employee_id or user.role not in PAYROLL_ROLES:
-        stmt = stmt.where(
-            EncashmentRequest.employee_id == _resolve_employee(user, employee_id)
-        )
-    if pending_only:
-        stmt = stmt.where(EncashmentRequest.status == EncashmentStatus.REQUESTED)
-    return [EncashmentRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    reads = [EncashmentRead.model_validate(row) for row in rows]
+    return await _named(session, user, reads)
 
 
 @router.patch(
@@ -513,4 +549,4 @@ async def decide_encashment(
         note=payload.note,
         request=request,
     )
-    return EncashmentRead.model_validate(record)
+    return (await _named(session, user, [EncashmentRead.model_validate(record)]))[0]

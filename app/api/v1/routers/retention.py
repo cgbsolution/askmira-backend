@@ -299,8 +299,99 @@ async def plan_run(
         "records_held": row.records_held,
         "records_blocked": row.records_blocked,
         "counts_by_action": row.counts_by_action,
-        "plan": row.plan_snapshot,
+        "plan": retention_service.public_snapshot(row.plan_snapshot),
     }
+
+
+class SweepIn(BaseModel):
+    today: date | None = None
+    approval_threshold: int = Field(
+        default=planner_engine.DEFAULT_APPROVAL_THRESHOLD, ge=1
+    )
+
+
+@router.post("/retention/sweep/preview", status_code=status.HTTP_201_CREATED)
+async def preview_sweep(
+    payload: SweepIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """A dry run over the records this workspace actually holds. Changes nothing.
+
+    Candidates are gathered from every classified table with an active policy,
+    so the preview is what tonight's sweep would do, not a hand-picked sample.
+    """
+    as_of = payload.today or date.today()
+    candidates = await retention_service.gather_candidates(session, user, today=as_of)
+    row = await retention_service.plan_run(
+        session,
+        user,
+        candidates=candidates,
+        today=as_of,
+        approval_threshold=payload.approval_threshold,
+        is_dry_run=True,
+        request=request,
+    )
+    return {
+        "id": str(row.id),
+        "status": row.status.value,
+        "candidates": len(candidates),
+        "records_to_act": row.records_to_act,
+        "records_held": row.records_held,
+        "records_blocked": row.records_blocked,
+        "counts_by_action": row.counts_by_action,
+        "plan": retention_service.public_snapshot(row.plan_snapshot),
+    }
+
+
+@router.post("/retention/sweep/plan", status_code=status.HTTP_201_CREATED)
+async def plan_sweep(
+    payload: SweepIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """Plan a real run over the workspace's records.
+
+    Nothing is deleted yet: a run under the threshold is ready to execute, and a
+    larger one waits for somebody else's approval.
+    """
+    as_of = payload.today or date.today()
+    candidates = await retention_service.gather_candidates(session, user, today=as_of)
+    row = await retention_service.plan_run(
+        session,
+        user,
+        candidates=candidates,
+        today=as_of,
+        approval_threshold=payload.approval_threshold,
+        is_dry_run=False,
+        request=request,
+    )
+    return {
+        "id": str(row.id),
+        "status": row.status.value,
+        "candidates": len(candidates),
+        "records_to_act": row.records_to_act,
+        "records_held": row.records_held,
+        "counts_by_action": row.counts_by_action,
+        "plan": retention_service.public_snapshot(row.plan_snapshot),
+    }
+
+
+@router.post("/retention/suppressions/apply")
+async def apply_suppressions(
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """Remove any erased record that has reappeared — after a backup restore."""
+    return await retention_service.apply_suppressions(
+        session, user, today=date.today(), request=request
+    )
 
 
 @router.get("/retention/runs")
@@ -380,9 +471,8 @@ async def execute_run(
 ) -> dict[str, Any]:
     """Execute an approved run.
 
-    Reports `records_actually_removed: 0` and says why: the per-module purge is
-    not built. A response that implied otherwise would be the most dangerous
-    thing in this codebase.
+    Deletes or anonymises each planned record, re-checking legal holds first,
+    and reports the real counts — `records_actually_removed` is what was removed.
     """
     return await retention_service.execute_plan(
         session, user, run_id=run_id, request=request

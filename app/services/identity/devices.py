@@ -30,10 +30,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from fastapi import HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.attendance import AttendancePunch, PunchDirection, PunchSource
+from app.models.attendance import (
+    AttendancePunch,
+    PunchDirection,
+    PunchSource,
+    WorkLocation,
+)
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.identity import (
@@ -42,6 +48,7 @@ from app.models.identity import (
     DeviceStatus,
     DeviceVendor,
 )
+from app.schemas.devices import DeviceIngestionRow, DeviceRead, IngestionStatus
 from app.services import audit
 
 __all__ = [
@@ -50,9 +57,16 @@ __all__ = [
     "NormalisedPunch",
     "authenticate_device",
     "create_device",
+    "get_device",
     "ingest_punches",
+    "ingestion_status",
+    "list_devices",
+    "list_exceptions",
     "normalise",
+    "resolve_exception",
+    "rotate_token",
     "silent_devices",
+    "update_device",
 ]
 
 
@@ -89,12 +103,26 @@ async def create_device(
     vendor: DeviceVendor,
     work_location_id: uuid.UUID | None = None,
     assumed_timezone: str = "Asia/Kolkata",
+    silence_threshold_minutes: int = 180,
     request=None,
 ) -> tuple[DeviceIntegration, str]:
     """Register a device. Returns `(device, plaintext push token)`.
 
-    The token is shown once; only its hash is stored.
+    The token is shown once; only its hash is stored. A device id already
+    registered in the tenant is refused.
     """
+    duplicate = await session.scalar(
+        select(DeviceIntegration.id).where(
+            DeviceIntegration.tenant_id == user.tenant_id,
+            DeviceIntegration.device_id == device_id,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A device with id {device_id} is already registered",
+        )
+    await _check_work_location(session, user, work_location_id)
     plaintext = f"dev_{secrets.token_urlsafe(32)}"
     device = DeviceIntegration(
         tenant_id=user.tenant_id,
@@ -105,6 +133,7 @@ async def create_device(
         push_token_hash=_hash_token(plaintext),
         push_token_hint=f"{plaintext[:8]}…{plaintext[-4:]}",
         assumed_timezone=assumed_timezone,
+        silence_threshold_minutes=silence_threshold_minutes,
     )
     session.add(device)
     await session.flush()
@@ -116,7 +145,11 @@ async def create_device(
         entity_type="device_integration",
         entity_id=device.id,
         actor=user,
-        changes={"device_id": device_id, "vendor": vendor.value},
+        changes={
+            "device_id": device_id,
+            "vendor": vendor.value,
+            "silence_threshold_minutes": silence_threshold_minutes,
+        },
         summary=f"Registered attendance device {name} ({device_id})",
         request=request,
     )
@@ -427,3 +460,326 @@ async def silent_devices(session: AsyncSession, tenant_id: uuid.UUID) -> list[De
     if silent:
         await session.commit()
     return silent
+
+
+# ── Administration ──────────────────────────────────────────────────────────
+
+
+def _mint_token() -> tuple[str, str, str]:
+    """`(plaintext, hash, hint)`. Only the hash and the hint are ever stored."""
+    plaintext = f"dev_{secrets.token_urlsafe(32)}"
+    return plaintext, _hash_token(plaintext), f"{plaintext[:8]}…{plaintext[-4:]}"
+
+
+def _snapshot(device: DeviceIntegration) -> dict[str, Any]:
+    return {
+        "name": device.name,
+        "status": device.status.value,
+        "work_location_id": str(device.work_location_id) if device.work_location_id else None,
+        "assumed_timezone": device.assumed_timezone,
+        "silence_threshold_minutes": device.silence_threshold_minutes,
+    }
+
+
+async def list_devices(session: AsyncSession, user) -> list[DeviceIntegration]:
+    stmt = (
+        select(DeviceIntegration)
+        .where(DeviceIntegration.tenant_id == user.tenant_id)
+        .order_by(DeviceIntegration.name)
+    )
+    return list((await session.scalars(stmt)).all())
+
+
+async def get_device(session: AsyncSession, user, device_pk: uuid.UUID) -> DeviceIntegration:
+    device = await session.scalar(
+        select(DeviceIntegration).where(
+            DeviceIntegration.tenant_id == user.tenant_id, DeviceIntegration.id == device_pk
+        )
+    )
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    return device
+
+
+async def _check_work_location(
+    session: AsyncSession, user, work_location_id: uuid.UUID | None
+) -> None:
+    if work_location_id is None:
+        return
+    found = await session.scalar(
+        select(WorkLocation.id).where(
+            WorkLocation.tenant_id == user.tenant_id, WorkLocation.id == work_location_id
+        )
+    )
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Work location not found")
+
+
+async def rotate_token(
+    session: AsyncSession, user, device_pk: uuid.UUID, *, request=None
+) -> tuple[DeviceIntegration, str]:
+    """Mint a new push token. The old one stops working at once; the new one is shown once."""
+    device = await get_device(session, user, device_pk)
+    plaintext, token_hash, hint = _mint_token()
+    previous_hint = device.push_token_hint
+    device.push_token_hash = token_hash
+    device.push_token_hint = hint
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="device_integration",
+        entity_id=device.id,
+        actor=user,
+        changes={"push_token_hint": {"before": previous_hint, "after": hint}},
+        summary=(
+            f"Rotated the push token for {device.name} ({device.device_id}). "
+            "The previous token no longer authenticates."
+        ),
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(device)
+    return device, plaintext
+
+
+async def update_device(
+    session: AsyncSession,
+    user,
+    device_pk: uuid.UUID,
+    *,
+    name: str | None = None,
+    work_location_id: uuid.UUID | None = None,
+    clear_work_location: bool = False,
+    assumed_timezone: str | None = None,
+    silence_threshold_minutes: int | None = None,
+    enabled: bool | None = None,
+    request=None,
+) -> DeviceIntegration:
+    device = await get_device(session, user, device_pk)
+    before = _snapshot(device)
+
+    if name is not None:
+        device.name = name
+    if clear_work_location:
+        device.work_location_id = None
+    elif work_location_id is not None:
+        await _check_work_location(session, user, work_location_id)
+        device.work_location_id = work_location_id
+    if assumed_timezone is not None:
+        device.assumed_timezone = assumed_timezone
+    if silence_threshold_minutes is not None:
+        device.silence_threshold_minutes = silence_threshold_minutes
+    if enabled is False:
+        device.status = DeviceStatus.DISABLED
+    elif enabled is True and device.status is DeviceStatus.DISABLED:
+        device.status = DeviceStatus.ACTIVE
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="device_integration",
+        entity_id=device.id,
+        actor=user,
+        changes={"before": before, "after": _snapshot(device)},
+        summary=f"Updated attendance device {device.name} ({device.device_id})",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(device)
+    return device
+
+
+async def list_exceptions(
+    session: AsyncSession, user, *, include_resolved: bool = False
+) -> list[DevicePunchException]:
+    stmt = select(DevicePunchException).where(DevicePunchException.tenant_id == user.tenant_id)
+    if not include_resolved:
+        stmt = stmt.where(DevicePunchException.resolved_at.is_(None))
+    stmt = stmt.order_by(DevicePunchException.punched_at.desc()).limit(1000)
+    return list((await session.scalars(stmt)).all())
+
+
+async def ingestion_status(session: AsyncSession, user) -> IngestionStatus:
+    """Push ingestion health per device.
+
+    Read-only: unlike `silent_devices`, this does not change a device's status.
+    Counts are of punches *received* (their `created_at`), because a device
+    replaying a week of buffered records has still only just reported.
+    """
+    now = datetime.now(UTC)
+    devices = await list_devices(session, user)
+
+    async def counts_since(since: datetime) -> dict[str, int]:
+        stmt = (
+            select(AttendancePunch.device_id, func.count())
+            .where(
+                AttendancePunch.tenant_id == user.tenant_id,
+                AttendancePunch.device_id.is_not(None),
+                AttendancePunch.created_at >= since,
+            )
+            .group_by(AttendancePunch.device_id)
+        )
+        return {str(k): int(v) for k, v in (await session.execute(stmt)).all()}
+
+    day = await counts_since(now - timedelta(hours=24))
+    week = await counts_since(now - timedelta(days=7))
+    open_stmt = (
+        select(DevicePunchException.device_id, func.count())
+        .where(
+            DevicePunchException.tenant_id == user.tenant_id,
+            DevicePunchException.resolved_at.is_(None),
+        )
+        .group_by(DevicePunchException.device_id)
+    )
+    open_exceptions = {str(k): int(v) for k, v in (await session.execute(open_stmt)).all()}
+
+    rows: list[DeviceIngestionRow] = []
+    for device in devices:
+        silent = device.status is not DeviceStatus.DISABLED and device.is_silent
+        minutes = (
+            int((now - device.last_seen_at).total_seconds() // 60)
+            if device.last_seen_at is not None
+            else None
+        )
+        rows.append(
+            DeviceIngestionRow(
+                device=DeviceRead.model_validate(device),
+                is_silent=silent,
+                minutes_since_seen=minutes,
+                punches_last_24h=day.get(device.device_id, 0),
+                punches_last_7d=week.get(device.device_id, 0),
+                open_exceptions=open_exceptions.get(device.device_id, 0),
+            )
+        )
+
+    return IngestionStatus(
+        generated_at=now,
+        device_count=len(devices),
+        silent_count=sum(1 for r in rows if r.is_silent),
+        open_exceptions=sum(open_exceptions.values()),
+        punches_last_24h=sum(day.values()),
+        devices=rows,
+        pull_ingestion_built=False,
+        silence_alerts_sent=False,
+        notes=[
+            "Push ingestion is live: a registered device posts to its token URL.",
+            "Pull ingestion (polling a device or an on-prem agent on a schedule) is not "
+            "built. It needs live vendor devices to build and test against.",
+            "A silent device is reported here and on the silent-device list. No alert is "
+            "sent to anybody yet.",
+        ],
+    )
+
+
+async def resolve_exception(
+    session: AsyncSession,
+    user,
+    exception_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    *,
+    request=None,
+) -> DevicePunchException:
+    """Map an orphaned punch to an employee and admit it to attendance.
+
+    Only a punch that was read but could not be attributed can be resolved. A
+    payload that could not be read at all has no trustworthy timestamp, and
+    admitting it would invent one.
+    """
+    from app.services.attendance import service as attendance_service
+
+    record = await session.scalar(
+        select(DevicePunchException).where(
+            DevicePunchException.tenant_id == user.tenant_id,
+            DevicePunchException.id == exception_id,
+        )
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exception not found")
+    if record.resolved_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="This exception is already resolved"
+        )
+    if record.employee_code is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"This payload could not be read ({record.reason}), so it has no timestamp "
+                "that can be trusted. Fix the device and have it re-send."
+            ),
+        )
+
+    employee = await session.scalar(
+        select(Employee).where(
+            Employee.tenant_id == user.tenant_id,
+            Employee.id == employee_id,
+            Employee.deleted_at.is_(None),
+        )
+    )
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    device = await session.scalar(
+        select(DeviceIntegration).where(
+            DeviceIntegration.tenant_id == user.tenant_id,
+            DeviceIntegration.device_id == record.device_id,
+        )
+    )
+    direction = PunchDirection.IN
+    try:
+        if device is not None:
+            direction = normalise(
+                record.raw_payload, vendor=device.vendor, timezone_name=device.assumed_timezone
+            ).direction
+        elif str(record.raw_payload.get("direction", "")).lower() == "out":
+            direction = PunchDirection.OUT
+    except DeviceError:
+        direction = PunchDirection.IN
+
+    already = await session.scalar(
+        select(AttendancePunch.id).where(
+            AttendancePunch.tenant_id == user.tenant_id,
+            AttendancePunch.employee_id == employee.id,
+            AttendancePunch.punched_at == record.punched_at,
+            AttendancePunch.direction == direction,
+        )
+    )
+    if already is None:
+        await attendance_service.record_punch(
+            session,
+            user,
+            employee_id=employee.id,
+            punched_at=record.punched_at,
+            direction=direction,
+            source=PunchSource.BIOMETRIC,
+            device_id=record.device_id,
+            raw_payload={**record.raw_payload, "_resolved_from_exception": str(record.id)},
+            commit=False,
+        )
+
+    record.resolved_at = datetime.now(UTC)
+    record.resolved_by_user_id = user.id
+    record.resolved_employee_id = employee.id
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="device_punch_exception",
+        entity_id=record.id,
+        actor=user,
+        changes={
+            "employee_code": record.employee_code,
+            "mapped_to": employee.employee_code,
+            "punch_created": already is None,
+        },
+        summary=(
+            f"Mapped orphaned punch from device code {record.employee_code} to "
+            f"{employee.employee_code}"
+        ),
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(record)
+    return record

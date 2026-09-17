@@ -35,6 +35,7 @@ from app.models.autonomy import (
 from app.models.user import User
 from app.services import audit
 from app.services.autonomy import proposals as proposal_engine
+from app.services.autonomy import subjects as subject_registry
 from app.services.autonomy.catalogue import (
     ACTIONS,
     AutonomyError,
@@ -309,6 +310,16 @@ async def propose(
         routing_reason=routing.reason,
         applied_at=moment if routing.applies_automatically else None,
     )
+    if routing.applies_automatically:
+        captured = await subject_registry.apply_change(
+            session,
+            user,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            change=dict(proposed_change),
+        )
+        if captured is not None:
+            row.previous_state = captured
     session.add(row)
     await session.flush()
 
@@ -478,6 +489,18 @@ async def decide_proposal(
     row.decided_at = moment
     row.decision_note = note or None
     if approve:
+        captured = await subject_registry.apply_change(
+            session,
+            user,
+            subject_type=row.subject_type,
+            subject_id=row.subject_id,
+            change=dict(row.proposed_change or {}),
+        )
+        if captured is not None:
+            # What the record actually held, read at the moment of applying — the
+            # state a revert restores. A previous state supplied with the proposal
+            # can be stale by the time somebody approves it.
+            row.previous_state = captured
         row.applied_at = moment
 
     await session.flush()
@@ -579,13 +602,16 @@ async def revert(
     reason: str,
     request: Request | None = None,
     now: datetime | None = None,
+    outcome: dict[str, Any] | None = None,
 ) -> ProposalReversal:
     """Undo an applied action, restoring the state captured at proposal time.
 
-    **Records the reversal; does not re-apply the old state to the subject
-    record.** The per-action undo — which table, which columns, which cascade —
-    is not written, because the actions themselves are not written. The response
-    says so rather than implying a record moved.
+    For a subject type registered in `subjects.py` the captured values are
+    written back to the record in the same transaction; `outcome`, when given,
+    is filled with `restored_to_record`.
+
+    The reversal row is always written. The record itself is restored only for
+    registered subject types; for any other the response says it was not touched.
     """
     moment = now or datetime.now(UTC)
     row = await _proposal_or_404(session, user, proposal_id)
@@ -639,6 +665,17 @@ async def revert(
     )
     session.add(reversal)
     row.status = ProposalStatusEnum.REVERTED
+    restored = False
+    if row.applied_at is not None:
+        restored = await subject_registry.restore(
+            session,
+            user,
+            subject_type=row.subject_type,
+            subject_id=row.subject_id,
+            previous=dict(row.previous_state or {}),
+        )
+    if outcome is not None:
+        outcome["restored_to_record"] = restored
 
     await session.flush()
     await audit.record(
@@ -764,8 +801,10 @@ async def transparency_surface(
         "not_built": [
             "No agent creates proposals in production — the agent layer is not "
             "built. Every proposal here was created by a test or a manual call.",
-            "Reverting records the reversal and restores nothing: the per-action "
-            "undo is not written, because the actions themselves are not.",
+            "Approving applies the change, and reverting restores it, only for "
+            "regularisations, expense claims, candidates and lifecycle events; any "
+            "other subject type is recorded as a decision and its record is not "
+            "touched.",
             "Rejected proposals are not yet fed into the slice 27 eval set; the "
             "column linking them exists and nothing writes it.",
         ],

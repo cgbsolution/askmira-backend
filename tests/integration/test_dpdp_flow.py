@@ -517,15 +517,17 @@ async def test_the_export_covers_every_module_holding_personal_data(
     )
 
 
-async def test_the_export_is_honest_about_not_including_contents(
+async def test_the_export_includes_the_persons_own_rows_and_withholds_credentials(
     session, hr_user, employee
 ):
     await _configure(session, hr_user)
     export = await dpdp.build_access_export(
         session, hr_user, principal_id=employee.id
     )
-    assert export["completeness"]["contents_included"] is False
-    assert "not yet included" in export["completeness"]["note"]
+    assert export["completeness"]["contents_included"] is True
+    tables = {section["table"]: section for section in export["contents"]}
+    assert tables["employees"]["rows"][0]["work_email"] == employee.work_email
+    assert "credential" in export["completeness"]["withheld"].lower()
 
 
 async def test_the_export_explains_each_section_in_plain_language(

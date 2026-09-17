@@ -1,7 +1,19 @@
 """Notifications, data protection, retention, security operations, agents and BI."""
 
 ENDPOINTS: dict[str, str] = {
+    # ── Approvals inbox ─────────────────────────────────────────────────────
+    "GET /approvals": (
+        "permissions: each source applies its module's own rule — HR for the whole "
+        "tenant, a manager for their reporting line, never an item about yourself."
+    ),
+    "GET /approvals/count": (
+        "permissions: the same per-source rule as the inbox, reduced to a number."
+    ),
     # ── Notifications ───────────────────────────────────────────────────────
+    "GET /notifications/unread-count": "own: the caller's own unread count.",
+    "POST /notifications/read-all": "own: marks only notifications sent to the caller.",
+    "GET /notifications/channels": "reference: which channels deliver in this workspace.",
+    "GET /notifications/events": "reference: the event catalogue and shipped defaults.",
     "GET /notifications": "own: the caller's own inbox.",
     "POST /notifications/{notification_id}/read": "own: only a notification sent to you.",
     "GET /notifications/stream": "own: the caller's own inbox.",
@@ -17,7 +29,9 @@ ENDPOINTS: dict[str, str] = {
     "GET /dpdp/me/consent": "own: the caller's own consent record.",
     "POST /dpdp/me/consent": "own: the caller's own consent record.",
     "POST /dpdp/me/consent/{purpose_key}/withdraw": "own: the caller's own consent record.",
-    "GET /dpdp/me/export": "own: the caller's own data manifest.",
+    "GET /dpdp/me/export": "own: the caller's own data, organised by category.",
+    "GET /dpdp/me/export/download": "own: the caller's own data as a downloadable file.",
+    "GET /dpdp/me/requests": "own: requests about the caller.",
     "GET /dpdp/me/erasure-preview": "own: the caller's own erasure plan.",
     "POST /dpdp/me/requests": "own: a request raised by and about the caller.",
     "GET /retention/taxonomy": "reference: the retention catalogue.",

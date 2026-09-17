@@ -28,6 +28,7 @@ from app.services import audit
 from app.services.identity import oidc as oidc_service
 from app.services.identity import saml as saml_service
 from app.services.identity import sso as sso_service
+from app.services.identity import sso_admin
 
 router = APIRouter(prefix="/sso", tags=["sso"])
 
@@ -553,3 +554,107 @@ async def set_break_glass(
 
 def _unused_state() -> str:
     return secrets.token_urlsafe(32)
+
+
+# ── Provider and SCIM administration ────────────────────────────────────────
+
+
+class ProviderUpdate(BaseModel):
+    """Every field optional. `client_secret` is write-only: omit it to keep the
+    stored one, send an empty string to clear it. No role or group mapping."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    enabled: bool | None = None
+    entity_id: str | None = None
+    sso_url: str | None = None
+    slo_url: str | None = None
+    x509_cert: str | None = None
+    issuer: str | None = None
+    discovery_url: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    email_attribute: str | None = None
+    first_name_attribute: str | None = None
+    last_name_attribute: str | None = None
+    employee_id_attribute: str | None = None
+    enforce_sso: bool | None = None
+    allowed_email_domains: list[str] | None = None
+    jit_provisioning: bool | None = None
+
+
+class ScimTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+@router.patch(
+    "/providers/{provider_id}",
+    response_model=ProviderRead,
+    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+)
+async def update_provider(
+    provider_id: uuid.UUID,
+    payload: ProviderUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ProviderRead:
+    changes = payload.model_dump(exclude_unset=True, exclude={"client_secret"})
+    changes = {key: value for key, value in changes.items() if value is not None}
+    provider = await sso_admin.update_provider(
+        session,
+        user,
+        provider_id=provider_id,
+        changes=changes,
+        client_secret=(
+            payload.client_secret if "client_secret" in payload.model_fields_set else None
+        ),
+        request=request,
+    )
+    return ProviderRead.model_validate(provider).model_copy(
+        update={"has_client_secret": bool(provider.client_secret_encrypted)}
+    )
+
+
+@router.get("/service-provider", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
+async def service_provider_details(user: CurrentUser) -> dict[str, str]:
+    """What an IdP administrator needs to configure this workspace on their side."""
+    base = settings.API_V1_PREFIX
+    return {
+        "saml_acs_url_template": f"{base}/sso/saml/acs/{{provider_id}}",
+        "oidc_redirect_path": f"{base}/sso/oidc/callback",
+        "scim_base_path": "/scim/v2",
+        "tenant_id": str(user.tenant_id),
+        "note": (
+            "Paths are relative to this API's public address. Sign-in has been tested "
+            "against a mock identity provider only, not a live Azure AD, Okta or Google "
+            "Workspace tenant."
+        ),
+    }
+
+
+@router.get("/scim-tokens", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
+async def list_scim_tokens(user: CurrentUser, session: DbSession) -> list[dict]:
+    """Tokens by name and hint. The token itself is never shown again."""
+    return await sso_admin.list_tokens(session, user)
+
+
+@router.post(
+    "/scim-tokens",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+)
+async def create_scim_token(
+    payload: ScimTokenCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """Mint a directory token. The response is the only time it is shown."""
+    return await sso_admin.create_token(session, user, name=payload.name, request=request)
+
+
+@router.post(
+    "/scim-tokens/{token_id}/revoke",
+    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+)
+async def revoke_scim_token(
+    token_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await sso_admin.revoke_token(session, user, token_id=token_id, request=request)

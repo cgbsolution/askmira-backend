@@ -39,7 +39,7 @@ from app.models.payroll import PayrollRuleSet, PayrollRun, PayrollRunStatus, Pay
 from app.models.tax import TaxComputationSnapshot
 from app.models.user import User
 from app.services import audit
-from app.services.filings import serialisers, validation
+from app.services.filings import serialisers, support, validation
 from app.services.filings.records import (
     EcrLine,
     EcrReturn,
@@ -221,6 +221,12 @@ async def _record(
         generated_by_user_id=user.id,
         validation_exceptions=result.as_list(),
     )
+    if not blocked and content is not None:
+        # Kept, encrypted, so the file that was filed can be downloaded again
+        # exactly — a regenerated file can differ once payslips move.
+        record.file_storage_key = support.store_generated(
+            user.tenant_id, "filings", content.encode("utf-8"), ".txt"
+        )
     session.add(record)
     await session.flush()
 
@@ -945,3 +951,59 @@ async def record_acknowledgement(
         request=request,
     )
     return record
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reading and downloading a filing record
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def get_record(session: AsyncSession, user: User, record_id: uuid.UUID) -> FilingRecord:
+    record = await session.scalar(
+        tenant_scoped(select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user)
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")
+    return record
+
+
+async def download_record(
+    session: AsyncSession,
+    user: User,
+    record_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> tuple[bytes, str]:
+    """The stored return file, exactly as generated. Every download is audited.
+
+    The caller commits: the audit row and the download are one transaction.
+    """
+    record = await get_record(session, user, record_id)
+    if record.status is FilingStatus.BLOCKED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This return was blocked by validation, so no file exists.",
+        )
+    stored = support.load_file(user.tenant_id, record.file_storage_key)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No stored file exists for this {record.return_type.value} return "
+                f"({record.period}); it was generated before files were kept. Generate it "
+                f"again and check it against the recorded hash {record.content_hash}."
+            ),
+        )
+    data, _ = stored
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.EXPORT,
+        entity_type="filing_record",
+        entity_id=record.id,
+        summary=f"Downloaded the {record.return_type.value} file for {record.period}",
+        changes={"content_hash": record.content_hash},
+        request=request,
+    )
+    return data, record.file_name or f"{record.return_type.value}_{record.period}.txt"

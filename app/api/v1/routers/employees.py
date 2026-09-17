@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.employee import EmploymentStatus
 from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeRead,
+    EmployeeSelfUpdate,
     EmployeeSummary,
     EmployeeUpdate,
 )
@@ -30,7 +32,8 @@ async def list_employees(
     search: str | None = Query(default=None, max_length=128),
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
-    employment_status: str | None = Query(default=None, alias="status"),
+    manager_id: uuid.UUID | None = None,
+    employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[EmployeeSummary]:
@@ -40,7 +43,8 @@ async def list_employees(
         search=search,
         department_id=department_id,
         location_id=location_id,
-        status_filter=employment_status,
+        manager_id=manager_id,
+        status_filter=employment_status.value if employment_status else None,
         offset=(page - 1) * page_size,
         limit=page_size,
     )
@@ -62,6 +66,25 @@ async def create_employee(
     payload: EmployeeCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> EmployeeRead:
     employee = await employee_service.create_employee(session, user, payload, request)
+    return EmployeeRead.model_validate(employee)
+
+
+# `/me` is declared before `/{employee_id}` so it is not parsed as an id.
+
+
+@router.get("/me", response_model=EmployeeRead)
+async def get_my_record(user: CurrentUser, session: DbSession) -> EmployeeRead:
+    """The caller's own full record, found through the login's own link."""
+    employee = await employee_service.get_own_employee(session, user)
+    return EmployeeRead.model_validate(employee)
+
+
+@router.patch("/me", response_model=EmployeeRead)
+async def update_my_contact(
+    payload: EmployeeSelfUpdate, user: CurrentUser, session: DbSession, request: Request
+) -> EmployeeRead:
+    """Self-service contact details. Employment fields are not in the contract."""
+    employee = await employee_service.update_own_contact(session, user, payload, request)
     return EmployeeRead.model_validate(employee)
 
 

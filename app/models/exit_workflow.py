@@ -184,7 +184,32 @@ class ClearanceItem(Base, UUIDMixin, TenantMixin, TimestampMixin):
     waiver_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Who signs this item off, copied from the template when the exit opens so
+    # a later checklist edit does not move an item somebody already owns.
+    # "hr" | "reporting_manager" | "named_user" — see `ClearanceOwnerRole`.
+    owner_role: Mapped[str] = mapped_column(
+        String(32), default="hr", server_default="hr", nullable=False
+    )
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     exit_record: Mapped[ExitRecord] = relationship(back_populates="clearance_items")
+
+
+class ClearanceOwnerRole(str, enum.Enum):
+    """Who may sign a clearance item off, besides HR.
+
+    HR can always clear an item — somebody has to be able to when the named
+    owner has left too. The owner is who is *expected* to, and who the
+    checklist shows as holding it up.
+    """
+
+    HR = "hr"
+    # The leaver's line manager: the handover, the project sign-off.
+    REPORTING_MANAGER = "reporting_manager"
+    # One named person: the IT admin who collects the laptop.
+    NAMED_USER = "named_user"
 
 
 class ClearanceTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -201,6 +226,12 @@ class ClearanceTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     is_mandatory: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    owner_role: Mapped[str] = mapped_column(
+        String(32), default="hr", server_default="hr", nullable=False
+    )
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class Settlement(Base, UUIDMixin, TenantMixin, TimestampMixin):

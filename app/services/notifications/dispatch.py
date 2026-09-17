@@ -34,6 +34,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.core.crypto import decrypt_secret
 from app.models.notifications import (
     Channel,
     DigestMode,
@@ -43,6 +45,7 @@ from app.models.notifications import (
     NotificationPreference,
     NotificationStatus,
     NotificationTemplate,
+    TenantSmtpSettings,
     WhatsAppConsent,
     WhatsAppTemplate,
 )
@@ -54,6 +57,7 @@ from app.services.notifications.adapters import (
     NullPushAdapter,
     OutboundMessage,
     PermanentFailure,
+    SmtpEmailAdapter,
     TransientFailure,
 )
 
@@ -374,6 +378,54 @@ def get_adapter(channel: Channel) -> ChannelAdapter | None:
     return _ADAPTERS.get(channel)
 
 
+#: The email adapter shipped in the registry. While nothing has replaced it (a
+#: test registers its own), each send looks for a real relay: the tenant's own,
+#: then the platform's, and only then falls back to logging.
+_DEFAULT_EMAIL_ADAPTER = _ADAPTERS[Channel.EMAIL]
+
+
+async def email_adapter_for(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> tuple[ChannelAdapter, str]:
+    """The adapter email for this tenant goes through, and which relay it is."""
+    row = await session.scalar(
+        select(TenantSmtpSettings).where(
+            TenantSmtpSettings.tenant_id == tenant_id,
+            TenantSmtpSettings.enabled.is_(True),
+        )
+    )
+    if row is not None:
+        return (
+            SmtpEmailAdapter(
+                host=row.host,
+                port=row.port,
+                username=row.username,
+                password=decrypt_secret(row.password_encrypted, tenant_id),
+                use_starttls=row.use_starttls,
+                use_ssl=row.use_ssl,
+                from_address=row.from_address,
+                from_name=row.from_name,
+                timeout=settings.SMTP_TIMEOUT_SECONDS,
+            ),
+            "tenant_smtp",
+        )
+    if settings.SMTP_HOST and settings.SMTP_FROM:
+        return (
+            SmtpEmailAdapter(
+                host=settings.SMTP_HOST,
+                port=settings.SMTP_PORT,
+                username=settings.SMTP_USERNAME,
+                password=settings.SMTP_PASSWORD,
+                use_starttls=settings.SMTP_USE_STARTTLS,
+                use_ssl=settings.SMTP_USE_SSL,
+                from_address=settings.SMTP_FROM,
+                timeout=settings.SMTP_TIMEOUT_SECONDS,
+            ),
+            "platform_smtp",
+        )
+    return _DEFAULT_EMAIL_ADAPTER, "console"
+
+
 # ── The entry point ─────────────────────────────────────────────────────────
 
 
@@ -503,6 +555,13 @@ async def _dispatch_one(
     lands on the row instead of propagating.
     """
     adapter = get_adapter(notification.channel)
+    if notification.channel is Channel.EMAIL and adapter is _DEFAULT_EMAIL_ADAPTER:
+        try:
+            adapter, _relay = await email_adapter_for(session, notification.tenant_id)
+        except Exception as exc:
+            notification.status = NotificationStatus.FAILED
+            notification.failure_reason = f"The configured mail relay could not be used: {exc}"
+            return False
     if adapter is None:
         notification.status = NotificationStatus.FAILED
         notification.failure_reason = (

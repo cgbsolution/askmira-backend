@@ -38,7 +38,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Database unreachable at startup")
         if settings.is_production:
             raise
+
+    # Background jobs: one instance runs them, chosen by a Postgres advisory lock.
+    from app.services.scheduler.runner import scheduler_enabled, start_scheduler, stop_scheduler
+
+    runner = await start_scheduler(engine) if scheduler_enabled() else None
     yield
+    if runner is not None:
+        await stop_scheduler(runner)
     await engine.dispose()
 
 

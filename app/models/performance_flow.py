@@ -253,6 +253,41 @@ class PipCheckIn(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
 
+class PipEmployeeStatement(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """The employee's own account, in their own words, written by them.
+
+    A check-in's `employee_comments` is what the manager recorded the employee
+    saying. This is different: text the person on the plan typed themselves,
+    timestamped when they saved it. Insert-only - a later statement is a new
+    row, so what they said at the time is never overwritten by what they said
+    afterwards.
+    """
+
+    __tablename__ = "pip_employee_statements"
+    __table_args__ = (
+        Index("ix_pip_employee_statements_pip", "tenant_id", "pip_id", "recorded_at"),
+    )
+
+    pip_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("pips.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: The check-in this responds to, where it responds to one.
+    check_in_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("pip_check_ins.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Increments
 # ══════════════════════════════════════════════════════════════════════════════

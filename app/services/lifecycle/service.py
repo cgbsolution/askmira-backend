@@ -19,6 +19,15 @@ Each event succeeds or fails on its own, and the ones that failed are visible.
 `effective_from <= today` and `status == APPROVED`. There is no other path from
 APPROVED to EFFECTED, so an approval in March for an April date changes nothing
 in March — and lands on 1 April whether or not anybody remembers.
+
+**The letter is part of the cascade.** Where the tenant has an active template
+for the event (see `_letter_template_for`), the letter is issued inside the same
+savepoint, so a promotion whose letter cannot be generated is not effected
+either. Where there is no template, the event is effected and the result says
+plainly that no letter was issued.
+
+**Nobody moves their own record.** An HR admin cannot raise, decide, effect or
+cancel an event about themselves.
 """
 
 from __future__ import annotations
@@ -32,8 +41,10 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.documents import LetterCategory, LetterTemplate
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import LeaveRequest, LeaveRequestStatus
 from app.models.lifecycle import (
@@ -43,11 +54,14 @@ from app.models.lifecycle import (
     LifecycleStatus,
     ProbationPolicy,
     ProbationReminder,
+    SilencePolicy,
 )
-from app.models.org import Location
+from app.models.org import Department, Location
 from app.models.user import User
+from app.schemas.lifecycle import EventRead, ProbationPolicyIn, ProbationPolicyRead
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services import audit
+from app.services.documents import service as letter_service
 from app.services.lifecycle import events as event_engine
 from app.services.lifecycle import probation as probation_engine
 from app.services.payroll import service as payroll_service
@@ -59,10 +73,14 @@ __all__ = [
     "effect_due_events",
     "effect_event",
     "employee_history",
+    "get_probation_policy",
+    "list_batches",
+    "list_events",
     "raise_bulk",
     "raise_event",
     "resolve_probation_drift",
     "send_probation_reminders",
+    "set_probation_policy",
 ]
 
 
@@ -91,6 +109,13 @@ async def _employee(session: AsyncSession, user: User, employee_id: uuid.UUID) -
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return row
+
+
+def _refuse_self(user: User, employee_id: uuid.UUID, *, doing: str) -> None:
+    if user.employee_id is not None and employee_id == user.employee_id:
+        raise permissions.forbidden(
+            f"You cannot {doing} a lifecycle event about yourself. Somebody else in HR has to."
+        )
 
 
 async def _location_facts(
@@ -126,6 +151,40 @@ async def _pending_approvals_held(
         )
     )
     return len(rows.all())
+
+
+async def _check_new_references(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, new_values: dict[str, Any]
+) -> None:
+    """An event may only point the record at things in this workspace."""
+    for key, model, label in (
+        ("location_id", Location, "location"),
+        ("department_id", Department, "department"),
+        ("manager_id", Employee, "manager"),
+    ):
+        value = new_values.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            target = _as_uuid(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"'{value}' is not a valid {label} id.",
+            ) from exc
+        if key == "manager_id" and target == employee_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="An employee cannot report to themselves.",
+            )
+        found = await session.scalar(
+            tenant_scoped(select(model.id).where(model.id == target), model, user)
+        )
+        if found is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"That {label} is not part of this workspace.",
+            )
 
 
 async def _facts(
@@ -190,8 +249,10 @@ async def raise_event(
     request: Request | None = None,
 ) -> LifecycleEvent:
     """Draft an event, with its consequences worked out and recorded."""
+    _refuse_self(user, employee_id, doing="raise")
     resolution_day = today or date.today()
     employee = await _employee(session, user, employee_id)
+    await _check_new_references(session, user, employee.id, new_values)
 
     facts = await _facts(
         session, user, employee,
@@ -266,12 +327,29 @@ async def preview_event(
     being told PT changes is approving something they did not read.
     """
     employee = await _employee(session, user, employee_id)
+    await _check_new_references(session, user, employee.id, new_values)
     facts = await _facts(
         session, user, employee,
         event_type=event_type, effective_from=effective_from,
         new_values=new_values, reason=reason, new_ctc_annual=new_ctc_annual,
     )
-    return event_engine.describe(facts, today=today or date.today())
+    described = event_engine.describe(facts, today=today or date.today())
+    try:
+        event_engine.validate_event(facts, today=today or date.today())
+        described["problems"] = []
+    except event_engine.LifecycleError as exc:
+        described["problems"] = [str(exc)]
+    template = (
+        await _letter_template_for(session, user, event_type)
+        if described["needs_a_letter"]
+        else None
+    )
+    described["letter_template"] = (
+        {"id": str(template.id), "code": template.code, "name": template.name}
+        if template
+        else None
+    )
+    return described
 
 
 async def approve_event(
@@ -287,6 +365,7 @@ async def approve_event(
     """Approve an event. Effecting it is a separate step, on its own date."""
     resolution_day = today or date.today()
     row = await _event(session, user, event_id)
+    _refuse_self(user, row.employee_id, doing="decide")
 
     if row.status is not LifecycleStatus.PENDING_APPROVAL:
         raise HTTPException(
@@ -298,6 +377,17 @@ async def approve_event(
         row.status = LifecycleStatus.CANCELLED
         row.cancelled_reason = note or "Not approved."
         await session.flush()
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            actor=user,
+            action=AuditAction.REJECT,
+            entity_type="lifecycle_event",
+            entity_id=row.id,
+            summary=f"{row.event_type.value} not approved",
+            changes={"note": row.cancelled_reason},
+            request=request,
+        )
         return {"event_id": str(row.id), "status": row.status.value}
 
     row.status = LifecycleStatus.APPROVED
@@ -331,9 +421,15 @@ async def approve_event(
 
 
 async def cancel_event(
-    session: AsyncSession, user: User, *, event_id: uuid.UUID, reason: str
+    session: AsyncSession,
+    user: User,
+    *,
+    event_id: uuid.UUID,
+    reason: str,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     row = await _event(session, user, event_id)
+    _refuse_self(user, row.employee_id, doing="cancel")
     if row.status is LifecycleStatus.EFFECTED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -342,14 +438,30 @@ async def cancel_event(
                 "the change — raise a reversing event instead."
             ),
         )
+    if row.status is LifecycleStatus.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="This event is already cancelled."
+        )
     if not reason.strip():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="A cancellation needs a reason.",
         )
+    previous = row.status.value
     row.status = LifecycleStatus.CANCELLED
     row.cancelled_reason = reason
     await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="lifecycle_event",
+        entity_id=row.id,
+        summary=f"{row.event_type.value} cancelled (was {previous})",
+        changes={"reason": reason},
+        request=request,
+    )
     return {"event_id": str(row.id), "status": row.status.value}
 
 
@@ -383,6 +495,95 @@ async def due_events(
     return list(rows.all())
 
 
+#: Which letter category an event's letter belongs to, where one is standard.
+_LETTER_CATEGORY: dict[LifecycleEventType, LetterCategory] = {
+    LifecycleEventType.CONFIRMATION: LetterCategory.CONFIRMATION,
+    LifecycleEventType.PROMOTION: LetterCategory.PROMOTION,
+    LifecycleEventType.TRANSFER: LetterCategory.TRANSFER,
+    LifecycleEventType.DEPUTATION: LetterCategory.TRANSFER,
+    LifecycleEventType.LOCATION_CHANGE: LetterCategory.TRANSFER,
+    LifecycleEventType.DEPARTMENT_CHANGE: LetterCategory.TRANSFER,
+}
+
+
+async def _letter_template_for(
+    session: AsyncSession, user: User, event_type: LifecycleEventType
+) -> LetterTemplate | None:
+    """The template an event's letter is issued from.
+
+    An active template coded `LIFECYCLE_<EVENT_TYPE>` (e.g. `LIFECYCLE_PROBATION_EXTENSION`)
+    wins, so a tenant can give any event its own letter. Otherwise the first
+    active template, by code, in the event's standard category. None means the
+    tenant has no letter for this event.
+    """
+    specific = await session.scalar(
+        tenant_scoped(
+            select(LetterTemplate).where(
+                LetterTemplate.code == f"LIFECYCLE_{event_type.value.upper()}",
+                LetterTemplate.active.is_(True),
+            ),
+            LetterTemplate,
+            user,
+        )
+    )
+    if specific is not None:
+        return specific
+    category = _LETTER_CATEGORY.get(event_type)
+    if category is None:
+        return None
+    return await session.scalar(
+        tenant_scoped(
+            select(LetterTemplate)
+            .where(LetterTemplate.category == category, LetterTemplate.active.is_(True))
+            .order_by(LetterTemplate.code)
+            .limit(1),
+            LetterTemplate,
+            user,
+        )
+    )
+
+
+async def _letter_manual_values(
+    session: AsyncSession, user: User, row: LifecycleEvent
+) -> dict[str, Any]:
+    """What an event's letter can say beyond the employee record.
+
+    Offered as `manual.*` tokens: `effective_date`, `reason`, `new_ctc_annual`,
+    every changed field by name, and the readable `new_department_name`,
+    `new_location_name` and `new_manager_name`.
+    """
+    values: dict[str, Any] = {
+        key: value for key, value in (row.new_values or {}).items() if value is not None
+    }
+    values["effective_date"] = row.effective_from
+    values["reason"] = row.reason
+    if row.new_ctc_annual is not None:
+        values["new_ctc_annual"] = Decimal(str(row.new_ctc_annual))
+    for key, model, label in (
+        ("department_id", Department, "new_department_name"),
+        ("location_id", Location, "new_location_name"),
+    ):
+        if (row.new_values or {}).get(key):
+            target = await session.scalar(
+                tenant_scoped(
+                    select(model).where(model.id == _as_uuid(row.new_values[key])), model, user
+                )
+            )
+            if target is not None:
+                values[label] = target.name
+    if (row.new_values or {}).get("manager_id"):
+        manager = await session.scalar(
+            tenant_scoped(
+                select(Employee).where(Employee.id == _as_uuid(row.new_values["manager_id"])),
+                Employee,
+                user,
+            )
+        )
+        if manager is not None:
+            values["new_manager_name"] = manager.full_name
+    return values
+
+
 async def effect_event(
     session: AsyncSession,
     user: User,
@@ -401,6 +602,7 @@ async def effect_event(
     """
     today = on or date.today()
     row = await _event(session, user, event_id)
+    _refuse_self(user, row.employee_id, doing="effect")
 
     if row.status is not LifecycleStatus.APPROVED:
         raise HTTPException(
@@ -422,6 +624,7 @@ async def effect_event(
 
     row.attempt_count += 1
     applied: list[str] = []
+    letter_result: dict[str, Any] = {"letter_id": None, "reference_number": None, "note": None}
 
     try:
         async with session.begin_nested():
@@ -457,6 +660,35 @@ async def effect_event(
                 row.salary_revision_id = salary.id
                 applied.append("salary revision")
 
+            # ── Letter (slice 03) ───────────────────────────────────────────
+            # Inside the savepoint: a promotion whose letter cannot be merged
+            # (a required value missing, no salary for a CTC table) is not
+            # effected either, and the failure names the letter's problem.
+            if event_engine.EventType(row.event_type.value).needs_a_letter:
+                template = await _letter_template_for(session, user, row.event_type)
+                if template is None:
+                    letter_result["note"] = (
+                        f"No letter was issued: there is no active "
+                        f"{_LETTER_CATEGORY.get(row.event_type, LetterCategory.CUSTOM).value} "
+                        f"template, nor one coded LIFECYCLE_{row.event_type.value.upper()}."
+                    )
+                else:
+                    await session.flush()
+                    letter = await letter_service.issue_letter(
+                        session,
+                        user,
+                        employee_id=employee.id,
+                        template_id=template.id,
+                        manual_values=await _letter_manual_values(session, user, row),
+                        as_of=row.effective_from,
+                        request=request,
+                        commit=False,
+                    )
+                    row.letter_id = letter.id
+                    letter_result["letter_id"] = str(letter.id)
+                    letter_result["reference_number"] = letter.reference_number
+                    applied.append(f"letter {letter.reference_number}")
+
             row.status = LifecycleStatus.EFFECTED
             row.effected_at = datetime.now(UTC)
             row.failure_reason = None
@@ -465,8 +697,9 @@ async def effect_event(
     except Exception as exc:
         # The savepoint is rolled back, so nothing above landed. The event is
         # marked outside it so the failure itself survives.
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
         row.status = LifecycleStatus.FAILED
-        row.failure_reason = f"{type(exc).__name__}: {exc}"[:2000]
+        row.failure_reason = f"{type(exc).__name__}: {detail}"[:2000]
         await session.flush()
         await audit.record(
             session,
@@ -477,14 +710,14 @@ async def effect_event(
             entity_id=row.id,
             summary=(
                 f"Effecting {row.event_type.value} failed and was rolled back "
-                f"entirely: {exc}"
+                f"entirely: {detail}"
             ),
             request=request,
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"This event could not be effected and nothing was applied: {exc}. "
+                f"This event could not be effected and nothing was applied: {detail}. "
                 "The whole cascade was rolled back — a half-applied change is very "
                 "hard to unpick."
             ),
@@ -499,7 +732,8 @@ async def effect_event(
         entity_id=row.id,
         summary=(
             f"{row.event_type.value} effected on {row.effective_from}: "
-            f"{', '.join(applied)}"
+            f"{', '.join(applied) or 'no field changes'}"
+            + (f". {letter_result['note']}" if letter_result["note"] else "")
         ),
         changes={"applied": applied, "previous_values": row.previous_values},
         request=request,
@@ -509,6 +743,7 @@ async def effect_event(
         "status": row.status.value,
         "effected_at": row.effected_at.isoformat(),
         "applied": applied,
+        "letter": letter_result,
     }
 
 
@@ -658,6 +893,7 @@ async def raise_bulk(
     rows: list[dict[str, Any]],
     approve_individually: bool = True,
     today: date | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """One decision producing many events, with per-employee results.
 
@@ -700,11 +936,23 @@ async def raise_bulk(
                     ),
                     batch_id=batch.id,
                     today=today,
+                    request=request,
                 )
             raised.append({"employee_id": str(employee_id), "event_id": str(event.id)})
         except HTTPException as exc:
             rejected.append({"employee_id": str(employee_id), "reason": str(exc.detail)})
 
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="lifecycle_batch",
+        entity_id=batch.id,
+        changes={"raised": len(raised), "rejected": len(rejected)},
+        summary=f"Bulk {event_type.value} '{name}': {len(raised)} raised, {len(rejected)} rejected",
+        request=request,
+    )
     return {
         "batch_id": str(batch.id),
         "name": batch.name,
@@ -715,9 +963,107 @@ async def raise_bulk(
     }
 
 
+async def list_batches(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    rows = await session.scalars(
+        tenant_scoped(
+            select(LifecycleBatch).order_by(LifecycleBatch.created_at.desc()),
+            LifecycleBatch,
+            user,
+        )
+    )
+    return [
+        {
+            "batch_id": str(b.id),
+            "name": b.name,
+            "event_type": b.event_type.value,
+            "effective_from": b.effective_from.isoformat(),
+            "reason": b.reason,
+            "events": len(b.events),
+            "approve_individually": b.approve_individually,
+            "created_at": b.created_at.isoformat(),
+        }
+        for b in rows.all()
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # History
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _require_visible(session: AsyncSession, user: User, employee_id: uuid.UUID) -> None:
+    """HR sees anybody's history; a manager only their own reporting line."""
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        employee_id,
+        detail="You can only see lifecycle history for your own reporting line.",
+        allow_self=True,
+    )
+
+
+async def list_events(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID | None = None,
+    event_status: LifecycleStatus | None = None,
+    event_type: LifecycleEventType | None = None,
+    limit: int = 500,
+) -> list[EventRead]:
+    stmt = select(LifecycleEvent).order_by(
+        LifecycleEvent.effective_from.desc(), LifecycleEvent.created_at.desc()
+    )
+    visible = await permissions.visible_employee_ids(session, user)
+    if visible is not None:
+        stmt = stmt.where(LifecycleEvent.employee_id.in_(visible))
+    if employee_id is not None:
+        stmt = stmt.where(LifecycleEvent.employee_id == employee_id)
+    if event_status is not None:
+        stmt = stmt.where(LifecycleEvent.status == event_status)
+    if event_type is not None:
+        stmt = stmt.where(LifecycleEvent.event_type == event_type)
+    rows = list(
+        (await session.scalars(tenant_scoped(stmt.limit(limit), LifecycleEvent, user))).all()
+    )
+
+    people: dict[uuid.UUID, Employee] = {}
+    ids = {row.employee_id for row in rows}
+    if ids:
+        people = {
+            e.id: e
+            for e in (
+                await session.scalars(
+                    tenant_scoped(select(Employee).where(Employee.id.in_(ids)), Employee, user)
+                )
+            ).all()
+        }
+    return [
+        EventRead(
+            id=row.id,
+            employee_id=row.employee_id,
+            employee_name=people[row.employee_id].full_name if row.employee_id in people else "",
+            employee_code=(
+                people[row.employee_id].employee_code if row.employee_id in people else ""
+            ),
+            event_type=row.event_type,
+            effective_from=row.effective_from,
+            status=row.status,
+            previous_values=row.previous_values or {},
+            new_values=row.new_values or {},
+            reason=row.reason,
+            new_ctc_annual=_dec(row.new_ctc_annual),
+            consequences_shown=row.consequences_shown or [],
+            approved_at=row.approved_at,
+            effected_at=row.effected_at,
+            cancelled_reason=row.cancelled_reason,
+            failure_reason=row.failure_reason,
+            letter_id=row.letter_id,
+            batch_id=row.batch_id,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 async def employee_history(
@@ -731,6 +1077,7 @@ async def employee_history(
     somebody looking at a gap.
     """
     employee = await _employee(session, user, employee_id)
+    await _require_visible(session, user, employee.id)
     rows = (
         await session.scalars(
             tenant_scoped(
@@ -742,6 +1089,18 @@ async def employee_history(
             )
         )
     ).all()
+
+    approver_ids = {e.approved_by_user_id for e in rows if e.approved_by_user_id}
+    approvers: dict[uuid.UUID, str] = {}
+    if approver_ids:
+        approvers = {
+            u.id: u.full_name
+            for u in (
+                await session.scalars(
+                    tenant_scoped(select(User).where(User.id.in_(approver_ids)), User, user)
+                )
+            ).all()
+        }
 
     return {
         "employee_id": str(employee.id),
@@ -765,10 +1124,12 @@ async def employee_history(
                 ),
                 "reason": e.reason,
                 "approved_by": str(e.approved_by_user_id) if e.approved_by_user_id else None,
+                "approved_by_name": approvers.get(e.approved_by_user_id),
                 "approved_at": e.approved_at.isoformat() if e.approved_at else None,
                 "effected_at": e.effected_at.isoformat() if e.effected_at else None,
                 "letter_id": str(e.letter_id) if e.letter_id else None,
                 "failure_reason": e.failure_reason,
+                "cancelled_reason": e.cancelled_reason,
                 "batch_id": str(e.batch_id) if e.batch_id else None,
             }
             for e in rows
@@ -786,6 +1147,7 @@ async def state_on(
     fall out of step with it.
     """
     employee = await _employee(session, user, employee_id)
+    await _require_visible(session, user, employee.id)
     rows = (
         await session.scalars(
             tenant_scoped(
@@ -841,6 +1203,100 @@ async def _policy(session: AsyncSession, user: User) -> ProbationPolicy:
     return policy
 
 
+_SILENCE_NOTE = {
+    SilencePolicy.AUTO_CONFIRM: "the employee is confirmed.",
+    SilencePolicy.REQUIRE_DECISION: "nothing happens until somebody decides.",
+    SilencePolicy.AUTO_EXTEND_ONCE: "probation extends once, then escalates.",
+}
+
+
+async def get_probation_policy(session: AsyncSession, user: User) -> ProbationPolicyRead:
+    """The configured policy, or a plain statement that there is none — never a default."""
+    policy = await session.scalar(
+        tenant_scoped(select(ProbationPolicy), ProbationPolicy, user)
+    )
+    if policy is None:
+        return ProbationPolicyRead(
+            configured=False,
+            silence_policy=None,
+            grace_days=None,
+            confirmation_raises_salary=None,
+            hr_escalation_user_id=None,
+            note=(
+                "No probation policy is configured. Reminders and drift resolution are "
+                "refused until somebody chooses what silence means."
+            ),
+        )
+    return ProbationPolicyRead(
+        configured=True,
+        silence_policy=policy.silence_policy,
+        grace_days=policy.grace_days,
+        confirmation_raises_salary=policy.confirmation_raises_salary,
+        hr_escalation_user_id=policy.hr_escalation_user_id,
+        note="Silence now means " + _SILENCE_NOTE[policy.silence_policy],
+    )
+
+
+async def set_probation_policy(
+    session: AsyncSession,
+    user: User,
+    payload: ProbationPolicyIn,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Choose what silence means. There is no default and there will not be one."""
+    if payload.hr_escalation_user_id is not None:
+        escalation = await session.scalar(
+            tenant_scoped(
+                select(User).where(
+                    User.id == payload.hr_escalation_user_id, User.is_active.is_(True)
+                ),
+                User,
+                user,
+            )
+        )
+        if escalation is None or escalation.role not in permissions.HR_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The escalation contact must be an active HR user in this workspace.",
+            )
+
+    existing = await session.scalar(
+        tenant_scoped(select(ProbationPolicy), ProbationPolicy, user)
+    )
+    before = (
+        {"silence_policy": existing.silence_policy.value, "grace_days": existing.grace_days}
+        if existing
+        else None
+    )
+    policy = existing or ProbationPolicy(
+        tenant_id=user.tenant_id, silence_policy=payload.silence_policy
+    )
+    policy.silence_policy = payload.silence_policy
+    policy.grace_days = payload.grace_days
+    policy.confirmation_raises_salary = payload.confirmation_raises_salary
+    policy.hr_escalation_user_id = payload.hr_escalation_user_id
+    policy.configured_by_user_id = user.id
+    session.add(policy)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE if existing else AuditAction.CREATE,
+        entity_type="probation_policy",
+        entity_id=policy.id,
+        changes={"before": before, "after": payload.model_dump(mode="json")},
+        summary=f"Probation silence policy set to {payload.silence_policy.value}",
+        request=request,
+    )
+    return {
+        "silence_policy": policy.silence_policy.value,
+        "grace_days": policy.grace_days,
+        "note": "Silence now means " + _SILENCE_NOTE[policy.silence_policy],
+    }
+
+
 async def _review_facts(
     session: AsyncSession, user: User
 ) -> list[probation_engine.ReviewFacts]:
@@ -871,12 +1327,16 @@ async def _review_facts(
         if employee is not None and employee.manager_id:
             manager = await session.get(Employee, employee.manager_id)
             manager_user = await session.scalar(
-                select(User).where(User.employee_id == employee.manager_id)
+                tenant_scoped(
+                    select(User).where(User.employee_id == employee.manager_id), User, user
+                )
             )
             manager_user_id = str(manager_user.id) if manager_user else None
             if manager is not None and manager.manager_id:
                 skip_user = await session.scalar(
-                    select(User).where(User.employee_id == manager.manager_id)
+                    tenant_scoped(
+                        select(User).where(User.employee_id == manager.manager_id), User, user
+                    )
                 )
                 skip_user_id = str(skip_user.id) if skip_user else None
 
@@ -915,8 +1375,7 @@ async def send_probation_reminders(
     today = on or date.today()
     policy = await _policy(session, user)
     reviews = await _review_facts(session, user)
-    reminders = probation_engine.due_reminders(reviews, on=today) if False else \
-        probation_engine.due_reminders(reviews, today=today)
+    reminders = probation_engine.due_reminders(reviews, today=today)
 
     from app.services.notifications import dispatch
 
@@ -994,6 +1453,10 @@ def _plain(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     return value
+
+
+def _dec(value: Any) -> Decimal | None:
+    return Decimal(str(value)) if value is not None else None
 
 
 def _as_uuid(value: Any) -> uuid.UUID | None:

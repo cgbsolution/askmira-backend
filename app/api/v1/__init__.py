@@ -6,6 +6,7 @@ from app.api.v1.routers import (
     admin,
     agenteval,
     appraisal,
+    approvals,
     arrears,
     attendance,
     auth,
@@ -20,12 +21,14 @@ from app.api.v1.routers import (
     dashboard,
     devices,
     disbursement,
+    documents,
     dpdp,
     employees,
     exit_benefits,
     exit_workflow,
     expenses,
     filings,
+    goals,
     grounding,
     gst,
     hiring,
@@ -39,6 +42,7 @@ from app.api.v1.routers import (
     opsec,
     org,
     payroll,
+    payslips,
     performance_flow,
     positions,
     recruiting,
@@ -72,6 +76,7 @@ api_router.include_router(leave.router, dependencies=_module("leave"))
 api_router.include_router(attendance.router, dependencies=_module("leave"))
 api_router.include_router(bi.router, dependencies=_module("analytics"))
 api_router.include_router(payroll.router, dependencies=_module("payroll"))
+api_router.include_router(payslips.router, dependencies=_module("payroll"))
 api_router.include_router(salary.router, dependencies=_module("payroll"))
 api_router.include_router(tax.router, dependencies=_module("payroll"))
 api_router.include_router(statutory.router, dependencies=_module("payroll"))
@@ -100,13 +105,16 @@ api_router.include_router(expenses.router)
 api_router.include_router(gst.router)
 api_router.include_router(opsec.router)
 api_router.include_router(performance_flow.router)
+api_router.include_router(goals.router)
 api_router.include_router(recruiting.router, dependencies=_module("hiring"))
 api_router.include_router(rewards.router, dependencies=_module("rewards"))
 api_router.include_router(exit_benefits.router, dependencies=_module("payroll"))
 api_router.include_router(letters.router)
+api_router.include_router(documents.router, dependencies=_module("core_hr"))
 api_router.include_router(sso.router)
 api_router.include_router(devices.router)
 api_router.include_router(notifications.router)
 api_router.include_router(culture.router, dependencies=_module("culture"))
 api_router.include_router(hiring.router, dependencies=_module("hiring"))
 api_router.include_router(admin.router)
+api_router.include_router(approvals.router)

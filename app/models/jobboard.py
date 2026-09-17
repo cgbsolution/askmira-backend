@@ -51,6 +51,10 @@ class JobBoard(str, enum.Enum):
     # applications come from" does not have to special-case it.
     CAREERS = "careers"
     REFERRAL = "referral"
+    # Entered by HR by hand — an agency CV, a walk-in, somebody met at an event.
+    # Its own value rather than borrowing one of the above, so source
+    # effectiveness never credits a board with a candidate it did not send.
+    MANUAL = "manual"
 
 
 class PostingStatus(str, enum.Enum):

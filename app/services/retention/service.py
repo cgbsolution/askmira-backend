@@ -4,29 +4,34 @@ The floor arithmetic, the anonymisation, the k-anonymity check and the planning
 all live in the pure modules beside this, where a reviewer can read them without
 reading SQLAlchemy. An invariant checks the isolation holds.
 
-**Execution is deliberately narrow.** `execute` acts on one action kind for one
-category at a time, inside one transaction, and writes its log row in the same
-transaction as the change. A single function that swept every category and
-committed as it went could leave a run half-applied with no way to tell which
-half — and the half it deleted is not coming back.
+**Execution is one transaction.** `execute_plan` deletes and anonymises the
+planned rows, writes the action logs, the suppressions and the audit row, and
+commits once. A function that committed as it went could leave a run
+half-applied with no way to tell which half — and the half it deleted is not
+coming back.
 """
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.models  # noqa: F401 — registers every table before the metadata is walked
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.base import Base
 from app.models.dpdp import DataPrincipalRequest
+from app.models.employee import Employee
 from app.models.retention import (
     ErasureSuppression,
     LegalHold,
@@ -39,16 +44,21 @@ from app.models.retention import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.dpdp.schema_map import TABLES, is_direct_identifier
 from app.services.retention import planner as planner_engine
 from app.services.retention import policy as policy_engine
 from app.services.retention.taxonomy import BACKUP_DISCLOSURE, trust_centre_taxonomy
 
 __all__ = [
     "active_holds",
+    "apply_suppressions",
     "execute_plan",
+    "gather_candidates",
     "place_hold",
     "plan_run",
+    "public_snapshot",
     "release_hold",
+    "scheduled_sweep",
     "seed_default_policies",
     "set_policy",
     "suppress_for_erasure",
@@ -58,6 +68,27 @@ __all__ = [
 #: How long a suppression has to outlive the deletion: the backup retention
 #: window, plus a week of slack for a restore that starts on the last day.
 _SUPPRESSION_DAYS = BACKUP_DISCLOSURE["retention_window_days"] + 7
+
+#: Tables no retention action ever touches: the evidence that actions happened,
+#: the consent record, and the spine statutory records hang from.
+NEVER_ACTIONED: frozenset[str] = frozenset(
+    {
+        "tenants",
+        "users",
+        "employees",
+        "audit_logs",
+        "consent_records",
+        "data_principal_requests",
+        "retention_policies",
+        "retention_runs",
+        "retention_action_logs",
+        "legal_holds",
+        "erasure_suppressions",
+    }
+)
+
+#: The most records one plan carries for execution.
+MAX_PLANNED_RECORDS = 10_000
 
 
 def _bad_request(detail: str) -> HTTPException:
@@ -439,7 +470,7 @@ async def plan_run(
         records_blocked=len(computed.blocked),
         counts_by_action=computed.counts_by_action(),
         approval_threshold=approval_threshold,
-        plan_snapshot=computed.as_dict(),
+        plan_snapshot=_snapshot(computed),
     )
     session.add(row)
     await session.flush()
@@ -562,20 +593,23 @@ async def execute_plan(
     request: Request | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Record the execution of an approved run.
+    """Execute an approved run: delete or anonymise every planned record.
 
-    **What this does and does not do, stated rather than implied.** It checks
-    the run is executable, writes an insert-only `RetentionActionLog` per
-    category and action with hashed sample ids, adds a suppression entry for
-    every deleted record, and marks the run executed — all in one transaction
-    with the audit row.
+    For each planned record, in one transaction with the action logs, the
+    suppressions and the audit row:
 
-    **It does not delete or anonymise any application row.** The per-module
-    purge — which table, which cascade, which foreign key to null rather than
-    follow — is not written. A function that claimed to have deleted records it
-    had not touched would be the single most dangerous lie in this codebase, so
-    the response says `records_actually_removed: 0` and the BUILD_LOG says it
-    too.
+    - **Legal holds are re-checked now**, not only at planning. A hold placed
+      between the plan and its execution still spares the record.
+    - DELETE removes the row, inside a savepoint. A row that other records still
+      refer to is kept and counted as not actioned rather than cascading.
+    - ANONYMISE clears the row's nullable identifying columns — the link to the
+      employee and any direct identifier. A table whose identifying columns are
+      all required cannot be anonymised in place; the row is kept and counted.
+    - ARCHIVE is not carried out: there is no cold storage to archive to.
+
+    Tables in `NEVER_ACTIONED` are never touched. The response reports what was
+    actually done — `records_actually_removed` is the real count — and names
+    what was not.
     """
     row = await _run_or_404(session, user, run_id)
     moment = now or datetime.now(UTC)
@@ -594,50 +628,111 @@ async def execute_plan(
     if row.status is not RetentionRunStatus.APPROVED:
         raise _bad_request(f"That run is {row.status.value} and cannot execute.")
 
-    sample = row.plan_snapshot.get("sample", [])
-    by_group: dict[tuple[str, str, str], list[str]] = {}
-    for entry in sample:
-        key = (entry["category"], entry["table"], entry["action"])
-        by_group.setdefault(key, []).append(entry["record_id"])
+    planned = row.plan_snapshot.get("to_act_records")
+    if planned is None:
+        # A plan written before execution existed carries only its sample.
+        planned = row.plan_snapshot.get("sample", [])
+    holds = _hold_scopes(await active_holds(session, user))
+    tables = Base.metadata.tables
 
-    logs: list[RetentionActionLog] = []
+    done: dict[tuple[str, str, str], list[str]] = {}
+    deleted: list[tuple[str, uuid.UUID]] = []
+    removed = anonymised = spared = not_actioned = archive_pending = 0
+    problems: list[str] = []
+
+    for entry in planned:
+        created = entry.get("record_created")
+        candidate = planner_engine.CandidateRecord(
+            record_id=entry["record_id"],
+            table=entry["table"],
+            data_category_key=entry["category"],
+            subject_id=str(entry.get("subject_id") or ""),
+            record_created=date.fromisoformat(created) if created else row.evaluated_on,
+            department=entry.get("department"),
+        )
+        if any(hold.covers(candidate) for hold in holds):
+            spared += 1
+            continue
+
+        table = tables.get(entry["table"])
+        action_value = entry.get("action")
+        if (
+            table is None
+            or entry["table"] in NEVER_ACTIONED
+            or "id" not in table.c
+            or "tenant_id" not in table.c
+            or not _looks_like_uuid(entry["record_id"])
+        ):
+            not_actioned += 1
+            problems.append(f"{entry['table']}: not a table retention may act on.")
+            continue
+        record_id = uuid.UUID(entry["record_id"])
+        key = (entry["category"], table.name, str(action_value))
+
+        if action_value == RetentionActionKind.DELETE.value:
+            try:
+                async with session.begin_nested():
+                    result = await session.execute(
+                        delete(table).where(
+                            table.c.tenant_id == user.tenant_id, table.c.id == record_id
+                        )
+                    )
+            except IntegrityError:
+                not_actioned += 1
+                problems.append(
+                    f"{table.name}: other records still refer to a row, so it was kept."
+                )
+                continue
+            if result.rowcount:
+                removed += 1
+                deleted.append((table.name, record_id))
+                done.setdefault(key, []).append(entry["record_id"])
+        elif action_value == RetentionActionKind.ANONYMISE.value:
+            if await _anonymise_row(session, user, table, record_id):
+                anonymised += 1
+                done.setdefault(key, []).append(entry["record_id"])
+            else:
+                not_actioned += 1
+                problems.append(
+                    f"{table.name}: its identifying columns are required, so a row "
+                    "cannot be anonymised in place and was kept."
+                )
+        else:
+            archive_pending += 1
+
+    logs = [
+        RetentionActionLog(
+            tenant_id=user.tenant_id,
+            run_id=row.id,
+            data_category_key=category_key,
+            record_type=table_name,
+            action=RetentionActionKind(action_value),
+            record_count=len(record_ids),
+            executed_at=moment,
+            approved_by_user_id=row.approved_by_user_id,
+            sample_record_hashes=[
+                _hash_record_id(rid, tenant_id=user.tenant_id) for rid in record_ids[:20]
+            ],
+            policy_snapshot={"category": category_key, "action": action_value},
+        )
+        for (category_key, table_name, action_value), record_ids in done.items()
+    ]
     suppressions = 0
-    for (category_key, table, action_value), record_ids in by_group.items():
-        logs.append(
-            RetentionActionLog(
+    for table_name, record_id in deleted:
+        session.add(
+            ErasureSuppression(
                 tenant_id=user.tenant_id,
-                run_id=row.id,
-                data_category_key=category_key,
-                record_type=table,
-                action=RetentionActionKind(action_value),
-                record_count=len(record_ids),
-                executed_at=moment,
-                approved_by_user_id=row.approved_by_user_id,
-                sample_record_hashes=[
-                    _hash_record_id(rid, tenant_id=user.tenant_id)
-                    for rid in record_ids[:20]
-                ],
-                policy_snapshot={"category": category_key, "action": action_value},
+                record_table=table_name,
+                record_id=record_id,
+                reason=(
+                    f"Deleted by retention run {row.id} on "
+                    f"{row.evaluated_on.isoformat()}."
+                ),
+                suppressed_at=moment,
+                expires_on=(moment + timedelta(days=_SUPPRESSION_DAYS)).date(),
             )
         )
-        if action_value == RetentionActionKind.DELETE.value:
-            for record_id in record_ids:
-                session.add(
-                    ErasureSuppression(
-                        tenant_id=user.tenant_id,
-                        record_table=table,
-                        record_id=uuid.UUID(record_id)
-                        if _looks_like_uuid(record_id)
-                        else uuid.uuid5(uuid.NAMESPACE_OID, record_id),
-                        reason=(
-                            f"Deleted by retention run {row.id} on "
-                            f"{row.evaluated_on.isoformat()}."
-                        ),
-                        suppressed_at=moment,
-                        expires_on=(moment + timedelta(days=_SUPPRESSION_DAYS)).date(),
-                    )
-                )
-                suppressions += 1
+        suppressions += 1
 
     session.add_all(logs)
     row.status = RetentionRunStatus.EXECUTED
@@ -652,10 +747,16 @@ async def execute_plan(
         entity_id=row.id,
         actor=user,
         summary=(
-            f"Retention run executed: {len(logs)} action log(s), "
-            f"{suppressions} suppression(s). No application rows removed — the "
-            "per-module purge is not built."
+            f"Retention run executed: {removed} deleted, {anonymised} anonymised, "
+            f"{spared} spared by a legal hold, {not_actioned} not actioned, "
+            f"{archive_pending} archive action(s) not carried out."
         ),
+        changes={
+            "deleted": removed,
+            "anonymised": anonymised,
+            "spared_by_legal_hold": spared,
+            "not_actioned": not_actioned,
+        },
         request=request,
     )
     await session.commit()
@@ -664,12 +765,240 @@ async def execute_plan(
         "run_id": str(row.id),
         "action_logs_written": len(logs),
         "suppressions_written": suppressions,
-        "records_actually_removed": 0,
+        "records_actually_removed": removed,
+        "records_anonymised": anonymised,
+        "records_spared_by_legal_hold": spared,
+        "records_not_actioned": not_actioned,
+        "problems": problems[:20],
         "not_built": (
-            "The per-module purge is not implemented. This run recorded what "
-            "would be removed and suppressed the identifiers against a restore; "
-            "no application row was deleted or anonymised."
+            f"{archive_pending} archive action(s) were not carried out: there is no cold "
+            "storage to archive to. Deleted rows remain in database backups until the "
+            "backup window passes; the suppression list removes them again if a backup "
+            "is restored."
         ),
+    }
+
+
+async def _anonymise_row(
+    session: AsyncSession, user: User, table: Any, record_id: uuid.UUID
+) -> bool:
+    """Clear a row's nullable identifying columns. False if there is none to clear."""
+    classification = TABLES.get(table.name)
+    columns = [
+        column.name
+        for column in table.columns
+        if column.nullable
+        and not column.primary_key
+        and (
+            column.name == "employee_id"
+            or column.name.endswith("_employee_id")
+            or is_direct_identifier(column.name)
+            or (
+                classification is not None
+                and classification.columns.get(column.name) == "identity"
+            )
+        )
+    ]
+    if not columns:
+        return False
+    result = await session.execute(
+        update(table)
+        .where(table.c.tenant_id == user.tenant_id, table.c.id == record_id)
+        .values({name: None for name in columns})
+    )
+    return bool(result.rowcount)
+
+
+def public_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """A plan as shown on screen: the counts and the sample, not every record id."""
+    return {key: value for key, value in (snapshot or {}).items() if key != "to_act_records"}
+
+
+def _snapshot(computed: planner_engine.RetentionPlan) -> dict[str, Any]:
+    snapshot = computed.as_dict()
+    snapshot["to_act_records"] = [
+        {
+            "record_id": planned.record.record_id,
+            "table": planned.record.table,
+            "category": planned.record.data_category_key,
+            "action": planned.action.value if planned.action else None,
+            "subject_id": planned.record.subject_id,
+            "record_created": planned.record.record_created.isoformat(),
+            "department": planned.record.department,
+        }
+        for planned in computed.to_act[:MAX_PLANNED_RECORDS]
+    ]
+    return snapshot
+
+
+def _months_before(day: date, months: int) -> date:
+    total = day.year * 12 + (day.month - 1) - months
+    year, month_index = divmod(total, 12)
+    month = month_index + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+async def gather_candidates(
+    session: AsyncSession,
+    user: User,
+    *,
+    today: date,
+    cap: int = MAX_PLANNED_RECORDS,
+) -> list[planner_engine.CandidateRecord]:
+    """Rows old enough that an active policy could apply to them.
+
+    Walks the DPDP classification: every table holding employee data, carrying
+    an `employee_id` and a `created_at`, whose category has an active policy.
+    A row younger than its policy's period cannot be due under any anchor — every
+    anchor falls on or after creation — so only older rows are read.
+    """
+    policies = {k: p for k, p in (await _policies_for(session, user)).items() if p.active}
+    if not policies:
+        return []
+
+    employees = {
+        emp.id: emp
+        for emp in (
+            await session.scalars(tenant_scoped(select(Employee), Employee, user))
+        ).all()
+    }
+    out: list[planner_engine.CandidateRecord] = []
+    for table in Base.metadata.sorted_tables:
+        if len(out) >= cap:
+            break
+        classification = TABLES.get(table.name)
+        if (
+            table.name in NEVER_ACTIONED
+            or classification is None
+            or classification.principal is None
+            or classification.default_category not in policies
+            or not {"id", "tenant_id", "employee_id", "created_at"} <= set(table.c.keys())
+        ):
+            continue
+        policy = policies[classification.default_category]
+        cutoff = _months_before(today, policy.retention_period_months)
+        rows = (
+            await session.execute(
+                select(table.c.id, table.c.employee_id, table.c.created_at)
+                .where(
+                    table.c.tenant_id == user.tenant_id,
+                    table.c.created_at < datetime.combine(cutoff, time.min, tzinfo=UTC),
+                )
+                .limit(cap - len(out))
+            )
+        ).all()
+        for record_id, employee_id, created_at in rows:
+            emp = employees.get(employee_id)
+            out.append(
+                planner_engine.CandidateRecord(
+                    record_id=str(record_id),
+                    table=table.name,
+                    data_category_key=classification.default_category,
+                    subject_id=str(employee_id),
+                    record_created=created_at.date(),
+                    employment_ended=emp.date_of_exit if emp else None,
+                    department=str(emp.department_id) if emp and emp.department_id else None,
+                )
+            )
+    return out
+
+
+async def apply_suppressions(
+    session: AsyncSession, user: User, *, today: date, request: Request | None = None
+) -> dict[str, Any]:
+    """Remove any suppressed record that has come back — after a backup restore.
+
+    This is the other half of the suppression list: writing it is a promise, and
+    this is keeping it. Returns how many reappeared records were removed again.
+    """
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(ErasureSuppression).where(ErasureSuppression.expires_on >= today),
+                ErasureSuppression,
+                user,
+            )
+        )
+    ).all()
+    tables = Base.metadata.tables
+    removed = 0
+    for suppression in rows:
+        table = tables.get(suppression.record_table)
+        if (
+            table is None
+            or suppression.record_table in NEVER_ACTIONED
+            or "id" not in table.c
+            or "tenant_id" not in table.c
+        ):
+            continue
+        try:
+            async with session.begin_nested():
+                result = await session.execute(
+                    delete(table).where(
+                        table.c.tenant_id == user.tenant_id,
+                        table.c.id == suppression.record_id,
+                    )
+                )
+        except IntegrityError:
+            continue
+        removed += int(result.rowcount or 0)
+
+    if removed:
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.DELETE,
+            entity_type="erasure_suppression",
+            actor=user,
+            summary=(
+                f"{removed} previously erased record(s) had reappeared — most likely a "
+                "backup restore — and were removed again."
+            ),
+            request=request,
+        )
+    await session.commit()
+    return {"suppressions_checked": len(rows), "reappeared_and_removed": removed}
+
+
+async def scheduled_sweep(
+    session: AsyncSession, user: User, *, today: date
+) -> dict[str, Any]:
+    """The nightly job: re-apply suppressions, then plan and (if small) execute.
+
+    A plan above the approval threshold is written and left AWAITING_APPROVAL for
+    a person — it appears in their approvals inbox. Nothing is recorded on a
+    night with nothing due.
+    """
+    suppression = await apply_suppressions(session, user, today=today)
+    candidates = await gather_candidates(session, user, today=today)
+    if not candidates:
+        return {"candidates": 0, "run_status": None, **suppression}
+
+    preview = planner_engine.plan(
+        candidates,
+        policies=await _policies_for(session, user),
+        legal_holds=_hold_scopes(await active_holds(session, user)),
+        today=today,
+        is_dry_run=True,
+    )
+    if not preview.to_act:
+        return {"candidates": len(candidates), "run_status": None, "due": 0, **suppression}
+
+    run = await plan_run(session, user, candidates=candidates, today=today, is_dry_run=False)
+    if run.status is RetentionRunStatus.APPROVED:
+        result = await execute_plan(session, user, run_id=run.id)
+        return {
+            "candidates": len(candidates),
+            "run_status": "executed",
+            "removed": result["records_actually_removed"],
+            "anonymised": result["records_anonymised"],
+            **suppression,
+        }
+    return {
+        "candidates": len(candidates),
+        "run_status": run.status.value,
+        "to_act": run.records_to_act,
+        **suppression,
     }
 
 

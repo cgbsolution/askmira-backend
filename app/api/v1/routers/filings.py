@@ -25,6 +25,7 @@ from app.models.payroll import Payslip
 from app.models.user import UserRole
 from app.services import audit
 from app.services.filings import service as filing_service
+from app.services.filings import support
 
 router = APIRouter(tags=["filings"])
 
@@ -65,6 +66,14 @@ class FilingRecordRead(BaseModel):
     filed_at: datetime | None
     rejection_reason: str | None
     validation_exceptions: list[dict[str, Any]]
+    has_file: bool = False
+    created_at: datetime
+
+    @classmethod
+    def from_model(cls, record: FilingRecord) -> FilingRecordRead:
+        read = cls.model_validate(record)
+        read.has_file = bool(record.file_storage_key)
+        return read
 
 
 class GenerationResult(BaseModel):
@@ -175,7 +184,7 @@ def _blocked(exc: filing_service.FilingBlockedError) -> HTTPException:
 
 def _result(generated: filing_service.GeneratedFile) -> GenerationResult:
     return GenerationResult(
-        record=FilingRecordRead.model_validate(generated.record),
+        record=FilingRecordRead.from_model(generated.record),
         content=generated.content,
         warnings=[e.as_dict() for e in generated.result.warnings],
     )
@@ -317,7 +326,7 @@ async def list_filings(
         stmt = stmt.where(FilingRecord.status == filing_status)
 
     rows = (await session.scalars(tenant_scoped(stmt, FilingRecord, user))).all()
-    return [FilingRecordRead.model_validate(row) for row in rows]
+    return [FilingRecordRead.from_model(row) for row in rows]
 
 
 @router.post(
@@ -343,7 +352,7 @@ async def acknowledge(
     )
     await session.commit()
     await session.refresh(record)
-    return FilingRecordRead.model_validate(record)
+    return FilingRecordRead.from_model(record)
 
 
 @router.post(
@@ -388,39 +397,21 @@ async def reject(
     )
     await session.commit()
     await session.refresh(record)
-    return FilingRecordRead.model_validate(record)
+    return FilingRecordRead.from_model(record)
 
 
 @router.get(
     "/filings/{record_id}/download",
     dependencies=[Depends(require_roles(*FILING_ROLES))],
 )
-async def download(record_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
-    """Regenerate is not the same as re-download.
-
-    A file is not stored on disk in this build, so this returns the metadata a
-    caller needs to regenerate deterministically — including the content hash,
-    so a regenerated file can be checked against what was filed.
-    """
-    record = await session.scalar(
-        tenant_scoped(
-            select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user
-        )
-    )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")
-    if record.status is FilingStatus.BLOCKED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This return was blocked by validation, so no file exists.",
-        )
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=(
-            "File retention is not wired to object storage in this build. Regenerate "
-            f"the {record.return_type.value} return for {record.period} and check it "
-            f"against the recorded hash {record.content_hash}."
-        ),
+async def download(
+    record_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """The generated return, exactly as stored, as an attachment. Audited."""
+    data, name = await filing_service.download_record(session, user, record_id, request=request)
+    await session.commit()
+    return Response(
+        content=data, media_type="text/plain", headers=support.attachment_headers(name)
     )
 
 
@@ -636,3 +627,18 @@ async def unmapped_tds(
         for payslip, employee, run in rows
         if payslip.id not in mapped
     ]
+
+
+# Registered last: `/filings/tds-challans` and `/filings/unmapped-tds` must
+# match before this path parameter does.
+@router.get(
+    "/filings/{record_id}",
+    response_model=FilingRecordRead,
+    dependencies=[Depends(require_roles(*FILING_ROLES))],
+)
+async def get_filing(
+    record_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> FilingRecordRead:
+    """One filing record, with its pre-generation exception list."""
+    record = await filing_service.get_record(session, user, record_id)
+    return FilingRecordRead.from_model(record)

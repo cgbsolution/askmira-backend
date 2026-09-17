@@ -1,36 +1,78 @@
-"""Expense policy, claims, travel and advances (slice 31).
+"""Expense policy, claims, receipts, reports, travel and advances (slice 31).
 
-`POST /expenses/claims` is the endpoint the slice exists for. It captures the
-claim **and returns the policy verdict in the same response** — the limit, what
-has already been claimed against it, the overage and what the employee must do
-next. There is deliberately no "evaluate this claim" endpoint to call later:
-an employee who finds out three weeks after the fact that their claim was out of
-policy is an employee who stops claiming properly.
+`POST /expenses/claims` captures the claim **and returns the policy verdict in
+the same response** — the limit, what has already been claimed against it, the
+overage and what the employee must do next. There is deliberately no "evaluate
+this claim" endpoint to call later.
 
-`GET /expenses/posture` says what this slice enforces and, line by line, what it
-does not.
+Who may call what:
+
+- Everybody, for themselves: claims, receipts, reports, trips, their advances and
+  whether a new advance would be blocked. An employee id from the request goes
+  through `app.core.permissions`; only finance may name somebody else.
+- Finance (tenant admin, HR admin, HR ops): the review queue, decisions,
+  advances, settlement, ageing, violation rates and configuration reads.
+  Nobody decides their own claim, trip, advance or settlement.
+- Tenant and HR admins: policy, tier, mileage, per-diem and settings writes.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import date
-from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.expenses import (
-    CityTierEnum,
-    ClaimKindEnum,
-    ConversionConventionEnum,
-    LimitTypeEnum,
-    ViolationActionEnum,
+    AdvanceStatusEnum,
+    ExpenseClaimStatusEnum,
+    TravelRequestStatusEnum,
 )
-from app.models.user import UserRole
+from app.models.user import User, UserRole
+from app.schemas.expenses import (
+    AdvanceIn,
+    AdvanceRead,
+    BlockStatus,
+    CityTierIn,
+    CityTierRead,
+    ClaimIn,
+    ClaimRead,
+    DecisionIn,
+    ExchangeRateIn,
+    ExchangeRateRead,
+    ExpenseMeta,
+    MileageRateIn,
+    MileageRateRead,
+    PerDiemRateIn,
+    PerDiemRateRead,
+    PolicyIn,
+    PolicyRead,
+    ReceiptRead,
+    ReportCreate,
+    ReportRead,
+    ReportSubmitIn,
+    ReviewQueue,
+    SettingsIn,
+    SettingsRead,
+    SettleIn,
+    SubmitIn,
+    TravelRequestIn,
+    TravelRequestRead,
+)
+from app.services.expenses import reads, receipt_store, receipts
 from app.services.expenses import service as expenses
 
 router = APIRouter(tags=["expenses"])
@@ -38,145 +80,52 @@ router = APIRouter(tags=["expenses"])
 FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
 
-
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class RuleIn(BaseModel):
-    category_key: str = Field(min_length=1, max_length=80)
-    city_tier: CityTierEnum
-    limit_type: LimitTypeEnum
-    limit_amount: Decimal = Field(ge=0)
-    violation_action: ViolationActionEnum
-    requires_receipt: bool = True
-    #: Below this, no receipt is asked for. A ₹40 auto fare with a receipt
-    #: demand is a policy that produces fake receipts.
-    receipt_threshold: Decimal = Field(default=Decimal("0"), ge=0)
-    requires_pre_approval: bool = False
-    is_per_diem: bool = False
+Scope = Literal["mine", "all"]
 
 
-class PolicyIn(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-    effective_from: date
-    rules: list[RuleIn] = Field(min_length=1)
-    description: str | None = Field(default=None, max_length=2000)
-    #: Empty means every grade. Unconfigured and none-of-them are different
-    #: states.
-    applicable_grades: list[str] = Field(default_factory=list)
-    applicable_locations: list[uuid.UUID] = Field(default_factory=list)
+def _whose(user: User, scope: Scope, employee_id: uuid.UUID | None) -> uuid.UUID | None:
+    """Whose records a list returns. `None` means everybody, for finance only."""
+    if scope == "all":
+        permissions.require_hr(user, detail="Only finance can list everybody's expenses.")
+        return employee_id
+    return permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own expenses."
+    )
 
 
-class SettingsIn(BaseModel):
-    conversion_convention: ConversionConventionEnum | None = None
-    rate_source: str | None = Field(default=None, max_length=120)
-    advance_block_after_days: int | None = Field(default=None, ge=1, le=365)
-
-
-class CityTierIn(BaseModel):
-    location_id: uuid.UUID
-    city_tier: CityTierEnum
-    note: str | None = Field(default=None, max_length=500)
-
-
-class MileageRateIn(BaseModel):
-    vehicle_type: str = Field(min_length=1, max_length=40)
-    rate_per_km: Decimal = Field(gt=0)
-    effective_from: date
-    tolerance_percent: Decimal | None = Field(default=None, ge=0, le=200)
-
-
-class PerDiemRateIn(BaseModel):
-    city_tier: CityTierEnum
-    grade: str = Field(min_length=1, max_length=40)
-    amount: Decimal = Field(gt=0)
-    effective_from: date
-    includes_meals: bool = True
-    includes_accommodation: bool = False
-
-
-class ExchangeRateIn(BaseModel):
-    from_currency: str = Field(min_length=3, max_length=3)
-    rate: Decimal = Field(gt=0)
-    quote_date: date
-    source: str = Field(min_length=1, max_length=120)
-    to_currency: str = Field(default="INR", min_length=3, max_length=3)
-
-
-class ClaimIn(BaseModel):
-    employee_id: uuid.UUID
-    category_key: str = Field(min_length=1, max_length=80)
-    city_tier: CityTierEnum
-    amount: Decimal = Field(gt=0)
-    incurred_on: date
-    kind: ClaimKindEnum = ClaimKindEnum.RECEIPTED
-    currency: str = Field(default="INR", min_length=3, max_length=3)
-    settlement_date: date | None = None
-    has_receipt: bool = False
-    justification: str | None = Field(default=None, max_length=2000)
-    description: str | None = Field(default=None, max_length=2000)
-    travel_request_id: uuid.UUID | None = None
-    receipt_document_id: uuid.UUID | None = None
-    distance_km: Decimal | None = Field(default=None, ge=0)
-    route_km: Decimal | None = Field(default=None, ge=0)
-    vehicle_type: str | None = Field(default=None, max_length=40)
-    per_diem_days: int | None = Field(default=None, ge=1, le=366)
-
-
-class SubmitIn(BaseModel):
-    justification: str | None = Field(default=None, max_length=2000)
-
-
-class DecisionIn(BaseModel):
-    approve: bool
-    note: str | None = Field(default=None, max_length=2000)
-
-
-class TravelRequestIn(BaseModel):
-    employee_id: uuid.UUID
-    purpose: str = Field(min_length=1, max_length=2000)
-    from_date: date
-    to_date: date
-    destinations: list[dict[str, Any]] = Field(default_factory=list)
-    estimated_cost: Decimal = Field(default=Decimal("0"), ge=0)
-    advance_requested: Decimal = Field(default=Decimal("0"), ge=0)
-
-
-class AdvanceIn(BaseModel):
-    travel_request_id: uuid.UUID
-    amount: Decimal = Field(gt=0)
-    issued_on: date
-    disbursement_batch_id: uuid.UUID | None = None
-
-
-class SettleIn(BaseModel):
-    settled_on: date
-
-
-# ── Posture ─────────────────────────────────────────────────────────────────
+# ── Posture and reference ───────────────────────────────────────────────────
 
 
 @router.get("/expenses/posture")
 async def posture(user: CurrentUser) -> dict[str, Any]:
-    """What the policy engine enforces, and what it does not.
-
-    Not role-gated. An employee is entitled to know that a blocked claim is
-    blocked by a rule and not by somebody's opinion.
-    """
+    """What the policy engine enforces, and what it does not."""
     return expenses.expense_posture()
+
+
+@router.get("/expenses/meta", response_model=ExpenseMeta)
+async def meta(user: CurrentUser, session: DbSession) -> ExpenseMeta:
+    """Categories, vehicles and currencies the claim form may offer — from configuration."""
+    return await reads.meta(session, user)
 
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
 
-@router.put("/expenses/settings")
+@router.get("/expenses/settings", response_model=SettingsRead)
+async def get_settings(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> SettingsRead:
+    return await reads.get_settings(session, user)
+
+
+@router.put("/expenses/settings", response_model=SettingsRead)
 async def set_settings(
     body: SettingsIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
+) -> SettingsRead:
     row = await expenses.set_settings(
         session,
         user,
@@ -185,27 +134,28 @@ async def set_settings(
         advance_block_after_days=body.advance_block_after_days,
         request=request,
     )
-    return {
-        "conversion_convention": row.conversion_convention.value,
-        "rate_source": row.rate_source,
-        "reporting_currency": row.reporting_currency,
-        "advance_block_after_days": row.advance_block_after_days,
-    }
+    return SettingsRead.model_validate(row)
 
 
-@router.post("/expenses/policies", status_code=status.HTTP_201_CREATED)
+@router.get("/expenses/policies", response_model=list[PolicyRead])
+async def list_policies(
+    session: DbSession,
+    user: CurrentUser,
+    include_inactive: bool = False,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> list[PolicyRead]:
+    return await reads.list_policies(session, user, include_inactive=include_inactive)
+
+
+@router.post("/expenses/policies", status_code=status.HTTP_201_CREATED, response_model=PolicyRead)
 async def create_policy(
     body: PolicyIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
-    """Create a policy version. An existing one is never edited.
-
-    Same rule as `PayrollRuleSet`: a March claim must keep reading as having
-    been judged against March's limit.
-    """
+) -> PolicyRead:
+    """Create a policy version. An existing one is never edited."""
     row = await expenses.create_policy(
         session,
         user,
@@ -217,23 +167,41 @@ async def create_policy(
         applicable_locations=[str(x) for x in body.applicable_locations],
         request=request,
     )
-    return {
-        "policy_id": str(row.id),
-        "name": row.name,
-        "effective_from": row.effective_from.isoformat(),
-        "rule_count": len(body.rules),
-    }
+    return await reads.get_policy(session, user, row.id)
 
 
-@router.put("/expenses/city-tiers")
+@router.post("/expenses/policies/{policy_id}/deactivate", response_model=PolicyRead)
+async def deactivate_policy(
+    policy_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> PolicyRead:
+    """Retire a policy. It is kept, because claims judged under it point at its rules."""
+    row = await expenses.deactivate_policy(session, user, policy_id=policy_id, request=request)
+    return await reads.get_policy(session, user, row.id)
+
+
+@router.get("/expenses/city-tiers", response_model=list[CityTierRead])
+async def list_city_tiers(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> list[CityTierRead]:
+    return await reads.list_city_tiers(session, user)
+
+
+@router.put("/expenses/city-tiers", response_model=CityTierRead)
 async def set_city_tier(
     body: CityTierIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
-    row = await expenses.set_city_tier(
+) -> CityTierRead:
+    rows = await reads.list_city_tiers(session, user)
+    if not any(r.location_id == body.location_id for r in rows):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Location not found")
+    await expenses.set_city_tier(
         session,
         user,
         location_id=body.location_id,
@@ -241,20 +209,27 @@ async def set_city_tier(
         note=body.note,
         request=request,
     )
-    return {
-        "location_id": str(row.location_id),
-        "city_tier": row.city_tier.value,
-    }
+    rows = await reads.list_city_tiers(session, user)
+    return next(r for r in rows if r.location_id == body.location_id)
 
 
-@router.post("/expenses/mileage-rates", status_code=status.HTTP_201_CREATED)
+@router.get("/expenses/mileage-rates", response_model=list[MileageRateRead])
+async def list_mileage_rates(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> list[MileageRateRead]:
+    return await reads.list_mileage_rates(session, user)
+
+
+@router.post(
+    "/expenses/mileage-rates", status_code=status.HTTP_201_CREATED, response_model=MileageRateRead
+)
 async def set_mileage_rate(
     body: MileageRateIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
+) -> MileageRateRead:
     """Add a mileage rate from a date. Earlier claims keep the earlier rate."""
     row = await expenses.set_mileage_rate(
         session,
@@ -265,22 +240,26 @@ async def set_mileage_rate(
         tolerance_percent=body.tolerance_percent,
         request=request,
     )
-    return {
-        "mileage_rate_id": str(row.id),
-        "vehicle_type": row.vehicle_type,
-        "rate_per_km": str(row.rate_per_km),
-        "effective_from": row.effective_from.isoformat(),
-    }
+    return MileageRateRead.model_validate(row)
 
 
-@router.post("/expenses/per-diem-rates", status_code=status.HTTP_201_CREATED)
+@router.get("/expenses/per-diem-rates", response_model=list[PerDiemRateRead])
+async def list_per_diem_rates(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> list[PerDiemRateRead]:
+    return await reads.list_per_diem_rates(session, user)
+
+
+@router.post(
+    "/expenses/per-diem-rates", status_code=status.HTTP_201_CREATED, response_model=PerDiemRateRead
+)
 async def set_per_diem_rate(
     body: PerDiemRateIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
+) -> PerDiemRateRead:
     row = await expenses.set_per_diem_rate(
         session,
         user,
@@ -292,23 +271,26 @@ async def set_per_diem_rate(
         includes_accommodation=body.includes_accommodation,
         request=request,
     )
-    return {
-        "per_diem_rate_id": str(row.id),
-        "grade": row.grade,
-        "city_tier": row.city_tier.value,
-        "amount": str(row.amount),
-        "requires_receipt": False,
-    }
+    return PerDiemRateRead.model_validate(row)
 
 
-@router.post("/expenses/exchange-rates", status_code=status.HTTP_201_CREATED)
+@router.get("/expenses/exchange-rates", response_model=list[ExchangeRateRead])
+async def list_exchange_rates(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> list[ExchangeRateRead]:
+    return await reads.list_exchange_rates(session, user)
+
+
+@router.post(
+    "/expenses/exchange-rates", status_code=status.HTTP_201_CREATED, response_model=ExchangeRateRead
+)
 async def record_exchange_rate(
     body: ExchangeRateIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
-) -> dict[str, Any]:
+) -> ExchangeRateRead:
     """Record a quote. No feed is connected; rates are entered."""
     row = await expenses.record_exchange_rate(
         session,
@@ -320,13 +302,50 @@ async def record_exchange_rate(
         to_currency=body.to_currency,
         request=request,
     )
-    return {
-        "exchange_rate_id": str(row.id),
-        "pair": f"{row.from_currency}/{row.to_currency}",
-        "rate": str(row.rate),
-        "quote_date": row.quote_date.isoformat(),
-        "source": row.source,
-    }
+    return ExchangeRateRead.model_validate(row)
+
+
+# ── Receipts ────────────────────────────────────────────────────────────────
+
+
+@router.post("/expenses/receipts", status_code=status.HTTP_201_CREATED, response_model=ReceiptRead)
+async def upload_receipt(
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    file: UploadFile = File(...),
+    employee_id: uuid.UUID | None = Form(default=None),
+) -> ReceiptRead:
+    """Upload a receipt before capturing the claim it supports.
+
+    Size and type are checked on the bytes; the filename and the browser's
+    content type are ignored.
+    """
+    owner = permissions.resolve_employee(
+        user, employee_id, detail="You can only upload receipts for your own claims."
+    )
+    data = await file.read(receipts.MAX_BYTES + 1)
+    row = await receipt_store.store_receipt(
+        session, user, employee_id=owner, data=data, filename=file.filename, request=request
+    )
+    return ReceiptRead.model_validate(row)
+
+
+@router.get("/expenses/receipts/{receipt_id}", response_model=None)
+async def download_receipt(
+    receipt_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> Response:
+    """The receipt, as an attachment, to its owner or finance."""
+    row = await receipt_store.receipt_for_download(session, user, receipt_id)
+    return Response(
+        content=row.content,
+        media_type=row.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{row.display_name}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 # ── Claims ──────────────────────────────────────────────────────────────────
@@ -339,20 +358,19 @@ async def capture_claim(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Capture a claim and return its policy verdict in the same response.
-
-    The verdict carries the limit, what has already been claimed against it, the
-    overage and what the employee has to do next. This is the endpoint the slice
-    exists for: policy that only appears at approval is a document, not a
-    control.
-    """
-    permissions.require_self_or_hr(
+    """Capture a claim and return its policy verdict in the same response."""
+    employee_id = permissions.resolve_employee(
         user, body.employee_id, detail="You can only file expense claims for yourself."
+    )
+    # A paper receipt seen in person is finance's call about somebody else's
+    # claim. Anybody else — finance included, for their own — attaches the file.
+    paper_receipt = body.has_receipt and permissions.is_hr(user) and (
+        employee_id != user.employee_id
     )
     return await expenses.capture_claim(
         session,
         user,
-        employee_id=body.employee_id,
+        employee_id=employee_id,
         category_key=body.category_key,
         city_tier=body.city_tier,
         amount=body.amount,
@@ -360,7 +378,7 @@ async def capture_claim(
         kind=body.kind,
         currency=body.currency,
         settlement_date=body.settlement_date,
-        has_receipt=body.has_receipt,
+        has_receipt=paper_receipt,
         justification=body.justification,
         description=body.description,
         travel_request_id=body.travel_request_id,
@@ -369,8 +387,27 @@ async def capture_claim(
         route_km=body.route_km,
         vehicle_type=body.vehicle_type,
         per_diem_days=body.per_diem_days,
+        report_id=body.report_id,
         request=request,
     )
+
+
+@router.get("/expenses/claims", response_model=list[ClaimRead])
+async def list_claims(
+    session: DbSession,
+    user: CurrentUser,
+    scope: Scope = "mine",
+    employee_id: uuid.UUID | None = None,
+    status_filter: ExpenseClaimStatusEnum | None = None,
+) -> list[ClaimRead]:
+    return await reads.list_claims(
+        session, user, employee_id=_whose(user, scope, employee_id), status_filter=status_filter
+    )
+
+
+@router.get("/expenses/claims/{claim_id}", response_model=ClaimRead)
+async def get_claim(claim_id: uuid.UUID, session: DbSession, user: CurrentUser) -> ClaimRead:
+    return await reads.get_claim(session, user, claim_id)
 
 
 @router.post("/expenses/claims/{claim_id}/submit")
@@ -383,11 +420,7 @@ async def submit_claim(
 ) -> dict[str, Any]:
     """Submit a captured claim, honouring the verdict it was given at capture."""
     claim = await expenses.submit_claim(
-        session,
-        user,
-        claim_id=claim_id,
-        justification=body.justification,
-        request=request,
+        session, user, claim_id=claim_id, justification=body.justification, request=request
     )
     return {
         "claim_id": str(claim.id),
@@ -396,6 +429,14 @@ async def submit_claim(
         "flagged_for_approver": claim.flagged_for_approver,
         "justification": claim.justification,
     }
+
+
+@router.post("/expenses/claims/{claim_id}/cancel", response_model=ClaimRead)
+async def cancel_claim(
+    claim_id: uuid.UUID, session: DbSession, user: CurrentUser, request: Request
+) -> ClaimRead:
+    await expenses.cancel_claim(session, user, claim_id=claim_id, request=request)
+    return await reads.get_claim(session, user, claim_id)
 
 
 @router.post("/expenses/claims/{claim_id}/decision")
@@ -407,13 +448,9 @@ async def decide_claim(
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
+    """Approve or reject, with a reason for a rejection. Never your own claim."""
     claim = await expenses.decide_claim(
-        session,
-        user,
-        claim_id=claim_id,
-        approve=body.approve,
-        note=body.note,
-        request=request,
+        session, user, claim_id=claim_id, approve=body.approve, note=body.note, request=request
     )
     return {
         "claim_id": str(claim.id),
@@ -429,31 +466,94 @@ async def violation_rates(
     scope: str = "department",
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Breach rates by employee, department or category, with the reading.
-
-    Persistent violation is either a policy problem or a behaviour problem. The
-    peer rate is what distinguishes them, so it is returned beside every group.
-    """
+    """Breach rates by employee, department or category, with the peer rate."""
     return await expenses.violation_rates(session, user, scope=scope)
+
+
+# ── Reports ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/expenses/reports", status_code=status.HTTP_201_CREATED, response_model=ReportRead)
+async def create_report(
+    body: ReportCreate, session: DbSession, user: CurrentUser, request: Request
+) -> ReportRead:
+    """Start a claim with line items. Lines are captured with `report_id`."""
+    employee_id = permissions.resolve_employee(
+        user, body.employee_id, detail="You can only start expense reports for yourself."
+    )
+    row = await expenses.create_report(
+        session,
+        user,
+        employee_id=employee_id,
+        title=body.title,
+        travel_request_id=body.travel_request_id,
+        request=request,
+    )
+    return await reads.get_report(session, user, row.id)
+
+
+@router.get("/expenses/reports", response_model=list[ReportRead])
+async def list_reports(
+    session: DbSession,
+    user: CurrentUser,
+    scope: Scope = "mine",
+    employee_id: uuid.UUID | None = None,
+) -> list[ReportRead]:
+    return await reads.list_reports(session, user, employee_id=_whose(user, scope, employee_id))
+
+
+@router.get("/expenses/reports/{report_id}", response_model=ReportRead)
+async def get_report(report_id: uuid.UUID, session: DbSession, user: CurrentUser) -> ReportRead:
+    return await reads.get_report(session, user, report_id)
+
+
+@router.post("/expenses/reports/{report_id}/submit", response_model=ReportRead)
+async def submit_report(
+    report_id: uuid.UUID,
+    body: ReportSubmitIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> ReportRead:
+    """Submit every line together; a blocked line refuses the report and is named."""
+    await expenses.submit_report(
+        session, user, report_id=report_id, justifications=body.justifications, request=request
+    )
+    return await reads.get_report(session, user, report_id)
+
+
+# ── Finance queue ───────────────────────────────────────────────────────────
+
+
+@router.get("/expenses/review-queue", response_model=ReviewQueue)
+async def review_queue(
+    session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
+) -> ReviewQueue:
+    """Claims, trips and advance settlements waiting on finance — never the caller's own."""
+    return await reads.review_queue(session, user, today=date.today())
 
 
 # ── Travel and advances ─────────────────────────────────────────────────────
 
 
-@router.post("/expenses/travel-requests", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/expenses/travel-requests",
+    status_code=status.HTTP_201_CREATED,
+    response_model=TravelRequestRead,
+)
 async def create_travel_request(
     body: TravelRequestIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-) -> dict[str, Any]:
-    permissions.require_self_or_hr(
+) -> TravelRequestRead:
+    employee_id = permissions.resolve_employee(
         user, body.employee_id, detail="You can only raise travel requests for yourself."
     )
     row = await expenses.create_travel_request(
         session,
         user,
-        employee_id=body.employee_id,
+        employee_id=employee_id,
         purpose=body.purpose,
         from_date=body.from_date,
         to_date=body.to_date,
@@ -462,14 +562,37 @@ async def create_travel_request(
         advance_requested=body.advance_requested,
         request=request,
     )
-    return {
-        "travel_request_id": str(row.id),
-        "status": row.status.value,
-        "advance_requested": str(row.advance_requested),
-    }
+    return await reads.get_travel_request(session, user, row.id)
 
 
-@router.post("/expenses/travel-requests/{travel_request_id}/decision")
+@router.get("/expenses/travel-requests", response_model=list[TravelRequestRead])
+async def list_travel_requests(
+    session: DbSession,
+    user: CurrentUser,
+    scope: Scope = "mine",
+    employee_id: uuid.UUID | None = None,
+    status_filter: TravelRequestStatusEnum | None = None,
+) -> list[TravelRequestRead]:
+    return await reads.list_travel_requests(
+        session, user, employee_id=_whose(user, scope, employee_id), status_filter=status_filter
+    )
+
+
+@router.post(
+    "/expenses/travel-requests/{travel_request_id}/cancel", response_model=TravelRequestRead
+)
+async def cancel_travel_request(
+    travel_request_id: uuid.UUID, session: DbSession, user: CurrentUser, request: Request
+) -> TravelRequestRead:
+    await expenses.cancel_travel_request(
+        session, user, travel_request_id=travel_request_id, request=request
+    )
+    return await reads.get_travel_request(session, user, travel_request_id)
+
+
+@router.post(
+    "/expenses/travel-requests/{travel_request_id}/decision", response_model=TravelRequestRead
+)
 async def decide_travel_request(
     travel_request_id: uuid.UUID,
     body: DecisionIn,
@@ -477,7 +600,7 @@ async def decide_travel_request(
     user: CurrentUser,
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
-) -> dict[str, Any]:
+) -> TravelRequestRead:
     row = await expenses.decide_travel_request(
         session,
         user,
@@ -486,27 +609,49 @@ async def decide_travel_request(
         note=body.note,
         request=request,
     )
-    return {
-        "travel_request_id": str(row.id),
-        "status": row.status.value,
-        "approvals": row.approvals,
-    }
+    return await reads.get_travel_request(session, user, row.id)
 
 
-@router.post("/expenses/advances", status_code=status.HTTP_201_CREATED)
+@router.get("/expenses/advances", response_model=list[AdvanceRead])
+async def list_advances(
+    session: DbSession,
+    user: CurrentUser,
+    scope: Scope = "mine",
+    employee_id: uuid.UUID | None = None,
+    status_filter: AdvanceStatusEnum | None = None,
+) -> list[AdvanceRead]:
+    return await reads.list_advances(
+        session,
+        user,
+        employee_id=_whose(user, scope, employee_id),
+        status_filter=status_filter,
+        today=date.today(),
+    )
+
+
+@router.get("/expenses/advances/block-status", response_model=BlockStatus)
+async def block_status(
+    session: DbSession,
+    user: CurrentUser,
+    employee_id: uuid.UUID | None = None,
+    as_of: date | None = None,
+) -> BlockStatus:
+    """Whether a new advance would be blocked, said before anybody asks for one."""
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only check your own advances."
+    )
+    return await reads.block_status(session, user, employee_id=target, today=as_of or date.today())
+
+
+@router.post("/expenses/advances", status_code=status.HTTP_201_CREATED, response_model=AdvanceRead)
 async def issue_advance(
     body: AdvanceIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
-) -> dict[str, Any]:
-    """Issue an advance against an approved trip.
-
-    Returns 409 with the blocking advance named when an older one is unsettled
-    past the tenant's threshold. Refusing without saying which advance is the
-    problem sends the employee to finance, and finance says yes.
-    """
+) -> AdvanceRead:
+    """Issue an advance against an approved trip; 409 naming the blocking advance."""
     row = await expenses.issue_advance(
         session,
         user,
@@ -516,13 +661,7 @@ async def issue_advance(
         disbursement_batch_id=body.disbursement_batch_id,
         request=request,
     )
-    return {
-        "advance_id": str(row.id),
-        "travel_request_id": str(row.travel_request_id),
-        "amount": str(row.amount),
-        "issued_on": row.issued_on.isoformat(),
-        "status": row.status.value,
-    }
+    return await reads.get_advance(session, user, row.id, today=date.today())
 
 
 @router.post("/expenses/advances/{advance_id}/settle")
@@ -534,17 +673,9 @@ async def settle_advance(
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Settle an advance against its own trip's approved claims.
-
-    Nothing here can net across trips: the claims that reach the engine are
-    selected by the advance's `travel_request_id`.
-    """
+    """Settle an advance against its own trip's approved claims."""
     return await expenses.settle_advance(
-        session,
-        user,
-        advance_id=advance_id,
-        settled_on=body.settled_on,
-        request=request,
+        session, user, advance_id=advance_id, settled_on=body.settled_on, request=request
     )
 
 
@@ -558,10 +689,7 @@ async def advance_ageing(
 ) -> dict[str, Any]:
     """Outstanding advances by age, for the person who chases them."""
     return await expenses.advance_ageing(
-        session,
-        user,
-        as_of=as_of or date.today(),
-        employee_id=employee_id,
+        session, user, as_of=as_of or date.today(), employee_id=employee_id
     )
 
 
@@ -573,11 +701,7 @@ async def block_check(
     as_of: date | None = None,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Whether this employee may take another advance, and why not.
-
-    Separate from issuing so the answer can be shown before somebody fills in a
-    form, rather than as a refusal after they have.
-    """
+    """Whether this employee may take another advance; 409 with the reason if not."""
     report = await expenses.advance_ageing(
         session, user, as_of=as_of or date.today(), employee_id=employee_id
     )

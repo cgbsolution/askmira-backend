@@ -319,3 +319,31 @@ class NotificationPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     rate_limit_per_hour: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
 
     max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+
+
+class TenantSmtpSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A tenant's own SMTP relay.
+
+    The password is a credential for somebody else's mail server, so it is
+    stored encrypted with the tenant's derived key (`app.core.crypto`) and no
+    read schema carries it — the admin screen is told only whether one is set.
+    """
+
+    __tablename__ = "tenant_smtp_settings"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_smtp_settings_tenant"),)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=587, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    use_starttls: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    use_ssl: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    from_address: Mapped[str] = mapped_column(String(320), nullable=False)
+    from_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

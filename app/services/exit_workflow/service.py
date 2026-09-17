@@ -23,6 +23,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
@@ -92,6 +93,13 @@ async def initiate_exit(
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    # HR for anyone; a manager for their reporting line; nobody for themselves.
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        employee_id,
+        detail="You can only start an exit for somebody in your reporting line.",
+    )
 
     existing = await session.scalar(
         tenant_scoped(
@@ -160,6 +168,8 @@ async def initiate_exit(
                 department=template.department,
                 description=template.description,
                 is_mandatory=template.is_mandatory,
+                owner_role=template.owner_role,
+                owner_user_id=template.owner_user_id,
             )
         )
 
@@ -214,6 +224,16 @@ async def clear_item(
     if item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Clearance item not found"
+        )
+    # The item's owner, the leaver's line manager for a manager item, or HR —
+    # and never on your own exit.
+    from app.services.exit_workflow.operations import require_item_permission
+
+    await require_item_permission(session, user, item)
+    if outcome is ClearanceStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Signing an item off needs an outcome other than 'pending'.",
         )
 
     if outcome is ClearanceStatus.WAIVED and not (waiver_reason or "").strip():
@@ -305,6 +325,11 @@ async def compute_settlement(
     cannot disagree.
     """
     record = await _exit_record(session, user, exit_id)
+    if user.employee_id is not None and record.employee_id == user.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This is your own exit. Somebody else computes its settlement.",
+        )
 
     outstanding = await outstanding_clearances(session, user, exit_id)
     if outstanding:
@@ -497,6 +522,11 @@ async def hold_settlement(
             status_code=status.HTTP_409_CONFLICT,
             detail="This settlement has been paid. A hold after payment is not a hold.",
         )
+    if user.employee_id is not None and settlement.employee_id == user.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This is your own settlement. Somebody else decides a hold on it.",
+        )
 
     settlement.status = SettlementStatus.ON_HOLD
     settlement.hold_reason = reason
@@ -546,6 +576,11 @@ async def revoke_access(
     └───────────────────────────────────────────────────────────────────────┘
     """
     record = await _exit_record(session, user, exit_id)
+    if user.employee_id is not None and record.employee_id == user.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot revoke your own access. Somebody else does that.",
+        )
     employee = await session.scalar(
         tenant_scoped(
             select(Employee).where(Employee.id == record.employee_id), Employee, user

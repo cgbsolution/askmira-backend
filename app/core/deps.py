@@ -89,6 +89,13 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # The tenant's session policy: privileged-role IP allowlist, idle timeout,
+    # absolute lifetime and per-device revocation. A no-op for a tenant that
+    # has not saved a policy. Imported here because opsec imports this module.
+    from app.services.opsec.enforcement import enforce_session_policy
+
+    await enforce_session_policy(request, session, user, payload)
+
     return user
 
 

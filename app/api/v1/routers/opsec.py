@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.core.security import verify_password
 from app.models.opsec import (
     DataTierEnum,
     FindingSeverityEnum,
@@ -61,7 +62,9 @@ class StepUpIn(BaseModel):
 
 
 class SatisfyIn(BaseModel):
-    succeeded: bool
+    """The account password, re-entered. Checked here; never stored or logged."""
+
+    password: str = Field(min_length=1, max_length=512)
 
 
 class DestinationIn(BaseModel):
@@ -161,6 +164,36 @@ async def list_sessions(
     return await opsec.list_sessions(
         session, user, target_user_id=target_user_id
     )
+
+
+@router.get("/opsec/sessions/policy")
+async def get_session_policy(
+    session: DbSession,
+    user: CurrentUser,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """The saved policy, including the allowlist, or the defaults if none is saved."""
+    return await opsec.policy_settings(session, user)
+
+
+@router.get("/opsec/sessions/active")
+async def all_active_sessions(
+    session: DbSession,
+    user: CurrentUser,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> list[dict[str, Any]]:
+    """Every tracked session in the workspace. Tracking starts once a policy is saved."""
+    return await opsec.active_sessions_everyone(session, user)
+
+
+@router.get("/opsec/registers")
+async def registers(
+    session: DbSession,
+    user: CurrentUser,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """Restore drills, pen-test findings and SIEM destinations, as recorded."""
+    return await opsec.registers(session, user)
 
 
 @router.put("/opsec/sessions/policy")
@@ -263,13 +296,18 @@ async def satisfy_step_up(
     A run of failed challenges against a disbursement release is exactly the
     signal a SOC wants, and it only exists if the failures are stored.
     """
-    return await opsec.satisfy_challenge(
+    result = await opsec.satisfy_challenge(
         session,
         user,
         challenge_id=challenge_id,
-        succeeded=payload.succeeded,
+        succeeded=verify_password(payload.password, user.password_hash),
         request=request,
     )
+    result["not_built"] = (
+        "The account password was re-checked. No second factor (an authenticator "
+        "app or a device) exists yet."
+    )
+    return result
 
 
 @router.get("/opsec/step-up/actions")

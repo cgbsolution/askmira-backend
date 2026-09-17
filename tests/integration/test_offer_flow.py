@@ -46,12 +46,13 @@ from app.models.payroll import (
     SalaryStructureComponent,
 )
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services.hiring import offers as offer_service
 from app.services.hiring import requisitions as requisition_service
 from app.services.payroll import service as payroll_service
 from app.services.payroll.salary_structure import resolve_ctc
+from tests.hiring.db_fixture import engine  # noqa: F401 - shadows the shared fixture
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -210,14 +211,32 @@ async def _draft(
     return offer, structure, candidate, requisition
 
 
+async def _approver(session: AsyncSession, tenant: Tenant) -> User:
+    """A second person who may sign. Nobody approves an offer they drafted."""
+    existing = await session.scalar(
+        select(User).where(User.tenant_id == tenant.id, User.email == "admin@acme.test")
+    )
+    if existing is not None:
+        return existing
+    person = User(
+        tenant_id=tenant.id, email="admin@acme.test", password_hash="not-a-real-hash",
+        full_name="Kavya Iyer", role=UserRole.TENANT_ADMIN, is_active=True,
+    )
+    session.add(person)
+    await session.commit()
+    await session.refresh(person)
+    return person
+
+
 async def _through_approval(
     session: AsyncSession, tenant: Tenant, hr_user: User, offer: Offer
 ) -> None:
     await _chain(session, tenant)
     await offer_service.submit_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
+    approver = await _approver(session, tenant)
     while offer.status is OfferStatus.PENDING_APPROVAL:
-        await offer_service.approve_offer(session, hr_user, offer_id=offer.id, approve=True)
+        await offer_service.approve_offer(session, approver, offer_id=offer.id, approve=True)
         await session.commit()
 
 
@@ -574,8 +593,9 @@ async def test_a_second_offer_cannot_take_a_seat_that_is_already_held(
     await session.commit()
     await offer_service.submit_offer(session, hr_user, offer_id=second.id)
     await session.commit()
+    approver = await _approver(session, tenant)
     while second.status is OfferStatus.PENDING_APPROVAL:
-        await offer_service.approve_offer(session, hr_user, offer_id=second.id, approve=True)
+        await offer_service.approve_offer(session, approver, offer_id=second.id, approve=True)
         await session.commit()
 
     with pytest.raises(HTTPException) as exc:
@@ -1013,8 +1033,8 @@ async def test_a_rejection_ends_the_chain(
     await session.commit()
 
     result = await requisition_service.approve_requisition(
-        session, hr_user, requisition_id=requisition.id, approve=False,
-        note="Hire into the existing vacancy first.",
+        session, await _approver(session, tenant), requisition_id=requisition.id,
+        approve=False, note="Hire into the existing vacancy first.",
     )
     await session.commit()
 

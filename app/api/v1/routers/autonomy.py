@@ -251,25 +251,34 @@ async def revert(
 ) -> dict[str, Any]:
     """Undo an applied action.
 
-    Records the reversal with the state captured at proposal time. It does not
-    re-apply that state to the subject record — the per-action undo is not
-    written, because the actions are not.
+    Records the reversal and, for a registered subject type (a regularisation, an
+    expense claim, a candidate, a lifecycle event), writes the captured values
+    back to the record in the same transaction.
     """
+    outcome: dict[str, Any] = {}
     row = await autonomy.revert(
         session,
         user,
         proposal_id=proposal_id,
         reason=payload.reason,
         request=request,
+        outcome=outcome,
     )
+    restored = bool(outcome.get("restored_to_record"))
     return {
         "id": str(row.id),
         "proposal_id": str(row.proposal_id),
         "restored_state": row.restored_state,
         "reverted_at": row.reverted_at.isoformat(),
+        "restored_to_record": restored,
         "not_built": (
-            "The reversal is recorded and the subject record was not touched. "
-            "The per-action undo is not implemented."
+            None
+            if restored
+            else (
+                "The reversal is recorded and the subject record was not touched: "
+                "this subject type has no registered undo, or the change was never "
+                "applied to a record."
+            )
         ),
     }
 

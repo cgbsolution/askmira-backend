@@ -104,6 +104,62 @@ def normalise_candidate_key(raw: str) -> str:
     return re.sub(r"\s+", "", (raw or "").strip().lower())
 
 
+async def _referrer_on_pip(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> bool:
+    """Whether the referrer has a live improvement plan, from the PIP records."""
+    from app.models.performance_flow import Pip, PipStatusEnum
+
+    found = await session.scalar(
+        tenant_scoped(
+            select(Pip.id).where(
+                Pip.employee_id == employee_id,
+                Pip.status.in_((PipStatusEnum.ACTIVE, PipStatusEnum.EXTENDED)),
+            ),
+            Pip,
+            user,
+        )
+    )
+    return found is not None
+
+
+async def _referrer_hiring_team(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> set[str]:
+    """Requisitions the referrer hires for, recruits for, or interviews on."""
+    from sqlalchemy import or_
+
+    from app.models.hiring import Candidate, Requisition
+    from app.models.interview import Interview, InterviewPanelist
+
+    owned = await session.scalars(
+        tenant_scoped(
+            select(Requisition.id).where(
+                or_(
+                    Requisition.hiring_manager_id == employee_id,
+                    Requisition.recruiter_id == employee_id,
+                )
+            ),
+            Requisition,
+            user,
+        )
+    )
+    ids = {str(r) for r in owned.all()}
+    panels = await session.scalars(
+        tenant_scoped(
+            select(Candidate.requisition_id)
+            .join(Interview, Interview.candidate_id == Candidate.id)
+            .join(InterviewPanelist, InterviewPanelist.interview_id == Interview.id)
+            .join(User, User.id == InterviewPanelist.user_id)
+            .where(User.employee_id == employee_id),
+            Candidate,
+            user,
+        )
+    )
+    ids |= {str(r) for r in panels.all()}
+    return ids
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Programme
 # ══════════════════════════════════════════════════════════════════════════════
@@ -287,6 +343,18 @@ async def submit_referral(
     ).scalar_one_or_none()
     if referrer is None:
         raise _not_found("No such employee in this tenant.")
+
+    # Eligibility facts come from the records, not only from the request. A
+    # caller can make the check stricter by passing them; they cannot make it
+    # looser, because the person asking is the one who would be declaring
+    # themselves eligible.
+    on_pip = on_pip or await _referrer_on_pip(session, user, referrer_employee_id)
+    hiring_team_requisitions = sorted(
+        {
+            *(hiring_team_requisitions or []),
+            *await _referrer_hiring_team(session, user, referrer_employee_id),
+        }
+    )
 
     # "Confirmed" means the probation window has closed. `probation_end_date`
     # in the past is the fact the employee record actually carries; a nullable

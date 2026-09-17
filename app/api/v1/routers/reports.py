@@ -301,12 +301,11 @@ async def export(
             ),
         )
 
+    headers = {"Content-Disposition": f'attachment; filename="{result["filename"]}"'}
+    if result.get("format_note"):
+        headers["X-Export-Note"] = "Delivered as CSV; this server does not produce Excel files."
     return Response(
-        content=result["content"],
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{result["filename"]}"'
-        },
+        content=result["content"], media_type="text/csv; charset=utf-8", headers=headers
     )
 
 
@@ -385,6 +384,40 @@ async def create_schedule(
         "timezone": schedule.timezone_name,
         "recipients": len(schedule.recipient_user_ids),
     }
+
+
+@router.get("/reports/schedules", dependencies=[Depends(require_roles(*ALL_ROLES))])
+async def list_schedules(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Your schedules; every schedule in the workspace for an admin."""
+    return await report_service.list_schedules(
+        session, user, include_all=user.role in ADMIN_ROLES or user.role is UserRole.PLATFORM_ADMIN
+    )
+
+
+class ScheduleActiveIn(BaseModel):
+    active: bool
+
+
+@router.post(
+    "/reports/schedules/{schedule_id}/active",
+    dependencies=[Depends(require_roles(*ALL_ROLES))],
+)
+async def set_schedule_active(
+    schedule_id: uuid.UUID,
+    payload: ScheduleActiveIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Pause or resume a schedule you created (any schedule, for an admin)."""
+    return await report_service.set_schedule_active(
+        session,
+        user,
+        schedule_id=schedule_id,
+        active=payload.active,
+        is_admin=user.role in ADMIN_ROLES or user.role is UserRole.PLATFORM_ADMIN,
+        request=request,
+    )
 
 
 @router.post(

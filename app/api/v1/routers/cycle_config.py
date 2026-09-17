@@ -1,108 +1,34 @@
-"""Cycle configuration: assignment rules, activation, cloning, probation (slice 18)."""
+"""Cycle configuration: assignment rules, windows, launch, clone, close, probation
+(slice 18)."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Request, status
 
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.appraisal import AppraisalStage
-from app.models.cycle_config import (
-    AutoAdvanceBehaviour,
-    ProbationOutcome,
-    ProbationReview,
-    TemplateAssignmentRule,
-)
-from app.models.employee import Employee
+from app.core import permissions
+from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
-from app.services.appraisal import assignment
+from app.schemas.performance import (
+    CloneRequest,
+    CloseRequest,
+    ProbationCreate,
+    ProbationOutcomeRequest,
+    ProbationRead,
+    ProbationScheduleRequest,
+    RuleCreate,
+    RuleRead,
+    StageWindowUpdate,
+)
 from app.services.appraisal import cycle_config as cycle_service
 
 router = APIRouter(tags=["cycle-config"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-
-
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class RuleCreate(BaseModel):
-    """One template assignment rule.
-
-    `conditions` accepts only the keys the engine understands. An unrecognised
-    key is refused rather than silently never matching — a rule that can never
-    fire looks exactly like a rule that is not needed.
-    """
-
-    cycle_id: uuid.UUID
-    priority: int = Field(ge=1, le=1000)
-    template_id: uuid.UUID
-    conditions: dict[str, Any] = Field(default_factory=dict)
-    label: str | None = Field(default=None, max_length=128)
-
-
-class RuleRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    cycle_id: uuid.UUID
-    priority: int
-    template_id: uuid.UUID
-    conditions: dict[str, Any]
-    label: str | None
-
-
-class StageWindowUpdate(BaseModel):
-    open_date: date | None = None
-    close_date: date | None = None
-    due_date: date | None = None
-    grace_days: int = Field(default=0, ge=0, le=90)
-    # No default here on purpose: what happens when a window closes is a
-    # decision, and a silent default is how a cycle ends up skipping stages
-    # nobody agreed to skip.
-    auto_advance: AutoAdvanceBehaviour
-
-
-class CloneRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
-    period_start: date
-    period_end: date
-
-
-class CloseRequest(BaseModel):
-    acknowledge_incomplete: bool = False
-
-
-class ProbationCreate(BaseModel):
-    employee_id: uuid.UUID
-    probation_end_date: date
-    review_due_date: date
-
-
-class ProbationRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: uuid.UUID
-    probation_end_date: date
-    review_due_date: date
-    outcome: ProbationOutcome | None
-    outcome_recorded_at: datetime | None
-    extended_to: date | None
-    extends_review_id: uuid.UUID | None
-    notes: str | None
-
-
-class ProbationOutcomeRequest(BaseModel):
-    outcome: ProbationOutcome
-    new_probation_end_date: date | None = None
-    notes: str | None = None
+HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
 
 
 # ── Assignment rules ────────────────────────────────────────────────────────
@@ -112,172 +38,75 @@ class ProbationOutcomeRequest(BaseModel):
     "/cycle-config/rules",
     response_model=RuleRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+    dependencies=HR_ONLY,
 )
 async def create_rule(
-    payload: RuleCreate, user: CurrentUser, session: DbSession
+    payload: RuleCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> RuleRead:
-    unknown = set(payload.conditions) - assignment.KNOWN_CONDITIONS
-    if unknown:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"These conditions are not understood: {sorted(unknown)}. A rule with an "
-                f"unrecognised condition can never match, which looks exactly like a "
-                f"rule that is not needed. Available: "
-                f"{sorted(assignment.KNOWN_CONDITIONS)}."
-            ),
-        )
-
-    rule = TemplateAssignmentRule(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(rule)
+    rule = await cycle_service.create_rule(session, user, payload, request=request)
     await session.commit()
     await session.refresh(rule)
     return RuleRead.model_validate(rule)
 
 
-@router.get(
-    "/cycle-config/rules",
-    response_model=list[RuleRead],
-    dependencies=[Depends(require_roles(*HR_ROLES))],
-)
-async def list_rules(
-    cycle_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> list[RuleRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(TemplateAssignmentRule)
-                .where(TemplateAssignmentRule.cycle_id == cycle_id)
-                .order_by(TemplateAssignmentRule.priority),
-                TemplateAssignmentRule,
-                user,
-            )
-        )
-    ).all()
-    return [RuleRead.model_validate(row) for row in rows]
+@router.get("/cycle-config/rules", response_model=list[RuleRead], dependencies=HR_ONLY)
+async def list_rules(cycle_id: uuid.UUID, user: CurrentUser, session: DbSession) -> list[RuleRead]:
+    return [
+        RuleRead.model_validate(r) for r in await cycle_service.list_rules(session, user, cycle_id)
+    ]
 
 
-@router.get(
-    "/cycle-config/cycles/{cycle_id}/assignment-preview",
-    dependencies=[Depends(require_roles(*HR_ROLES))],
+@router.delete(
+    "/cycle-config/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=HR_ONLY,
 )
+async def delete_rule(
+    rule_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await cycle_service.delete_rule(session, user, rule_id, request=request)
+    await session.commit()
+
+
+@router.get("/cycle-config/cycles/{cycle_id}/assignment-preview", dependencies=HR_ONLY)
 async def assignment_preview(
     cycle_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> dict[str, Any]:
-    """Who resolves to which template, before activating.
-
-    The unresolved list is the one to read: those employees would get no
-    appraisal at all.
-    """
-    cycle = await cycle_service._cycle(session, user, cycle_id)
-    rules = await cycle_service._rules(session, user, cycle_id)
-    population = await cycle_service._eligible_population(session, user, cycle)
-
-    resolved, unresolved = assignment.resolve_all(
-        population=[facts for _, facts in population],
-        rules=rules,
-        as_of=cycle.period_end,
-    )
-    return {
-        "eligible": len(population),
-        "resolved": len(resolved),
-        "unresolved": [r.as_dict() for r in unresolved],
-        "by_template": cycle_service._count_by_template(resolved),
-    }
+    """Who resolves to which template, before launching."""
+    return await cycle_service.assignment_preview(session, user, cycle_id)
 
 
 # ── Stage windows ───────────────────────────────────────────────────────────
 
 
-@router.patch(
-    "/cycle-config/stages/{stage_id}/window",
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
-)
+@router.patch("/cycle-config/stages/{stage_id}/window", dependencies=HR_ONLY)
 async def set_stage_window(
     stage_id: uuid.UUID,
     payload: StageWindowUpdate,
     user: CurrentUser,
     session: DbSession,
+    request: Request,
 ) -> dict[str, Any]:
-    """When a stage opens and closes, and what happens if it does not finish."""
-    stage = await session.scalar(
-        tenant_scoped(
-            select(AppraisalStage).where(AppraisalStage.id == stage_id),
-            AppraisalStage,
-            user,
-        )
-    )
-    if stage is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stage not found")
-
-    if (
-        payload.open_date
-        and payload.close_date
-        and payload.close_date < payload.open_date
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="The stage closes before it opens.",
-        )
-
-    stage.open_date = payload.open_date
-    stage.close_date = payload.close_date
-    stage.due_date = payload.due_date
-    stage.grace_days = payload.grace_days
-    stage.auto_advance = payload.auto_advance
+    result = await cycle_service.set_stage_window(session, user, stage_id, payload, request=request)
     await session.commit()
-
-    return {
-        "stage_id": str(stage.id),
-        "auto_advance": stage.auto_advance.value,
-        "note": {
-            AutoAdvanceBehaviour.ESCALATE: (
-                "Unfinished appraisals stay on this stage and escalate. Nothing is "
-                "skipped; somebody else is asked to do it."
-            ),
-            AutoAdvanceBehaviour.ADVANCE: (
-                "Unfinished appraisals move on with this stage recorded as never "
-                "filled in. The cycle completes; the record says the stage was skipped."
-            ),
-            AutoAdvanceBehaviour.HOLD: (
-                "Unfinished appraisals stay put and wait for a human. Right if somebody "
-                "will look; a stalled cycle if nobody does."
-            ),
-        }[stage.auto_advance],
-    }
+    return result
 
 
 # ── Lifecycle ───────────────────────────────────────────────────────────────
 
 
-@router.post(
-    "/cycle-config/cycles/{cycle_id}/activate",
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
-)
-async def activate(
-    cycle_id: uuid.UUID,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
+@router.post("/cycle-config/cycles/{cycle_id}/launch", dependencies=ADMIN_ONLY)
+async def launch(
+    cycle_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Validate the configuration and make the cycle live.
-
-    Refuses if any eligible employee resolves to no template — at activation
-    that is a configuration problem; at launch it is a person with no
-    appraisal.
-    """
-    result = await cycle_service.activate_cycle(
-        session, user, cycle_id=cycle_id, request=request
-    )
+    """Validate the rules (where there are any) and create every appraisal."""
+    result = await cycle_service.launch(session, user, cycle_id=cycle_id, request=request)
     await session.commit()
     return result
 
 
-@router.post(
-    "/cycle-config/cycles/{cycle_id}/auto-advance",
-    dependencies=[Depends(require_roles(*HR_ROLES))],
-)
+@router.post("/cycle-config/cycles/{cycle_id}/auto-advance", dependencies=HR_ONLY)
 async def auto_advance(
     cycle_id: uuid.UUID,
     user: CurrentUser,
@@ -285,7 +114,6 @@ async def auto_advance(
     request: Request,
     as_of: date | None = None,
 ) -> dict[str, Any]:
-    """Deal with appraisals sitting on a closed stage, per configuration."""
     result = await cycle_service.run_auto_advance(
         session, user, cycle_id=cycle_id, as_of=as_of, request=request
     )
@@ -296,7 +124,7 @@ async def auto_advance(
 @router.post(
     "/cycle-config/cycles/{cycle_id}/clone",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+    dependencies=ADMIN_ONLY,
 )
 async def clone(
     cycle_id: uuid.UUID,
@@ -305,7 +133,6 @@ async def clone(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Copy a cycle's stages, rules and template into a new draft."""
     result = await cycle_service.clone_cycle(
         session,
         user,
@@ -319,10 +146,7 @@ async def clone(
     return result
 
 
-@router.post(
-    "/cycle-config/cycles/{cycle_id}/close",
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
-)
+@router.post("/cycle-config/cycles/{cycle_id}/close", dependencies=ADMIN_ONLY)
 async def close(
     cycle_id: uuid.UUID,
     payload: CloseRequest,
@@ -330,16 +154,13 @@ async def close(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Close the cycle.
-
-    Blocked while an ENFORCED calibration policy is out of tolerance — that
-    gate is not acknowledgeable, because the client chose the mode.
-    """
+    """Blocked while an ENFORCED calibration is out of tolerance."""
     result = await cycle_service.close_cycle(
         session,
         user,
         cycle_id=cycle_id,
         acknowledge_incomplete=payload.acknowledge_incomplete,
+        release_completed=payload.release_completed,
         request=request,
     )
     await session.commit()
@@ -353,40 +174,37 @@ async def close(
     "/cycle-config/probation-reviews",
     response_model=ProbationRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*HR_ROLES))],
+    dependencies=HR_ONLY,
 )
 async def create_probation_review(
-    payload: ProbationCreate, user: CurrentUser, session: DbSession
+    payload: ProbationCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> ProbationRead:
-    """Schedule a probation review on one employee's own clock."""
-    employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == payload.employee_id), Employee, user
-        )
-    )
-    if employee is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-
-    if payload.review_due_date > payload.probation_end_date:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "The review is due after probation ends. The conversation has to happen "
-                "before the deadline, not after it."
-            ),
-        )
-
-    review = ProbationReview(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(review)
+    review = await cycle_service.create_probation_review(session, user, payload, request=request)
     await session.commit()
     await session.refresh(review)
-    return ProbationRead.model_validate(review)
+    return ProbationRead.model_validate(review, from_attributes=True)
+
+
+@router.post("/cycle-config/probation-reviews/schedule-due", dependencies=HR_ONLY)
+async def schedule_due(
+    payload: ProbationScheduleRequest, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Schedule reviews for probations ending soon, from the employee record."""
+    result = await cycle_service.schedule_due_probation_reviews(
+        session,
+        user,
+        horizon_days=payload.horizon_days,
+        lead_days=payload.lead_days,
+        request=request,
+    )
+    await session.commit()
+    return result
 
 
 @router.get(
     "/cycle-config/probation-reviews",
     response_model=list[ProbationRead],
-    dependencies=[Depends(require_roles(*HR_ROLES))],
+    dependencies=HR_ONLY,
 )
 async def list_probation_reviews(
     user: CurrentUser,
@@ -394,21 +212,16 @@ async def list_probation_reviews(
     due_before: date | None = None,
     pending_only: bool = True,
 ) -> list[ProbationRead]:
-    """Reviews falling due, on each employee's own clock rather than a
-    calendar cycle."""
-    stmt = select(ProbationReview).order_by(ProbationReview.review_due_date)
-    if pending_only:
-        stmt = stmt.where(ProbationReview.outcome.is_(None))
-    if due_before is not None:
-        stmt = stmt.where(ProbationReview.review_due_date <= due_before)
-    rows = (await session.scalars(tenant_scoped(stmt, ProbationReview, user))).all()
-    return [ProbationRead.model_validate(row) for row in rows]
+    rows = await cycle_service.list_probation_reviews(
+        session, user, due_before=due_before, pending_only=pending_only
+    )
+    return [ProbationRead.model_validate(r) for r in rows]
 
 
 @router.post(
     "/cycle-config/probation-reviews/{review_id}/outcome",
     response_model=ProbationRead,
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+    dependencies=ADMIN_ONLY,
 )
 async def record_outcome(
     review_id: uuid.UUID,
@@ -417,12 +230,7 @@ async def record_outcome(
     session: DbSession,
     request: Request,
 ) -> ProbationRead:
-    """Confirm, extend, or terminate.
-
-    An extension schedules the next review automatically — an extension with
-    no follow-up is how someone stays on probation indefinitely because the
-    second conversation never got diarised.
-    """
+    """Confirm, extend, or terminate. An extension schedules the next review."""
     review = await cycle_service.record_probation_outcome(
         session,
         user,
@@ -434,4 +242,4 @@ async def record_outcome(
     )
     await session.commit()
     await session.refresh(review)
-    return ProbationRead.model_validate(review)
+    return ProbationRead.model_validate(review, from_attributes=True)

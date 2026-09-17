@@ -64,6 +64,7 @@ from app.models.gst import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.gst import csv_io
 from app.services.gst import eligibility as elig_engine
 from app.services.gst import gstin as gstin_engine
 from app.services.gst import register as register_engine
@@ -1037,3 +1038,124 @@ async def require_own_expense_claim(
     )
     if owner is None or owner != user.employee_id:
         raise permissions.forbidden("That expense claim is not yours.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lists for the finance screens, and the register as a file
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def list_credits(
+    session: AsyncSession,
+    user: User,
+    *,
+    eligibility: GstEligibilityEnum | None = None,
+    reconciliation_status: Gstr2bMatchEnum | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    limit: int = 1000,
+) -> list[GstInputCredit]:
+    stmt = select(GstInputCredit)
+    if eligibility is not None:
+        stmt = stmt.where(GstInputCredit.eligibility == eligibility)
+    if reconciliation_status is not None:
+        stmt = stmt.where(GstInputCredit.reconciliation_status == reconciliation_status)
+    if period_start is not None:
+        stmt = stmt.where(GstInputCredit.invoice_date >= period_start)
+    if period_end is not None:
+        stmt = stmt.where(GstInputCredit.invoice_date <= period_end)
+    stmt = stmt.order_by(GstInputCredit.invoice_date.desc()).limit(limit)
+    return list((await session.execute(tenant_scoped(stmt, GstInputCredit, user))).scalars())
+
+
+async def claim_credits(
+    session: AsyncSession, user: User, expense_claim_id: uuid.UUID
+) -> list[GstInputCredit]:
+    """GST invoices captured against one claim — the claimant's own, or any for finance."""
+    exists = await session.scalar(
+        tenant_scoped(
+            select(ExpenseClaim.id).where(ExpenseClaim.id == expense_claim_id),
+            ExpenseClaim,
+            user,
+        )
+    )
+    if exists is None:
+        raise _not_found("No such expense claim in this tenant.")
+    if not permissions.is_hr(user):
+        await require_own_expense_claim(session, user, expense_claim_id)
+    stmt = tenant_scoped(
+        select(GstInputCredit)
+        .where(GstInputCredit.expense_claim_id == expense_claim_id)
+        .order_by(GstInputCredit.invoice_date),
+        GstInputCredit,
+        user,
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def list_entity_registrations(
+    session: AsyncSession, user: User
+) -> list[GstEntityRegistration]:
+    stmt = tenant_scoped(
+        select(GstEntityRegistration).order_by(GstEntityRegistration.state_code),
+        GstEntityRegistration,
+        user,
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def list_blocked_categories(session: AsyncSession, user: User) -> list[GstBlockedCategory]:
+    stmt = tenant_scoped(
+        select(GstBlockedCategory).order_by(GstBlockedCategory.category_key),
+        GstBlockedCategory,
+        user,
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def list_gstr2b_imports(session: AsyncSession, user: User) -> list[Gstr2bImport]:
+    stmt = tenant_scoped(
+        select(Gstr2bImport).order_by(Gstr2bImport.imported_on.desc()), Gstr2bImport, user
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def list_reconciliations(session: AsyncSession, user: User) -> list[GstReconciliation]:
+    stmt = tenant_scoped(
+        select(GstReconciliation).order_by(GstReconciliation.run_on.desc()),
+        GstReconciliation,
+        user,
+    )
+    return list((await session.execute(stmt)).scalars())
+
+
+async def register_csv(
+    session: AsyncSession,
+    user: User,
+    *,
+    period_start: date,
+    period_end: date,
+    request: Request | None = None,
+) -> str:
+    """The register as CSV, formulas neutralised, with the download recorded."""
+    register = await register_export(
+        session, user, period_start=period_start, period_end=period_end
+    )
+    content = csv_io.register_to_csv(register)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.EXPORT,
+        entity_type="gst_register",
+        actor=user,
+        changes={
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "eligible_lines": len(register["eligible"]),
+            "awaiting_review": len(register["awaiting_review"]),
+        },
+        summary=f"GST register exported for {period_start} to {period_end}.",
+        request=request,
+    )
+    await session.commit()
+    return content

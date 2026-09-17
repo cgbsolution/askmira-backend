@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.attendance import (
     AttendanceDay,
@@ -40,6 +44,7 @@ from app.models.attendance import (
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import Holiday, LeaveRequest, LeaveRequestStatus, LeaveType
+from app.models.org import Location
 from app.models.user import User
 from app.services import audit
 from app.services.attendance.computation import (
@@ -278,6 +283,7 @@ async def recompute_range(
     end: date,
     force: bool = False,
     request: Request | None = None,
+    commit: bool = True,
 ) -> int:
     """Recompute `AttendanceDay` for a date range.
 
@@ -285,6 +291,8 @@ async def recompute_range(
     and shift, so running it twice writes identical values.
 
     Refuses a locked period unless `force`, which only an explicit unlock sets.
+    `commit=False` leaves the transaction open for a caller that writes its own
+    change (a regularisation decision) in the same commit.
     """
     if end < start:
         raise HTTPException(
@@ -315,6 +323,7 @@ async def recompute_range(
         employee_ids = list((await session.scalars(stmt)).all())
 
     holidays = await _holidays_for(session, user, start, end)
+    zones = await employee_timezones(session, user, employee_ids)
     written = 0
 
     for employee_id in employee_ids:
@@ -351,12 +360,13 @@ async def recompute_range(
         )
         existing = {d.attendance_date: d for d in (await session.scalars(existing_stmt)).all()}
 
+        zone = zones.get(employee_id, UTC)
         cursor = start
         while cursor <= end:
             shift = await _resolve_shift(session, user, employee_id, cursor)
 
             if shift is not None:
-                window_start, window_end = attendance_window(shift, cursor)
+                window_start, window_end = attendance_window(shift, cursor, zone)
                 day_punches = [
                     PunchRecord(punched_at=p.punched_at, direction=p.direction)
                     for p in all_punches
@@ -366,7 +376,7 @@ async def recompute_range(
                 day_punches = [
                     PunchRecord(punched_at=p.punched_at, direction=p.direction)
                     for p in all_punches
-                    if p.punched_at.date() == cursor
+                    if p.punched_at.astimezone(zone).date() == cursor
                 ]
 
             leave_entry = leave.get(cursor)
@@ -382,6 +392,7 @@ async def recompute_range(
                     leave_is_half_day=leave_entry[0] if leave_entry else False,
                     leave_is_paid=leave_entry[1] if leave_entry else True,
                     regularised_status=regularisations.get(cursor),
+                    timezone=zone,
                 )
             )
 
@@ -401,7 +412,8 @@ async def recompute_range(
         ),
         request=request,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return written
 
 
@@ -648,6 +660,25 @@ async def unlock_period(
 # ── Regularisation ──────────────────────────────────────────────────────────
 
 
+async def _regularisation(
+    session: AsyncSession, user: User, regularisation_id: uuid.UUID
+) -> AttendanceRegularisation:
+    row = await session.scalar(
+        tenant_scoped(
+            select(AttendanceRegularisation).where(
+                AttendanceRegularisation.id == regularisation_id
+            ),
+            AttendanceRegularisation,
+            user,
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Regularisation not found"
+        )
+    return row
+
+
 async def raise_regularisation(
     session: AsyncSession,
     user: User,
@@ -656,13 +687,56 @@ async def raise_regularisation(
     attendance_date: date,
     requested_status: AttendanceStatus,
     reason: str,
+    requested_first_in: datetime | None = None,
+    requested_last_out: datetime | None = None,
     request: Request | None = None,
 ) -> AttendanceRegularisation:
+    """Raise a correction for one day.
+
+    Allowed for a locked period — people forget — but it cannot be approved
+    until the period is unlocked, and the approver is told so.
+    """
+    if attendance_date > datetime.now(UTC).date() + timedelta(days=1):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A regularisation corrects a day that has happened. This date is in the future.",
+        )
+    if (
+        requested_first_in is not None
+        and requested_last_out is not None
+        and requested_last_out <= requested_first_in
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The corrected punch-out must be after the corrected punch-in.",
+        )
+    duplicate = await session.scalar(
+        tenant_scoped(
+            select(AttendanceRegularisation.id).where(
+                AttendanceRegularisation.employee_id == employee_id,
+                AttendanceRegularisation.attendance_date == attendance_date,
+                AttendanceRegularisation.status == RegularisationStatus.PENDING,
+            ),
+            AttendanceRegularisation,
+            user,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"There is already a pending regularisation for {attendance_date}. "
+                "Withdraw it first to ask for something different."
+            ),
+        )
+
     regularisation = AttendanceRegularisation(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
         attendance_date=attendance_date,
         requested_status=requested_status,
+        requested_first_in=requested_first_in,
+        requested_last_out=requested_last_out,
         reason=reason,
     )
     session.add(regularisation)
@@ -675,7 +749,44 @@ async def raise_regularisation(
         entity_type="attendance_regularisation",
         entity_id=regularisation.id,
         actor=user,
+        changes={
+            "employee_id": str(employee_id),
+            "attendance_date": attendance_date.isoformat(),
+            "requested_status": requested_status.value,
+        },
         summary=f"Regularisation raised for {attendance_date}",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(regularisation)
+    return regularisation
+
+
+async def cancel_regularisation(
+    session: AsyncSession,
+    user: User,
+    regularisation_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> AttendanceRegularisation:
+    """Withdraw a pending request. Only the person who raised it can."""
+    regularisation = await _regularisation(session, user, regularisation_id)
+    if user.employee_id is None or regularisation.employee_id != user.employee_id:
+        raise permissions.forbidden("Only the person a regularisation is about can withdraw it.")
+    if regularisation.status is not RegularisationStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This request was already {regularisation.status.value}",
+        )
+    regularisation.status = RegularisationStatus.CANCELLED
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="attendance_regularisation",
+        entity_id=regularisation.id,
+        actor=user,
+        summary=f"Regularisation for {regularisation.attendance_date} withdrawn",
         request=request,
     )
     await session.commit()
@@ -692,36 +803,49 @@ async def decide_regularisation(
     note: str | None = None,
     request: Request | None = None,
 ) -> AttendanceRegularisation:
-    """Approve or reject, then recompute the affected day.
+    """Approve or reject; an approval recomputes the day in the same transaction.
 
-    An approval that did not trigger a recompute would leave the attendance
-    record disagreeing with its own regularisation.
+    Only the person's manager (their reporting line) or HR may decide, and never
+    for themselves. An approval inside a locked payroll period is refused: it
+    would change a paid day, and that needs the audited unlock first.
     """
-    regularisation = await session.scalar(
-        tenant_scoped(
-            select(AttendanceRegularisation).where(
-                AttendanceRegularisation.id == regularisation_id
-            ),
-            AttendanceRegularisation,
-            user,
-        )
+    regularisation = await _regularisation(session, user, regularisation_id)
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        regularisation.employee_id,
+        detail="Only this person's manager or HR can decide their regularisation.",
     )
-    if regularisation is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Regularisation not found"
-        )
     if regularisation.status is not RegularisationStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This request was already {regularisation.status.value}",
         )
+    if not approve and not (note or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say why the regularisation is rejected.",
+        )
+    if approve:
+        lock = await active_lock_covering(
+            session, user, regularisation.attendance_date, regularisation.attendance_date
+        )
+        if lock is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Attendance for {lock.period_start} to {lock.period_end} is locked for "
+                    "payroll. HR must unlock the period, with a recorded reason, before this "
+                    "correction can change the day."
+                ),
+            )
 
     regularisation.status = (
         RegularisationStatus.APPROVED if approve else RegularisationStatus.REJECTED
     )
     regularisation.approver_user_id = user.id
     regularisation.decided_at = datetime.now(UTC)
-    regularisation.decision_note = note
+    regularisation.decision_note = (note or "").strip() or None
 
     await audit.record(
         session,
@@ -730,15 +854,17 @@ async def decide_regularisation(
         entity_type="attendance_regularisation",
         entity_id=regularisation.id,
         actor=user,
+        changes={"note": regularisation.decision_note},
         summary=(
             f"Regularisation for {regularisation.attendance_date} "
             f"{'approved' if approve else 'rejected'}"
         ),
         request=request,
     )
-    await session.commit()
 
     if approve:
+        # Same transaction: an approval whose recompute failed would leave the
+        # record disagreeing with its own regularisation.
         await recompute_range(
             session,
             user,
@@ -746,7 +872,227 @@ async def decide_regularisation(
             start=regularisation.attendance_date,
             end=regularisation.attendance_date,
             request=request,
+            commit=False,
         )
 
+    await session.commit()
     await session.refresh(regularisation)
     return regularisation
+
+
+# ── Self-service punch rules ────────────────────────────────────────────────
+
+
+def punch_source_for(
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    punched_at: datetime | None,
+    source: PunchSource | None,
+    device_id: str | None,
+    has_coordinates: bool,
+) -> PunchSource:
+    """Decide the source of a punch recorded through the API, and refuse forgery.
+
+    A punch somebody records for themselves — HR included — is timestamped by
+    the server and comes from the web or a phone. A back-dated "biometric" punch
+    typed in by the person it is about is not an observation of anything.
+    HR recording a punch for somebody else (a manual correction) may set the
+    time and the source.
+    """
+    default = PunchSource.MOBILE_GEO if has_coordinates else PunchSource.WEB
+    acting_for_self = user.employee_id is not None and employee_id == user.employee_id
+    if permissions.is_hr(user) and not acting_for_self:
+        return source or PunchSource.MANUAL
+    if punched_at is not None or device_id is not None:
+        raise permissions.forbidden(
+            "A punch you record for yourself is timestamped by the server. "
+            "To correct a past day, raise a regularisation."
+        )
+    if source not in (None, PunchSource.WEB, PunchSource.MOBILE_GEO):
+        raise permissions.forbidden(
+            "A punch you record for yourself comes from the web or your phone."
+        )
+    return source or default
+
+
+# ── Bulk import ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRow:
+    row: int
+    employee_code: str
+    punched_at: datetime
+    direction: PunchDirection
+    device_id: str | None
+    raw: dict[str, Any]
+
+
+async def import_punch_rows(
+    session: AsyncSession,
+    user: User,
+    rows: list[ImportRow],
+    *,
+    errors: list[dict[str, Any]] | None = None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Store normalised punch rows; report per-row problems instead of failing.
+
+    Deduplicates on (employee, timestamp, direction) against what is already
+    stored and within the file, so importing the same export twice adds nothing.
+    """
+    all_errors: list[dict[str, Any]] = list(errors or [])
+    codes = {r.employee_code for r in rows}
+    by_code: dict[str, uuid.UUID] = {}
+    if codes:
+        stmt = tenant_scoped(
+            select(Employee.id, Employee.employee_code).where(
+                Employee.employee_code.in_(codes), Employee.deleted_at.is_(None)
+            ),
+            Employee,
+            user,
+        )
+        by_code = {code: eid for eid, code in (await session.execute(stmt)).all()}
+
+    existing: set[tuple[uuid.UUID, datetime, PunchDirection]] = set()
+    known = [r for r in rows if r.employee_code in by_code]
+    if known:
+        stmt = tenant_scoped(
+            select(
+                AttendancePunch.employee_id,
+                AttendancePunch.punched_at,
+                AttendancePunch.direction,
+            ).where(
+                AttendancePunch.employee_id.in_({by_code[r.employee_code] for r in known}),
+                AttendancePunch.punched_at >= min(r.punched_at for r in known),
+                AttendancePunch.punched_at <= max(r.punched_at for r in known),
+            ),
+            AttendancePunch,
+            user,
+        )
+        existing = {
+            (eid, at, direction) for eid, at, direction in (await session.execute(stmt)).all()
+        }
+
+    imported = 0
+    duplicates = 0
+    unknown: set[str] = set()
+    seen: set[tuple[uuid.UUID, datetime, PunchDirection]] = set()
+
+    for row in rows:
+        employee_id = by_code.get(row.employee_code)
+        if employee_id is None:
+            unknown.add(row.employee_code)
+            all_errors.append(
+                {
+                    "row": row.row,
+                    "employee_code": row.employee_code,
+                    "error": f"No employee with code {row.employee_code}. The row was skipped.",
+                }
+            )
+            continue
+        key = (employee_id, row.punched_at, row.direction)
+        if key in existing or key in seen:
+            duplicates += 1
+            continue
+        seen.add(key)
+        await record_punch(
+            session,
+            user,
+            employee_id=employee_id,
+            punched_at=row.punched_at,
+            direction=row.direction,
+            source=PunchSource.IMPORT,
+            device_id=row.device_id,
+            raw_payload=row.raw,
+            commit=False,
+        )
+        imported += 1
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="attendance_punch",
+        actor=user,
+        changes={
+            "imported": imported,
+            "duplicates": duplicates,
+            "unknown_codes": sorted(unknown),
+            "row_errors": len(all_errors),
+        },
+        summary=(
+            f"Imported {imported} punch(es); {duplicates} duplicate(s) skipped; "
+            f"{len(all_errors)} row(s) with problems"
+        ),
+        request=request,
+    )
+    await session.commit()
+    return {
+        "imported": imported,
+        "duplicates": duplicates,
+        "skipped_unknown_employee": sorted(unknown),
+        "errors": sorted(all_errors, key=lambda e: e["row"]),
+    }
+
+
+# ── Scheduler entry point ───────────────────────────────────────────────────
+
+
+async def nightly_recompute(
+    session: AsyncSession, user: User, *, as_of: date
+) -> dict[str, Any]:
+    """The nightly job's body: recompute the previous day for every active employee.
+
+    The scheduler (not part of this module) calls it once per tenant, with a
+    system user of that tenant and the tenant's local date as `as_of`. It is
+    idempotent, so a retried or doubled run changes nothing. A locked day is
+    skipped rather than raising — the job must not need an unlock to finish.
+    """
+    day = as_of - timedelta(days=1)
+    lock = await active_lock_covering(session, user, day, day)
+    if lock is not None:
+        return {
+            "date": day.isoformat(),
+            "days_computed": 0,
+            "skipped": True,
+            "reason": f"{day} is inside the locked period {lock.period_start} to {lock.period_end}",
+        }
+    written = await recompute_range(session, user, employee_ids=None, start=day, end=day)
+    return {"date": day.isoformat(), "days_computed": written, "skipped": False, "reason": None}
+
+
+# ── Timezones ───────────────────────────────────────────────────────────────
+
+
+def _zone(name: str | None) -> tzinfo:
+    if not name:
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return UTC
+
+
+async def employee_timezones(
+    session: AsyncSession, user: User, employee_ids: list[uuid.UUID] | set[uuid.UUID]
+) -> dict[uuid.UUID, tzinfo]:
+    """Where each person works, as a timezone.
+
+    Shift times are wall-clock times at the place of work. Comparing a 09:00
+    shift start with a punch stored in UTC as if both were UTC marks everybody
+    in India five and a half hours early — so the location's timezone is applied.
+    An employee with no location is evaluated in UTC.
+    """
+    ids = list(employee_ids)
+    if not ids:
+        return {}
+    stmt = tenant_scoped(
+        select(Employee.id, Location.timezone)
+        .outerjoin(Location, Location.id == Employee.location_id)
+        .where(Employee.id.in_(ids)),
+        Employee,
+        user,
+    )
+    return {eid: _zone(name) for eid, name in (await session.execute(stmt)).all()}

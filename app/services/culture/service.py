@@ -19,17 +19,24 @@ THE TWO PLACES WHERE THIS LAYER IS THE CONTROL, NOT THE ENGINE
 
 **What is and is not wired**, stated once here:
 
-- Announcements are stored and their audience is resolved; **nothing is sent**.
-  Slice 05's notification engine is not called from here, so WhatsApp delivery
-  to non-desk staff is a plan rather than a fact.
-- A winner is recorded in `award_results` and **nothing posts it to the feed**.
-- Nothing schedules a re-survey. `movement` is computed when two waves exist.
+- Announcements are delivered through the notification engine to everybody in
+  the audience with a login - immediately when published, or by
+  `deliver_due_announcements` when a scheduled publish time arrives. Which
+  channels carry them is each recipient's preference; email is a console
+  adapter and WhatsApp needs an approved template and recorded consent.
+- A declared winner is recorded in `award_results` and announced on the feed in
+  the same transaction, as the company's post rather than anybody's.
+- `schedule_due_resurveys` opens the next wave from a survey's configured
+  interval. **Nothing calls it on a timer** - there is no scheduler in this
+  deployment - so HR runs it, or an external cron calls the endpoint.
 """
 
 from __future__ import annotations
 
+import statistics
 import uuid
-from datetime import UTC, date, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -39,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.culture import Shoutout, ShoutoutVisibility
 from app.models.culture_depth import (
     ActionPlanItem,
     Announcement,
@@ -63,7 +71,7 @@ from app.models.culture_depth import (
     TagSourceEnum,
     ValueTag,
 )
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentStatus
 from app.models.user import User
 from app.services import audit
 from app.services.culture import actionplans as plan_engine
@@ -71,8 +79,11 @@ from app.services.culture import awards as award_engine
 from app.services.culture import comms as comms_engine
 from app.services.culture import surveys as survey_engine
 from app.services.culture import values as values_engine
+from app.services.notifications import dispatch
 
 __all__ = [
+    "CURRENT_STATUSES",
+    "SystemActor",
     "acknowledge",
     "acknowledgement_register",
     "announce",
@@ -84,6 +95,8 @@ __all__ = [
     "culture_posture",
     "declare_winner",
     "define_value",
+    "deliver_announcement",
+    "deliver_due_announcements",
     "jury_view",
     "loop_report",
     "nominate",
@@ -96,6 +109,32 @@ __all__ = [
     "value_analytics",
 ]
 
+#: Employment states that still belong to the company's audience.
+CURRENT_STATUSES = (
+    EmploymentStatus.ACTIVE,
+    EmploymentStatus.ON_NOTICE,
+    EmploymentStatus.ON_LEAVE,
+)
+
+#: A scheduled announcement found undelivered longer than this after its publish
+#: time is not sent late. A month-old "the office is closed tomorrow" arriving
+#: today is worse than nothing.
+DELIVERY_GRACE = timedelta(days=2)
+
+
+@dataclass(frozen=True, slots=True)
+class SystemActor:
+    """The caller for a scheduled run: one tenant, and nobody in it.
+
+    `tenant_scoped` reads only `tenant_id`, so a scheduled job is scoped exactly
+    as a request is. It has no role, so no permission check passes for it.
+    """
+
+    tenant_id: uuid.UUID
+    id: None = None
+    employee_id: None = None
+    role: None = None
+
 
 def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
@@ -107,6 +146,16 @@ def _not_found(detail: str) -> HTTPException:
 
 def _forbidden(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+def _current_employees_stmt(user: Any):
+    return tenant_scoped(
+        select(Employee).where(
+            Employee.deleted_at.is_(None), Employee.status.in_(CURRENT_STATUSES)
+        ),
+        Employee,
+        user,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -123,6 +172,8 @@ async def define_value(
     description: str,
     icon: str | None = None,
     colour: str | None = None,
+    display_order: int | None = None,
+    is_active: bool | None = None,
     request: Request | None = None,
 ) -> CompanyValue:
     """Define or update a company value.
@@ -153,6 +204,11 @@ async def define_value(
         row.description = description
     row.icon = icon
     row.colour = colour
+    if display_order is not None:
+        row.display_order = display_order
+    if is_active is not None:
+        row.is_active = is_active
+    await session.flush()
 
     await audit.record(
         session,
@@ -161,7 +217,10 @@ async def define_value(
         entity_type="company_value",
         entity_id=row.id,
         actor=user,
-        summary=f"Company value {code!r} defined as {name!r}.",
+        summary=(
+            f"Company value {code!r} defined as {name!r}"
+            + ("." if row.is_active is not False else " (inactive).")
+        ),
         request=request,
     )
     await session.commit()
@@ -199,6 +258,7 @@ async def tag_value(
     subject_employee_id: uuid.UUID | None,
     occurred_on: date,
     group_key: str | None = None,
+    request: Request | None = None,
 ) -> ValueTag:
     """Tag a shoutout, nomination or competency to a value."""
     known = {v.code for v in await _value_definitions(session, user)}
@@ -218,6 +278,17 @@ async def tag_value(
         group_key=group_key,
     )
     session.add(row)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="value_tag",
+        entity_id=row.id,
+        actor=user,
+        summary=f"A {source.value} tagged to the value {value_code!r}.",
+        request=request,
+    )
     await session.commit()
     await session.refresh(row)
     return row
@@ -257,7 +328,11 @@ async def value_analytics(
             "This tenant has no company values defined yet, so there is nothing "
             "for recognition to be measured against."
         )
-    items = await _tagged_items(session, user)
+    known = {v.code for v in definitions}
+    # A value deactivated after it was used stays in the ledger of what was
+    # recognised; it is left out of the live framework's coverage rather than
+    # failing the whole report as an unknown code.
+    items = [i for i in await _tagged_items(session, user) if i.value_code in known]
     try:
         report = values_engine.coverage(items, values=definitions)
         unlived = values_engine.unlived_values(items, values=definitions)
@@ -322,6 +397,7 @@ async def open_cycle(
         juror_user_ids=[str(x) for x in juror_user_ids],
     )
     session.add(row)
+    await session.flush()
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -368,6 +444,22 @@ async def nominate(
     cycle = (await session.execute(stmt)).scalar_one_or_none()
     if cycle is None:
         raise _not_found("No such award cycle in this tenant.")
+    if cycle.status in (AwardCycleStatusEnum.DRAFT, AwardCycleStatusEnum.CANCELLED):
+        raise _bad_request(f"This award cycle is {cycle.status.value.replace('_', ' ')}.")
+
+    nominee = (
+        await session.execute(
+            tenant_scoped(
+                select(Employee).where(
+                    Employee.id == nominee_employee_id, Employee.deleted_at.is_(None)
+                ),
+                Employee,
+                user,
+            )
+        )
+    ).scalar_one_or_none()
+    if nominee is None:
+        raise _not_found("No such colleague to nominate in this tenant.")
 
     window = award_engine.NominationWindow(
         opens_on=cycle.nominations_open_on, closes_on=cycle.nominations_close_on
@@ -399,6 +491,15 @@ async def nominate(
             f"({sorted(c for c in categories if c)})."
         )
 
+    if value_codes:
+        known = {v.code for v in await _value_definitions(session, user)}
+        unknown = sorted(set(value_codes) - known)
+        if unknown:
+            raise _bad_request(
+                f"{unknown} are not among this tenant's values. A tally over codes "
+                "nobody defined is a tally of typos."
+            )
+
     row = AwardNomination(
         tenant_id=user.tenant_id,
         cycle_id=cycle_id,
@@ -414,7 +515,7 @@ async def nominate(
     session.add(row)
     await session.flush()
 
-    for code in value_codes or []:
+    for code in dict.fromkeys(value_codes or []):
         session.add(
             ValueTag(
                 tenant_id=user.tenant_id,
@@ -422,6 +523,7 @@ async def nominate(
                 source_id=row.id,
                 value_code=code,
                 subject_employee_id=nominee_employee_id,
+                group_key=str(nominee.department_id) if nominee.department_id else None,
                 occurred_on=today or date.today(),
             )
         )
@@ -481,6 +583,30 @@ async def score_nomination(
             "Only a juror on this cycle may score its nominations."
         )
 
+    programme = (
+        await session.execute(
+            tenant_scoped(
+                select(AwardProgramme).where(AwardProgramme.id == nomination.programme_id),
+                AwardProgramme,
+                user,
+            )
+        )
+    ).scalar_one_or_none()
+    criteria = {
+        c.get("key") for c in ((programme.criteria if programme else None) or []) if c.get("key")
+    }
+    if criteria:
+        unknown = sorted(set(scores) - criteria)
+        if unknown:
+            raise _bad_request(
+                f"{unknown} are not criteria of this programme ({sorted(criteria)})."
+            )
+        if submit and set(scores) != criteria:
+            raise _bad_request(
+                f"Score every criterion before submitting: {sorted(criteria - set(scores))} "
+                "still blank. A submitted score cannot be reopened."
+            )
+
     existing = (
         await session.execute(
             tenant_scoped(
@@ -512,7 +638,18 @@ async def score_nomination(
         row.submitted_at = datetime.now(UTC)
     if existing is None:
         session.add(row)
+    await session.flush()
 
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE if existing is not None else AuditAction.CREATE,
+        entity_type="jury_score",
+        entity_id=row.id,
+        actor=user,
+        summary="Jury score submitted." if submit else "Jury score saved as a draft.",
+        request=request,
+    )
     await session.commit()
     await session.refresh(row)
     return row
@@ -581,16 +718,37 @@ async def jury_view(
     )
 
     own = next((s for s in engine_scores if s.juror_id == str(user.id)), None)
+    juror_names = {
+        str(uid): name
+        for uid, name in (
+            await session.execute(
+                tenant_scoped(
+                    select(User.id, User.full_name).where(
+                        User.id.in_([uuid.UUID(s.juror_id) for s in visible])
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    } if visible else {}
     return {
         "nomination_id": str(nomination_id),
         "citation": nomination.citation,
         "you_have_submitted": bool(own and own.is_submitted),
+        "your_draft": (
+            {"scores": own.scores, "comments": own.comments}
+            if own and not own.is_submitted
+            else None
+        ),
         "scores": [
             {
                 "juror_id": s.juror_id,
+                "juror_name": juror_names.get(s.juror_id),
                 "scores": s.scores,
                 "comments": s.comments,
                 "mean": s.mean,
+                "is_submitted": s.is_submitted,
             }
             for s in visible
         ],
@@ -611,7 +769,12 @@ async def declare_winner(
     awarded_on: date,
     request: Request | None = None,
 ) -> AwardResult:
-    """Record a win permanently on the employee's record."""
+    """Record a win permanently, and announce it on the feed.
+
+    The feed post is written in the same transaction as the result, as the
+    company's post: it has no sender, because nobody wrote it and attributing
+    it to whoever clicked "declare" would put words in their name.
+    """
     stmt = tenant_scoped(
         select(AwardNomination).where(AwardNomination.id == nomination_id),
         AwardNomination,
@@ -620,6 +783,18 @@ async def declare_winner(
     nomination = (await session.execute(stmt)).scalar_one_or_none()
     if nomination is None:
         raise _not_found("No such nomination in this tenant.")
+
+    already = (
+        await session.execute(
+            tenant_scoped(
+                select(AwardResult.id).where(AwardResult.nomination_id == nomination_id),
+                AwardResult,
+                user,
+            )
+        )
+    ).scalar_one_or_none()
+    if already is not None:
+        raise _bad_request("This nomination has already been declared a winner.")
 
     scores = list(
         (
@@ -650,6 +825,7 @@ async def declare_winner(
         )
     ).scalar_one()
 
+    now = datetime.now(UTC)
     row = AwardResult(
         tenant_id=user.tenant_id,
         cycle_id=nomination.cycle_id,
@@ -659,9 +835,22 @@ async def declare_winner(
         employee_id=nomination.nominee_employee_id,
         citation=nomination.citation,
         awarded_on=awarded_on,
+        announced_at=now,
     )
     session.add(row)
     nomination.status = NominationStatusEnum.WON
+    await session.flush()
+
+    post = Shoutout(
+        tenant_id=user.tenant_id,
+        from_employee_id=None,
+        to_employee_id=nomination.nominee_employee_id,
+        award_result_id=row.id,
+        message=nomination.citation,
+        visibility=ShoutoutVisibility.COMPANY,
+    )
+    session.add(post)
+    await session.flush()
 
     await audit.record(
         session,
@@ -672,7 +861,7 @@ async def declare_winner(
         actor=user,
         summary=(
             f"{programme.name} ({nomination.category_key}) awarded on "
-            f"{awarded_on.isoformat()}."
+            f"{awarded_on.isoformat()} and announced on the feed."
         ),
         request=request,
     )
@@ -696,8 +885,15 @@ async def create_survey(
     closes_on: date,
     instrument_key: str | None = None,
     min_responses_to_report: int = survey_engine.MIN_RESPONSES,
+    resurvey_interval_days: int | None = None,
+    previous_wave_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> Survey:
+    """Open a survey and send it to everybody currently employed.
+
+    Sending is a participant row per person: that row is what "surveys sent to
+    me" lists and what restricts who may answer. It carries no answers.
+    """
     if min_responses_to_report < survey_engine.MIN_RESPONSES:
         raise _bad_request(
             f"The reporting threshold cannot be set below "
@@ -710,6 +906,11 @@ async def create_survey(
             survey_engine.instrument(instrument_key)
         except survey_engine.SurveyError as exc:
             raise _bad_request(str(exc)) from exc
+    if resurvey_interval_days is not None and resurvey_interval_days < 30:
+        raise _bad_request(
+            "A re-survey sooner than 30 days after the last one closes measures "
+            "the survey, not the action taken on it."
+        )
 
     row = Survey(
         tenant_id=user.tenant_id,
@@ -720,18 +921,36 @@ async def create_survey(
         closes_on=closes_on,
         status=SurveyStatusEnum.OPEN,
         min_responses_to_report=min_responses_to_report,
+        resurvey_interval_days=resurvey_interval_days,
+        previous_wave_id=previous_wave_id,
     )
     session.add(row)
+    await session.flush()
+
+    invited = [
+        employee.id for employee in (await session.execute(_current_employees_stmt(user))).scalars()
+    ]
+    session.add_all(
+        SurveyParticipant(tenant_id=user.tenant_id, survey_id=row.id, employee_id=employee_id)
+        for employee_id in invited
+    )
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
         action=AuditAction.CREATE,
         entity_type="survey",
         entity_id=row.id,
-        actor=user,
+        actor=user if isinstance(user, User) else None,
+        actor_type="user" if isinstance(user, User) else "system",
         summary=(
-            f"Survey {name!r} open, reporting threshold "
-            f"{min_responses_to_report}."
+            f"Survey {name!r} open, sent to {len(invited)} people, reporting "
+            f"threshold {min_responses_to_report}"
+            + (
+                f", re-survey {resurvey_interval_days} days after close."
+                if resurvey_interval_days
+                else "."
+            )
         ),
         request=request,
     )
@@ -826,6 +1045,18 @@ async def submit_response(
             submitted_on=submitted_on or date.today(),
         )
     )
+    await session.flush()
+    # The audit row names the participant row - the same fact that stops the
+    # reminders - and nothing about the answers.
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="survey_participation",
+        entity_id=participant.id,
+        actor=user,
+        summary="Survey response recorded; the answers are stored unlinked.",
+    )
     await session.commit()
     return {
         "recorded": True,
@@ -838,7 +1069,11 @@ async def submit_response(
 
 
 async def close_survey(
-    session: AsyncSession, user: User, *, survey_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    *,
+    survey_id: uuid.UUID,
+    request: Request | None = None,
 ) -> Survey:
     survey = (
         await session.execute(
@@ -847,10 +1082,37 @@ async def close_survey(
     ).scalar_one_or_none()
     if survey is None:
         raise _not_found("No such survey in this tenant.")
-    survey.status = SurveyStatusEnum.CLOSED
-    await session.commit()
-    await session.refresh(survey)
+    if survey.status is not SurveyStatusEnum.CLOSED:
+        survey.status = SurveyStatusEnum.CLOSED
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="survey",
+            entity_id=survey.id,
+            actor=user,
+            summary=f"Survey {survey.name!r} closed.",
+            request=request,
+        )
+        await session.commit()
+        await session.refresh(survey)
     return survey
+
+
+async def _answers(
+    session: AsyncSession, user: User, survey_id: uuid.UUID
+) -> list[SurveyResponse]:
+    return list(
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(SurveyResponse).where(SurveyResponse.survey_id == survey_id),
+                    SurveyResponse,
+                    user,
+                )
+            )
+        ).scalars()
+    )
 
 
 async def survey_results(
@@ -881,17 +1143,16 @@ async def survey_results(
     if survey is None:
         raise _not_found("No such survey in this tenant.")
 
-    rows = list(
-        (
+    rows = await _answers(session, user, survey_id)
+    previous = None
+    if survey.previous_wave_id is not None:
+        previous = (
             await session.execute(
                 tenant_scoped(
-                    select(SurveyResponse).where(SurveyResponse.survey_id == survey_id),
-                    SurveyResponse,
-                    user,
+                    select(Survey).where(Survey.id == survey.previous_wave_id), Survey, user
                 )
             )
-        ).scalars()
-    )
+        ).scalar_one_or_none()
 
     if survey.instrument_key == "enps":
         scores = [int(r.answers.get("enps", -1)) for r in rows]
@@ -899,9 +1160,27 @@ async def survey_results(
             overall = survey_engine.enps(
                 scores, min_responses=survey.min_responses_to_report
             ).as_dict()
+            prior = None
+            if previous is not None and previous.instrument_key == "enps":
+                prior_rows = await _answers(session, user, previous.id)
+                prior = survey_engine.enps(
+                    [int(r.answers.get("enps", -1)) for r in prior_rows],
+                    min_responses=previous.min_responses_to_report,
+                ).as_dict()
         except survey_engine.SurveyError as exc:
             raise _bad_request(str(exc)) from exc
-        return {"survey_id": str(survey_id), "instrument": "enps", "overall": overall}
+        return {
+            "survey_id": str(survey_id),
+            "instrument": "enps",
+            "responses": len(rows),
+            "min_responses_to_report": survey.min_responses_to_report,
+            "overall": overall,
+            "previous_wave": (
+                {"survey_id": str(previous.id), "name": previous.name, "overall": prior}
+                if previous is not None and prior is not None
+                else None
+            ),
+        }
 
     if not survey.instrument_key:
         raise _bad_request(
@@ -929,6 +1208,21 @@ async def survey_results(
         else {}
     )
 
+    movement = None
+    if previous is not None and previous.instrument_key:
+        prior_rows = await _answers(session, user, previous.id)
+        movement = survey_engine.compare_waves(
+            before=[dict(r.answers or {}) for r in prior_rows],
+            after=[dict(r.answers or {}) for r in rows],
+            before_instrument=previous.instrument_key,
+            after_instrument=survey.instrument_key,
+            min_responses=max(
+                previous.min_responses_to_report, survey.min_responses_to_report
+            ),
+        ).as_dict()
+        movement["previous_wave_id"] = str(previous.id)
+        movement["previous_wave_name"] = previous.name
+
     return {
         "survey_id": str(survey_id),
         "instrument": survey.instrument_key,
@@ -936,6 +1230,7 @@ async def survey_results(
         "min_responses_to_report": survey.min_responses_to_report,
         "overall": overall_scores,
         "groups": [g.as_dict() for g in breakdown],
+        "movement": movement,
         "note": (
             "Groups below the threshold are withheld, and where one is withheld "
             "a second goes with it so the first cannot be recovered by "
@@ -1107,6 +1402,58 @@ async def complete_plan(
     return row
 
 
+async def _wave_movement_by_theme(
+    session: AsyncSession, user: User, survey_ids: set[uuid.UUID]
+) -> dict[str, float]:
+    """Per theme, how far the next wave moved from the one a plan answered.
+
+    Computed only where a later wave of the same instrument exists and both
+    waves clear the reporting threshold - `compare_waves` refuses otherwise,
+    and a theme it refuses stays unmeasured rather than reading as zero.
+    """
+    movement: dict[str, list[float]] = {}
+    for survey_id in survey_ids:
+        before = (
+            await session.execute(
+                tenant_scoped(select(Survey).where(Survey.id == survey_id), Survey, user)
+            )
+        ).scalar_one_or_none()
+        after = (
+            await session.execute(
+                tenant_scoped(
+                    select(Survey)
+                    .where(Survey.previous_wave_id == survey_id)
+                    .order_by(Survey.opens_on),
+                    Survey,
+                    user,
+                )
+            )
+        ).scalars().first()
+        if (
+            before is None
+            or after is None
+            or not before.instrument_key
+            or before.instrument_key == "enps"
+            or not after.instrument_key
+        ):
+            continue
+        comparison = survey_engine.compare_waves(
+            before=[dict(r.answers or {}) for r in await _answers(session, user, before.id)],
+            after=[dict(r.answers or {}) for r in await _answers(session, user, after.id)],
+            before_instrument=before.instrument_key,
+            after_instrument=after.instrument_key,
+            min_responses=max(before.min_responses_to_report, after.min_responses_to_report),
+        )
+        if not comparison.comparable:
+            continue
+        items = survey_engine.instrument(after.instrument_key).items
+        for item in items:
+            if item.key in comparison.deltas:
+                for theme in {item.theme, item.key} - {""}:
+                    movement.setdefault(theme, []).append(comparison.deltas[item.key])
+    return {theme: round(statistics.fmean(values), 2) for theme, values in movement.items()}
+
+
 async def loop_report(
     session: AsyncSession,
     user: User,
@@ -1114,7 +1461,11 @@ async def loop_report(
     as_of: date,
     movement: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Per theme: was anything done, and did the next wave move."""
+    """Per theme: was anything done, and did the next wave move.
+
+    Movement comes from the re-survey wave when one exists, unless a caller
+    supplies it.
+    """
     rows = list(
         (
             await session.execute(
@@ -1123,6 +1474,8 @@ async def loop_report(
         ).scalars()
     )
     plans = [await _engine_plan(session, user, row) for row in rows]
+    if movement is None:
+        movement = await _wave_movement_by_theme(session, user, {r.survey_id for r in rows})
     return plan_engine.loop_closure(
         plans=plans, movement=dict(movement or {}), today=as_of
     )
@@ -1131,6 +1484,79 @@ async def loop_report(
 # ══════════════════════════════════════════════════════════════════════════════
 # Announcements
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+def _notification_text(row: Announcement) -> str:
+    body = " ".join(row.body.split())
+    text = body if len(body) <= 400 else body[:400].rstrip() + "…"
+    if row.requires_acknowledgement:
+        text += " Please read it and acknowledge it in AskMira."
+    return text
+
+
+async def deliver_announcement(
+    session: AsyncSession, user: Any, row: Announcement
+) -> int:
+    """Notify everybody in the audience who has a login, in the caller's
+    transaction. Returns how many people it reached.
+
+    The audience is resolved against current employees. Delivery is recorded on
+    the row, which is what stops a scheduled announcement going out twice.
+    """
+    spec = row.audience or {}
+    audience = comms_engine.Audience(
+        department_ids=tuple(spec.get("department_ids", [])),
+        location_ids=tuple(spec.get("location_ids", [])),
+        grades=tuple(spec.get("grades", [])),
+    )
+    employees = list((await session.execute(_current_employees_stmt(user))).scalars())
+    in_audience = {
+        uuid.UUID(r.employee_id)
+        for r in comms_engine.resolve_audience(
+            audience,
+            [
+                comms_engine.Recipient(
+                    employee_id=str(e.id),
+                    department_id=str(e.department_id) if e.department_id else None,
+                    location_id=str(e.location_id) if e.location_id else None,
+                    grade=e.grade,
+                )
+                for e in employees
+            ],
+        )
+    }
+    recipients: list[uuid.UUID] = []
+    if in_audience:
+        recipients = list(
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(User.id).where(
+                            User.employee_id.in_(in_audience), User.is_active.is_(True)
+                        ),
+                        User,
+                        user,
+                    )
+                )
+            ).scalars()
+        )
+    if recipients:
+        await dispatch.notify(
+            session,
+            tenant_id=row.tenant_id,
+            event_key="system.announcement",
+            recipient_user_ids=recipients,
+            payload={
+                "title": row.title,
+                "message": _notification_text(row),
+                "announcement_id": str(row.id),
+                "requires_acknowledgement": row.requires_acknowledgement,
+            },
+            commit=False,
+        )
+    row.delivered_at = datetime.now(UTC)
+    row.delivered_count = len(recipients)
+    return len(recipients)
 
 
 async def announce(
@@ -1146,6 +1572,10 @@ async def announce(
     channels: list[str] | None = None,
     request: Request | None = None,
 ) -> Announcement:
+    """Publish an announcement, and deliver it now if its time has come.
+
+    A future `publish_at` is delivered by `deliver_due_announcements`.
+    """
     spec = audience or {}
     engine_audience = comms_engine.Audience(
         department_ids=tuple(spec.get("department_ids", [])),
@@ -1179,6 +1609,12 @@ async def announce(
         published_by_user_id=user.id,
     )
     session.add(row)
+    await session.flush()
+
+    delivered: int | None = None
+    if publish_at <= datetime.now(UTC):
+        delivered = await deliver_announcement(session, user, row)
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1189,13 +1625,78 @@ async def announce(
         summary=(
             f"Announcement {title!r} published to "
             f"{engine_audience.describe()}"
-            + (" (acknowledgement required)." if requires_acknowledgement else ".")
+            + (" (acknowledgement required)" if requires_acknowledgement else "")
+            + (
+                f"; delivered to {delivered} people."
+                if delivered is not None
+                else f"; scheduled for {publish_at.isoformat()}."
+            )
         ),
         request=request,
     )
     await session.commit()
     await session.refresh(row)
     return row
+
+
+async def deliver_due_announcements(
+    session: AsyncSession, tenant_id: uuid.UUID, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Scheduler-callable: deliver every announcement whose publish time has
+    arrived and which has not been delivered.
+
+    Safe to run as often as a scheduler likes - a delivered announcement is
+    never sent again. One found more than `DELIVERY_GRACE` late is skipped
+    and counted rather than sent stale.
+    """
+    actor = SystemActor(tenant_id=tenant_id)
+    moment = now or datetime.now(UTC)
+    due = list(
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(Announcement).where(
+                        Announcement.delivered_at.is_(None),
+                        Announcement.publish_at <= moment,
+                    ),
+                    Announcement,
+                    actor,
+                )
+            )
+        ).scalars()
+    )
+    delivered = people = stale = 0
+    for row in due:
+        if row.publish_at < moment - DELIVERY_GRACE or (
+            row.expires_at is not None and row.expires_at <= moment
+        ):
+            stale += 1
+            continue
+        count = await deliver_announcement(session, actor, row)
+        delivered += 1
+        people += count
+        await audit.record(
+            session,
+            tenant_id=tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="announcement",
+            entity_id=row.id,
+            actor=None,
+            actor_type="system",
+            summary=f"Scheduled announcement {row.title!r} delivered to {count} people.",
+        )
+    await session.commit()
+    return {
+        "delivered": delivered,
+        "people_notified": people,
+        "skipped_stale": stale,
+        "note": (
+            "Announcements more than two days past their publish time, or already "
+            "expired, are not sent late."
+            if stale
+            else "Every due announcement was delivered."
+        ),
+    }
 
 
 def _engine_announcement(row: Announcement) -> comms_engine.Announcement:
@@ -1263,15 +1764,24 @@ async def acknowledge(
     if existing is not None:
         return {"recorded": False, "note": "Already acknowledged this version."}
 
-    session.add(
-        AnnouncementAcknowledgement(
-            tenant_id=user.tenant_id,
-            announcement_id=announcement_id,
-            employee_id=employee_id,
-            acknowledged_at=datetime.now(UTC),
-            content_hash=current,
-            channel=channel,
-        )
+    ack = AnnouncementAcknowledgement(
+        tenant_id=user.tenant_id,
+        announcement_id=announcement_id,
+        employee_id=employee_id,
+        acknowledged_at=datetime.now(UTC),
+        content_hash=current,
+        channel=channel,
+    )
+    session.add(ack)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="announcement_acknowledgement",
+        entity_id=ack.id,
+        actor=user,
+        summary=f"Acknowledged {row.title!r} (version {current[:12]}).",
     )
     await session.commit()
     return {"recorded": True, "content_hash": current}
@@ -1296,11 +1806,7 @@ async def acknowledgement_register(
     if row is None:
         raise _not_found("No such announcement in this tenant.")
 
-    employees = list(
-        (
-            await session.execute(tenant_scoped(select(Employee), Employee, user))
-        ).scalars()
-    )
+    employees = list((await session.execute(_current_employees_stmt(user))).scalars())
     recipients = [
         comms_engine.Recipient(
             employee_id=str(e.id),
@@ -1353,8 +1859,11 @@ async def set_event_privacy(
     share_birthday: bool,
     share_work_anniversary: bool,
     birthday_scope: str = "team",
+    request: Request | None = None,
 ) -> EventPrivacyPreference:
     """Record what this person has agreed to have announced."""
+    if birthday_scope not in {"team", "company"}:
+        raise _bad_request("A birthday is shared with your team or the company.")
     row = (
         await session.execute(
             tenant_scoped(
@@ -1374,9 +1883,39 @@ async def set_event_privacy(
     row.share_birthday = share_birthday
     row.share_work_anniversary = share_work_anniversary
     row.birthday_scope = birthday_scope
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="event_privacy_preference",
+        entity_id=row.id,
+        actor=user,
+        summary=(
+            "Celebration sharing set: birthday "
+            + (f"shared with {birthday_scope}" if share_birthday else "not shared")
+            + ", work anniversary "
+            + ("shared." if share_work_anniversary else "not shared.")
+        ),
+        request=request,
+    )
     await session.commit()
     await session.refresh(row)
     return row
+
+
+def _occurrences(original: date, from_date: date, to_date: date) -> list[date]:
+    """Each anniversary of `original` inside the window, across a year boundary,
+    with 29 February observed on the 28th in a common year."""
+    out = []
+    for year in range(from_date.year, to_date.year + 1):
+        try:
+            occasion = original.replace(year=year)
+        except ValueError:
+            occasion = date(year, 2, 28)
+        if from_date <= occasion <= to_date:
+            out.append(occasion)
+    return out
 
 
 async def calendar(
@@ -1386,19 +1925,20 @@ async def calendar(
     from_date: date,
     to_date: date,
 ) -> dict[str, Any]:
-    """The events that may be published in a window.
+    """The events that may be published in a window, for this viewer.
 
     An employee with no privacy row contributes nothing. The absence of a
-    record is a refusal, not a gap to be filled with a default of yes.
+    record is a refusal, not a gap to be filled with a default of yes. A
+    birthday shared with the team is shown to that person's department, to
+    themselves and to HR - not to the company.
     """
     if to_date < from_date:
         raise _bad_request("A calendar window cannot end before it starts.")
+    if (to_date - from_date).days > 366:
+        raise _bad_request("A calendar window is at most a year.")
 
-    employees = list(
-        (
-            await session.execute(tenant_scoped(select(Employee), Employee, user))
-        ).scalars()
-    )
+    employees = list((await session.execute(_current_employees_stmt(user))).scalars())
+    by_id = {str(e.id): e for e in employees}
     prefs = {
         str(p.employee_id): comms_engine.EventPrivacy(
             employee_id=str(p.employee_id),
@@ -1417,30 +1957,30 @@ async def calendar(
 
     person_events: list[comms_engine.PersonEvent] = []
     for e in employees:
+        label = e.full_name
         if e.date_of_birth:
-            occasion = e.date_of_birth.replace(year=from_date.year)
-            if from_date <= occasion <= to_date:
+            for occasion in _occurrences(e.date_of_birth, from_date, to_date):
                 person_events.append(
                     comms_engine.PersonEvent(
                         employee_id=str(e.id),
                         kind=comms_engine.EventKind.BIRTHDAY,
                         on_date=occasion,
-                        label=f"{e.first_name} {e.last_name}".strip(),
+                        label=label,
                     )
                 )
         if e.date_of_joining:
-            occasion = e.date_of_joining.replace(year=from_date.year)
-            years = from_date.year - e.date_of_joining.year
-            if from_date <= occasion <= to_date and years > 0:
-                person_events.append(
-                    comms_engine.PersonEvent(
-                        employee_id=str(e.id),
-                        kind=comms_engine.EventKind.WORK_ANNIVERSARY,
-                        on_date=occasion,
-                        label=f"{e.first_name} {e.last_name}".strip(),
-                        years=years,
+            for occasion in _occurrences(e.date_of_joining, from_date, to_date):
+                years = occasion.year - e.date_of_joining.year
+                if years > 0:
+                    person_events.append(
+                        comms_engine.PersonEvent(
+                            employee_id=str(e.id),
+                            kind=comms_engine.EventKind.WORK_ANNIVERSARY,
+                            on_date=occasion,
+                            label=label,
+                            years=years,
+                        )
                     )
-                )
 
     company = [
         comms_engine.CalendarEvent(
@@ -1464,10 +2004,38 @@ async def calendar(
     events = comms_engine.calendar_events(
         person_events=person_events, privacy=prefs, company_events=company
     )
+
+    viewer = by_id.get(str(user.employee_id)) if user.employee_id else None
+    is_hr = permissions.is_hr(user)
+
+    def may_see(event: comms_engine.CalendarEvent) -> bool:
+        if event.kind is not comms_engine.EventKind.BIRTHDAY or event.scope != "team":
+            return True
+        if is_hr or event.employee_id == str(user.employee_id):
+            return True
+        person = by_id.get(event.employee_id or "")
+        return (
+            person is not None
+            and viewer is not None
+            and viewer.department_id is not None
+            and person.department_id == viewer.department_id
+        )
+
     return {
         "from": from_date.isoformat(),
         "to": to_date.isoformat(),
-        "events": [e.as_dict() for e in events],
+        "events": [
+            {
+                **event.as_dict(),
+                "photo_url": (
+                    by_id[event.employee_id].photo_url
+                    if event.employee_id in by_id
+                    else None
+                ),
+            }
+            for event in events
+            if may_see(event)
+        ],
         "note": (
             "Birthdays and work anniversaries appear only for people who have "
             "opted in, and the two are separate choices."
@@ -1494,20 +2062,29 @@ def culture_posture() -> dict[str, Any]:
             "an edit does not inherit it.",
             "Birthday and work-anniversary sharing default to off, in the "
             "column, and are separate consents.",
+            "Announcements are delivered to their audience through the "
+            "notification engine when published, exactly once.",
+            "A declared award result is posted to the feed in the same "
+            "transaction, as the company's post.",
+            "A club's member list is visible to its members only; HR sees "
+            "participation in aggregate.",
         ],
         "not_built": [
-            "Nothing is sent. Announcements are stored and their audience is "
-            "resolved; slice 05's notification engine is not called from here, "
-            "so WhatsApp delivery to non-desk staff is a plan, not a fact.",
-            "Nothing posts an award result to the feed. The win is recorded on "
-            "the employee's profile and announced by a person.",
-            "No re-survey is scheduled. Movement is computed when two waves of "
-            "the same instrument exist and somebody asks.",
+            "Email and WhatsApp: nothing is sent on those channels in this "
+            "deployment. Delivery writes in-app notifications; email goes to a "
+            "console adapter, and WhatsApp needs an approved Meta template and "
+            "the person's recorded consent before the engine will queue it.",
+            "No scheduler runs in this deployment. Scheduled announcements and "
+            "re-surveys are delivered when `deliver_due_announcements` and "
+            "`schedule_due_resurveys` are called - by HR from the admin screen "
+            "or by an external cron.",
             "No external benchmarks - that is slice 37. Comparison is against "
-            "this company's own prior periods only.",
+            "this company's own prior waves only.",
             "The validated instruments are composed from published item "
             "structures and have not been psychometrically validated on this "
             "population.",
+            "No club invitations. A private club is visible to and joinable by "
+            "its members only, which in practice means its organiser.",
             "No Swag Store, no Your Voice inbox. Those were assumed by the "
             "brief to exist already and do not exist in this repository.",
         ],

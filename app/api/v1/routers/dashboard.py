@@ -1,11 +1,13 @@
 """Home dashboard aggregation.
 
-One call for the home screen rather than six, so the shell renders in a single
-round-trip. FRD 6 budgets 2s p95 for core screens and this is the screen every
-user sees first.
+One call for the home screen's headline numbers rather than six, so the shell
+renders in a single round-trip. FRD 6 budgets 2s p95 for core screens and this
+is the screen every user sees first.
 
-Counts are real where the V1 tables exist; the widgets that depend on V2
-modules (analytics, tasks) report zero rather than inventing a number.
+Counts are real where the tables exist; the widgets that depend on modules not
+built (tasks) report zero rather than inventing a number. The shoutout count is
+the caller's visible feed, not every shoutout in the company - a private
+shoutout is not a number anybody else gets to see move.
 """
 
 from __future__ import annotations
@@ -17,9 +19,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, DbSession, tenant_scoped
-from app.models.culture import Shoutout
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import LeaveRequest, LeaveRequestStatus
+from app.services.culture import feed
 from app.services.leave import service as leave_service
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -79,13 +81,7 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
     # company: "3 requests waiting on you" has to be true for whoever reads it.
     pending = await leave_service.pending_for(session, user)
 
-    shoutouts = await session.scalar(
-        tenant_scoped(
-            select(func.count(Shoutout.id)).where(Shoutout.created_at >= week_ago),
-            Shoutout,
-            user,
-        )
-    )
+    shoutouts = await feed.count_visible_since(session, user, week_ago)
 
     return DashboardSummary(
         greeting_name=user.full_name.split(" ")[0],
@@ -93,7 +89,7 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
         new_hires_30d=new_hires or 0,
         on_leave_today=on_leave or 0,
         pending_approvals=pending or 0,
-        shoutouts_this_week=shoutouts or 0,
-        # Workflow builder is V2; reporting 0 is honest, a fake number is not.
+        shoutouts_this_week=shoutouts,
+        # Tasks and workflows are not built; reporting 0 is honest, a fake number is not.
         open_tasks=0,
     )

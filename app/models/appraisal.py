@@ -214,10 +214,30 @@ class Appraisal(Base, UUIDMixin, TenantMixin, TimestampMixin):
         index=True,
     )
 
+    # The competency template this person was resolved to at launch (slice 18's
+    # assignment rules). Stored rather than re-resolved, so a grade change in
+    # the middle of a cycle does not swap the form under a half-written review.
+    competency_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("competency_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     final_rating: Mapped[str | None] = mapped_column(String(64), nullable=True)
     final_score: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ── Overdue escalation ──────────────────────────────────────────────────
+    # Set once, when the current stage went past its due date plus the cycle's
+    # escalation window. The person named here may then act on the stage, and
+    # the entry they write is marked escalated.
+    escalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    escalated_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # ── Acknowledgement ─────────────────────────────────────────────────────
     acknowledged_at: Mapped[datetime | None] = mapped_column(

@@ -12,7 +12,16 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,9 +46,26 @@ class Shoutout(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "shoutouts"
+    __table_args__ = (
+        # A peer shoutout has a sender. An award announcement has no sender -
+        # it is the company's post, recorded against the award result - and it
+        # must never be attributed to whichever HR person clicked "declare".
+        CheckConstraint(
+            "from_employee_id IS NOT NULL OR award_result_id IS NOT NULL",
+            name="ck_shoutout_has_author",
+        ),
+    )
 
-    from_employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
+    #: Null only for an award announcement, which is the company's post.
+    from_employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=True
+    )
+    #: Set when this feed post announces an award result (slice 32).
+    award_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("award_results.id", ondelete="CASCADE"),
+        nullable=True,
+        unique=True,
     )
     to_employee_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False

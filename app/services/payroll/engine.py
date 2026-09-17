@@ -20,13 +20,16 @@ Compliance SME. A rule set without approval is refused.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from app.models.payroll import ComponentType, EmployeeSalary, PayrollRuleSet
+from app.services.loans.recovery import RecoveryError, plan_recovery
 from app.services.payroll.statutory import (
     PfElection,
     StatutoryError,
@@ -35,8 +38,14 @@ from app.services.payroll.statutory import (
     resolve_pf_base,
     should_continue_esi,
 )
+from app.services.payroll.tds import MonthFigures, TdsContext, compute_monthly_tds
+from app.services.tax.computation import TaxRuleError
 
 __all__ = [
+    "ComputedInputLine",
+    "InputKind",
+    "InputLine",
+    "LoanRecoveryInput",
     "PayrollComputation",
     "PayrollInput",
     "PayrollRuleError",
@@ -44,6 +53,98 @@ __all__ = [
 ]
 
 _RUPEE = Decimal("0.01")
+_ZERO = Decimal(0)
+
+# The component codes slice 07's projection treats as HRA and employer NPS.
+# Mirrored rather than re-decided, so the TDS a payslip deducts and the
+# projection an employee previews read the same components.
+_HRA_CODES = frozenset({"HRA"})
+_EMPLOYER_NPS_CODES = frozenset({"NPS_ER", "EMPLOYER_NPS"})
+
+
+class InputKind(str, enum.Enum):
+    """How a line from another module lands on a payslip.
+
+    The distinction that matters is between what moves cash and what does not:
+    a perquisite is taxable income the employee never receives as money, so it
+    raises TDS without touching net pay.
+    """
+
+    # Paid in cash. `taxable_amount` says how much of it is taxable.
+    EARNING = "earning"
+    # Paid in cash, exempt against a bill.
+    REIMBURSEMENT = "reimbursement"
+    # Always taken.
+    DEDUCTION = "deduction"
+    # Taken only when it fits inside net pay; skipped — and left unconsumed — otherwise.
+    RECOVERY = "recovery"
+    # Non-cash taxable value. Raises TDS, never net pay.
+    PERQUISITE = "perquisite"
+    # Owed by the employer; employer cost only. May be negative (an arrear refund).
+    EMPLOYER_CONTRIBUTION = "employer_contribution"
+
+
+@dataclass(frozen=True, slots=True)
+class InputLine:
+    """One item another module wants on this payslip."""
+
+    provider: str
+    code: str
+    name: str
+    kind: InputKind
+    amount: Decimal
+    taxable_amount: Decimal = _ZERO
+    basis: str = ""
+    # The record consumed: {"type": "reimbursement_claim", "id": "..."}.
+    source: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class LoanRecoveryInput:
+    """One loan's instalment, recovered against the scheme's net-pay floor."""
+
+    provider: str
+    code: str
+    name: str
+    emi: Decimal
+    outstanding_principal: Decimal
+    carried_forward: Decimal
+    minimum_net_pay: Decimal
+    allow_partial: bool
+    source: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ComputedInputLine:
+    provider: str
+    code: str
+    name: str
+    kind: InputKind
+    # What was actually applied to the payslip — zero for a skipped recovery.
+    amount: Decimal
+    # What the source asked for.
+    requested: Decimal
+    taxable_amount: Decimal
+    basis: str
+    source: dict[str, Any]
+    skipped: bool = False
+    # A loan recovery's full decision (amount, carried forward, reason).
+    recovery: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "code": self.code,
+            "name": self.name,
+            "kind": self.kind.value,
+            "amount": str(self.amount),
+            "requested": str(self.requested),
+            "taxable_amount": str(self.taxable_amount),
+            "basis": self.basis,
+            "source": self.source,
+            "skipped": self.skipped,
+            "recovery": self.recovery,
+        }
 
 
 class PayrollRuleError(ValueError):
@@ -86,6 +187,17 @@ class PayrollInput:
     # Welfare Fund — are then left undeducted and flagged rather than guessed.
     state_review: str | None = None
 
+    # ── Inputs from other modules, and TDS ──────────────────────────────────
+    # Loan EMIs, reimbursements, arrears, referral bonuses and the like, as
+    # gathered by `services/payroll/inputs.py`. Empty for a caller that only
+    # wants the structure recomputed (the arrears engine).
+    inputs: tuple[InputLine, ...] = ()
+    loan_recoveries: tuple[LoanRecoveryInput, ...] = ()
+    # The employee's year for the income tax projection. `None` leaves TDS at
+    # zero — right for a structure-only recomputation, and the run refuses to be
+    # approved without it (see `run.py`).
+    tds: TdsContext | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class ComputedLine:
@@ -125,6 +237,16 @@ class PayrollComputation:
     # Things payroll declined to decide alone. A non-empty list does not stop
     # the computation; it stops the run being approved without a look.
     review_flags: list[str] = field(default_factory=list)
+
+    # Cash earnings from input lines (arrears, encashment, bonus, referral,
+    # reimbursements). Deliberately **not** part of `gross_earnings`, which stays
+    # the structure's earnings: the PF ECR, the bonus wage and the registers read
+    # `gross_earnings` as monthly wages, and a one-off payment is not a wage.
+    #
+    #     net_pay = gross_earnings + other_earnings - total_deductions
+    other_earnings: Decimal = Decimal(0)
+    input_lines: list[ComputedInputLine] = field(default_factory=list)
+    tds_working: dict[str, Any] | None = None
 
 
 def _require_rule_set(rule_sets: dict[str, PayrollRuleSet], rule_type: str) -> PayrollRuleSet:
@@ -380,11 +502,54 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         lwf_employee = lwf.employee_contribution
         lwf_employer = lwf.employer_contribution
 
-    # ── 7. TDS ──────────────────────────────────────────────────────────────
-    # Income tax is an annual projection against declared investments, which is
-    # slice 07. Until then TDS is zero rather than a guess — an approximate
-    # deduction from someone's salary is worse than none.
+    # ── 7. Inputs from other modules ────────────────────────────────────────
+    other_earnings = _ZERO
+    input_deductions = _ZERO
+    input_employer_cost = _ZERO
+    one_off_taxable = _ZERO
+    computed_inputs: list[ComputedInputLine] = []
+    deferred_recoveries: list[InputLine] = []
+
+    for item in payroll_input.inputs:
+        _check_input(item)
+        if item.kind is InputKind.RECOVERY:
+            deferred_recoveries.append(item)
+            continue
+        if item.kind in (InputKind.EARNING, InputKind.REIMBURSEMENT):
+            other_earnings += item.amount
+        elif item.kind is InputKind.DEDUCTION:
+            input_deductions += item.amount
+        elif item.kind is InputKind.EMPLOYER_CONTRIBUTION:
+            input_employer_cost += item.amount
+        one_off_taxable += item.taxable_amount
+        computed_inputs.append(
+            ComputedInputLine(
+                provider=item.provider,
+                code=item.code,
+                name=item.name,
+                kind=item.kind,
+                amount=_money(item.amount),
+                requested=_money(item.amount),
+                taxable_amount=_money(item.taxable_amount),
+                basis=item.basis,
+                source=item.source,
+            )
+        )
+
+    # ── 8. TDS ──────────────────────────────────────────────────────────────
+    # Slice 07's annual projection, re-levelled every month. Without a context
+    # (a structure-only recomputation) it stays zero; a run never approves
+    # without one.
     tds = Decimal(0)
+    tds_working: dict[str, Any] | None = None
+    if payroll_input.tds is not None:
+        figures = _month_figures(salary, prorated, professional_tax, one_off_taxable)
+        try:
+            result = compute_monthly_tds(payroll_input.tds, figures)
+        except TaxRuleError as exc:
+            raise PayrollRuleError(str(exc)) from exc
+        tds = result.amount
+        tds_working = result.working
 
     total_deductions = (
         pf_employee + vpf + esi_employee + professional_tax + lwf_employee + tds
@@ -397,6 +562,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         ),
         start=Decimal(0),
     )
+    total_deductions += input_deductions
 
     employer_contributions = sum(
         (
@@ -406,6 +572,72 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         ),
         start=Decimal(0),
     )
+    employer_contributions += input_employer_cost
+
+    # ── 9. Recoveries, last, against what is actually left ──────────────────
+    net_running = gross_earnings + other_earnings - total_deductions
+    if net_running < 0:
+        raise PayrollRuleError(
+            f"Net pay would be {_money(net_running)} before any loan or advance recovery. "
+            "Deductions exceed earnings; check the salary and the input lines before "
+            "paying this employee."
+        )
+
+    for item in deferred_recoveries:
+        if item.amount <= net_running:
+            net_running -= item.amount
+            total_deductions += item.amount
+            computed_inputs.append(
+                ComputedInputLine(
+                    provider=item.provider, code=item.code, name=item.name, kind=item.kind,
+                    amount=_money(item.amount), requested=_money(item.amount),
+                    taxable_amount=_ZERO, basis=item.basis, source=item.source,
+                )
+            )
+        else:
+            computed_inputs.append(
+                ComputedInputLine(
+                    provider=item.provider, code=item.code, name=item.name, kind=item.kind,
+                    amount=_ZERO, requested=_money(item.amount), taxable_amount=_ZERO,
+                    basis=(
+                        f"Not recovered this month: {_money(item.amount)} is more than the "
+                        f"{_money(net_running)} net pay left. It stays owed and is attempted "
+                        "again next run."
+                    ),
+                    source=item.source,
+                    skipped=True,
+                )
+            )
+
+    for loan in payroll_input.loan_recoveries:
+        try:
+            decision = plan_recovery(
+                emi=loan.emi,
+                net_pay_before_recovery=_money(net_running),
+                minimum_net_pay=loan.minimum_net_pay,
+                outstanding_principal=loan.outstanding_principal,
+                already_carried_forward=loan.carried_forward,
+                allow_partial=loan.allow_partial,
+            )
+        except RecoveryError as exc:
+            raise PayrollRuleError(f"{loan.name}: {exc}") from exc
+        net_running -= decision.amount
+        total_deductions += decision.amount
+        computed_inputs.append(
+            ComputedInputLine(
+                provider=loan.provider,
+                code=loan.code,
+                name=loan.name,
+                kind=InputKind.RECOVERY,
+                amount=decision.amount,
+                requested=_money(loan.emi + loan.carried_forward),
+                taxable_amount=_ZERO,
+                basis=decision.reason,
+                source=loan.source,
+                skipped=decision.is_skipped,
+                recovery=decision.as_dict(),
+            )
+        )
 
     lines.extend(
         [
@@ -460,9 +692,14 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         lop_days=lop_days,
         gross_earnings=_money(gross_earnings),
         total_deductions=_money(total_deductions),
-        net_pay=_money(gross_earnings - total_deductions),
+        net_pay=_money(gross_earnings + other_earnings - total_deductions),
         employer_cost=_money(
-            gross_earnings + employer_contributions + pf_employer + esi_employer + lwf_employer
+            gross_earnings
+            + other_earnings
+            + employer_contributions
+            + pf_employer
+            + esi_employer
+            + lwf_employer
         ),
         pf_wage_base=_money(pf_wage_base),
         esi_wage_base=_money(esi_wage_base),
@@ -477,6 +714,77 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         vpf=vpf,
         lines=lines,
         review_flags=review_flags,
+        other_earnings=_money(other_earnings),
+        input_lines=computed_inputs,
+        tds_working=tds_working,
+    )
+
+
+def _check_input(item: InputLine) -> None:
+    """An input line is money from another module; hold it to payroll's rules."""
+    for name, value in (("amount", item.amount), ("taxable amount", item.taxable_amount)):
+        if not isinstance(value, Decimal):
+            raise PayrollRuleError(f"{item.name}: the {name} must be a Decimal, not a float")
+    if item.kind is not InputKind.EMPLOYER_CONTRIBUTION and item.amount < 0:
+        raise PayrollRuleError(f"{item.name}: an input line cannot be negative")
+    if item.taxable_amount < 0:
+        raise PayrollRuleError(f"{item.name}: a taxable amount cannot be negative")
+    if item.kind in (InputKind.EARNING, InputKind.PERQUISITE) and item.taxable_amount > item.amount:
+        raise PayrollRuleError(
+            f"{item.name}: {item.taxable_amount} taxable is more than the {item.amount} paid"
+        )
+    if item.kind in (
+        InputKind.REIMBURSEMENT,
+        InputKind.DEDUCTION,
+        InputKind.RECOVERY,
+        InputKind.EMPLOYER_CONTRIBUTION,
+    ) and item.taxable_amount != 0:
+        raise PayrollRuleError(f"{item.name}: a {item.kind.value} line carries no taxable income")
+
+
+def _month_figures(
+    salary: EmployeeSalary,
+    prorated: dict[str, Decimal],
+    professional_tax: Decimal,
+    one_off_taxable: Decimal,
+) -> MonthFigures:
+    """This month's pay in the shape the projection reads.
+
+    `*_this_month` is what was actually paid (after loss of pay); `*_full_month`
+    is the materialised monthly amount the later months are projected at.
+    """
+    taxable_now = taxable_full = _ZERO
+    basic_now = basic_full = _ZERO
+    hra_now = hra_full = _ZERO
+    nps_now = nps_full = _ZERO
+
+    for component in salary.components:
+        now = prorated[component.component_code]
+        full = _money(Decimal(str(component.monthly_amount)))
+        if component.component_type is ComponentType.EARNING and component.taxable:
+            taxable_now += now
+            taxable_full += full
+        if component.counts_toward_pf:
+            basic_now += now
+            basic_full += full
+        if component.component_code in _HRA_CODES:
+            hra_now += now
+            hra_full += full
+        if component.component_code in _EMPLOYER_NPS_CODES:
+            nps_now += now
+            nps_full += full
+
+    return MonthFigures(
+        taxable_this_month=taxable_now,
+        taxable_full_month=taxable_full,
+        basic_plus_da_this_month=basic_now,
+        basic_plus_da_full_month=basic_full,
+        hra_this_month=hra_now,
+        hra_full_month=hra_full,
+        employer_nps_this_month=nps_now,
+        employer_nps_full_month=nps_full,
+        professional_tax=professional_tax,
+        one_off_taxable=one_off_taxable,
     )
 
 

@@ -10,6 +10,22 @@ convention:
 Assuming zero silently overpays everyone who had unpaid absence that month, and
 the error is only discovered when someone reconciles the bank file. Blocking is
 recoverable; overpaying is not.
+
+The lifecycle, and who may move it:
+
+    DRAFT ─compute─▶ PENDING_REVIEW ─approve─▶ APPROVED ─mark paid─▶ PAID
+                  ▲        │                       │
+                  └─recompute                  publish (payslips to employees)
+
+- **Compute** refuses an unlocked attendance period and any unapproved rule set.
+  It may be repeated until approval; every repeat replaces the payslips and
+  clears variance acknowledgements, because the numbers they acknowledged moved.
+- **Approve** needs every variance flag acknowledged with a note, no review
+  flags, and a different person from whoever computed it (maker-checker). It is
+  also where input sources — loans, reimbursements, arrears — are marked as
+  consumed, so nothing is paid by two runs.
+- **An approved run is immutable.** It is never recomputed; a correction is an
+  arrears revision paid in a later run.
 """
 
 from __future__ import annotations
@@ -20,12 +36,13 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmployeeWorkLocation, EmploymentStatus
+from app.models.org import LegalEntity
 from app.models.payroll import (
     PayrollRuleSet,
     PayrollRun,
@@ -33,24 +50,71 @@ from app.models.payroll import (
     PayrollRunType,
     Payslip,
 )
+from app.models.tax import TaxRegimeElection, WindowType
 from app.models.user import User
 from app.services import audit
 from app.services.attendance import service as attendance_service
 from app.services.attendance.service import AttendanceLockError
+from app.services.notifications.dispatch import notify
 from app.services.payroll import statutory_service
 from app.services.payroll.engine import PayrollInput, PayrollRuleError, compute_payroll
+from app.services.payroll.inputs import (
+    InputConsumedElsewhereError,
+    RunScope,
+    collect_inputs,
+    consume_inputs,
+)
 from app.services.payroll.service import active_salary_on
 from app.services.payroll.statutory import PtStateResolution, resolve_professional_tax_state
+from app.services.payroll.tds import (
+    PriorPay,
+    TdsContext,
+    financial_year_for,
+    fy_start_month,
+    months_remaining,
+)
+from app.services.tax import service as tax_service
+from app.services.tax.computation import TaxRuleError
 
 # Rule types resolved for every run. Professional Tax and the Labour Welfare
 # Fund are state levies, so they are resolved per employee by their location.
 CENTRAL_RULE_TYPES = ("pf", "esi", "tds")
 STATE_RULE_TYPES = ("professional_tax", "labour_welfare_fund")
 
+# A run in one of these states has been signed off and is history.
+CLOSED_STATUSES = (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID)
+# Statuses a compute may start from.
+COMPUTABLE_STATUSES = (
+    PayrollRunStatus.DRAFT,
+    PayrollRunStatus.PENDING_REVIEW,
+    PayrollRunStatus.FAILED,
+)
+
+_ZERO = Decimal(0)
+_INPUT_CASH_KINDS = ("earning", "reimbursement")
+
 
 def period_bounds(year: int, month: int) -> tuple[date, date]:
     last_day = calendar.monthrange(year, month)[1]
     return date(year, month, 1), date(year, month, last_day)
+
+
+def period_label(year: int, month: int) -> str:
+    return f"{calendar.month_name[month]} {year}"
+
+
+def _not_found() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
+
+
+async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> PayrollRun:
+    """A run in the caller's tenant, or a 404 — never a 403 that confirms it exists."""
+    run = await session.scalar(
+        tenant_scoped(select(PayrollRun).where(PayrollRun.id == run_id), PayrollRun, user)
+    )
+    if run is None:
+        raise _not_found()
+    return run
 
 
 async def _resolve_rule_sets(
@@ -76,13 +140,19 @@ async def _resolve_rule_sets(
     for rule_set in (await session.scalars(stmt)).all():
         if rule_set.rule_type in STATE_RULE_TYPES:
             if rule_set.jurisdiction in jurisdictions:
-                resolved[f"{rule_set.rule_type}:{rule_set.jurisdiction}"] = rule_set
+                key = f"{rule_set.rule_type}:{rule_set.jurisdiction}"
+                existing = resolved.get(key)
+                if existing is None or rule_set.effective_from > existing.effective_from:
+                    resolved[key] = rule_set
         elif rule_set.rule_type in CENTRAL_RULE_TYPES:
             existing = resolved.get(rule_set.rule_type)
             # Latest effective version wins when several are still open.
             if existing is None or rule_set.effective_from > existing.effective_from:
                 resolved[rule_set.rule_type] = rule_set
     return resolved
+
+
+# ── Create ──────────────────────────────────────────────────────────────────
 
 
 async def create_run(
@@ -93,6 +163,7 @@ async def create_run(
     period_year: int,
     period_month: int,
     run_type: PayrollRunType = PayrollRunType.REGULAR,
+    payment_date: date | None = None,
     request: Request | None = None,
 ) -> PayrollRun:
     """Open a draft run for a period.
@@ -100,7 +171,31 @@ async def create_run(
     `effective_date` is fixed here, at the period end, and never re-derived —
     that is what makes a re-run months later produce the identical result.
     """
+    if run_type is not PayrollRunType.REGULAR:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"{run_type.value.replace('_', ' ').title()} runs are not available yet. "
+                "Approved arrears, encashment, reimbursements and scheduled statutory bonus "
+                "are paid inside the next regular run; full and final is settled from "
+                "the exit."
+            ),
+        )
+
+    entity = await session.scalar(
+        tenant_scoped(
+            select(LegalEntity).where(LegalEntity.id == legal_entity_id), LegalEntity, user
+        )
+    )
+    if entity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal entity not found")
+
     start, end = period_bounds(period_year, period_month)
+    if payment_date is not None and payment_date < start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"The payment date {payment_date} is before the period it pays for.",
+        )
 
     existing = await session.scalar(
         tenant_scoped(
@@ -129,6 +224,7 @@ async def create_run(
         period_year=period_year,
         period_month=period_month,
         effective_date=end,
+        payment_date=payment_date,
         run_type=run_type,
         status=PayrollRunStatus.DRAFT,
     )
@@ -142,13 +238,54 @@ async def create_run(
         entity_type="payroll_run",
         entity_id=run.id,
         actor=user,
-        changes={"period": f"{period_month}/{period_year}", "type": run_type.value},
+        changes={
+            "period": f"{period_month}/{period_year}",
+            "type": run_type.value,
+            "legal_entity": entity.name,
+            "payment_date": payment_date.isoformat() if payment_date else None,
+        },
         summary=f"Opened {run_type.value} payroll run for {period_month}/{period_year}",
         request=request,
     )
     await session.commit()
     await session.refresh(run)
     return run
+
+
+async def list_runs(
+    session: AsyncSession,
+    user: User,
+    *,
+    year: int | None = None,
+    run_status: PayrollRunStatus | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> tuple[list[PayrollRun], int]:
+    stmt = tenant_scoped(select(PayrollRun), PayrollRun, user)
+    count_stmt = tenant_scoped(select(func.count(PayrollRun.id)), PayrollRun, user)
+    if year:
+        stmt = stmt.where(PayrollRun.period_year == year)
+        count_stmt = count_stmt.where(PayrollRun.period_year == year)
+    if run_status is not None:
+        stmt = stmt.where(PayrollRun.status == run_status)
+        count_stmt = count_stmt.where(PayrollRun.status == run_status)
+
+    total = int(await session.scalar(count_stmt) or 0)
+    rows = (
+        await session.scalars(
+            stmt.order_by(
+                PayrollRun.period_year.desc(),
+                PayrollRun.period_month.desc(),
+                PayrollRun.created_at.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return list(rows), total
+
+
+# ── Compute ─────────────────────────────────────────────────────────────────
 
 
 async def compute_run(
@@ -164,15 +301,19 @@ async def compute_run(
     Refuses when attendance for the period is not locked. See the module
     docstring for why that is a refusal rather than a warning.
     """
-    run = await session.scalar(
-        tenant_scoped(select(PayrollRun).where(PayrollRun.id == run_id), PayrollRun, user)
-    )
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
-    if run.is_locked:
+    run = await get_run(session, user, run_id)
+    if run.status in CLOSED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This run has been paid and cannot be recomputed. Raise an arrears run.",
+            detail=(
+                f"This run is {run.status.value} and cannot be recomputed. An approved run "
+                "is history; a correction is an arrears revision paid in a later run."
+            ),
+        )
+    if run.status not in COMPUTABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A run in status '{run.status.value}' cannot be computed.",
         )
 
     start, end = period_bounds(run.period_year, run.period_month)
@@ -192,7 +333,8 @@ async def compute_run(
     employees = (
         await session.scalars(
             tenant_scoped(
-                select(Employee).where(
+                select(Employee)
+                .where(
                     Employee.legal_entity_id == run.legal_entity_id,
                     Employee.deleted_at.is_(None),
                     Employee.status.in_(
@@ -202,7 +344,8 @@ async def compute_run(
                             EmploymentStatus.ON_LEAVE,
                         ]
                     ),
-                ),
+                )
+                .order_by(Employee.employee_code),
                 Employee,
                 user,
             )
@@ -224,6 +367,67 @@ async def compute_run(
 
     # Prior cycle payslips, for variance flagging.
     previous = await _previous_net_by_employee(session, user, run)
+
+    # ── Income tax: the rule set, the financial year, what was paid already ─
+    run_flags: list[str] = []
+    tds_rules = rule_sets.get("tds")
+    tds_usable = False
+    start_month = fy_start_month({})
+    if tds_rules is None:
+        run_flags.append(
+            f"No income tax (TDS) rule set is in force on {run.effective_date}, so TDS was "
+            "not computed for anyone on this run. The Compliance SME supplies and approves "
+            "one; then recompute."
+        )
+    elif not tds_rules.is_approved:
+        run_flags.append(
+            f"The income tax (TDS) rule set effective {tds_rules.effective_from} has not "
+            "been approved by a Compliance SME, so TDS was not computed for anyone on this "
+            "run. Approve it under Payroll → Rule sets; then recompute."
+        )
+    else:
+        try:
+            start_month = fy_start_month(tds_rules.rules)
+            tds_usable = True
+        except TaxRuleError as exc:
+            run_flags.append(f"TDS was not computed: {exc}")
+
+    fy_label, fy_start, fy_end = financial_year_for(end, start_month)
+    employee_ids = frozenset(e.id for e in employees)
+    prior_pay, prior_lines = await _prior_financial_year(
+        session, user, run, employee_ids=employee_ids, fy_start=fy_start, fy_end=fy_end
+    )
+
+    collected = await collect_inputs(
+        session,
+        user,
+        RunScope(
+            run=run,
+            period_start=start,
+            period_end=end,
+            period=f"{run.period_year}-{run.period_month:02d}",
+            employee_ids=employee_ids,
+            fy_start=fy_start,
+            fy_end=fy_end,
+            prior_input_lines=prior_lines,
+        ),
+    )
+
+    proof_window = (
+        await tax_service.window_for(session, user, fy_label, WindowType.PROOF)
+        if tds_usable
+        else None
+    )
+    # Before the proof window closes, TDS follows what employees declared;
+    # after it, only what was proved and accepted. That is what spikes March for
+    # anyone who declared and never proved, and it is correct.
+    use_declared = proof_window is None or end <= proof_window.closes_at
+    declaration_basis = (
+        "Declared amounts are used: the proof window has not closed."
+        if use_declared
+        else f"Only proved and accepted amounts are used: the proof window closed on "
+        f"{proof_window.closes_at}."  # type: ignore[union-attr]
+    )
 
     working_days = Decimal((end - start).days + 1)
     payslips: list[Payslip] = []
@@ -285,6 +489,29 @@ async def compute_run(
             session, user, employee_id=employee.id, on_date=start, esi_rules=esi_rules
         )
 
+        tds_context: TdsContext | None = None
+        if tds_usable and tds_rules is not None:
+            try:
+                base = await tax_service.build_projection_input(
+                    session,
+                    user,
+                    employee.id,
+                    fy_label,
+                    use_declared_when_unproven=use_declared,
+                )
+                tds_context = TdsContext(
+                    rules=tds_rules.rules,
+                    rule_set_id=str(tds_rules.id),
+                    financial_year=fy_label,
+                    months_remaining=months_remaining(run.period_month, tds_rules.rules),
+                    base=base,
+                    prior=prior_pay.get(employee.id, PriorPay()),
+                    declaration_basis=declaration_basis,
+                )
+            except TaxRuleError as exc:
+                errors.append(f"{employee.employee_code}: {exc}")
+                continue
+
         try:
             computation = compute_payroll(
                 PayrollInput(
@@ -298,6 +525,9 @@ async def compute_run(
                     esi_contributing_at_period_start=contributing_at_start,
                     designation=employee.designation,
                     state_review=state_review,
+                    inputs=tuple(collected.lines.get(employee.id, [])),
+                    loan_recoveries=tuple(collected.loans.get(employee.id, [])),
+                    tds=tds_context,
                 )
             )
         except PayrollRuleError as exc:
@@ -340,6 +570,9 @@ async def compute_run(
                     }
                     for line in computation.lines
                 ],
+                input_lines=[line.as_dict() for line in computation.input_lines],
+                tds_working=computation.tds_working,
+                is_published=False,
             )
         )
 
@@ -368,15 +601,36 @@ async def compute_run(
                     {
                         "employee_id": str(employee.id),
                         "employee_code": employee.employee_code,
+                        "employee_name": employee.full_name,
                         "previous_net": str(prior),
                         "current_net": str(computation.net_pay),
                         "change_percent": str(change.quantize(Decimal("0.01"))),
+                        "acknowledged": False,
+                        "acknowledged_by_user_id": None,
+                        "acknowledged_at": None,
+                        "note": None,
                     }
                 )
+
+    run.computed_by_user_id = user.id
 
     if errors:
         run.status = PayrollRunStatus.FAILED
         run.error_log = "\n".join(errors)
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="payroll_run",
+            entity_id=run.id,
+            actor=user,
+            changes={"step": "compute", "outcome": "failed", "errors": len(errors)},
+            summary=(
+                f"Payroll for {run.period_month}/{run.period_year} could not compute for "
+                f"{len(errors)} employee(s)"
+            ),
+            request=request,
+        )
         await session.commit()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -410,7 +664,11 @@ async def compute_run(
     run.total_net = sum((p.net_pay for p in payslips), start=Decimal(0))
     run.total_employer_cost = sum((p.employer_cost for p in payslips), start=Decimal(0))
     run.variance_flags = variances
-    run.review_flags = review_flags
+    # Run-level flags go last, so the first flag stays the first employee's.
+    run.review_flags = review_flags + run_flags
+    run.input_notices = [
+        {"kind": "source", **report.as_dict()} for report in collected.reports
+    ] + [{"kind": "notice", **notice} for notice in collected.notices]
     run.rule_set_snapshot = {key: str(value.id) for key, value in rule_sets.items()}
     run.processed_at = datetime.now(UTC)
     run.status = PayrollRunStatus.PENDING_REVIEW
@@ -424,9 +682,12 @@ async def compute_run(
         entity_id=run.id,
         actor=user,
         changes={
+            "step": "compute",
             "employees": len(payslips),
             "total_net": str(run.total_net),
             "variances": len(variances),
+            "review_flags": len(run.review_flags),
+            "input_items": sum(len(p.input_lines) for p in payslips),
         },
         summary=(
             f"Computed payroll for {run.period_month}/{run.period_year}: "
@@ -439,6 +700,80 @@ async def compute_run(
     return run
 
 
+# ── Variances ───────────────────────────────────────────────────────────────
+
+
+async def acknowledge_variance(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    *,
+    note: str,
+    request: Request | None = None,
+) -> PayrollRun:
+    """Record that a flagged swing in someone's net pay was looked at, and why it is right."""
+    run = await get_run(session, user, run_id)
+    if run.status is not PayrollRunStatus.PENDING_REVIEW:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Variances are acknowledged before approval, not on a {run.status.value} run.",
+        )
+    note = note.strip()
+    if not note:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say why this change in net pay is correct.",
+        )
+
+    flags = [dict(flag) for flag in (run.variance_flags or [])]
+    target = next((f for f in flags if f.get("employee_id") == str(employee_id)), None)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This run has no variance flag for that employee.",
+        )
+
+    now = datetime.now(UTC)
+    target.update(
+        {
+            "acknowledged": True,
+            "acknowledged_by_user_id": str(user.id),
+            "acknowledged_at": now.isoformat(),
+            "note": note,
+        }
+    )
+    # A new list, so the JSONB column is seen as changed.
+    run.variance_flags = flags
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="payroll_run",
+        entity_id=run.id,
+        actor=user,
+        changes={
+            "step": "acknowledge_variance",
+            "employee_code": target.get("employee_code"),
+            "previous_net": target.get("previous_net"),
+            "current_net": target.get("current_net"),
+            "note": note,
+        },
+        summary=(
+            f"Acknowledged a {target.get('change_percent')}% net pay change for "
+            f"{target.get('employee_code')}"
+        ),
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+# ── Approve ─────────────────────────────────────────────────────────────────
+
+
 async def approve_run(
     session: AsyncSession,
     user: User,
@@ -449,26 +784,29 @@ async def approve_run(
 ) -> PayrollRun:
     """Sign off a computed run.
 
-    Unacknowledged variance flags block approval. A 20% swing in someone's net
-    pay is either a real change HR knows about or a mistake; either way it
-    should be looked at before money moves.
+    Every variance flag must have been acknowledged individually, with a note
+    (`acknowledge_variance`). A 20% swing in someone's net pay is either a real
+    change HR knows about or a mistake; either way somebody says which before
+    money moves. `acknowledge_variances` is kept for existing callers and does
+    not approve past an unacknowledged flag.
+
+    The person who computed the run cannot approve it.
     """
-    run = await session.scalar(
-        tenant_scoped(select(PayrollRun).where(PayrollRun.id == run_id), PayrollRun, user)
-    )
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
+    run = await get_run(session, user, run_id)
     if run.status is not PayrollRunStatus.PENDING_REVIEW:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"A run in status '{run.status.value}' cannot be approved",
         )
-    if run.variance_flags and not acknowledge_variances:
+
+    unacknowledged = [flag for flag in (run.variance_flags or []) if not flag.get("acknowledged")]
+    if unacknowledged:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"{len(run.variance_flags)} employee(s) have a net pay change beyond the "
-                "review threshold. Review them and approve with acknowledgement."
+                f"{len(unacknowledged)} employee(s) have a net pay change beyond the review "
+                "threshold that nobody has acknowledged. Acknowledge each one with a note "
+                "before approving."
             ),
         )
     if run.review_flags:
@@ -484,28 +822,312 @@ async def approve_run(
                 "Resolve them and recompute — these cannot be acknowledged away."
             ),
         )
+    if run.computed_by_user_id is not None and run.computed_by_user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You computed this run, so somebody else has to approve it. Payroll is "
+                "maker-checker: the person who prepares the numbers does not sign them off."
+            ),
+        )
+
+    payslips = (
+        await session.scalars(
+            tenant_scoped(select(Payslip).where(Payslip.run_id == run.id), Payslip, user)
+        )
+    ).all()
+
+    run_id_value, period = run.id, f"{run.period_month}/{run.period_year}"
+    try:
+        consumed = 0
+        for payslip in payslips:
+            consumed += await consume_inputs(session, user, run, list(payslip.input_lines or []))
+    except InputConsumedElsewhereError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    # The regime election a run used is now locked for the year: a later switch
+    # is still allowed, but it recomputes the whole year (slice 07).
+    financial_years = {
+        (payslip.tds_working or {}).get("financial_year")
+        for payslip in payslips
+        if payslip.tds_working
+    }
+    now = datetime.now(UTC)
+    if financial_years:
+        elections = (
+            await session.scalars(
+                tenant_scoped(
+                    select(TaxRegimeElection).where(
+                        TaxRegimeElection.employee_id.in_([p.employee_id for p in payslips]),
+                        TaxRegimeElection.financial_year.in_(financial_years),
+                        TaxRegimeElection.locked_at.is_(None),
+                    ),
+                    TaxRegimeElection,
+                    user,
+                )
+            )
+        ).all()
+        for election in elections:
+            election.locked_at = now
 
     run.status = PayrollRunStatus.APPROVED
     run.approved_by_user_id = user.id
-    run.approved_at = datetime.now(UTC)
+    run.approved_at = now
 
     await audit.record(
         session,
         tenant_id=user.tenant_id,
         action=AuditAction.APPROVE,
         entity_type="payroll_run",
-        entity_id=run.id,
+        entity_id=run_id_value,
         actor=user,
         changes={
+            "step": "approve",
             "total_net": str(run.total_net),
-            "variances_acknowledged": len(run.variance_flags),
+            "variances_acknowledged": len(run.variance_flags or []),
+            "input_items_consumed": consumed,
         },
-        summary=f"Approved payroll run for {run.period_month}/{run.period_year}",
+        summary=f"Approved payroll run for {period}",
         request=request,
     )
     await session.commit()
     await session.refresh(run)
     return run
+
+
+# ── Publish and pay ─────────────────────────────────────────────────────────
+
+
+async def publish_run(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> PayrollRun:
+    """Release an approved run's payslips to the employees, and tell them."""
+    run = await get_run(session, user, run_id)
+    if run.status not in CLOSED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payslips are published from an approved run only.",
+        )
+    if run.published_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This run's payslips were already published on {run.published_at:%d %b %Y}.",
+        )
+
+    payslips = (
+        await session.scalars(
+            tenant_scoped(select(Payslip).where(Payslip.run_id == run.id), Payslip, user)
+        )
+    ).all()
+    now = datetime.now(UTC)
+    for payslip in payslips:
+        payslip.is_published = True
+        payslip.published_at = now
+    run.published_at = now
+    run.published_by_user_id = user.id
+
+    employee_ids = [p.employee_id for p in payslips]
+    recipients = (
+        list(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(User.id).where(
+                            User.employee_id.in_(employee_ids), User.is_active.is_(True)
+                        ),
+                        User,
+                        user,
+                    )
+                )
+            ).all()
+        )
+        if employee_ids
+        else []
+    )
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="payroll_run",
+        entity_id=run.id,
+        actor=user,
+        changes={"step": "publish", "payslips": len(payslips), "recipients": len(recipients)},
+        summary=(
+            f"Published {len(payslips)} payslip(s) for {run.period_month}/{run.period_year}"
+        ),
+        request=request,
+    )
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key="payroll.payslip.published",
+            recipient_user_ids=recipients,
+            payload={"period": period_label(run.period_year, run.period_month)},
+            commit=False,
+        )
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+async def mark_paid(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    payment_date: date | None = None,
+    request: Request | None = None,
+) -> PayrollRun:
+    """Record that the money moved. A paid run is locked for good."""
+    run = await get_run(session, user, run_id)
+    if run.status is not PayrollRunStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only an approved run can be marked paid; this one is {run.status.value}.",
+        )
+    now = datetime.now(UTC)
+    if payment_date is not None:
+        start, _ = period_bounds(run.period_year, run.period_month)
+        if payment_date < start:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"The payment date {payment_date} is before the period it pays for.",
+            )
+        run.payment_date = payment_date
+    elif run.payment_date is None:
+        run.payment_date = now.date()
+
+    run.status = PayrollRunStatus.PAID
+    run.paid_at = now
+    run.paid_by_user_id = user.id
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="payroll_run",
+        entity_id=run.id,
+        actor=user,
+        changes={
+            "step": "paid",
+            "payment_date": run.payment_date.isoformat() if run.payment_date else None,
+            "total_net": str(run.total_net),
+        },
+        summary=f"Marked payroll for {run.period_month}/{run.period_year} paid",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+async def _prior_financial_year(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    *,
+    employee_ids: frozenset[uuid.UUID],
+    fy_start: date,
+    fy_end: date,
+) -> tuple[dict[uuid.UUID, PriorPay], dict[uuid.UUID, list[dict]]]:
+    """What approved runs earlier in this financial year paid, per employee.
+
+    Earlier *months* only for recurring pay: this month's salary is projected
+    from this computation, so an approved run for the same month is not counted
+    twice. One-off income and TDS count from every approved run in the year.
+    """
+    if not employee_ids:
+        return {}, {}
+
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(Payslip, PayrollRun)
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .where(
+                    Payslip.employee_id.in_(employee_ids),
+                    PayrollRun.id != run.id,
+                    PayrollRun.status.in_(CLOSED_STATUSES),
+                    PayrollRun.effective_date >= fy_start,
+                    PayrollRun.effective_date <= fy_end,
+                ),
+                Payslip,
+                user,
+            )
+        )
+    ).all()
+
+    totals: dict[uuid.UUID, dict[str, Decimal | int]] = {}
+    lines: dict[uuid.UUID, list[dict]] = {}
+    for payslip, prior_run in rows:
+        bucket = totals.setdefault(
+            payslip.employee_id,
+            {
+                "recurring_taxable": _ZERO,
+                "basic_plus_da": _ZERO,
+                "hra": _ZERO,
+                "employer_nps": _ZERO,
+                "professional_tax": _ZERO,
+                "one_off_taxable": _ZERO,
+                "tds_deducted": _ZERO,
+                "months_on_record": 0,
+            },
+        )
+        bucket["tds_deducted"] += Decimal(str(payslip.tds))
+        for line in payslip.input_lines or []:
+            if line.get("skipped"):
+                continue
+            bucket["one_off_taxable"] += Decimal(str(line.get("taxable_amount", "0")))
+        lines.setdefault(payslip.employee_id, []).extend(payslip.input_lines or [])
+
+        is_earlier_month = (prior_run.period_year, prior_run.period_month) < (
+            run.period_year,
+            run.period_month,
+        )
+        if not is_earlier_month:
+            continue
+        working = payslip.tds_working or {}
+        projection = working.get("projection") or {}
+        if "this_month_taxable_pay" in projection:
+            bucket["recurring_taxable"] += Decimal(projection["this_month_taxable_pay"])
+        else:
+            # A payslip from before TDS was wired in: its structure earnings are
+            # the best record of taxable pay that month.
+            bucket["recurring_taxable"] += Decimal(str(payslip.gross_earnings))
+        bucket["basic_plus_da"] += Decimal(str(payslip.pf_wage_base))
+        bucket["professional_tax"] += Decimal(str(payslip.professional_tax))
+        for line in payslip.line_items or []:
+            code = str(line.get("code", ""))
+            if code == "HRA":
+                bucket["hra"] += Decimal(str(line.get("amount", "0")))
+            elif code in ("NPS_ER", "EMPLOYER_NPS"):
+                bucket["employer_nps"] += Decimal(str(line.get("amount", "0")))
+        bucket["months_on_record"] += 1
+
+    prior = {
+        employee_id: PriorPay(
+            recurring_taxable=Decimal(values["recurring_taxable"]),
+            basic_plus_da=Decimal(values["basic_plus_da"]),
+            hra=Decimal(values["hra"]),
+            employer_nps=Decimal(values["employer_nps"]),
+            professional_tax=Decimal(values["professional_tax"]),
+            one_off_taxable=Decimal(values["one_off_taxable"]),
+            tds_deducted=Decimal(values["tds_deducted"]),
+            months_on_record=int(values["months_on_record"]),
+        )
+        for employee_id, values in totals.items()
+    }
+    return prior, lines
 
 
 async def _professional_tax_state(
@@ -608,3 +1230,15 @@ async def _previous_net_by_employee(
         )
     ).all()
     return {p.employee_id: Decimal(str(p.net_pay)) for p in payslips}
+
+
+def other_earnings_of(payslip: Payslip) -> Decimal:
+    """Cash from input lines: what sits between gross earnings and net pay."""
+    return sum(
+        (
+            Decimal(str(line.get("amount", "0")))
+            for line in (payslip.input_lines or [])
+            if line.get("kind") in _INPUT_CASH_KINDS and not line.get("skipped")
+        ),
+        start=_ZERO,
+    )

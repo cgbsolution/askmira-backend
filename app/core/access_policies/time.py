@@ -37,8 +37,17 @@ ENDPOINTS: dict[str, str] = {
         "permissions: everybody sees who is out on approved leave; the leave type and "
         "pending requests only for self, the reporting line and HR."
     ),
-    "POST /attendance/punch": "permissions: your own punch unless HR.",
+    "POST /attendance/punch": (
+        "permissions: your own punch unless HR; a punch you record for yourself is "
+        "timestamped by the server and cannot claim a device source."
+    ),
+    "GET /attendance/punches": "permissions: your own punches unless HR.",
     "GET /attendance/day": "permissions: your own attendance unless HR.",
+    "GET /attendance/period": "permissions: your own attendance period unless HR.",
     "POST /attendance/regularisation": "permissions: your own regularisation unless HR.",
+    "GET /attendance/regularisations": "permissions: your own regularisations unless HR.",
+    "POST /attendance/regularisations/{regularisation_id}/cancel": (
+        "permissions: only the person the regularisation is about may withdraw it."
+    ),
     "GET /attendance/locks": "reference: which payroll periods are locked.",
 }

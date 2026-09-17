@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
+from app.models.appraisal import Appraisal
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.performance_flow import (
@@ -63,6 +64,7 @@ from app.models.performance_flow import (
     OverageModeEnum,
     Pip,
     PipCheckIn,
+    PipEmployeeStatement,
     PipMilestone,
     PipStatusEnum,
     PromotionRecord,
@@ -71,6 +73,7 @@ from app.models.performance_flow import (
 from app.models.user import User
 from app.services import audit
 from app.services.performance import increments as inc_engine
+from app.services.performance import notices
 from app.services.performance import pip as pip_engine
 from app.services.performance import promotion as promo_engine
 
@@ -123,8 +126,53 @@ async def open_pip(
     """Open a plan, refusing the shapes that cannot be defended later.
 
     Every refusal here is a thing employment counsel would ask about first: no
-    written expectations, no support recorded, no measurable milestone.
+    written expectations, no support recorded, no measurable milestone. Opened
+    by the employee's line or HR, never by the person themselves.
     """
+    employee = (
+        await session.execute(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+    ).scalar_one_or_none()
+    if employee is None:
+        raise _not_found("No such employee in this tenant.")
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        employee_id,
+        detail="Improvement plans are opened by the employee's manager or HR.",
+    )
+    if appraisal_id is not None:
+        linked = (
+            await session.execute(
+                tenant_scoped(
+                    select(Appraisal.employee_id).where(Appraisal.id == appraisal_id),
+                    Appraisal,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if linked != employee_id:
+            raise _bad_request("That review is not this employee's.")
+    open_already = (
+        await session.execute(
+            tenant_scoped(
+                select(Pip.id).where(
+                    Pip.employee_id == employee_id,
+                    Pip.status.in_(
+                        [PipStatusEnum.DRAFT, PipStatusEnum.ACTIVE, PipStatusEnum.EXTENDED]
+                    ),
+                ),
+                Pip,
+                user,
+            )
+        )
+    ).first()
+    if open_already is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This employee already has an open improvement plan.",
+        )
     try:
         pip_engine.PipFacts(
             pip_id="pending",
@@ -195,6 +243,14 @@ async def open_pip(
         ),
         request=request,
     )
+    recipients = await notices.user_ids_for_employees(session, user, [employee_id])
+    await notices.send(
+        session,
+        tenant_id=user.tenant_id,
+        event_key="performance.pip.opened",
+        recipient_user_ids=recipients.values(),
+        payload={"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
+    )
     await session.commit()
     await session.refresh(row)
     return row
@@ -221,9 +277,7 @@ async def record_check_in(
     and its evidential value is close to zero.
     """
     plan = (
-        await session.execute(
-            tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user)
-        )
+        await session.execute(tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user))
     ).scalar_one_or_none()
     if plan is None:
         raise _not_found("No such PIP in this tenant.")
@@ -245,9 +299,7 @@ async def record_check_in(
             held_on=held_on,
             manager_comments=manager_comments,
             employee_comments=employee_comments,
-            employee_input_state=pip_engine.EmployeeInputState(
-                employee_input_state.value
-            ),
+            employee_input_state=pip_engine.EmployeeInputState(employee_input_state.value),
             decline_reason=decline_reason,
         )
     except pip_engine.PipError as exc:
@@ -265,9 +317,7 @@ async def record_check_in(
         decline_reason=decline_reason or None,
         recorded_by_user_id=user.id,
         employee_comment_at=(
-            datetime.now(UTC)
-            if employee_input_state is EmployeeInputStateEnum.GIVEN
-            else None
+            datetime.now(UTC) if employee_input_state is EmployeeInputStateEnum.GIVEN else None
         ),
     )
     session.add(row)
@@ -279,8 +329,7 @@ async def record_check_in(
         entity_id=row.id,
         actor=user,
         summary=(
-            f"PIP check-in held {held_on.isoformat()}; employee input "
-            f"{employee_input_state.value}."
+            f"PIP check-in held {held_on.isoformat()}; employee input {employee_input_state.value}."
         ),
         request=request,
     )
@@ -289,9 +338,7 @@ async def record_check_in(
     return row
 
 
-async def _engine_pip(
-    session: AsyncSession, user: User, row: Pip
-) -> pip_engine.PipFacts:
+async def _engine_pip(session: AsyncSession, user: User, row: Pip) -> pip_engine.PipFacts:
     milestones = list(
         (
             await session.execute(
@@ -346,9 +393,7 @@ async def _engine_pip(
                 held_on=c.held_on,
                 manager_comments=c.manager_comments or "",
                 employee_comments=c.employee_comments or "",
-                employee_input_state=pip_engine.EmployeeInputState(
-                    c.employee_input_state.value
-                ),
+                employee_input_state=pip_engine.EmployeeInputState(c.employee_input_state.value),
                 decline_reason=c.decline_reason or "",
                 milestone_id=str(c.milestone_id) if c.milestone_id else "",
             )
@@ -376,9 +421,7 @@ async def close_pip(
     the trail looked like when somebody decided.
     """
     row = (
-        await session.execute(
-            tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user)
-        )
+        await session.execute(tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user))
     ).scalar_one_or_none()
     if row is None:
         raise _not_found("No such PIP in this tenant.")
@@ -402,9 +445,7 @@ async def close_pip(
     row.outcome_reason = reason or None
     row.outcome_recorded_on = today
     row.trail_gaps_at_outcome = list(result.trail.gaps)
-    row.weak_trail_acknowledged = (
-        acknowledge_weak_trail and not result.trail.is_defensible
-    )
+    row.weak_trail_acknowledged = acknowledge_weak_trail and not result.trail.is_defensible
     if result.new_end_date is not None:
         row.extensions = [
             *list(row.extensions or []),
@@ -437,17 +478,33 @@ async def evidence_pack(
 ) -> dict[str, Any]:
     """Everything an employment adviser would ask for, in one payload."""
     row = (
-        await session.execute(
-            tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user)
-        )
+        await session.execute(tenant_scoped(select(Pip).where(Pip.id == pip_id), Pip, user))
     ).scalar_one_or_none()
     if row is None:
         raise _not_found("No such PIP in this tenant.")
-    pack = pip_engine.evidence_pack(
-        await _engine_pip(session, user, row), today=today
-    )
+    pack = pip_engine.evidence_pack(await _engine_pip(session, user, row), today=today)
     pack["weak_trail_acknowledged"] = row.weak_trail_acknowledged
     pack["trail_gaps_at_outcome"] = list(row.trail_gaps_at_outcome or [])
+    statements = (
+        await session.execute(
+            tenant_scoped(
+                select(PipEmployeeStatement)
+                .where(PipEmployeeStatement.pip_id == row.id)
+                .order_by(PipEmployeeStatement.recorded_at),
+                PipEmployeeStatement,
+                user,
+            )
+        )
+    ).scalars()
+    # The employee's own words, reproduced verbatim with when they wrote them.
+    pack["employee_statements"] = [
+        {
+            "statement": s.statement,
+            "recorded_at": s.recorded_at.isoformat(),
+            "check_in_id": str(s.check_in_id) if s.check_in_id else None,
+        }
+        for s in statements
+    ]
     return pack
 
 
@@ -481,9 +538,7 @@ async def create_increment_cycle(
         name=name,
         effective_from=effective_from,
         budget_total=_d(budget_total),
-        budget_by_department={
-            str(k): str(v) for k, v in (budget_by_department or {}).items()
-        },
+        budget_by_department={str(k): str(v) for k, v in (budget_by_department or {}).items()},
         status=IncrementCycleStatusEnum.OPEN,
         overage_mode=overage_mode,
         letter_release_on=letter_release_on,
@@ -539,9 +594,7 @@ async def _bands(
         (
             await session.execute(
                 tenant_scoped(
-                    select(IncrementMatrixRow).where(
-                        IncrementMatrixRow.cycle_id == cycle_id
-                    ),
+                    select(IncrementMatrixRow).where(IncrementMatrixRow.cycle_id == cycle_id),
                     IncrementMatrixRow,
                     user,
                 )
@@ -576,9 +629,7 @@ async def _consumed(
     stmt = tenant_scoped(
         select(IncrementRecommendation)
         .where(IncrementRecommendation.cycle_id == cycle_id)
-        .where(
-            IncrementRecommendation.status != RecommendationStatusEnum.REJECTED
-        ),
+        .where(IncrementRecommendation.status != RecommendationStatusEnum.REJECTED),
         IncrementRecommendation,
         user,
     )
@@ -623,13 +674,9 @@ async def budget_view(
     if cycle is None:
         raise _not_found("No such increment cycle in this tenant.")
 
-    total_used, dept_used = await _consumed(
-        session, user, cycle_id, department_id=department_id
-    )
+    total_used, dept_used = await _consumed(session, user, cycle_id, department_id=department_id)
     dept_budget = _d(
-        (cycle.budget_by_department or {}).get(str(department_id), 0)
-        if department_id
-        else 0
+        (cycle.budget_by_department or {}).get(str(department_id), 0) if department_id else 0
     )
     return inc_engine.headroom(
         department_allocated=dept_budget,
@@ -647,8 +694,8 @@ async def recommend_increment(
     *,
     cycle_id: uuid.UUID,
     employee_id: uuid.UUID,
-    rating_label: str,
-    current_ctc: Decimal,
+    rating_label: str | None,
+    current_ctc: Decimal | None,
     percentage: Decimal,
     justification: str | None = None,
     promotion_to_grade: str | None = None,
@@ -660,7 +707,46 @@ async def recommend_increment(
     Both are returned rather than left to a second call: the manager is choosing
     the number now, and a parity comparison that arrives in a report next March
     cannot change it.
+
+    The current CTC comes from the open salary assignment and the rating from
+    the linked review, not from the caller. Only HR may supply a CTC, and only
+    for somebody with no salary assignment.
     """
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        employee_id,
+        detail="Increments are recommended by the employee's manager or HR.",
+    )
+    from app.models.payroll import EmployeeSalary
+
+    assigned = (
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(EmployeeSalary.ctc_annual)
+                    .where(EmployeeSalary.employee_id == employee_id)
+                    .where(EmployeeSalary.effective_to.is_(None))
+                    .order_by(EmployeeSalary.effective_from.desc()),
+                    EmployeeSalary,
+                    user,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if assigned is not None:
+        current_ctc = _d(assigned)
+    elif current_ctc is None:
+        raise _bad_request(
+            "This employee has no salary assignment, so there is no current CTC to "
+            "increment. Assign a salary first."
+        )
+    elif not permissions.is_hr(user):
+        raise permissions.forbidden(
+            "This employee has no salary assignment. Only HR can enter a current CTC by hand."
+        )
     cycle = (
         await session.execute(
             tenant_scoped(
@@ -680,13 +766,34 @@ async def recommend_increment(
 
     employee = (
         await session.execute(
-            tenant_scoped(
-                select(Employee).where(Employee.id == employee_id), Employee, user
-            )
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
         )
     ).scalar_one_or_none()
     if employee is None:
         raise _not_found("No such employee in this tenant.")
+
+    if cycle.linked_appraisal_cycle_id is not None:
+        reviewed = (
+            await session.execute(
+                tenant_scoped(
+                    select(Appraisal.final_rating).where(
+                        Appraisal.cycle_id == cycle.linked_appraisal_cycle_id,
+                        Appraisal.employee_id == employee_id,
+                    ),
+                    Appraisal,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if reviewed:
+            if rating_label and rating_label != reviewed:
+                raise _bad_request(
+                    f"This person's review rating is '{reviewed}', not '{rating_label}'. The "
+                    "rating drives the band; change it through calibration, not here."
+                )
+            rating_label = reviewed
+    if not rating_label:
+        raise _bad_request("There is no rating to recommend against yet.")
 
     try:
         proposal = inc_engine.recommend(
@@ -711,9 +818,7 @@ async def recommend_increment(
         department_id=employee.department_id,
         exclude_employee_id=employee_id,
     )
-    dept_budget = _d(
-        (cycle.budget_by_department or {}).get(str(employee.department_id), 0)
-    )
+    dept_budget = _d((cycle.budget_by_department or {}).get(str(employee.department_id), 0))
     budget = inc_engine.consume(
         increase=increase,
         department_allocated=dept_budget,
@@ -724,9 +829,7 @@ async def recommend_increment(
         mode=inc_engine.OverageMode(cycle.overage_mode.value),
     )
     if not budget.permitted:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=budget.message
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=budget.message)
 
     peers = list(
         (
@@ -832,7 +935,20 @@ async def recommend_increment(
         "recommendation_id": str(row.id),
         "proposal": proposal.as_dict(),
         "budget": budget.as_dict(),
-        "equity": equity,
+        # A manager is not shown the peer minimum or maximum: in a group of
+        # five, each is one identifiable person's pay.
+        "equity": (
+            equity
+            if permissions.is_hr(user)
+            else {
+                **equity,
+                "parity": (
+                    {k: v for k, v in equity["parity"].items() if k not in ("peer_min", "peer_max")}
+                    if isinstance(equity.get("parity"), dict)
+                    else equity.get("parity")
+                ),
+            }
+        ),
         "status": row.status.value,
     }
 
@@ -864,12 +980,10 @@ async def decide_recommendation(
         RecommendationStatusEnum.ESCALATED,
     ):
         raise _bad_request(f"This recommendation is {row.status.value}.")
+    if row.employee_id == user.employee_id:
+        raise permissions.forbidden("You cannot decide an increment for yourself.")
 
-    row.status = (
-        RecommendationStatusEnum.APPROVED
-        if approve
-        else RecommendationStatusEnum.REJECTED
-    )
+    row.status = RecommendationStatusEnum.APPROVED if approve else RecommendationStatusEnum.REJECTED
     row.approvals = [
         *list(row.approvals or []),
         {
@@ -996,16 +1110,20 @@ async def apply_promotion(
     from app.models.payroll import EmployeeSalary
 
     current_salary = (
-        await session.execute(
-            tenant_scoped(
-                select(EmployeeSalary)
-                .where(EmployeeSalary.employee_id == employee.id)
-                .where(EmployeeSalary.effective_to.is_(None)),
-                EmployeeSalary,
-                user,
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(EmployeeSalary)
+                    .where(EmployeeSalary.employee_id == employee.id)
+                    .where(EmployeeSalary.effective_to.is_(None)),
+                    EmployeeSalary,
+                    user,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if current_salary is None:
         raise _bad_request(
             "This employee has no current salary assignment, so a promotion has "
@@ -1109,9 +1227,7 @@ async def apply_promotion(
         "promotion_record_id": str(record.id),
         "lifecycle_event_id": str(event.id),
         "plan": plan.as_dict(),
-        "arrears": promo_engine.arrears_window(
-            effective_from=effective_from, today=today
-        ),
+        "arrears": promo_engine.arrears_window(effective_from=effective_from, today=today),
         "effected": effected,
         "note": (
             "Applied through the lifecycle cascade, which is one savepoint: "
@@ -1177,16 +1293,11 @@ async def release_letters(
             )
         ).scalars()
     )
-    approved = [
-        str(r.employee_id)
-        for r in rows
-        if r.status is RecommendationStatusEnum.APPROVED
-    ]
+    approved = [str(r.employee_id) for r in rows if r.status is RecommendationStatusEnum.APPROVED]
     pending = [
         str(r.employee_id)
         for r in rows
-        if r.status
-        in (RecommendationStatusEnum.SUBMITTED, RecommendationStatusEnum.ESCALATED)
+        if r.status in (RecommendationStatusEnum.SUBMITTED, RecommendationStatusEnum.ESCALATED)
     ]
 
     decision = promo_engine.release_plan(

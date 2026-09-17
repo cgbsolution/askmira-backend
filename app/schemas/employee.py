@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.employee import EmploymentStatus, EmploymentType, Gender
 
@@ -38,8 +38,19 @@ class EmployeeBase(BaseModel):
 class EmployeeCreate(EmployeeBase):
     """`tenant_id` is deliberately absent — it comes from the caller's token."""
 
-    employee_code: str = Field(min_length=1, max_length=32)
+    employee_code: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_\-/]+$")
+    status: EmploymentStatus = EmploymentStatus.ACTIVE
     custom_fields: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _dates_in_order(self) -> EmployeeCreate:
+        if (
+            self.date_of_joining
+            and self.probation_end_date
+            and self.probation_end_date < self.date_of_joining
+        ):
+            raise ValueError("Probation cannot end before the date of joining")
+        return self
 
 
 class EmployeeUpdate(BaseModel):
@@ -48,11 +59,11 @@ class EmployeeUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     first_name: str | None = Field(default=None, min_length=1, max_length=128)
-    last_name: str | None = None
-    display_name: str | None = None
+    last_name: str | None = Field(default=None, max_length=128)
+    display_name: str | None = Field(default=None, max_length=255)
     work_email: EmailStr | None = None
     personal_email: EmailStr | None = None
-    phone: str | None = None
+    phone: str | None = Field(default=None, max_length=32)
     date_of_birth: date | None = None
     gender: Gender | None = None
 
@@ -61,14 +72,14 @@ class EmployeeUpdate(BaseModel):
     department_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
 
-    designation: str | None = None
-    grade: str | None = None
+    designation: str | None = Field(default=None, max_length=255)
+    grade: str | None = Field(default=None, max_length=32)
     employment_type: EmploymentType | None = None
     status: EmploymentStatus | None = None
     date_of_joining: date | None = None
     date_of_exit: date | None = None
     probation_end_date: date | None = None
-    notice_period_days: int | None = None
+    notice_period_days: int | None = Field(default=None, ge=0, le=365)
 
     custom_fields: dict[str, Any] | None = None
 
@@ -78,15 +89,16 @@ class EmployeeSelfUpdate(BaseModel):
 
     Salary, grade, status and reporting line are absent on purpose: those stay
     read-only in self-service, and an edit that needs approval becomes a task
-    for HR rather than a direct write.
+    for HR rather than a direct write. A photo URL is absent too: a free-form
+    URL rendered on every colleague's screen is a tracking pixel waiting to
+    happen, and photos belong in managed storage.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    display_name: str | None = None
+    display_name: str | None = Field(default=None, max_length=255)
     personal_email: EmailStr | None = None
-    phone: str | None = None
-    photo_url: str | None = None
+    phone: str | None = Field(default=None, max_length=32, pattern=r"^[0-9+\-() ]*$")
 
 
 class EmployeeRead(EmployeeBase):
@@ -117,6 +129,7 @@ class EmployeeSummary(BaseModel):
     work_email: EmailStr
     designation: str | None
     department_id: uuid.UUID | None
+    location_id: uuid.UUID | None
     manager_id: uuid.UUID | None
     photo_url: str | None
     status: EmploymentStatus

@@ -107,6 +107,42 @@ async def _appraisal_for(
     return appraisal
 
 
+async def _subject(session: AsyncSession, appraisal: Appraisal) -> User:
+    """The login of the person the appraisal is about, created on first use.
+
+    The self review and the acknowledgement are theirs alone, so the tests act
+    as them for those steps.
+    """
+    employee = await session.get(Employee, appraisal.employee_id)
+    assert employee is not None
+    found = await session.scalar(select(User).where(User.employee_id == employee.id))
+    if found is not None:
+        return found
+    person = User(
+        tenant_id=employee.tenant_id,
+        email=f"{employee.employee_code.lower()}@people.acme.test",
+        password_hash="not-a-real-hash",
+        full_name=employee.full_name,
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
+    )
+    session.add(person)
+    await session.commit()
+    await session.refresh(person)
+    return person
+
+
+async def _advance(session: AsyncSession, hr_user: User, *, appraisal_id, **kwargs):
+    """Submit the current step as whoever owns it: the person for the self
+    review, HR (stepping in for the line) for the rest."""
+    appraisal = await session.get(Appraisal, appraisal_id)
+    assert appraisal is not None
+    stage = await session.get(AppraisalStage, appraisal.current_stage_id)
+    actor = await _subject(session, appraisal) if stage.role is StageRole.SELF else hr_user
+    return await appraisal_service.submit_stage(session, actor, appraisal_id=appraisal_id, **kwargs)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Launch and eligibility
 # ═══════════════════════════════════════════════════════════════════════════
@@ -129,7 +165,7 @@ async def test_a_launch_creates_an_appraisal_for_every_eligible_employee(
 async def test_exclusions_are_reported_with_a_reason(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
-    """"Why is Anita not in this cycle" is asked on every launch."""
+    """ "Why is Anita not in this cycle" is asked on every launch."""
     employee.grade = "L3"
     await session.commit()
 
@@ -194,8 +230,11 @@ async def test_a_cycle_with_no_stages_cannot_launch(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name="Empty", cycle_type=CycleType.OFF_CYCLE,
-        period_start=date(2026, 4, 1), period_end=date(2027, 3, 31),
+        tenant_id=tenant.id,
+        name="Empty",
+        cycle_type=CycleType.OFF_CYCLE,
+        period_start=date(2026, 4, 1),
+        period_end=date(2027, 3, 31),
     )
     session.add(cycle)
     await session.commit()
@@ -217,14 +256,20 @@ async def test_stages_advance_in_sequence_and_skip_the_optional_one(
     appraisal = await _appraisal_for(session, cycle, employee)
     stages = await _stages(session, cycle)
 
-    await appraisal_service.submit_stage(
-        session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 4},
+    await _advance(
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        ratings={"overall": 4},
     )
     await session.commit()
     assert appraisal.current_stage_id == stages[1].id
 
-    await appraisal_service.submit_stage(
-        session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 4},
+    await _advance(
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        ratings={"overall": 4},
     )
     await session.commit()
     assert appraisal.current_stage_id == stages[3].id, "the optional reviewer is skipped"
@@ -237,7 +282,7 @@ async def test_the_chain_completes_after_the_last_stage(
     appraisal = await _appraisal_for(session, cycle, employee)
 
     for _ in range(3):
-        await appraisal_service.submit_stage(
+        await _advance(
             session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 4}, score=4.0
         )
         await session.commit()
@@ -264,13 +309,19 @@ async def test_a_return_moves_back_and_leaves_both_entries_in_the_history(
     appraisal = await _appraisal_for(session, cycle, employee)
     stages = await _stages(session, cycle)
 
-    await appraisal_service.submit_stage(
-        session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 3},
+    await _advance(
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        ratings={"overall": 3},
     )
     await session.commit()
 
     await appraisal_service.return_stage(
-        session, hr_user, appraisal_id=appraisal.id, target_stage_id=stages[0].id,
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        target_stage_id=stages[0].id,
         reason="Please add specific examples against the delivery goal.",
     )
     await session.commit()
@@ -299,15 +350,21 @@ async def test_a_return_without_a_reason_is_refused(
     appraisal = await _appraisal_for(session, cycle, employee)
     stages = await _stages(session, cycle)
 
-    await appraisal_service.submit_stage(
-        session, hr_user, appraisal_id=appraisal.id, ratings={},
+    await _advance(
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        ratings={},
     )
     await session.commit()
 
     with pytest.raises(HTTPException) as exc:
         await appraisal_service.return_stage(
-            session, hr_user, appraisal_id=appraisal.id,
-            target_stage_id=stages[0].id, reason="  ",
+            session,
+            hr_user,
+            appraisal_id=appraisal.id,
+            target_stage_id=stages[0].id,
+            reason="  ",
         )
     assert "needs a reason" in exc.value.detail
 
@@ -318,13 +375,65 @@ async def test_returning_forwards_is_refused(
     cycle, _ = await _launched(session, tenant, hr_user)
     appraisal = await _appraisal_for(session, cycle, employee)
     stages = await _stages(session, cycle)
+    await _advance(session, hr_user, appraisal_id=appraisal.id, ratings={})
+    await session.commit()
 
     with pytest.raises(HTTPException) as exc:
         await appraisal_service.return_stage(
-            session, hr_user, appraisal_id=appraisal.id,
-            target_stage_id=stages[2].id, reason="Skip ahead.",
+            session,
+            hr_user,
+            appraisal_id=appraisal.id,
+            target_stage_id=stages[2].id,
+            reason="Skip ahead.",
         )
     assert "goes backwards" in exc.value.detail
+
+
+async def test_the_person_cannot_send_their_own_review_back(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    cycle, _ = await _launched(session, tenant, hr_user)
+    appraisal = await _appraisal_for(session, cycle, employee)
+    stages = await _stages(session, cycle)
+    await _advance(session, hr_user, appraisal_id=appraisal.id, ratings={})
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await appraisal_service.return_stage(
+            session,
+            await _subject(session, appraisal),
+            appraisal_id=appraisal.id,
+            target_stage_id=stages[0].id,
+            reason="I want to redo it.",
+        )
+    assert exc.value.status_code == 403
+
+
+async def test_hr_cannot_write_somebodys_self_review(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    cycle, _ = await _launched(session, tenant, hr_user)
+    appraisal = await _appraisal_for(session, cycle, employee)
+    with pytest.raises(HTTPException) as exc:
+        await appraisal_service.submit_stage(
+            session, hr_user, appraisal_id=appraisal.id, ratings={}
+        )
+    assert exc.value.status_code == 403
+
+
+async def test_hr_cannot_acknowledge_for_somebody(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    _, appraisal = await _completed(session, tenant, hr_user, employee)
+    await appraisal_service.release(session, hr_user, appraisal_id=appraisal.id)
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await appraisal_service.acknowledge(
+            session,
+            hr_user,
+            appraisal_id=appraisal.id,
+            acknowledgement=AcknowledgementType.AGREED,
+        )
+    assert exc.value.status_code == 403
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -337,14 +446,16 @@ async def test_a_delegated_entry_names_both_the_delegate_and_the_original(
 ) -> None:
     """The checklist gate.
 
-    "Why did someone outside my reporting line rate me" has to be answerable.
+    "Why did someone outside my reporting line rate me" has to be answerable:
+    the delegate is the actor, the person who delegated is on the entry.
     """
-    from app.core.security import hash_password
-
     cover = User(
-        tenant_id=tenant.id, email="cover@acme.test",
-        password_hash=hash_password("Str0ng!Passw0rd"), full_name="Priya Cover",
-        role=UserRole.MANAGER, is_active=True,
+        tenant_id=tenant.id,
+        email="cover@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Priya Cover",
+        role=UserRole.MANAGER,
+        is_active=True,
     )
     session.add(cover)
     await session.flush()
@@ -352,30 +463,63 @@ async def test_a_delegated_entry_names_both_the_delegate_and_the_original(
     cycle, _ = await _launched(session, tenant, hr_user)
     session.add(
         StageDelegation(
-            tenant_id=tenant.id, cycle_id=cycle.id,
-            from_user_id=hr_user.id, to_user_id=cover.id,
-            effective_from=date.today(), effective_to=date(2099, 12, 31),
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            from_user_id=hr_user.id,
+            to_user_id=cover.id,
+            effective_from=date.today(),
+            effective_to=date(2099, 12, 31),
             reason="On leave for three weeks.",
         )
     )
     await session.commit()
 
     appraisal = await _appraisal_for(session, cycle, employee)
+    await _advance(session, hr_user, appraisal_id=appraisal.id, ratings={})
+    await session.commit()
     await appraisal_service.submit_stage(
-        session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 4},
+        session,
+        cover,
+        appraisal_id=appraisal.id,
+        ratings={"overall": 4},
     )
     await session.commit()
 
+    stages = await _stages(session, cycle)
     entry = await session.scalar(
         select(AppraisalStageEntry).where(
-            AppraisalStageEntry.appraisal_id == appraisal.id
+            AppraisalStageEntry.appraisal_id == appraisal.id,
+            AppraisalStageEntry.stage_id == stages[1].id,
         )
     )
     assert entry is not None
-    assert entry.actor_user_id == hr_user.id
-    assert entry.delegated_from_user_id == cover.id, (
-        "the delegation is recorded on the entry"
+    assert entry.actor_user_id == cover.id
+    assert entry.delegated_from_user_id == hr_user.id, "the original owner is recorded"
+    assert entry.is_escalated is False
+
+
+async def test_a_manager_without_a_delegation_cannot_act(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    stranger = User(
+        tenant_id=tenant.id,
+        email="stranger@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Not The Manager",
+        role=UserRole.MANAGER,
+        is_active=True,
     )
+    session.add(stranger)
+    await session.commit()
+    cycle, _ = await _launched(session, tenant, hr_user)
+    appraisal = await _appraisal_for(session, cycle, employee)
+    await _advance(session, hr_user, appraisal_id=appraisal.id, ratings={})
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await appraisal_service.submit_stage(
+            session, stranger, appraisal_id=appraisal.id, ratings={}
+        )
+    assert exc.value.status_code == 403
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -387,7 +531,7 @@ async def _completed(session, tenant, hr_user, employee):
     cycle, _ = await _launched(session, tenant, hr_user)
     appraisal = await _appraisal_for(session, cycle, employee)
     for _ in range(3):
-        await appraisal_service.submit_stage(
+        await _advance(
             session, hr_user, appraisal_id=appraisal.id, ratings={"overall": 4}, score=4.0
         )
     await session.commit()
@@ -409,7 +553,9 @@ async def test_an_employee_closes_the_cycle_while_disagreeing(
     await session.commit()
 
     result = await appraisal_service.acknowledge(
-        session, hr_user, appraisal_id=appraisal.id,
+        session,
+        await _subject(session, appraisal),
+        appraisal_id=appraisal.id,
         acknowledgement=AcknowledgementType.DISAGREED,
         objection="The delivery goal was reassigned in October and is not mine.",
     )
@@ -431,7 +577,9 @@ async def test_disagreeing_without_an_objection_is_refused(
 
     with pytest.raises(HTTPException) as exc:
         await appraisal_service.acknowledge(
-            session, hr_user, appraisal_id=appraisal.id,
+            session,
+            await _subject(session, appraisal),
+            appraisal_id=appraisal.id,
             acknowledgement=AcknowledgementType.DISAGREED,
         )
     assert "written objection" in exc.value.detail
@@ -443,7 +591,9 @@ async def test_agreeing_needs_no_objection(
     _, appraisal = await _completed(session, tenant, hr_user, employee)
     await appraisal_service.release(session, hr_user, appraisal_id=appraisal.id)
     result = await appraisal_service.acknowledge(
-        session, hr_user, appraisal_id=appraisal.id,
+        session,
+        await _subject(session, appraisal),
+        appraisal_id=appraisal.id,
         acknowledgement=AcknowledgementType.AGREED,
     )
     await session.commit()
@@ -457,7 +607,9 @@ async def test_an_unreleased_appraisal_cannot_be_acknowledged(
     _, appraisal = await _completed(session, tenant, hr_user, employee)
     with pytest.raises(HTTPException) as exc:
         await appraisal_service.acknowledge(
-            session, hr_user, appraisal_id=appraisal.id,
+            session,
+            await _subject(session, appraisal),
+            appraisal_id=appraisal.id,
             acknowledgement=AcknowledgementType.AGREED,
         )
     assert "nothing released to acknowledge" in exc.value.detail
@@ -487,7 +639,9 @@ async def test_reopening_with_downstream_impact_warns_before_proceeding(
 
     with pytest.raises(HTTPException) as exc:
         await appraisal_service.reopen(
-            session, hr_user, appraisal_id=appraisal.id,
+            session,
+            hr_user,
+            appraisal_id=appraisal.id,
             reason="The reviewer stage was skipped in error.",
             downstream_impact=impact,
         )
@@ -496,7 +650,9 @@ async def test_reopening_with_downstream_impact_warns_before_proceeding(
     assert exc.value.detail["downstream_impact"] == impact
 
     reopened = await appraisal_service.reopen(
-        session, hr_user, appraisal_id=appraisal.id,
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
         reason="The reviewer stage was skipped in error.",
         downstream_impact=impact,
         acknowledge_impact=True,
@@ -513,20 +669,24 @@ async def test_a_second_reopen_does_not_erase_the_first_impact(
 ) -> None:
     _, appraisal = await _completed(session, tenant, hr_user, employee)
     await appraisal_service.reopen(
-        session, hr_user, appraisal_id=appraisal.id, reason="First.",
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        reason="First.",
         downstream_impact=[{"type": "increment", "reference": "A"}],
         acknowledge_impact=True,
     )
     await session.commit()
 
     for _ in range(3):
-        await appraisal_service.submit_stage(
-            session, hr_user, appraisal_id=appraisal.id, ratings={}, score=3.0
-        )
+        await _advance(session, hr_user, appraisal_id=appraisal.id, ratings={}, score=3.0)
     await session.commit()
 
     await appraisal_service.reopen(
-        session, hr_user, appraisal_id=appraisal.id, reason="Second.",
+        session,
+        hr_user,
+        appraisal_id=appraisal.id,
+        reason="Second.",
         downstream_impact=[{"type": "bonus", "reference": "B"}],
         acknowledge_impact=True,
     )
@@ -542,9 +702,7 @@ async def test_reopening_without_a_reason_is_refused(
 ) -> None:
     _, appraisal = await _completed(session, tenant, hr_user, employee)
     with pytest.raises(HTTPException) as exc:
-        await appraisal_service.reopen(
-            session, hr_user, appraisal_id=appraisal.id, reason="  "
-        )
+        await appraisal_service.reopen(session, hr_user, appraisal_id=appraisal.id, reason="  ")
     assert "needs a reason" in exc.value.detail
 
 
@@ -554,7 +712,10 @@ async def test_reopening_without_a_reason_is_refused(
 
 
 async def test_the_progress_dashboard_is_accurate_under_partial_completion(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     """The checklist gate.
@@ -565,9 +726,12 @@ async def test_the_progress_dashboard_is_accurate_under_partial_completion(
     for index in range(4):
         session.add(
             Employee(
-                tenant_id=tenant.id, employee_code=f"REV{index:03d}",
-                first_name="Person", last_name=str(index),
-                work_email=f"rev{index}@acme.test", legal_entity_id=legal_entity.id,
+                tenant_id=tenant.id,
+                employee_code=f"REV{index:03d}",
+                first_name="Person",
+                last_name=str(index),
+                work_email=f"rev{index}@acme.test",
+                legal_entity_id=legal_entity.id,
             )
         )
     await session.commit()
@@ -581,13 +745,14 @@ async def test_the_progress_dashboard_is_accurate_under_partial_completion(
 
     # Two move one stage on; one completes entirely.
     for appraisal in appraisals[:2]:
-        await appraisal_service.submit_stage(
-            session, hr_user, appraisal_id=appraisal.id, ratings={},
+        await _advance(
+            session,
+            hr_user,
+            appraisal_id=appraisal.id,
+            ratings={},
         )
     for _ in range(3):
-        await appraisal_service.submit_stage(
-            session, hr_user, appraisal_id=appraisals[2].id, ratings={}, score=4.0
-        )
+        await _advance(session, hr_user, appraisal_id=appraisals[2].id, ratings={}, score=4.0)
     await session.commit()
 
     progress = await appraisal_service.cycle_progress(session, hr_user, cycle.id)
@@ -614,7 +779,10 @@ async def test_overdue_stages_are_flagged_on_the_dashboard(
 
 
 async def test_appraisals_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
     employee: Employee,
 ) -> None:
     cycle, _ = await _launched(session, tenant, hr_user)

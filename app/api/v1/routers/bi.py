@@ -22,7 +22,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -172,6 +172,28 @@ async def run_export(
         kind=body.kind,
         source_rows=body.source_rows,
         request=request,
+    )
+
+
+@router.post("/bi/connections/{connection_id}/export-file")
+async def export_file(
+    connection_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> Response:
+    """Run a full export and download it as CSV. The run and audit row commit first."""
+    content, filename, meta = await bi.export_file(
+        session, user, connection_id=connection_id, request=request
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Export-Run": meta["export_run_id"],
+        },
     )
 
 

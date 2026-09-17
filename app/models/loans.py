@@ -58,6 +58,9 @@ class InterestType(str, enum.Enum):
 class LoanStatus(str, enum.Enum):
     APPLIED = "applied"
     APPROVED = "approved"
+    # Declined at approval. `decision_note` says why — "rejected" with no
+    # reason is not a decision the applicant can do anything with.
+    REJECTED = "rejected"
     DISBURSED = "disbursed"
     ACTIVE = "active"
     CLOSED = "closed"
@@ -163,6 +166,8 @@ class LoanAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):
     carried_forward: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
 
     purpose: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The approver's note, and on a rejection the required reason.
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

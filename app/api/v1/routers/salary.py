@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
+from app.schemas.common import Page
 from app.schemas.payroll import (
     EmployeeSalaryCreate,
     EmployeeSalaryRead,
@@ -24,6 +25,7 @@ from app.schemas.payroll import (
     SalaryStructureCreate,
     SalaryStructureRead,
 )
+from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
 from app.services.payroll import service as salary_service
 
 router = APIRouter(
@@ -82,6 +84,14 @@ async def create_structure(
     return SalaryStructureRead.model_validate(structure)
 
 
+@router.get("/salary-structures/{structure_id}", response_model=SalaryStructureDetailRead)
+async def get_structure(
+    structure_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> SalaryStructureDetailRead:
+    """A structure with its components and per-structure overrides."""
+    return await salary_service.structure_detail(session, user, structure_id)
+
+
 @router.get("/salary-structures/{structure_id}/preview", response_model=SalaryBreakdownRead)
 async def preview_structure(
     structure_id: uuid.UUID,
@@ -131,6 +141,21 @@ async def preview_structure(
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
+
+
+@router.get("/salaries", response_model=Page[SalaryOverviewRead])
+async def salary_overview(
+    user: CurrentUser,
+    session: DbSession,
+    search: str | None = Query(default=None, max_length=128),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=200),
+) -> Page[SalaryOverviewRead]:
+    """Employees with the salary each is on today."""
+    rows, total = await salary_service.salary_overview(
+        session, user, search=search, page=page, page_size=page_size
+    )
+    return Page[SalaryOverviewRead](items=rows, total=total, page=page, page_size=page_size)
 
 
 @router.post(

@@ -5,5 +5,6 @@ governance: policy evaluated at capture rather than at approval, rates that are
 effective-dated, advances that settle against the trip they funded, and foreign
 claims that keep both the incurred amount and the converted one.
 
-Everything except `service.py` is pure.
+`policy`, `rates`, `advances` and `receipts` are pure. `service.py` (mutations),
+`reads.py` and `receipt_store.py` touch the database.
 """

@@ -1,19 +1,36 @@
-"""Tenant administration: module toggles, RBAC, audit trail (FS-ADM-01, FS-AIT-01)."""
+"""Tenant administration (FS-ADM-01, FS-AIT-01).
+
+Company settings, logins and roles, module toggles, the audit trail and the
+background jobs. Every rule about who may change whose role lives in
+`app.services.identity.users`; this router parses, gates and serialises.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.audit import AuditAction, AuditLog, RoleModulePermission
 from app.models.tenant import Tenant
 from app.models.user import UserRole
 from app.schemas.common import Page
+from app.schemas.platform_admin import (
+    ActiveChange,
+    ManagedUserCreate,
+    ManagedUserCreated,
+    ManagedUserRead,
+    ModuleToggle,
+    RoleChange,
+    TenantSettingsUpdate,
+)
+from app.services.identity import users as user_admin
+from app.services.scheduler import service as scheduler_service
 
 router = APIRouter(
     prefix="/admin",
@@ -85,6 +102,78 @@ async def list_permissions(user: CurrentUser, session: DbSession) -> list[Permis
     return [PermissionRead.model_validate(row) for row in rows]
 
 
+@router.patch("/tenant", response_model=TenantSettingsRead)
+async def update_tenant(
+    payload: TenantSettingsUpdate, user: CurrentUser, session: DbSession, request: Request
+) -> TenantSettingsRead:
+    tenant = await user_admin.update_tenant(session, user, payload, request=request)
+    return TenantSettingsRead.model_validate(tenant)
+
+
+# ── Logins and roles ────────────────────────────────────────────────────────
+
+
+@router.get("/users", response_model=list[ManagedUserRead])
+async def list_users(user: CurrentUser, session: DbSession) -> list[ManagedUserRead]:
+    return await user_admin.list_users(session, user)
+
+
+@router.post("/users", response_model=ManagedUserCreated, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    payload: ManagedUserCreate, user: CurrentUser, session: DbSession, request: Request
+) -> ManagedUserCreated:
+    """Create a login. The temporary password is returned once and never again."""
+    return await user_admin.create_user(session, user, payload, request=request)
+
+
+@router.patch("/users/{user_id}/role", response_model=ManagedUserRead)
+async def change_role(
+    user_id: uuid.UUID,
+    payload: RoleChange,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ManagedUserRead:
+    """Change somebody else's role. Never your own; never to platform admin."""
+    return await user_admin.set_role(
+        session, user, user_id=user_id, role=payload.role, reason=payload.reason,
+        request=request,
+    )
+
+
+@router.patch("/users/{user_id}/active", response_model=ManagedUserRead)
+async def change_active(
+    user_id: uuid.UUID,
+    payload: ActiveChange,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ManagedUserRead:
+    return await user_admin.set_active(
+        session, user, user_id=user_id, active=payload.active, reason=payload.reason,
+        request=request,
+    )
+
+
+# ── Modules ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/modules")
+async def get_modules(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await user_admin.module_state(session, user)
+
+
+@router.put("/modules")
+async def set_modules(
+    payload: ModuleToggle, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Switch modules on or off. The API refuses a switched-off module's routes."""
+    return await user_admin.set_modules(session, user, modules=payload.modules, request=request)
+
+
+# ── Audit trail ─────────────────────────────────────────────────────────────
+
+
 @router.get("/audit-logs", response_model=Page[AuditLogRead])
 async def list_audit_logs(
     user: CurrentUser,
@@ -94,6 +183,10 @@ async def list_audit_logs(
     actor_type: str | None = Query(
         default=None, description='Filter to AI actions with "ai_companion"'
     ),
+    actor_user_id: uuid.UUID | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    search: str | None = Query(default=None, max_length=100),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> Page[AuditLogRead]:
@@ -109,7 +202,16 @@ async def list_audit_logs(
         stmt = stmt.where(AuditLog.action == action)
     if actor_type:
         stmt = stmt.where(AuditLog.actor_type == actor_type)
+    if actor_user_id:
+        stmt = stmt.where(AuditLog.actor_user_id == actor_user_id)
+    if since:
+        stmt = stmt.where(AuditLog.created_at >= since)
+    if until:
+        stmt = stmt.where(AuditLog.created_at < until)
+    if search:
+        stmt = stmt.where(AuditLog.summary.ilike(f"%{search}%"))
 
+    total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (
         await session.scalars(
             stmt.order_by(AuditLog.created_at.desc())
@@ -119,13 +221,43 @@ async def list_audit_logs(
     ).all()
     return Page[AuditLogRead](
         items=[AuditLogRead.model_validate(row) for row in rows],
-        total=len(rows),
+        total=int(total or 0),
         page=page,
         page_size=page_size,
     )
 
 
-# TODO(V1): PATCH /permissions — with the rule from FS-ADM-01 that a user can
-# never elevate their own role, and every change audit-logged.
-# TODO(V2): GET /audit-logs/export — the exportable, immutable log procurement
-# asks for.
+@router.get("/audit-logs/entity-types")
+async def audit_entity_types(user: CurrentUser, session: DbSession) -> list[str]:
+    """The entity types present in this workspace's trail, for the filter."""
+    stmt = tenant_scoped(
+        select(AuditLog.entity_type).distinct().order_by(AuditLog.entity_type), AuditLog, user
+    )
+    return list((await session.scalars(stmt)).all())
+
+
+# ── Background jobs ─────────────────────────────────────────────────────────
+
+
+@router.get("/scheduler/jobs")
+async def scheduler_jobs(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Every scheduled job, what it calls, and how it last went for this workspace."""
+    return await scheduler_service.list_jobs(session, user)
+
+
+@router.get("/scheduler/jobs/{job_key}/runs")
+async def scheduler_runs(
+    job_key: str, user: CurrentUser, session: DbSession
+) -> list[dict[str, Any]]:
+    return await scheduler_service.recent_runs(session, user, job_key=job_key)
+
+
+@router.post(
+    "/scheduler/jobs/{job_key}/run",
+    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+)
+async def run_job_now(
+    job_key: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Run one job now, for this workspace only. Tenant admins only."""
+    return await scheduler_service.run_job_now(session, user, job_key=job_key, request=request)

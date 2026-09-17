@@ -32,6 +32,7 @@ __all__ = [
     "InAppAdapter",
     "NullPushAdapter",
     "PermanentFailure",
+    "SmtpEmailAdapter",
     "TransientFailure",
     "WhatsAppCloudAdapter",
 ]
@@ -248,3 +249,132 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             raise TransientFailure("WhatsApp accepted the request but returned no message id")
 
         return DeliveryResult(provider_message_id=messages[0]["id"])
+
+
+def _under_test_suite() -> bool:
+    import sys
+
+    return "pytest" in sys.modules
+
+
+class SmtpEmailAdapter(ChannelAdapter):
+    """Email over SMTP, with nothing but the standard library.
+
+    Works with any relay a company already has — Microsoft 365, Google
+    Workspace, SES's SMTP interface, an on-premises Postfix — which is the
+    realistic first integration for an Indian mid-market tenant, and needs no
+    SDK in this codebase.
+
+    Failure classification follows SMTP itself: a 4xx reply is transient and
+    retried with backoff; a 5xx reply, a refused recipient or refused
+    credentials is permanent. Unreachable relays (DNS, TCP, TLS) are transient.
+
+    **It refuses to send from inside the test suite** unless a test injects its
+    own `smtp_factory`. A test run that emails real people is an incident.
+    """
+
+    name = "email"
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        from_address: str,
+        username: str | None = None,
+        password: str | None = None,
+        use_starttls: bool = True,
+        use_ssl: bool = False,
+        from_name: str | None = None,
+        timeout: int = 20,
+        smtp_factory=None,
+    ) -> None:
+        if not host or not from_address or "@" not in from_address:
+            raise ValueError("An SMTP relay needs a host and a sender address.")
+        self._host = host
+        self._port = port
+        self._from_address = from_address
+        self._from_name = from_name
+        self._username = username
+        self._password = password
+        self._use_starttls = use_starttls
+        self._use_ssl = use_ssl
+        self._timeout = timeout
+        self._smtp_factory = smtp_factory
+
+    @property
+    def relay(self) -> str:
+        return f"{self._host}:{self._port}"
+
+    async def send(self, message: OutboundMessage) -> DeliveryResult:
+        import asyncio
+        from email.message import EmailMessage
+        from email.utils import formataddr, make_msgid
+
+        address = (message.recipient_email or "").strip()
+        if (
+            not address
+            or "@" not in address
+            or address.startswith("@")
+            or any(ch in address for ch in "\r\n,;")
+        ):
+            raise PermanentFailure(f"'{address}' is not a usable email address. Not retrying.")
+        if self._smtp_factory is None and _under_test_suite():
+            raise PermanentFailure(
+                "Refusing to send real email from the test suite. Inject an SMTP factory "
+                "to exercise this adapter."
+            )
+
+        subject = (message.subject or message.event_key).replace("\r", " ").replace("\n", " ")
+        email = EmailMessage()
+        email["From"] = (
+            formataddr((self._from_name, self._from_address))
+            if self._from_name
+            else self._from_address
+        )
+        email["To"] = address
+        email["Subject"] = subject[:250]
+        message_id = make_msgid(domain=self._from_address.rsplit("@", 1)[-1])
+        email["Message-ID"] = message_id
+        email.set_content(message.body)
+
+        await asyncio.to_thread(self._deliver, email, address)
+        return DeliveryResult(provider_message_id=message_id.strip("<>"))
+
+    def _deliver(self, email, address: str) -> None:
+        import smtplib
+        import ssl
+
+        factory = self._smtp_factory or (smtplib.SMTP_SSL if self._use_ssl else smtplib.SMTP)
+        try:
+            with factory(self._host, self._port, timeout=self._timeout) as client:
+                if self._use_starttls and not self._use_ssl:
+                    client.starttls(context=ssl.create_default_context())
+                if self._username:
+                    client.login(self._username, self._password or "")
+                refused = client.send_message(email)
+        except smtplib.SMTPRecipientsRefused as exc:
+            raise PermanentFailure(f"The mail relay refused {address}: {exc.recipients}") from exc
+        except smtplib.SMTPAuthenticationError as exc:
+            raise PermanentFailure(
+                "The mail relay refused the configured credentials. Fix the SMTP settings; "
+                "retrying will not help."
+            ) from exc
+        except smtplib.SMTPSenderRefused as exc:
+            raise PermanentFailure(
+                f"The mail relay refused the sender address {self._from_address}."
+            ) from exc
+        except smtplib.SMTPConnectError as exc:
+            raise TransientFailure(f"Could not connect to the mail relay: {exc}") from exc
+        except smtplib.SMTPResponseException as exc:
+            if 400 <= exc.smtp_code < 500:
+                raise TransientFailure(
+                    f"The mail relay deferred the message ({exc.smtp_code})."
+                ) from exc
+            raise PermanentFailure(
+                f"The mail relay rejected the message ({exc.smtp_code})."
+            ) from exc
+        except (smtplib.SMTPException, OSError) as exc:
+            raise TransientFailure(f"Could not reach the mail relay: {exc}") from exc
+        if refused and address in refused:
+            raise PermanentFailure(f"The mail relay refused {address}.")

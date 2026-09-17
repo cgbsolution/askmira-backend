@@ -37,7 +37,7 @@ a week off is a holiday, and approved leave beats a stray punch:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 
 from app.models.attendance import AttendanceStatus, PunchDirection, Shift
@@ -81,6 +81,8 @@ class DayInputs:
     leave_is_paid: bool = True
     # An approved regularisation overriding the derived status.
     regularised_status: AttendanceStatus | None = None
+    # Shift times are wall-clock times where the person works.
+    timezone: tzinfo = UTC
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,24 +117,26 @@ class ComputedDay:
         return Decimal(1) - self.payable_fraction
 
 
-def _combine(day: date, at: time) -> datetime:
-    return datetime.combine(day, at, tzinfo=UTC)
+def _combine(day: date, at: time, tz: tzinfo = UTC) -> datetime:
+    return datetime.combine(day, at, tzinfo=tz)
 
 
-def attendance_window(shift: Shift, working_day: date) -> tuple[datetime, datetime]:
+def attendance_window(
+    shift: Shift, working_day: date, tz: tzinfo = UTC
+) -> tuple[datetime, datetime]:
     """The datetime range whose punches belong to `working_day`.
 
     For a night shift the window crosses midnight into the next calendar day.
     This is the single rule that makes an 02:00 OUT attach to the previous
     day's record.
     """
-    start = _combine(working_day, shift.start_time)
+    start = _combine(working_day, shift.start_time, tz)
 
     if shift.is_night_shift or shift.end_time <= shift.start_time:
         # Ends on the following calendar day.
-        end = _combine(working_day + timedelta(days=1), shift.end_time)
+        end = _combine(working_day + timedelta(days=1), shift.end_time, tz)
     else:
-        end = _combine(working_day, shift.end_time)
+        end = _combine(working_day, shift.end_time, tz)
 
     return start - _EARLY_TOLERANCE, end + _LATE_TOLERANCE
 
@@ -316,7 +320,7 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
     early_by = 0
 
     if first_in is not None:
-        scheduled_in = _combine(day, shift.start_time)
+        scheduled_in = _combine(day, shift.start_time, inputs.timezone)
         lateness = int((first_in - scheduled_in).total_seconds() // 60)
         # Grace is forgiveness, not a shifted start: 8 minutes late against a
         # 10-minute grace is 0 late, 12 minutes late is 12 — not 2.
@@ -324,9 +328,9 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
 
     if last_out is not None:
         if shift.is_night_shift or shift.end_time <= shift.start_time:
-            scheduled_out = _combine(day + timedelta(days=1), shift.end_time)
+            scheduled_out = _combine(day + timedelta(days=1), shift.end_time, inputs.timezone)
         else:
-            scheduled_out = _combine(day, shift.end_time)
+            scheduled_out = _combine(day, shift.end_time, inputs.timezone)
         earliness = int((scheduled_out - last_out).total_seconds() // 60)
         early_by = earliness if earliness > shift.grace_out_minutes else 0
 

@@ -7,7 +7,16 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -18,7 +27,6 @@ from app.models.disbursement import (
     BankFileFormat,
     BankProfile,
     DisbursementBatch,
-    DisbursementLine,
     DisbursementStatus,
     EmployeeBankAccount,
     LineStatus,
@@ -29,6 +37,7 @@ from app.models.user import UserRole
 from app.services import audit
 from app.services.disbursement import service as disbursement_service
 from app.services.disbursement import validation
+from app.services.disbursement.responses import MAX_RESPONSE_BYTES
 
 router = APIRouter(tags=["disbursement"])
 
@@ -88,6 +97,8 @@ class BankAccountRead(BaseModel):
     is_primary: bool
     verified_at: datetime | None
     verification_method: VerificationMethod
+    employee_code: str | None = None
+    employee_name: str | None = None
     # No account number, for the same reason as above.
 
 
@@ -123,8 +134,10 @@ class BatchRead(BaseModel):
     file_name: str | None
     file_hash: str | None
     prepared_by_user_id: uuid.UUID | None
+    prepared_by_name: str | None = None
     prepared_at: datetime | None
     approved_by_user_id: uuid.UUID | None
+    approved_by_name: str | None = None
     approved_at: datetime | None
     released_at: datetime | None
     validation_exceptions: list[dict[str, Any]]
@@ -142,6 +155,8 @@ class LineRead(BaseModel):
     status: LineStatus
     failure_reason: str | None
     bank_reference: str | None
+    employee_code: str | None = None
+    employee_name: str | None = None
 
 
 class BankResponse(BaseModel):
@@ -157,6 +172,20 @@ class ReconcileRequest(BaseModel):
 
 class SupplementaryRequest(BaseModel):
     value_date: date
+
+
+def _batch_read(
+    batch: DisbursementBatch, prepared_by: str | None = None, approved_by: str | None = None
+) -> BatchRead:
+    read = BatchRead.model_validate(batch)
+    read.prepared_by_name = prepared_by
+    read.approved_by_name = approved_by
+    return read
+
+
+async def _named(session, user, batch: DisbursementBatch) -> BatchRead:
+    _, prepared_by, approved_by = await disbursement_service.get_batch(session, user, batch.id)
+    return _batch_read(batch, prepared_by, approved_by)
 
 
 # ── Bank profiles ───────────────────────────────────────────────────────────
@@ -232,11 +261,14 @@ async def create_profile(
 async def list_accounts(
     user: CurrentUser, session: DbSession, employee_id: uuid.UUID | None = None
 ) -> list[BankAccountRead]:
-    stmt = select(EmployeeBankAccount).order_by(EmployeeBankAccount.created_at.desc())
-    if employee_id is not None:
-        stmt = stmt.where(EmployeeBankAccount.employee_id == employee_id)
-    rows = (await session.scalars(tenant_scoped(stmt, EmployeeBankAccount, user))).all()
-    return [BankAccountRead.model_validate(row) for row in rows]
+    rows = await disbursement_service.bank_accounts(session, user, employee_id=employee_id)
+    out = []
+    for account, label in rows:
+        read = BankAccountRead.model_validate(account)
+        if label:
+            read.employee_code, read.employee_name = label
+        out.append(read)
+    return out
 
 
 @router.post(
@@ -327,7 +359,9 @@ async def create_account(
     )
     await session.commit()
     await session.refresh(account)
-    return BankAccountRead.model_validate(account)
+    read = BankAccountRead.model_validate(account)
+    read.employee_code, read.employee_name = employee.employee_code, employee.full_name
+    return read
 
 
 # ── Batches ─────────────────────────────────────────────────────────────────
@@ -366,7 +400,7 @@ async def prepare(
         ) from exc
     await session.commit()
     await session.refresh(batch)
-    return BatchRead.model_validate(batch)
+    return await _named(session, user, batch)
 
 
 @router.get(
@@ -379,11 +413,20 @@ async def list_batches(
     session: DbSession,
     payroll_run_id: uuid.UUID | None = None,
 ) -> list[BatchRead]:
-    stmt = select(DisbursementBatch).order_by(DisbursementBatch.created_at.desc())
-    if payroll_run_id is not None:
-        stmt = stmt.where(DisbursementBatch.payroll_run_id == payroll_run_id)
-    rows = (await session.scalars(tenant_scoped(stmt, DisbursementBatch, user))).all()
-    return [BatchRead.model_validate(row) for row in rows]
+    rows = await disbursement_service.list_batches(
+        session, user, payroll_run_id=payroll_run_id
+    )
+    return [_batch_read(batch, prepared, approved) for batch, prepared, approved in rows]
+
+
+@router.get(
+    "/disbursement/batches/{batch_id}",
+    response_model=BatchRead,
+    dependencies=[Depends(require_roles(*PREPARER_ROLES))],
+)
+async def get_batch(batch_id: uuid.UUID, user: CurrentUser, session: DbSession) -> BatchRead:
+    batch, prepared, approved = await disbursement_service.get_batch(session, user, batch_id)
+    return _batch_read(batch, prepared, approved)
 
 
 @router.get(
@@ -394,16 +437,14 @@ async def list_batches(
 async def list_lines(
     batch_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[LineRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(DisbursementLine).where(DisbursementLine.batch_id == batch_id),
-                DisbursementLine,
-                user,
-            )
-        )
-    ).all()
-    return [LineRead.model_validate(row) for row in rows]
+    rows = await disbursement_service.batch_lines(session, user, batch_id)
+    out = []
+    for line, label in rows:
+        read = LineRead.model_validate(line)
+        if label:
+            read.employee_code, read.employee_name = label
+        out.append(read)
+    return out
 
 
 @router.post(
@@ -424,7 +465,7 @@ async def approve(
     )
     await session.commit()
     await session.refresh(batch)
-    return BatchRead.model_validate(batch)
+    return await _named(session, user, batch)
 
 
 @router.post(
@@ -451,7 +492,7 @@ async def regenerate(
         ) from exc
     await session.commit()
     await session.refresh(batch)
-    return BatchRead.model_validate(batch)
+    return await _named(session, user, batch)
 
 
 @router.post(
@@ -470,7 +511,7 @@ async def release(
     )
     await session.commit()
     await session.refresh(batch)
-    return BatchRead.model_validate(batch)
+    return await _named(session, user, batch)
 
 
 @router.get(
@@ -535,6 +576,33 @@ async def reconcile(
 
 
 @router.post(
+    "/disbursement/batches/{batch_id}/reconcile/import",
+    dependencies=[Depends(require_roles(*PREPARER_ROLES))],
+)
+async def reconcile_import(
+    batch_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Import the bank's CSV response (account_number, status, reason, reference).
+
+    Failed credits come back in the response, and HR Ops are notified in the
+    same transaction.
+    """
+    outcome = await disbursement_service.import_bank_response(
+        session,
+        user,
+        batch_id=batch_id,
+        data=await file.read(MAX_RESPONSE_BYTES + 1),
+        request=request,
+    )
+    await session.commit()
+    return outcome
+
+
+@router.post(
     "/disbursement/batches/{batch_id}/supplementary",
     response_model=BatchRead,
     status_code=status.HTTP_201_CREATED,
@@ -553,4 +621,4 @@ async def supplementary(
     )
     await session.commit()
     await session.refresh(batch)
-    return BatchRead.model_validate(batch)
+    return await _named(session, user, batch)
