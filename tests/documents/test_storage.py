@@ -59,15 +59,15 @@ def test_a_file_at_the_limit_is_accepted() -> None:
 # ── Local storage ───────────────────────────────────────────────────────────
 
 
-def test_round_trip_and_delete(tmp_path) -> None:
+async def test_round_trip_and_delete(tmp_path) -> None:
     storage = LocalFileStorage(tmp_path)
     key = storage.new_key(uuid.uuid4(), "documents", ".pdf")
-    storage.put(key, PDF)
-    assert storage.get(key) == PDF
-    assert storage.exists(key)
-    assert storage.delete(key) is True
-    assert storage.get(key) is None
-    assert storage.delete(key) is False
+    await storage.put(key, PDF)
+    assert await storage.get(key) == PDF
+    assert await storage.exists(key)
+    assert await storage.delete(key) is True
+    assert await storage.get(key) is None
+    assert await storage.delete(key) is False
 
 
 def test_generated_keys_are_unique_and_carry_no_client_name(tmp_path) -> None:
@@ -82,10 +82,10 @@ def test_generated_keys_are_unique_and_carry_no_client_name(tmp_path) -> None:
     "key",
     ["../outside.pdf", "a/../../outside.pdf", "/etc/passwd", "a\\b.pdf", "", "a", "a/b c.pdf"],
 )
-def test_a_key_cannot_leave_the_root(tmp_path, key: str) -> None:
+async def test_a_key_cannot_leave_the_root(tmp_path, key: str) -> None:
     storage = LocalFileStorage(tmp_path / "root")
     with pytest.raises(StorageError):
-        storage.put(key, PDF)
+        await storage.put(key, PDF)
 
 
 @pytest.mark.parametrize(
@@ -96,9 +96,9 @@ def test_a_malformed_namespace_or_extension_is_refused(namespace: str, extension
         LocalFileStorage.new_key(uuid.uuid4(), namespace, extension)
 
 
-def test_a_legacy_letter_key_is_still_addressable(tmp_path) -> None:
+async def test_a_legacy_letter_key_is_still_addressable(tmp_path) -> None:
     """Letters issued before the adapter recorded keys like this one."""
     storage = LocalFileStorage(tmp_path)
     key = f"letters/{uuid.uuid4()}/ACM_OFF_2026-27_00001.pdf"
-    storage.put(key, PDF)
-    assert storage.get(key) == PDF
+    await storage.put(key, PDF)
+    assert await storage.get(key) == PDF

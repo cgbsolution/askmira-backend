@@ -694,7 +694,9 @@ async def submit_claim(
     if bill_date is not None and bill_date > date.today():
         raise _refuse("A bill cannot be dated in the future.")
 
-    stored = support.store_upload(user.tenant_id, "reimbursement-bills", bill) if bill else None
+    stored = (
+        await support.store_upload(user.tenant_id, "reimbursement-bills", bill) if bill else None
+    )
     claim = ReimbursementClaim(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
@@ -832,7 +834,7 @@ async def claim_bill(
     permissions.require_self_or_hr(
         user, claim.employee_id, detail="You can only open your own bills"
     )
-    stored = support.load_file(user.tenant_id, claim.bill_storage_key)
+    stored = await support.load_file(user.tenant_id, claim.bill_storage_key)
     if stored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No bill is attached")
     data, mime = stored

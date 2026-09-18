@@ -689,7 +689,7 @@ async def attach_previous_employer_document(
         raise TaxWorkflowError(
             "Save the previous employer's figures first, then attach their Form 16."
         )
-    stored = support.store_upload(user.tenant_id, "tax-form16", data)
+    stored = await support.store_upload(user.tenant_id, "tax-form16", data)
     record.document_storage_key = stored.key
     record.status = ProofStatus.PENDING
     await session.flush()
@@ -721,7 +721,9 @@ async def previous_employer_document(
         record.employee_id if record else None,
         detail="You can only open your own documents",
     )
-    stored = support.load_file(user.tenant_id, record.document_storage_key if record else None)
+    stored = await support.load_file(
+        user.tenant_id, record.document_storage_key if record else None
+    )
     if record is None or stored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No Form 16 is attached")
     data, mime = stored
@@ -793,7 +795,7 @@ async def submit_proof(
         )
     await assert_window_open(session, user, declaration.financial_year, WindowType.PROOF)
 
-    stored = support.store_upload(user.tenant_id, "tax-proofs", data)
+    stored = await support.store_upload(user.tenant_id, "tax-proofs", data)
     proof = TaxProof(
         tenant_id=user.tenant_id,
         declaration_id=declaration.id,
@@ -845,7 +847,7 @@ async def proof_document(
     permissions.require_self_or_hr(
         user, declaration.employee_id, detail="You can only open your own proofs"
     )
-    stored = support.load_file(user.tenant_id, proof.document_storage_key)
+    stored = await support.load_file(user.tenant_id, proof.document_storage_key)
     if stored is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No document is stored for this proof"
@@ -1430,7 +1432,7 @@ async def form_12bb_pdf(
                 "Do not use it; issue it again."
             ),
         )
-    data = documents_service.stored_pdf(letter.pdf_storage_key or "")
+    data = await documents_service.stored_pdf(letter.pdf_storage_key or "")
     if data is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

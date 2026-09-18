@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from app.services.storage.local import StorageError, get_storage
+from app.services.storage import StorageError, get_storage
 from app.services.storage.sniff import FileRejected, SniffedType, validate_upload
 
 __all__ = [
@@ -81,7 +81,7 @@ def _extract_text(data: bytes) -> dict[str, Any]:
     }
 
 
-def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[str, Any]]:
+async def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[str, Any]]:
     """Validate and store a resume. Returns the storage key and extracted text."""
     try:
         kind = validate_upload(data, max_bytes=RESUME_MAX_BYTES)
@@ -93,7 +93,7 @@ def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[str, Any
     storage = get_storage()
     key = storage.new_key(tenant_id, "resumes", kind.extension)
     try:
-        storage.put(key, data)
+        await storage.put(key, data)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -102,7 +102,7 @@ def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[str, Any
     return key, _extract_text(data)
 
 
-def accept_document(data: bytes, tenant_id: uuid.UUID) -> tuple[str, SniffedType]:
+async def accept_document(data: bytes, tenant_id: uuid.UUID) -> tuple[str, SniffedType]:
     """Validate and store a pre-joining document."""
     try:
         kind = validate_upload(data, max_bytes=DOCUMENT_MAX_BYTES)
@@ -112,7 +112,7 @@ def accept_document(data: bytes, tenant_id: uuid.UUID) -> tuple[str, SniffedType
     storage = get_storage()
     key = storage.new_key(tenant_id, "candidate-docs", kind.extension)
     try:
-        storage.put(key, data)
+        await storage.put(key, data)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -121,11 +121,11 @@ def accept_document(data: bytes, tenant_id: uuid.UUID) -> tuple[str, SniffedType
     return key, kind
 
 
-def read_stored(key: str | None) -> bytes:
+async def read_stored(key: str | None) -> bytes:
     if not key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No file is stored.")
     try:
-        data = get_storage().get(key)
+        data = await get_storage().get(key)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No file is stored."

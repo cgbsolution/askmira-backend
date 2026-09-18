@@ -224,7 +224,7 @@ async def _record(
     if not blocked and content is not None:
         # Kept, encrypted, so the file that was filed can be downloaded again
         # exactly — a regenerated file can differ once payslips move.
-        record.file_storage_key = support.store_generated(
+        record.file_storage_key = await support.store_generated(
             user.tenant_id, "filings", content.encode("utf-8"), ".txt"
         )
     session.add(record)
@@ -984,7 +984,7 @@ async def download_record(
             status_code=status.HTTP_409_CONFLICT,
             detail="This return was blocked by validation, so no file exists.",
         )
-    stored = support.load_file(user.tenant_id, record.file_storage_key)
+    stored = await support.load_file(user.tenant_id, record.file_storage_key)
     if stored is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

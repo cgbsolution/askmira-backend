@@ -36,8 +36,13 @@ from app.core.deps import tenant_scoped
 from app.models.documents import IssuedLetter, LetterTemplate
 from app.models.notifications import Channel, NotificationTemplate
 from app.models.user import User, UserRole
-from app.services.storage import FileRejected, LocalFileStorage, StorageError, validate_upload
-from app.services.storage.local import DEFAULT_ROOT
+from app.services.storage import (
+    FileRejected,
+    FileStorage,
+    StorageError,
+    get_storage,
+    validate_upload,
+)
 
 __all__ = [
     "MAX_UPLOAD_BYTES",
@@ -72,18 +77,6 @@ _MIME_BY_EXTENSION = {
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _storage() -> LocalFileStorage:
-    """The vault, tolerating a settings object that does not declare its root.
-
-    `get_storage()` reads `settings.FILE_STORAGE_ROOT`; until that setting is
-    declared everywhere, falling back to the vault's own default root keeps
-    uploads working rather than failing with an AttributeError.
-    """
-    from app.core.config import settings
-
-    return LocalFileStorage(getattr(settings, "FILE_STORAGE_ROOT", None) or DEFAULT_ROOT)
-
-
 @dataclass(frozen=True, slots=True)
 class StoredFile:
     key: str
@@ -92,17 +85,17 @@ class StoredFile:
     size: int
 
 
-def _put(tenant_id: uuid.UUID, key: str, data: bytes) -> None:
+async def _put(tenant_id: uuid.UUID, key: str, data: bytes) -> None:
     sealed = encrypt_secret(base64.b64encode(data).decode("ascii"), tenant_id)
     try:
-        _storage().put(key, sealed.encode("ascii"))
+        await get_storage().put(key, sealed.encode("ascii"))
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
 
-def store_upload(tenant_id: uuid.UUID, namespace: str, data: bytes) -> StoredFile:
+async def store_upload(tenant_id: uuid.UUID, namespace: str, data: bytes) -> StoredFile:
     """Validate and store an uploaded document. Refuses with the vault's reason.
 
     The client's filename and content type are never consulted: the type comes
@@ -114,19 +107,21 @@ def store_upload(tenant_id: uuid.UUID, namespace: str, data: bytes) -> StoredFil
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    key = LocalFileStorage.new_key(tenant_id, namespace, kind.extension)
-    _put(tenant_id, key, data)
+    key = FileStorage.new_key(tenant_id, namespace, kind.extension)
+    await _put(tenant_id, key, data)
     return StoredFile(key=key, mime_type=kind.mime_type, extension=kind.extension, size=len(data))
 
 
-def store_generated(tenant_id: uuid.UUID, namespace: str, content: bytes, extension: str) -> str:
+async def store_generated(
+    tenant_id: uuid.UUID, namespace: str, content: bytes, extension: str
+) -> str:
     """Store a file this system produced (a return, a bank file). Returns its key."""
-    key = LocalFileStorage.new_key(tenant_id, namespace, extension)
-    _put(tenant_id, key, content)
+    key = FileStorage.new_key(tenant_id, namespace, extension)
+    await _put(tenant_id, key, content)
     return key
 
 
-def load_file(tenant_id: uuid.UUID, key: str | None) -> tuple[bytes, str] | None:
+async def load_file(tenant_id: uuid.UUID, key: str | None) -> tuple[bytes, str] | None:
     """The bytes at a key and their media type, or None.
 
     A key belonging to another tenant is treated as absent, whatever the
@@ -135,7 +130,7 @@ def load_file(tenant_id: uuid.UUID, key: str | None) -> tuple[bytes, str] | None
     if not key or not key.startswith(f"{tenant_id}/"):
         return None
     try:
-        raw = _storage().get(key)
+        raw = await get_storage().get(key)
     except StorageError:
         return None
     if raw is None:

@@ -12,3 +12,5 @@ venv/
 htmlcov/
 *.log
 .DS_Store
+# Uploaded files live in Supabase Storage (or FILE_STORAGE_ROOT), never in git.
+uploads/

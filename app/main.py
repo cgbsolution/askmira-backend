@@ -39,6 +39,18 @@ async def lifespan(app: FastAPI):
         if settings.is_production:
             raise
 
+    # Where uploads go, said once at boot, so a deploy writing to a disk that
+    # the next deploy throws away is visible in the first lines of the log.
+    from app.services.storage import get_storage
+
+    logger.info("File storage: %s", get_storage().describe())
+    if settings.is_production and settings.STORAGE_BACKEND == "local":
+        logger.warning(
+            "File storage is the container's local disk in production. Files are lost "
+            "when the container is replaced unless FILE_STORAGE_ROOT is a mounted "
+            "volume. Set STORAGE_BACKEND=supabase."
+        )
+
     # Background jobs: one instance runs them, chosen by a Postgres advisory lock.
     from app.services.scheduler.runner import scheduler_enabled, start_scheduler, stop_scheduler
 

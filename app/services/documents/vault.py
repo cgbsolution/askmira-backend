@@ -183,7 +183,7 @@ async def download_document(
         raise _NOT_FOUND
 
     try:
-        data = get_storage().get(document.file_url)
+        data = await get_storage().get(document.file_url)
     except StorageError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if data is None:
@@ -255,7 +255,7 @@ async def upload_document(
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "documents", kind.extension)
     try:
-        storage.put(key, data)
+        await storage.put(key, data)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -296,8 +296,10 @@ async def upload_document(
         )
         await session.commit()
     except BaseException:
-        # The row did not land, so the file must not linger unreferenced.
-        storage.delete(key)
+        # The row did not land, so the file must not linger unreferenced. A
+        # storage failure here must not replace the exception that got us here.
+        with contextlib.suppress(StorageError):
+            await storage.delete(key)
         raise
 
     await session.refresh(document)
@@ -380,4 +382,4 @@ async def delete_document(
     # After the commit: a failed commit must leave the file for the row that
     # still points at it.
     with contextlib.suppress(StorageError):
-        get_storage().delete(key)
+        await get_storage().delete(key)

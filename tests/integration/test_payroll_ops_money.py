@@ -156,7 +156,7 @@ async def test_a_filed_return_is_downloaded_exactly_and_audited(
     record = FilingRecord(
         tenant_id=tenant.id, return_type=ReturnType.PF_ECR, legal_entity_id=legal_entity.id,
         period="2026-06", status=FilingStatus.GENERATED, file_name="ECR_202606.txt",
-        file_storage_key=support.store_generated(tenant.id, "filings", content, ".txt"),
+        file_storage_key=await support.store_generated(tenant.id, "filings", content, ".txt"),
     )
     blocked = FilingRecord(
         tenant_id=tenant.id, return_type=ReturnType.ESIC, legal_entity_id=legal_entity.id,

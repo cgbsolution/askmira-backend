@@ -365,7 +365,7 @@ async def form_10e_pdf(
             status_code=status.HTTP_409_CONFLICT,
             detail="The stored Form 10E does not match its content hash. Issue it again.",
         )
-    data = documents_service.stored_pdf(letter.pdf_storage_key or "")
+    data = await documents_service.stored_pdf(letter.pdf_storage_key or "")
     if data is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -658,7 +658,7 @@ async def issue_letter(
         storage = get_storage()
         stored_key = storage.new_key(user.tenant_id, "letters", ".pdf")
         try:
-            storage.put(stored_key, pdf_bytes)
+            await storage.put(stored_key, pdf_bytes)
         except StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -690,18 +690,19 @@ async def issue_letter(
             await session.commit()
         except BaseException:
             if stored_key:
-                get_storage().delete(stored_key)
+                with contextlib.suppress(StorageError):
+                    await get_storage().delete(stored_key)
             raise
         await session.refresh(letter)
     return letter
 
 
-def stored_pdf(storage_key: str) -> bytes | None:
+async def stored_pdf(storage_key: str) -> bytes | None:
     """The stored bytes at a key, or None."""
     if not storage_key:
         return None
     try:
-        return get_storage().get(storage_key)
+        return await get_storage().get(storage_key)
     except StorageError:
         return None
 
@@ -713,7 +714,7 @@ async def _pdf_bytes(session: AsyncSession, letter: IssuedLetter) -> bytes:
     content is byte-identical to the original, so writing it back at the same
     key restores the stored document rather than changing it.
     """
-    data = stored_pdf(letter.pdf_storage_key or "")
+    data = await stored_pdf(letter.pdf_storage_key or "")
     if data is not None:
         return data
 
@@ -728,7 +729,7 @@ async def _pdf_bytes(session: AsyncSession, letter: IssuedLetter) -> bytes:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if letter.pdf_storage_key:
         with contextlib.suppress(StorageError):
-            get_storage().put(letter.pdf_storage_key, data)
+            await get_storage().put(letter.pdf_storage_key, data)
     return data
 
 
@@ -997,7 +998,7 @@ async def letter_pdf(
         )
     stem = letter.reference_number.replace("/", "_")
     if signed:
-        data = stored_pdf(letter.signed_pdf_storage_key or "")
+        data = await stored_pdf(letter.signed_pdf_storage_key or "")
         if data is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1268,7 +1269,7 @@ async def record_signature_webhook(
         signed_document = await provider.download_signed(signature_status.request_id)
         storage = get_storage()
         key = storage.new_key(letter.tenant_id, "letters", ".pdf")
-        storage.put(key, signed_document)
+        await storage.put(key, signed_document)
         letter.signed_pdf_storage_key = key
     except (SignatureError, StorageError):
         # The status change stands even if the download fails; a retry can

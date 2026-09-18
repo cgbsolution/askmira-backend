@@ -201,7 +201,7 @@ async def upload_document(
             detail="Choose one of the listed document types.",
         )
     row = await careers.resolve_portal_token(session, token)
-    key, kind = resume_files.accept_document(data, row.tenant_id)
+    key, kind = await resume_files.accept_document(data, row.tenant_id)
 
     config = await session.scalar(
         select(CareersPageConfig).where(CareersPageConfig.tenant_id == row.tenant_id)

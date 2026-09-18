@@ -788,7 +788,7 @@ async def resume_file(
     )
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resume is stored.")
-    data = resume_files.read_stored(application.resume_storage_key)
+    data = await resume_files.read_stored(application.resume_storage_key)
     return data, resume_files.attachment_name(f"{requisition.code}-resume", ".pdf")
 
 
@@ -809,7 +809,7 @@ async def document_file(
     )
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    data = resume_files.read_stored(document.storage_key)
+    data = await resume_files.read_stored(document.storage_key)
     extension = "." + document.storage_key.rsplit(".", 1)[-1] if "." in document.storage_key else ""
     return (
         data,

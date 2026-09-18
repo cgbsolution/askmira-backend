@@ -27,7 +27,7 @@ from app.models.jobboard import CareersPageConfig, ConsentPurpose, JobBoard
 from app.models.user import UserRole
 from app.services.hiring import careers, ingestion, resume_files
 from app.services.jobboards.base import RawApplication
-from app.services.storage.local import StorageError, get_storage
+from app.services.storage import StorageError, get_storage
 
 __all__ = ["PublicActor", "submit_application"]
 
@@ -101,7 +101,7 @@ async def submit_application(
     resume_key: str | None = None
     extracted: dict[str, Any] | None = None
     if resume:
-        resume_key, extracted = resume_files.accept_resume(resume, config.tenant_id)
+        resume_key, extracted = await resume_files.accept_resume(resume, config.tenant_id)
 
     purposes = [ConsentPurpose.APPLICATION_PROCESSING]
     if consent_talent_pool:
@@ -132,7 +132,7 @@ async def submit_application(
     if outcome.application is None or outcome.candidate is None:
         if resume_key:
             with contextlib.suppress(StorageError):
-                get_storage().delete(resume_key)
+                await get_storage().delete(resume_key)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=outcome.note)
 
     if resume_key:
