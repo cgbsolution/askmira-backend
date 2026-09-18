@@ -104,6 +104,13 @@ class EmployeeSelfUpdate(BaseModel):
 class EmployeeRead(EmployeeBase):
     model_config = ConfigDict(from_attributes=True)
 
+    #: Plain strings on the way out. Addresses are validated when written; re-
+    #: validating a stored one on every read means a single address the
+    #: validator has since come to dislike (an imported `.local` domain, a
+    #: reserved TLD) turns the whole directory into a 500.
+    work_email: str
+    personal_email: str | None = None
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     employee_code: str
@@ -126,7 +133,8 @@ class EmployeeSummary(BaseModel):
     first_name: str
     last_name: str | None
     display_name: str | None
-    work_email: EmailStr
+    #: A plain string for the same reason as `EmployeeRead.work_email`.
+    work_email: str
     designation: str | None
     department_id: uuid.UUID | None
     location_id: uuid.UUID | None

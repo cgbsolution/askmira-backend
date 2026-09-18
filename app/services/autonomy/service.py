@@ -306,6 +306,11 @@ async def propose(
             if routing.applies_automatically
             else ProposalStatusEnum.PENDING
         ),
+        # Stamped from the same clock as `expires_at`. Left to the column
+        # default, age (now - created_at) and expiry were measured from two
+        # different clocks whenever `now` was supplied, and a proposal could be
+        # "negative days old" at the moment it expired.
+        created_at=moment,
         expires_at=proposal_engine.expires_at(action_key, created_at=moment),
         routing_reason=routing.reason,
         applied_at=moment if routing.applies_automatically else None,

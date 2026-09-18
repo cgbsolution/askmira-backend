@@ -603,6 +603,16 @@ async def raise_breach(
     }
 
 
+@router.get("/dpdp/breaches")
+async def list_breaches(
+    session: DbSession,
+    user: CurrentUser,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> list[dict[str, Any]]:
+    """The breach register: every incident, newest first."""
+    return await dpdp_service.list_breaches(session, user)
+
+
 @router.get("/dpdp/breaches/rehearsal")
 async def breach_rehearsal(
     session: DbSession,

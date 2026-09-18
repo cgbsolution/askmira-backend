@@ -37,6 +37,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -460,7 +461,12 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # this run that is not a line on anybody's payslip: a source that is not
     # available yet, or an item left unprocessed and why. Informational — a
     # notice never blocks approval; a review flag does.
-    input_notices: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    #: `server_default` as well as `default`: the column is NOT NULL and was added to a
+    #: table that already had rows, so the database needs its own answer for anything
+    #: inserted outside the ORM. Declared here too, or `alembic check` reports drift.
+    input_notices: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
 
     payslips: Mapped[list[Payslip]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -538,7 +544,9 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # source record it consumed. Kept apart from `line_items` on purpose: the
     # arrears engine diffs `line_items` against a structure recomputation, and a
     # one-off payment there would read as a component to recover.
-    input_lines: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    input_lines: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
     # The income tax projection behind `tds`: regime, projected income, slabs,
     # deductions, months remaining, what was already deducted.
     tds_working: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

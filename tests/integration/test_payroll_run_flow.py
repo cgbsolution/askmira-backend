@@ -427,7 +427,9 @@ async def test_variances_must_each_be_acknowledged_and_inputs_paid_once(
     assert acknowledged.variance_flags[0]["note"] == "Promotion effective May"
 
     # Somebody else paid the claim between compute and approval: refuse, and
-    # leave everything else unmarked.
+    # leave everything else unmarked. The refusal rolls back, which expires every
+    # loaded object, so the loan id is read before it rather than lazily after.
+    loan_id = loan.id
     claim.paid_in_run_id = april.id
     await session.commit()
     with pytest.raises(HTTPException) as exc:
@@ -435,7 +437,7 @@ async def test_variances_must_each_be_acknowledged_and_inputs_paid_once(
     assert exc.value.status_code == 409
     assert "Recompute" in exc.value.detail
     assert await session.scalar(
-        select(LoanRepayment.id).where(LoanRepayment.loan_account_id == loan.id)
+        select(LoanRepayment.id).where(LoanRepayment.loan_account_id == loan_id)
     ) is None
 
     # The refusal rolled the approval back, which expires everything loaded.

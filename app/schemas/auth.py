@@ -82,7 +82,9 @@ class UserRead(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
-    email: EmailStr
+    #: Plain on the way out: validated at sign-up, and a stored address the
+    #: validator later rejects must not make the session endpoint fail.
+    email: str
     full_name: str
     phone: str | None
     role: UserRole

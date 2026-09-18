@@ -35,7 +35,7 @@ from app.models.payroll import (
     SalaryStructureComponent,
 )
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services.arrears import service as arrears_service
 from app.services.payroll import service as salary_service
@@ -476,6 +476,23 @@ async def test_a_bulk_revision_produces_one_batch_not_one_per_employee(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def _checker(session: AsyncSession, tenant: Tenant) -> User:
+    """A second payroll user.
+
+    An arrear batch is approved by somebody other than the person who computed
+    it — money leaving the company gets a second pair of eyes — so these tests
+    need two people.
+    """
+    user = User(
+        tenant_id=tenant.id, email="checker@acme.test", password_hash="not-a-real-hash",
+        full_name="Ravi Checker", role=UserRole.HR_ADMIN, is_active=True,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
 async def test_affected_filings_must_be_acknowledged_before_approval(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
     employee: Employee,
@@ -497,13 +514,14 @@ async def test_affected_filings_must_be_acknowledged_before_approval(
     )
     await session.commit()
     assert batch.affected_filings, "a PF movement changes the ECR"
+    checker = await _checker(session, tenant)
 
     with pytest.raises(HTTPException) as exc:
-        await arrears_service.approve_batch(session, hr_user, batch_id=batch.id)
+        await arrears_service.approve_batch(session, checker, batch_id=batch.id)
     assert "already-filed return" in exc.value.detail
 
     approved = await arrears_service.approve_batch(
-        session, hr_user, batch_id=batch.id, acknowledge_filings=True
+        session, checker, batch_id=batch.id, acknowledge_filings=True
     )
     await session.commit()
     assert approved.status is ArrearStatus.APPROVED
@@ -526,7 +544,8 @@ async def test_a_batch_with_no_filing_impact_approves_directly(
     await session.commit()
     assert batch.affected_filings == []
 
-    approved = await arrears_service.approve_batch(session, hr_user, batch_id=batch.id)
+    checker = await _checker(session, tenant)
+    approved = await arrears_service.approve_batch(session, checker, batch_id=batch.id)
     await session.commit()
     assert approved.status is ArrearStatus.APPROVED
 

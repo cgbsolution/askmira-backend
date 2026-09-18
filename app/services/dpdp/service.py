@@ -948,6 +948,37 @@ async def raise_breach(
     return row
 
 
+async def list_breaches(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Every incident in this workspace, newest first, rehearsals included.
+
+    A summary per incident; `breach_state` is the full view with both clocks.
+    Without a list, an incident raised last week is reachable only by someone
+    who kept its id, which is not a register.
+    """
+    stmt = tenant_scoped(
+        select(BreachIncident).order_by(BreachIncident.became_aware_at.desc()),
+        BreachIncident,
+        user,
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": str(row.id),
+            "reference": row.reference,
+            "is_rehearsal": row.is_rehearsal,
+            "severity": row.severity.value,
+            "became_aware_at": row.became_aware_at.isoformat(),
+            "affected_principal_count": row.affected_principal_count,
+            "board_report_due_at": row.board_report_due_at.isoformat(),
+            "reported_to_board_at": (
+                row.reported_to_board_at.isoformat() if row.reported_to_board_at else None
+            ),
+            "notification_sent": row.notification_sent,
+        }
+        for row in rows
+    ]
+
+
 async def breach_state(
     session: AsyncSession, user: User, *, incident_id: uuid.UUID, now: datetime | None = None
 ) -> dict[str, Any]:
