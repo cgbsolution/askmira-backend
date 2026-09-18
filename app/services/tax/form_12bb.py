@@ -1,20 +1,28 @@
 """Form 12BB.
 
 The statutory declaration an employee gives their employer for HRA, LTA,
-home-loan interest and Chapter VI-A deductions. Rendered through the letter
-engine from slice 03, so it inherits the same guarantees: a required field that
+home-loan interest and Chapter VI-A deductions. Issued through the letter engine
+from slice 03, so it inherits the same guarantees: a required field that
 resolves to nothing blocks generation, values are HTML-escaped, the output is
 hashed and re-verifiable, and it can be e-signed.
 
-The structure below follows the prescribed form. No amount, limit or threshold
-appears here — every figure comes from the employee's own declarations and the
-SME-approved rule set.
+The merge engine escapes **every** merged value, markup included — which is the
+right rule, and it means a claims table cannot be passed in as one value (it
+would print as literal tags). So the template carries the prescribed form's four
+heads as fixed rows, and each head's amount and particulars arrive as separate
+plain-text values from `claim_values`.
+
+No amount, limit or threshold appears here — every figure comes from the
+employee's own declarations. Which sections belong to the LTA and home-loan heads
+is read from the rule set's `form_12bb_heads` where the SME has supplied it.
 """
 
 from __future__ import annotations
 
+import html
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,14 +39,23 @@ from app.services.documents.indian_numbers import group_indian
 
 FORM_12BB_CODE = "FORM_12BB"
 
-# The four heads the prescribed form is organised under. Which *sections* fall
-# under each is configuration on the rule set; this is the form's own structure.
+# The four heads the prescribed form is organised under.
 FORM_HEADS = (
     ("hra", "1. House Rent Allowance"),
     ("lta", "2. Leave Travel Concession"),
     ("home_loan", "3. Deduction of interest on borrowing"),
     ("chapter_via", "4. Deduction under Chapter VI-A"),
 )
+
+#: Section codes as the statute names them, used only where the rule set does not
+#: say which sections fall under the LTA and home-loan heads.
+DEFAULT_HEAD_SECTIONS: dict[str, tuple[str, ...]] = {
+    "hra": ("HRA",),
+    "lta": ("LTA",),
+    "home_loan": ("24B",),
+}
+
+NOT_CLAIMED = "Not claimed"
 
 BODY_HTML = """
 <h2 style="text-align:center">FORM NO. 12BB</h2>
@@ -51,14 +68,44 @@ BODY_HTML = """
 <table class="ctc-table" cellspacing="0" cellpadding="6">
   <tr><td><strong>1. Name and address of the employee</strong></td>
       <td>{{computed.full_name}}<br/>{{employee.work_email}}</td></tr>
-  <tr><td><strong>2. Permanent Account Number</strong></td>
+  <tr><td><strong>2. Permanent Account Number of the employee</strong></td>
       <td>{{manual.employee_pan}}</td></tr>
   <tr><td><strong>3. Financial year</strong></td>
       <td>{{manual.financial_year}}</td></tr>
 </table>
 
 <h3>Details of claims and evidence thereof</h3>
-{{manual.claims_table}}
+<table class="ctc-table" cellspacing="0" cellpadding="6">
+  <thead>
+    <tr><th>Nature of claim</th><th>Amount (Rs.)</th><th>Evidence / particulars</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1. House Rent Allowance: rent paid to the landlord; name, address and
+          permanent account number of the landlord</td>
+      <td>{{manual.hra_rent_paid}}</td>
+      <td>Landlord: {{manual.landlord_name}}<br/>
+          Address: {{manual.landlord_address}}<br/>
+          PAN: {{manual.landlord_pan}}</td>
+    </tr>
+    <tr>
+      <td>2. Leave travel concessions or assistance</td>
+      <td>{{manual.lta_amount}}</td>
+      <td>{{manual.lta_particulars}}</td>
+    </tr>
+    <tr>
+      <td>3. Deduction of interest on borrowing: interest payable or paid to the
+          lender; name, address and permanent account number of the lender</td>
+      <td>{{manual.home_loan_interest}}</td>
+      <td>{{manual.home_loan_particulars}}</td>
+    </tr>
+    <tr>
+      <td>4. Deduction under Chapter VI-A</td>
+      <td>{{manual.chapter_via_total}}</td>
+      <td>{{manual.chapter_via_particulars}}</td>
+    </tr>
+  </tbody>
+</table>
 
 <h3>Verification</h3>
 <p>
@@ -77,6 +124,23 @@ BODY_HTML = """
   </tr>
 </table>
 """
+
+_REQUIRED_MANUAL = (
+    ("employee_pan", "Employee PAN"),
+    ("financial_year", "Financial year"),
+    ("hra_rent_paid", "Rent paid"),
+    ("landlord_name", "Landlord name"),
+    ("landlord_address", "Landlord address"),
+    ("landlord_pan", "Landlord PAN"),
+    ("lta_amount", "Leave travel amount"),
+    ("lta_particulars", "Leave travel particulars"),
+    ("home_loan_interest", "Home loan interest"),
+    ("home_loan_particulars", "Home loan particulars"),
+    ("chapter_via_total", "Chapter VI-A total"),
+    ("chapter_via_particulars", "Chapter VI-A particulars"),
+    ("parent_name", "Father's / mother's name"),
+    ("place", "Place"),
+)
 
 
 def seed_template(tenant_id: uuid.UUID) -> LetterTemplate:
@@ -99,20 +163,20 @@ def seed_template(tenant_id: uuid.UUID) -> LetterTemplate:
         is_seed=False,
     )
 
-    for token, label, source in (
-        ("computed.full_name", "Employee name", FieldSource.COMPUTED),
-        ("computed.letter_date", "Date", FieldSource.COMPUTED),
-        ("employee.work_email", "Work email", FieldSource.EMPLOYEE),
-        ("employee.designation", "Designation", FieldSource.EMPLOYEE),
-        ("manual.employee_pan", "Employee PAN", FieldSource.MANUAL),
-        ("manual.financial_year", "Financial year", FieldSource.MANUAL),
-        ("manual.claims_table", "Claims and evidence", FieldSource.MANUAL),
-        ("manual.parent_name", "Father's / mother's name", FieldSource.MANUAL),
-        ("manual.place", "Place", FieldSource.MANUAL),
-    ):
+    fields: list[tuple[str, str, FieldSource, bool]] = [
+        ("computed.full_name", "Employee name", FieldSource.COMPUTED, True),
+        ("computed.letter_date", "Date", FieldSource.COMPUTED, True),
+        ("employee.work_email", "Work email", FieldSource.EMPLOYEE, True),
+        # Optional: an employee with no designation on record can still declare.
+        ("employee.designation", "Designation", FieldSource.EMPLOYEE, False),
+    ]
+    fields += [
+        (f"manual.{token}", label, FieldSource.MANUAL, True) for token, label in _REQUIRED_MANUAL
+    ]
+    for token, label, source, required in fields:
         template.fields.append(
             LetterTemplateField(
-                tenant_id=tenant_id, token=token, label=label, source=source, required=True
+                tenant_id=tenant_id, token=token, label=label, source=source, required=required
             )
         )
 
@@ -127,32 +191,17 @@ def _money(value: object) -> str:
     "1,50,000" beside "90,000.00" looks like a rendering bug on a statutory
     form.
     """
-    from decimal import Decimal
-
     return group_indian(Decimal(str(value)).quantize(Decimal("0.01")))
 
 
 def _cell(value: object) -> str:
-    """Escape a value for the claims table.
-
-    The claims table reaches the merge engine as a MANUAL value, which the
-    engine escapes wholesale — so it has to be assembled as trusted markup with
-    each *interpolated* value escaped here.
-    """
-    import html
-
+    """Escape a value for the HTML preview table."""
     return html.escape(str(value))
 
 
-async def build_claims_table(
+async def _declarations_and_rent(
     session: AsyncSession, user: User, employee_id: uuid.UUID, financial_year: str
-) -> str:
-    """Assemble the claims table from declarations and rent.
-
-    Shows declared *and* accepted side by side. An employee signing a 12BB
-    should see exactly what was allowed and what was not, rather than
-    discovering it from a payslip.
-    """
+) -> tuple[list[TaxDeclaration], HouseRentDeclaration | None]:
     declarations = (
         await session.scalars(
             tenant_scoped(
@@ -179,6 +228,20 @@ async def build_claims_table(
             user,
         )
     )
+    return list(declarations), rent
+
+
+async def build_claims_table(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, financial_year: str
+) -> str:
+    """The claims as an escaped HTML table, for the on-screen preview.
+
+    Shows declared *and* accepted side by side. An employee signing a 12BB
+    should see exactly what was allowed and what was not, rather than
+    discovering it from a payslip. The portal renders this only inside a
+    sandboxed frame.
+    """
+    declarations, rent = await _declarations_and_rent(session, user, employee_id, financial_year)
 
     rows: list[str] = []
 
@@ -217,3 +280,69 @@ async def build_claims_table(
         "<th>Amount declared</th><th>Amount accepted</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
+
+
+def _head_sections(rules: dict[str, Any] | None) -> dict[str, set[str]]:
+    configured = (rules or {}).get("form_12bb_heads") or {}
+    return {
+        head: {str(code).upper() for code in configured.get(head, default)}
+        for head, default in DEFAULT_HEAD_SECTIONS.items()
+    }
+
+
+async def claim_values(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    financial_year: str,
+    *,
+    rules: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Plain-text values for each head of the form, declared and accepted.
+
+    Every value is filled — "Not claimed" rather than blank — because a
+    required field that resolves to nothing blocks the letter, and a blank on a
+    statutory form reads as an omission rather than a nil claim.
+    """
+    declarations, rent = await _declarations_and_rent(session, user, employee_id, financial_year)
+    heads = _head_sections(rules)
+
+    def _particulars(lines: list[TaxDeclaration]) -> tuple[str, str]:
+        if not lines:
+            return _money(0), NOT_CLAIMED
+        total = sum((Decimal(str(line.declared_amount)) for line in lines), start=Decimal(0))
+        parts = []
+        for line in lines:
+            label = line.section + (f" ({line.sub_category})" if line.sub_category else "")
+            parts.append(
+                f"{label}: declared {_money(line.declared_amount)}, accepted "
+                f"{_money(line.accepted_amount)}"
+                + (f" — {line.description}" if line.description else "")
+            )
+        return _money(total), "; ".join(parts)
+
+    lta = [d for d in declarations if d.section.upper() in heads["lta"]]
+    home_loan = [d for d in declarations if d.section.upper() in heads["home_loan"]]
+    excluded = heads["lta"] | heads["home_loan"] | heads["hra"]
+    chapter_via = [d for d in declarations if d.section.upper() not in excluded]
+
+    lta_amount, lta_text = _particulars(lta)
+    loan_amount, loan_text = _particulars(home_loan)
+    via_amount, via_text = _particulars(chapter_via)
+
+    has_rent = rent is not None and Decimal(str(rent.annual_rent)) > 0
+    return {
+        "financial_year": financial_year,
+        "hra_rent_paid": _money(rent.annual_rent) if has_rent else _money(0),
+        "landlord_name": (rent.landlord_name if has_rent else None) or NOT_CLAIMED,
+        "landlord_address": (rent.property_address if has_rent else None) or NOT_CLAIMED,
+        "landlord_pan": (rent.landlord_pan if has_rent else None) or (
+            "Not supplied" if has_rent else NOT_CLAIMED
+        ),
+        "lta_amount": lta_amount,
+        "lta_particulars": lta_text,
+        "home_loan_interest": loan_amount,
+        "home_loan_particulars": loan_text,
+        "chapter_via_total": via_amount,
+        "chapter_via_particulars": via_text,
+    }

@@ -19,6 +19,7 @@ from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -31,6 +32,7 @@ from app.models.dpdp import (
     DprRequestType,
 )
 from app.models.user import UserRole
+from app.services.dpdp import erasure as erasure_service
 from app.services.dpdp import service as dpdp_service
 from app.services.dpdp import transfers as transfer_engine
 from app.services.dpdp.breach import rehearse
@@ -297,6 +299,27 @@ async def my_export(session: DbSession, user: CurrentUser) -> dict[str, Any]:
     )
 
 
+@router.get("/dpdp/me/export/download")
+async def download_my_export(
+    session: DbSession, user: CurrentUser, request: Request
+) -> JSONResponse:
+    """Everything held about the caller, as a file. Audited before it is sent."""
+    principal = user.employee_id or user.id
+    document, filename = await dpdp_service.export_file(
+        session, user, principal_id=principal, request=request
+    )
+    return JSONResponse(
+        document, headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/dpdp/me/requests")
+async def my_requests(session: DbSession, user: CurrentUser) -> dict[str, Any]:
+    """The caller's own rights requests and what came of them."""
+    _ = user.id  # the caller's own requests only
+    return {"requests": await dpdp_service.list_my_requests(session, user)}
+
+
 @router.get("/dpdp/me/erasure-preview")
 async def my_erasure_preview(
     session: DbSession, user: CurrentUser
@@ -477,6 +500,52 @@ async def export_for_request(
     )
 
 
+@router.get("/dpdp/requests/{request_id}/export/download")
+async def download_export_for_request(
+    request_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> JSONResponse:
+    """The ACCESS export for a logged request, as a file. Admin only, and audited.
+
+    Personal data leaves only to the person or to an administrator answering
+    their request — never to HR ops browsing the queue.
+    """
+    stmt = tenant_scoped(
+        select(DataPrincipalRequest).where(DataPrincipalRequest.id == request_id),
+        DataPrincipalRequest,
+        user,
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such request.")
+    document, filename = await dpdp_service.export_file(
+        session, user, principal_id=row.principal_id, request=request
+    )
+    return JSONResponse(
+        document, headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.post("/dpdp/requests/{request_id}/execute-erasure")
+async def execute_erasure(
+    request_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """Carry out an erasure request: purge what may go, keep and explain what must stay.
+
+    Refused while a legal hold covers the person, and refused for your own data.
+    """
+    return await erasure_service.execute_erasure(
+        session, user, request_id=request_id, request=request
+    )
+
+
 @router.get("/dpdp/requests/{request_id}/erasure-preview")
 async def erasure_preview_for_request(
     request_id: uuid.UUID,
@@ -532,6 +601,16 @@ async def raise_breach(
         "board_report_due_at": row.board_report_due_at.isoformat(),
         "is_rehearsal": row.is_rehearsal,
     }
+
+
+@router.get("/dpdp/breaches")
+async def list_breaches(
+    session: DbSession,
+    user: CurrentUser,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> list[dict[str, Any]]:
+    """The breach register: every incident, newest first."""
+    return await dpdp_service.list_breaches(session, user)
 
 
 @router.get("/dpdp/breaches/rehearsal")

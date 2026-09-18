@@ -38,7 +38,14 @@ async def lifespan(app: FastAPI):
         logger.exception("Database unreachable at startup")
         if settings.is_production:
             raise
+
+    # Background jobs: one instance runs them, chosen by a Postgres advisory lock.
+    from app.services.scheduler.runner import scheduler_enabled, start_scheduler, stop_scheduler
+
+    runner = await start_scheduler(engine) if scheduler_enabled() else None
     yield
+    if runner is not None:
+        await stop_scheduler(runner)
     await engine.dispose()
 
 
@@ -55,12 +62,67 @@ app = FastAPI(
     openapi_url="/openapi.json" if not settings.is_production else None,
 )
 
+class SecurityHeadersMiddleware:
+    """Hardening headers on every response.
+
+    A pure ASGI middleware rather than `BaseHTTPMiddleware`, so the server-sent
+    notification stream is not buffered.
+
+    The API serves JSON and files, never pages, so its CSP forbids everything
+    and it may not be framed. The interactive docs (development only) load
+    scripts from a CDN and are left without a CSP.
+    """
+
+    HEADERS: tuple[tuple[bytes, bytes], ...] = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"cross-origin-opener-policy", b"same-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
+    )
+    DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
+    API_CSP = b"default-src 'none'; frame-ancestors 'none'"
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path: str = scope.get("path", "")
+
+        async def send_with_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {name.lower() for name, _ in headers}
+                for name, value in self.HEADERS:
+                    if name not in present:
+                        headers.append((name, value))
+                if not path.startswith(self.DOCS_PATHS):
+                    if b"content-security-policy" not in present:
+                        headers.append((b"content-security-policy", self.API_CSP))
+                    if b"cache-control" not in present:
+                        # Personal data must not sit in a shared or browser cache.
+                        headers.append((b"cache-control", b"no-store"))
+                if settings.is_production:
+                    headers.append(
+                        (b"strict-transport-security", b"max-age=63072000; includeSubDomains")
+                    )
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Auth-Transport"],
+    expose_headers=["Content-Disposition", "Retry-After"],
 )
 
 

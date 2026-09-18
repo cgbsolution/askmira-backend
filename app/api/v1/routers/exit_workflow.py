@@ -1,40 +1,43 @@
-"""Exit workflow and full & final settlement (slice 13)."""
+"""Exit workflow and full & final settlement (slice 13).
+
+Thin: parse, gate, delegate, serialise. Managers reach the exit and clearance
+routes for their own reporting line; who may see or sign off what is decided in
+`app.services.exit_workflow.operations` through `app.core.permissions`.
+Settlement routes are HR's.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.audit import AuditAction
+from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.exit_workflow import (
-    ClearanceItem,
+    ClearanceOwnerRole,
     ClearanceStatus,
-    ClearanceTemplate,
-    ExitRecord,
     ExitStatus,
     ExitType,
-    Settlement,
-    SettlementLine,
     SettlementStatus,
 )
 from app.models.user import UserRole
-from app.services import audit
+from app.schemas.payroll_ops import IssuedDocumentRead
+from app.services.exit_workflow import operations
 from app.services.exit_workflow import service as exit_service
 from app.services.exit_workflow import settlement as settlement_engine
+from app.services.filings import support
 
 router = APIRouter(tags=["exit-workflow"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-# Clearance is signed off by the department that owns it, not only by HR.
-CLEARANCE_ROLES = (*HR_ROLES, UserRole.MANAGER)
+# Exits and clearance are reached by managers too; which exit is theirs is
+# decided per record in the service.
+MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -47,14 +50,14 @@ class ExitCreate(BaseModel):
     requested_last_working_day: date | None = None
     approved_last_working_day: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class ExitRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None
+    employee_name: str | None
     exit_type: ExitType
     status: ExitStatus
     resignation_date: date
@@ -64,34 +67,51 @@ class ExitRead(BaseModel):
     notice_shortfall_days: int
     notice_waived: bool
     notice_waiver_reason: str | None
+    reason: str | None
     access_revoked_at: datetime | None
+    clearance_total: int
+    clearance_pending_mandatory: int
+    settlement_id: uuid.UUID | None
+    settlement_status: SettlementStatus | None
+    created_at: datetime
 
 
-class NoticeWaiver(BaseModel):
-    reason: str = Field(min_length=1)
+class ReasonRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class NoteRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class ClearanceTemplateCreate(BaseModel):
     department: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=512)
     is_mandatory: bool = True
-    display_order: int = 0
+    display_order: int = Field(default=0, ge=0)
+    owner_role: ClearanceOwnerRole = ClearanceOwnerRole.HR
+    owner_user_id: uuid.UUID | None = None
 
 
 class ClearanceTemplateRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     department: str
     description: str
     is_mandatory: bool
     display_order: int
     active: bool
+    owner_role: str
+    owner_user_id: uuid.UUID | None
+    owner_name: str | None
+
+
+class ClearanceOwnerRead(BaseModel):
+    user_id: uuid.UUID
+    full_name: str
+    role: str
 
 
 class ClearanceItemRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     exit_record_id: uuid.UUID
     department: str
@@ -100,15 +120,23 @@ class ClearanceItemRead(BaseModel):
     status: ClearanceStatus
     recovery_amount: Decimal
     cleared_at: datetime | None
+    cleared_by_name: str | None
     waiver_reason: str | None
     notes: str | None
+    owner_role: str
+    owner_user_id: uuid.UUID | None
+    owner_name: str | None
+    can_update: bool
 
 
 class ClearanceUpdate(BaseModel):
     outcome: ClearanceStatus
-    recovery_amount: Decimal = Field(default=Decimal(0), ge=0)
-    waiver_reason: str | None = None
-    notes: str | None = None
+    recovery_amount: Decimal = Field(default=Decimal(0), ge=0, max_digits=14, decimal_places=2)
+    waiver_reason: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+_Amount = Field(default=Decimal(0), ge=0, max_digits=14, decimal_places=2)
 
 
 class SettlementCompute(BaseModel):
@@ -119,32 +147,32 @@ class SettlementCompute(BaseModel):
     and then two documents say different things about the same money.
     """
 
-    final_month_salary: Decimal = Field(default=Decimal(0), ge=0)
-    final_month_basis: str = ""
-    leave_encashment: Decimal = Field(default=Decimal(0), ge=0)
-    leave_encashment_basis: str = ""
-    gratuity: Decimal = Field(default=Decimal(0), ge=0)
-    gratuity_basis: str = ""
-    pending_reimbursements: Decimal = Field(default=Decimal(0), ge=0)
-    reimbursement_basis: str = ""
-    pro_rata_bonus: Decimal = Field(default=Decimal(0), ge=0)
-    bonus_basis: str = ""
-    pending_arrears: Decimal = Field(default=Decimal(0), ge=0)
-    arrears_basis: str = ""
+    final_month_salary: Decimal = _Amount
+    final_month_basis: str = Field(default="", max_length=2000)
+    leave_encashment: Decimal = _Amount
+    leave_encashment_basis: str = Field(default="", max_length=2000)
+    gratuity: Decimal = _Amount
+    gratuity_basis: str = Field(default="", max_length=2000)
+    pending_reimbursements: Decimal = _Amount
+    reimbursement_basis: str = Field(default="", max_length=2000)
+    pro_rata_bonus: Decimal = _Amount
+    bonus_basis: str = Field(default="", max_length=2000)
+    pending_arrears: Decimal = _Amount
+    arrears_basis: str = Field(default="", max_length=2000)
 
-    notice_shortfall: Decimal = Field(default=Decimal(0), ge=0)
-    notice_basis: str = ""
-    loan_outstanding: Decimal = Field(default=Decimal(0), ge=0)
-    loan_basis: str = ""
-    excess_leave_taken: Decimal = Field(default=Decimal(0), ge=0)
-    excess_leave_basis: str = ""
-    other_recoveries: Decimal = Field(default=Decimal(0), ge=0)
-    other_recovery_basis: str = ""
+    notice_shortfall: Decimal = _Amount
+    notice_basis: str = Field(default="", max_length=2000)
+    loan_outstanding: Decimal = _Amount
+    loan_basis: str = Field(default="", max_length=2000)
+    excess_leave_taken: Decimal = _Amount
+    excess_leave_basis: str = Field(default="", max_length=2000)
+    other_recoveries: Decimal = _Amount
+    other_recovery_basis: str = Field(default="", max_length=2000)
 
     # Signed: negative is a refund to the employee, which is common for
     # someone leaving part-way through a year.
-    final_tds: Decimal = Decimal(0)
-    tax_basis: str = ""
+    final_tds: Decimal = Field(default=Decimal(0), max_digits=14, decimal_places=2)
+    tax_basis: str = Field(default="", max_length=2000)
     tax_working: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -162,11 +190,13 @@ class SettlementLineRead(BaseModel):
 
 
 class SettlementRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     exit_record_id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None
+    employee_name: str | None
+    exit_type: ExitType | None
+    last_working_day: date | None
     status: SettlementStatus
     total_earnings: Decimal
     total_recoveries: Decimal
@@ -177,10 +207,7 @@ class SettlementRead(BaseModel):
     computed_at: datetime | None
     approved_at: datetime | None
     paid_at: datetime | None
-
-
-class HoldRequest(BaseModel):
-    reason: str = Field(min_length=1)
+    statement_letter_id: uuid.UUID | None
 
 
 class NoticeRecoveryRequest(BaseModel):
@@ -195,123 +222,61 @@ class NoticeRecoveryRequest(BaseModel):
     wage_basis_label: str = Field(min_length=1)
 
 
-# ── Exits ───────────────────────────────────────────────────────────────────
+class ExitLetterRequest(BaseModel):
+    kind: Literal["relieving", "experience"]
 
 
-@router.post(
-    "/exits",
-    response_model=ExitRead,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*HR_ROLES))],
-)
-async def create_exit(
-    payload: ExitCreate,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
-) -> ExitRead:
-    record = await exit_service.initiate_exit(
-        session,
-        user,
-        employee_id=payload.employee_id,
-        exit_type=payload.exit_type,
-        resignation_date=payload.resignation_date,
-        requested_last_working_day=payload.requested_last_working_day,
-        approved_last_working_day=payload.approved_last_working_day,
-        notice_period_days=payload.notice_period_days,
-        reason=payload.reason,
-        request=request,
-    )
-    await session.commit()
-    await session.refresh(record)
-    return ExitRead.model_validate(record)
+class LetterGateRead(BaseModel):
+    allowed: bool
+    reason: str
+    requires_settlement: bool
+    settlement_status: SettlementStatus | None
+    hold_reason: str | None
+
+
+class ExitPolicy(BaseModel):
+    letters_require_settlement: bool
+
+
+async def _exit_read(session, user, record) -> ExitRead:
+    return ExitRead(**await operations.exit_read(session, user, record))
+
+
+async def _settlement_read(session, user, settlement) -> SettlementRead:
+    rows = await operations.settlement_reads(session, user, [settlement])
+    return SettlementRead(**rows[0])
+
+
+# ── Policy, templates, settlements list ─────────────────────────────────────
+# Registered before `/exits/{exit_id}`: a literal path must match before the
+# path parameter tries to read it as an id.
 
 
 @router.get(
-    "/exits",
-    response_model=list[ExitRead],
+    "/exits/policy",
+    response_model=ExitPolicy,
     dependencies=[Depends(require_roles(*HR_ROLES))],
 )
-async def list_exits(
-    user: CurrentUser,
-    session: DbSession,
-    exit_status: ExitStatus | None = None,
-) -> list[ExitRead]:
-    stmt = select(ExitRecord).order_by(ExitRecord.resignation_date.desc())
-    if exit_status is not None:
-        stmt = stmt.where(ExitRecord.status == exit_status)
-    rows = (await session.scalars(tenant_scoped(stmt, ExitRecord, user))).all()
-    return [ExitRead.model_validate(row) for row in rows]
+async def get_policy(user: CurrentUser, session: DbSession) -> ExitPolicy:
+    return ExitPolicy(**await operations.exit_policy(session, user))
 
 
-@router.post(
-    "/exits/{exit_id}/waive-notice",
-    response_model=ExitRead,
+@router.put(
+    "/exits/policy",
+    response_model=ExitPolicy,
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
-async def waive_notice(
-    exit_id: uuid.UUID,
-    payload: NoticeWaiver,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
-) -> ExitRead:
-    """Waive a notice shortfall, with a reason.
-
-    Waiving recovery is giving away money, so it is recorded with who did it
-    and why.
-    """
-    record = await session.scalar(
-        tenant_scoped(select(ExitRecord).where(ExitRecord.id == exit_id), ExitRecord, user)
-    )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exit record not found")
-
-    record.notice_waived = True
-    record.notice_waived_by_user_id = user.id
-    record.notice_waiver_reason = payload.reason
-    await session.flush()
-
-    await audit.record(
+async def set_policy(
+    payload: ExitPolicy, user: CurrentUser, session: DbSession, request: Request
+) -> ExitPolicy:
+    result = await operations.set_exit_policy(
         session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.APPROVE,
-        entity_type="exit_record",
-        entity_id=record.id,
-        summary=(
-            f"Waived {record.notice_shortfall_days} day(s) of notice shortfall: "
-            f"{payload.reason}"
-        ),
-        changes={"notice_waiver_reason": payload.reason},
+        user,
+        letters_require_settlement=payload.letters_require_settlement,
         request=request,
     )
     await session.commit()
-    await session.refresh(record)
-    return ExitRead.model_validate(record)
-
-
-@router.post(
-    "/exits/{exit_id}/revoke-access",
-    response_model=ExitRead,
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
-)
-async def revoke(
-    exit_id: uuid.UUID,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
-) -> ExitRead:
-    """Deactivate the login. Everything else is retained — see slice 26."""
-    record = await exit_service.revoke_access(
-        session, user, exit_id=exit_id, request=request
-    )
-    await session.commit()
-    await session.refresh(record)
-    return ExitRead.model_validate(record)
-
-
-# ── Clearance ───────────────────────────────────────────────────────────────
+    return ExitPolicy(**result)
 
 
 @router.get(
@@ -319,19 +284,8 @@ async def revoke(
     response_model=list[ClearanceTemplateRead],
     dependencies=[Depends(require_roles(*HR_ROLES))],
 )
-async def list_templates(
-    user: CurrentUser, session: DbSession
-) -> list[ClearanceTemplateRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(ClearanceTemplate).order_by(ClearanceTemplate.display_order),
-                ClearanceTemplate,
-                user,
-            )
-        )
-    ).all()
-    return [ClearanceTemplateRead.model_validate(row) for row in rows]
+async def list_templates(user: CurrentUser, session: DbSession) -> list[ClearanceTemplateRead]:
+    return [ClearanceTemplateRead(**row) for row in await operations.list_templates(session, user)]
 
 
 @router.post(
@@ -341,67 +295,47 @@ async def list_templates(
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def create_template(
-    payload: ClearanceTemplateCreate,
-    user: CurrentUser,
-    session: DbSession,
+    payload: ClearanceTemplateCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> ClearanceTemplateRead:
-    template = ClearanceTemplate(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(template)
-    await session.commit()
-    await session.refresh(template)
-    return ClearanceTemplateRead.model_validate(template)
-
-
-@router.get(
-    "/exits/{exit_id}/clearance",
-    response_model=list[ClearanceItemRead],
-    dependencies=[Depends(require_roles(*CLEARANCE_ROLES))],
-)
-async def list_clearance(
-    exit_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> list[ClearanceItemRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(ClearanceItem)
-                .where(ClearanceItem.exit_record_id == exit_id)
-                .order_by(ClearanceItem.department),
-                ClearanceItem,
-                user,
-            )
-        )
-    ).all()
-    return [ClearanceItemRead.model_validate(row) for row in rows]
-
-
-@router.patch(
-    "/exits/clearance/{item_id}",
-    response_model=ClearanceItemRead,
-    dependencies=[Depends(require_roles(*CLEARANCE_ROLES))],
-)
-async def update_clearance(
-    item_id: uuid.UUID,
-    payload: ClearanceUpdate,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
-) -> ClearanceItemRead:
-    item = await exit_service.clear_item(
+    template = await operations.create_template(
         session,
         user,
-        item_id=item_id,
-        outcome=payload.outcome,
-        recovery_amount=payload.recovery_amount,
-        waiver_reason=payload.waiver_reason,
-        notes=payload.notes,
+        department=payload.department,
+        description=payload.description,
+        is_mandatory=payload.is_mandatory,
+        display_order=payload.display_order,
+        owner_role=payload.owner_role,
+        owner_user_id=payload.owner_user_id,
         request=request,
     )
     await session.commit()
-    await session.refresh(item)
-    return ClearanceItemRead.model_validate(item)
+    rows = await operations.list_templates(session, user)
+    return ClearanceTemplateRead(**next(row for row in rows if row["id"] == template.id))
 
 
-# ── Settlement ──────────────────────────────────────────────────────────────
+@router.get(
+    "/exits/clearance-owners",
+    response_model=list[ClearanceOwnerRead],
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def clearance_owners(user: CurrentUser, session: DbSession) -> list[ClearanceOwnerRead]:
+    return [ClearanceOwnerRead(**row) for row in await operations.owner_candidates(session, user)]
+
+
+@router.get(
+    "/exits/settlements",
+    response_model=list[SettlementRead],
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def list_settlements(
+    user: CurrentUser,
+    session: DbSession,
+    settlement_status: SettlementStatus | None = Query(default=None, alias="status"),
+) -> list[SettlementRead]:
+    rows = await operations.list_settlements(
+        session, user, settlement_status=settlement_status
+    )
+    return [SettlementRead(**row) for row in rows]
 
 
 @router.post(
@@ -428,6 +362,204 @@ async def notice_recovery(payload: NoticeRecoveryRequest) -> dict[str, str]:
     return {"amount": str(amount), "basis": basis}
 
 
+# ── Exits ───────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/exits",
+    response_model=ExitRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def create_exit(
+    payload: ExitCreate, user: CurrentUser, session: DbSession, request: Request
+) -> ExitRead:
+    """Open an exit: HR for anyone, a manager for their reporting line, nobody for themselves."""
+    record = await exit_service.initiate_exit(
+        session,
+        user,
+        employee_id=payload.employee_id,
+        exit_type=payload.exit_type,
+        resignation_date=payload.resignation_date,
+        requested_last_working_day=payload.requested_last_working_day,
+        approved_last_working_day=payload.approved_last_working_day,
+        notice_period_days=payload.notice_period_days,
+        reason=payload.reason,
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(record)
+    return await _exit_read(session, user, record)
+
+
+@router.get(
+    "/exits",
+    response_model=list[ExitRead],
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def list_exits(
+    user: CurrentUser, session: DbSession, exit_status: ExitStatus | None = None
+) -> list[ExitRead]:
+    """HR sees every exit; a manager their reporting line and items they own."""
+    return [
+        ExitRead(**row)
+        for row in await operations.list_exits(session, user, exit_status=exit_status)
+    ]
+
+
+@router.get(
+    "/exits/{exit_id}",
+    response_model=ExitRead,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def get_exit(exit_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ExitRead:
+    record = await operations.visible_exit(session, user, exit_id)
+    return await _exit_read(session, user, record)
+
+
+@router.post(
+    "/exits/{exit_id}/cancel",
+    response_model=ExitRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def cancel_exit(
+    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> ExitRead:
+    record = await operations.cancel_exit(
+        session, user, exit_id, reason=payload.reason, request=request
+    )
+    await session.commit()
+    return await _exit_read(session, user, record)
+
+
+@router.post(
+    "/exits/{exit_id}/waive-notice",
+    response_model=ExitRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def waive_notice(
+    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> ExitRead:
+    """Waive a notice shortfall, with a reason. Waiving recovery gives money away."""
+    record = await operations.waive_notice(
+        session, user, exit_id, reason=payload.reason, request=request
+    )
+    await session.commit()
+    return await _exit_read(session, user, record)
+
+
+@router.post(
+    "/exits/{exit_id}/revoke-access",
+    response_model=ExitRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def revoke(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> ExitRead:
+    """Deactivate the login. Everything else is retained — see slice 26."""
+    record = await exit_service.revoke_access(session, user, exit_id=exit_id, request=request)
+    await session.commit()
+    await session.refresh(record)
+    return await _exit_read(session, user, record)
+
+
+# ── Clearance ───────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/exits/{exit_id}/clearance",
+    response_model=list[ClearanceItemRead],
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def list_clearance(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[ClearanceItemRead]:
+    return [
+        ClearanceItemRead(**row)
+        for row in await operations.list_clearance(session, user, exit_id)
+    ]
+
+
+@router.patch(
+    "/exits/clearance/{item_id}",
+    response_model=ClearanceItemRead,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def update_clearance(
+    item_id: uuid.UUID,
+    payload: ClearanceUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ClearanceItemRead:
+    """Sign an item off: its owner, the line manager for a manager item, or HR."""
+    item = await exit_service.clear_item(
+        session,
+        user,
+        item_id=item_id,
+        outcome=payload.outcome,
+        recovery_amount=payload.recovery_amount,
+        waiver_reason=payload.waiver_reason,
+        notes=payload.notes,
+        request=request,
+    )
+    await session.commit()
+    rows = await operations.list_clearance(session, user, item.exit_record_id)
+    return ClearanceItemRead(**next(row for row in rows if row["id"] == item.id))
+
+
+# ── Letters ─────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/exits/{exit_id}/letter-gate",
+    response_model=LetterGateRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def letter_gate(exit_id: uuid.UUID, user: CurrentUser, session: DbSession) -> LetterGateRead:
+    record = await operations.visible_exit(session, user, exit_id)
+    return LetterGateRead(**await operations.letter_gate(session, user, record.employee_id))
+
+
+@router.post(
+    "/exits/{exit_id}/letters",
+    response_model=IssuedDocumentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def issue_letter(
+    exit_id: uuid.UUID,
+    payload: ExitLetterRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> IssuedDocumentRead:
+    """A relieving or experience letter — refused while the settlement is on hold,
+    and, where the workspace says so, until it is approved."""
+    letter = await operations.issue_exit_letter(
+        session, user, exit_id, kind=payload.kind, request=request
+    )
+    await session.commit()
+    await session.refresh(letter)
+    return IssuedDocumentRead.from_model(letter)
+
+
+# ── Settlement ──────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/exits/{exit_id}/settlement/sources",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def settlement_sources(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Figures other modules already hold for this leaver, to prefill the settlement."""
+    return await operations.settlement_sources(session, user, exit_id)
+
+
 @router.post(
     "/exits/{exit_id}/settlement",
     response_model=SettlementRead,
@@ -450,7 +582,19 @@ async def compute(
     )
     await session.commit()
     await session.refresh(settlement)
-    return SettlementRead.model_validate(settlement)
+    return await _settlement_read(session, user, settlement)
+
+
+@router.get(
+    "/exits/{exit_id}/settlement",
+    response_model=SettlementRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def get_settlement(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> SettlementRead:
+    settlement = await operations.settlement_for_exit(session, user, exit_id)
+    return await _settlement_read(session, user, settlement)
 
 
 @router.get(
@@ -466,26 +610,7 @@ async def settlement_lines(
     The employee reads this on the day they lose access to anyone who could
     explain it, so each line has to stand on its own.
     """
-    settlement = await session.scalar(
-        tenant_scoped(
-            select(Settlement).where(Settlement.exit_record_id == exit_id), Settlement, user
-        )
-    )
-    if settlement is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No settlement has been computed"
-        )
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(SettlementLine)
-                .where(SettlementLine.settlement_id == settlement.id)
-                .order_by(SettlementLine.display_order),
-                SettlementLine,
-                user,
-            )
-        )
-    ).all()
+    rows = await operations.settlement_lines(session, user, exit_id)
     return [SettlementLineRead.model_validate(row) for row in rows]
 
 
@@ -496,18 +621,38 @@ async def settlement_lines(
 )
 async def hold(
     settlement_id: uuid.UUID,
-    payload: HoldRequest,
+    payload: ReasonRequest,
     user: CurrentUser,
     session: DbSession,
     request: Request,
 ) -> SettlementRead:
-    """Computed but not paid, with the reason recorded."""
+    """Computed but not paid, with the reason recorded. Letters wait too."""
     settlement = await exit_service.hold_settlement(
         session, user, settlement_id=settlement_id, reason=payload.reason, request=request
     )
     await session.commit()
     await session.refresh(settlement)
-    return SettlementRead.model_validate(settlement)
+    return await _settlement_read(session, user, settlement)
+
+
+@router.post(
+    "/exits/settlements/{settlement_id}/release-hold",
+    response_model=SettlementRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def release_hold(
+    settlement_id: uuid.UUID,
+    payload: NoteRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SettlementRead:
+    settlement = await operations.release_hold(
+        session, user, settlement_id, note=payload.note, request=request
+    )
+    await session.commit()
+    await session.refresh(settlement)
+    return await _settlement_read(session, user, settlement)
 
 
 @router.post(
@@ -516,52 +661,41 @@ async def hold(
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def approve_settlement(
-    settlement_id: uuid.UUID,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
+    settlement_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> SettlementRead:
-    """Sign off for payment — or, where the net is negative, for a demand.
-
-    The two are different outcomes and the status says which, so a demand is
-    never mistaken for a payment awaiting a bank run.
-    """
-    settlement = await session.scalar(
-        tenant_scoped(
-            select(Settlement).where(Settlement.id == settlement_id), Settlement, user
-        )
-    )
-    if settlement is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settlement not found")
-    if settlement.status is SettlementStatus.PAID:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="This settlement has been paid."
-        )
-
-    is_demand = Decimal(str(settlement.net_amount)) < 0
-    settlement.status = (
-        SettlementStatus.DEMAND_RAISED if is_demand else SettlementStatus.APPROVED
-    )
-    settlement.approved_by_user_id = user.id
-    settlement.approved_at = datetime.now(tz=None).astimezone()
-    await session.flush()
-
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.APPROVE,
-        entity_type="settlement",
-        entity_id=settlement.id,
-        summary=(
-            f"Raised a demand for {-Decimal(str(settlement.net_amount))} against the "
-            "employee"
-            if is_demand
-            else f"Approved a settlement of {settlement.net_amount} for payment"
-        ),
-        changes={"net_amount": str(settlement.net_amount), "is_demand": is_demand},
-        request=request,
+    """Sign off for payment — or, where the net is negative, for a demand."""
+    settlement = await operations.approve_settlement(
+        session, user, settlement_id, request=request
     )
     await session.commit()
     await session.refresh(settlement)
-    return SettlementRead.model_validate(settlement)
+    return await _settlement_read(session, user, settlement)
+
+
+@router.post(
+    "/exits/settlements/{settlement_id}/statement",
+    response_model=IssuedDocumentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def issue_statement(
+    settlement_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> IssuedDocumentRead:
+    """The itemised settlement statement, issued through the letter engine."""
+    letter = await operations.issue_statement(session, user, settlement_id, request=request)
+    await session.commit()
+    await session.refresh(letter)
+    return IssuedDocumentRead.from_model(letter)
+
+
+@router.get(
+    "/exits/settlements/{settlement_id}/statement/pdf",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def statement_pdf(
+    settlement_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> Response:
+    data, name = await operations.statement_pdf(session, user, settlement_id)
+    return Response(
+        content=data, media_type="application/pdf", headers=support.attachment_headers(name)
+    )

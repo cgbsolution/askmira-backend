@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -23,11 +23,131 @@ from app.models.notifications import (
     WhatsAppConsent,
 )
 from app.models.user import UserRole
+from app.services.notifications import admin as notification_admin
 from app.services.notifications import dispatch as notification_service
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+
+
+class PolicyUpdate(BaseModel):
+    quiet_hours_enabled: bool
+    quiet_start: time
+    quiet_end: time
+    timezone: str = Field(min_length=1, max_length=64)
+    rate_limit_per_hour: int = Field(ge=1, le=1000)
+    max_attempts: int = Field(ge=1, le=20)
+
+
+class TemplateSave(BaseModel):
+    event_key: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_.]+$")
+    channel: Channel
+    locale: str = Field(default="en-IN", min_length=2, max_length=16)
+    subject: str | None = Field(default=None, max_length=512)
+    body: str = Field(min_length=1, max_length=8000)
+
+
+class SmtpSave(BaseModel):
+    """`password` omitted keeps the stored one; an empty string clears it."""
+
+    enabled: bool = True
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=512)
+    use_starttls: bool = True
+    use_ssl: bool = False
+    from_address: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=320)
+    from_name: str | None = Field(default=None, max_length=128)
+
+
+# ── The caller's own tallies and the catalogue ──────────────────────────────
+
+
+@router.get("/unread-count")
+async def unread_count(user: CurrentUser, session: DbSession) -> dict[str, int]:
+    """The number behind the header bell."""
+    return {"count": await notification_admin.unread_count(session, user)}
+
+
+@router.post("/read-all")
+async def read_all(user: CurrentUser, session: DbSession) -> dict[str, int]:
+    return {"marked": await notification_admin.mark_all_read(session, user)}
+
+
+@router.get("/channels")
+async def channels(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Which channels actually deliver here — push and unconnected ones say so."""
+    return await notification_admin.channel_status(session, user)
+
+
+@router.get("/events")
+async def events(user: CurrentUser) -> list[dict[str, Any]]:
+    return notification_admin.event_catalogue()
+
+
+# ── Workspace administration ────────────────────────────────────────────────
+
+
+@router.get("/admin/policy", dependencies=ADMIN_ONLY)
+async def get_policy(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await notification_admin.get_policy(session, user)
+
+
+@router.put("/admin/policy", dependencies=ADMIN_ONLY)
+async def update_policy(
+    payload: PolicyUpdate, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await notification_admin.update_policy(
+        session, user, **payload.model_dump(), request=request
+    )
+
+
+@router.get("/admin/templates", dependencies=ADMIN_ONLY)
+async def list_templates(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await notification_admin.list_templates(session, user)
+
+
+@router.put("/admin/templates", dependencies=ADMIN_ONLY)
+async def save_template(
+    payload: TemplateSave, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Save the next version of a template. The previous version is kept, inactive."""
+    return await notification_admin.save_template(
+        session, user, **payload.model_dump(), request=request
+    )
+
+
+@router.post("/admin/failed/{notification_id}/retry", dependencies=ADMIN_ONLY)
+async def retry_failed(
+    notification_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await notification_admin.retry_notification(
+        session, user, notification_id=notification_id, request=request
+    )
+
+
+@router.get("/admin/smtp", dependencies=ADMIN_ONLY)
+async def get_smtp(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """The relay settings. The password is never returned — only whether one is set."""
+    return await notification_admin.smtp_settings(session, user)
+
+
+@router.put("/admin/smtp", dependencies=ADMIN_ONLY)
+async def save_smtp(
+    payload: SmtpSave, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await notification_admin.save_smtp(
+        session, user, **payload.model_dump(), request=request
+    )
+
+
+@router.post("/admin/smtp/test", dependencies=ADMIN_ONLY)
+async def test_smtp(user: CurrentUser, session: DbSession, request: Request) -> dict[str, Any]:
+    """Send a test message to the admin who asked."""
+    return await notification_admin.test_smtp(session, user, request=request)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────

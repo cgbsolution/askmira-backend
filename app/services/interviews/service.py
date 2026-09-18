@@ -18,6 +18,12 @@ verbal feedback is how a hiring decision becomes undefendable.
 
 **A calendar that could not be read is never treated as free.** The proposal
 carries the caveat and names whose calendar is unverified.
+
+Who sees what: HR and the requisition's hiring team see every interview for it;
+a panellist sees the interviews they are on and nothing else (see
+`app.services.hiring.visibility`). Whether peer feedback is hidden until you
+submit your own is the tenant's setting, read here — never a query parameter a
+panellist could flip.
 """
 
 from __future__ import annotations
@@ -26,15 +32,17 @@ import hashlib
 import secrets
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
-from app.models.hiring import Candidate
+from app.models.hiring import Candidate, InterviewScore, Requisition
 from app.models.interview import (
     CalendarConnection,
     Interview,
@@ -48,6 +56,7 @@ from app.models.interview import (
     ResponseStatus,
     SelfScheduleLink,
 )
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
 from app.services.calendar import registry as calendar_registry
@@ -58,28 +67,44 @@ from app.services.calendar.base import (
     EventSpec,
     Transport,
 )
+from app.services.hiring import signals, visibility
 from app.services.interviews import availability
 from app.services.interviews import feedback as feedback_engine
 from app.services.notifications import dispatch
 
 __all__ = [
+    "DEFAULT_REMINDER_HOURS",
     "SELF_SCHEDULE_TTL_DAYS",
     "advance_blockers",
+    "advance_check",
     "book_self_schedule",
     "cancel_interview",
     "consolidated_view",
     "create_self_schedule_link",
+    "create_stage",
+    "interview_detail",
+    "list_interviews_for",
+    "list_stages",
+    "panel_people",
     "propose_panel_slots",
+    "record_outcome",
     "record_response",
     "reschedule_interview",
     "schedule_interview",
+    "send_due_interview_reminders",
     "submit_feedback",
+    "update_stage",
+    "view_self_schedule",
     "visible_feedback",
 ]
 
 #: A self-scheduling link that never expires is a link a candidate books
 #: three months late against a role that closed.
 SELF_SCHEDULE_TTL_DAYS = 14
+
+#: Hours before an interview that panellists are reminded, unless the tenant sets
+#: `interview_reminder_hours` in its settings.
+DEFAULT_REMINDER_HOURS: tuple[int, ...] = (24, 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -142,6 +167,175 @@ async def _email_for(session: AsyncSession, user_id: uuid.UUID) -> str | None:
     return person.email if person else None
 
 
+async def _require_panel_members(
+    session: AsyncSession, user: User, user_ids: list[uuid.UUID]
+) -> None:
+    """Every panellist must be an active login in this tenant.
+
+    Ids arrive in the request body. Without this check a panel could name a user
+    from another company, who would then be invited to — and able to read — this
+    interview.
+    """
+    wanted = {uid for uid in user_ids if uid is not None}
+    if not wanted:
+        return
+    found = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(User.id.in_(wanted), User.is_active.is_(True)),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if found != wanted:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "One or more people on this panel are not active users in this workspace. "
+                "Nothing was scheduled."
+            ),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stages
+# ═══════════════════════════════════════════════════════════════════════════
+
+_STAGE_FIELDS = (
+    "name",
+    "sequence",
+    "stage_type",
+    "duration_minutes",
+    "mode",
+    "feedback_template_id",
+    "required_competencies",
+    "is_eliminating",
+    "feedback_required",
+    "preparation_notes",
+)
+
+
+async def _sequence_taken(
+    session: AsyncSession, user: User, requisition_id: uuid.UUID, sequence: int,
+    *, excluding: uuid.UUID | None = None,
+) -> bool:
+    stmt = select(InterviewStage.id).where(
+        InterviewStage.requisition_id == requisition_id,
+        InterviewStage.sequence == sequence,
+    )
+    if excluding is not None:
+        stmt = stmt.where(InterviewStage.id != excluding)
+    return await session.scalar(tenant_scoped(stmt, InterviewStage, user)) is not None
+
+
+async def create_stage(
+    session: AsyncSession, user: User, *, values: dict[str, Any], request: Request | None = None
+) -> InterviewStage:
+    """Add a round to a requisition's interview process."""
+    requisition = await visibility.load_requisition(session, user, values["requisition_id"])
+    if await _sequence_taken(session, user, requisition.id, values["sequence"]):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Round {values['sequence']} already exists on {requisition.code}.",
+        )
+    stage = InterviewStage(
+        tenant_id=user.tenant_id,
+        requisition_id=requisition.id,
+        **{k: values[k] for k in _STAGE_FIELDS if k in values},
+    )
+    stage.required_competencies = [
+        str(c).strip()[:64] for c in (values.get("required_competencies") or []) if str(c).strip()
+    ]
+    session.add(stage)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="interview_stage",
+        entity_id=stage.id,
+        summary=f"Interview round {stage.sequence} '{stage.name}' added to {requisition.code}",
+        request=request,
+    )
+    return stage
+
+
+async def update_stage(
+    session: AsyncSession,
+    user: User,
+    *,
+    stage_id: uuid.UUID,
+    changes: dict[str, Any],
+    request: Request | None = None,
+) -> InterviewStage:
+    stage = await _stage(session, user, stage_id)
+    await visibility.load_requisition(session, user, stage.requisition_id)
+    unknown = set(changes) - set(_STAGE_FIELDS)
+    if unknown or not changes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nothing to change." if not changes else f"Not editable: {sorted(unknown)}",
+        )
+    if "sequence" in changes and await _sequence_taken(
+        session, user, stage.requisition_id, changes["sequence"], excluding=stage.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Round {changes['sequence']} already exists on this requisition.",
+        )
+    for field, value in changes.items():
+        if value is None and field not in ("feedback_template_id", "preparation_notes"):
+            continue
+        setattr(stage, field, value)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="interview_stage",
+        entity_id=stage.id,
+        summary=f"Interview round '{stage.name}' edited: {', '.join(sorted(changes))}",
+        request=request,
+    )
+    return stage
+
+
+async def list_stages(
+    session: AsyncSession, user: User, *, requisition_id: uuid.UUID | None
+) -> list[InterviewStage]:
+    """The rounds for a requisition. Outside HR, only for the caller's own requisitions."""
+    stmt = select(InterviewStage).order_by(InterviewStage.requisition_id, InterviewStage.sequence)
+    if requisition_id is not None:
+        await visibility.load_requisition(session, user, requisition_id)
+        stmt = stmt.where(InterviewStage.requisition_id == requisition_id)
+    elif not permissions.is_hr(user):
+        stmt = stmt.where(
+            InterviewStage.requisition_id.in_(visibility.team_requisition_ids(user))
+        )
+    rows = await session.scalars(tenant_scoped(stmt, InterviewStage, user))
+    return list(rows.all())
+
+
+async def panel_people(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Active logins who can sit on a panel, for the scheduling form."""
+    rows = await session.scalars(
+        tenant_scoped(
+            select(User).where(User.is_active.is_(True)).order_by(User.full_name),
+            User,
+            user,
+        )
+    )
+    return [
+        {"user_id": str(u.id), "full_name": u.full_name, "email": u.email, "role": u.role.value}
+        for u in rows.all()
+    ]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Availability
 # ═══════════════════════════════════════════════════════════════════════════
@@ -172,6 +366,7 @@ async def propose_panel_slots(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No panelists. There is nothing to find a time for.",
         )
+    await _require_panel_members(session, user, panelist_user_ids)
 
     working = availability.WorkingHours(timezone_name=timezone_name)
     windows = working.windows(from_day=from_day, days=days)
@@ -400,11 +595,22 @@ async def schedule_interview(
     )
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    if candidate.requisition_id != stage.requisition_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "This interview round belongs to a different requisition from the one "
+                "the candidate is being considered for."
+            ),
+        )
     if not panelist_user_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="An interview needs at least one interviewer.",
         )
+    await _require_panel_members(
+        session, user, [*panelist_user_ids, *(observer_user_ids or [])]
+    )
 
     utc_start = availability.to_utc(start, candidate_timezone)
     interview = Interview(
@@ -443,6 +649,21 @@ async def schedule_interview(
     )
     interview.calendar_warnings = warnings
     await session.flush()
+
+    await dispatch.notify(
+        session,
+        tenant_id=user.tenant_id,
+        event_key="interview.scheduled",
+        recipient_user_ids=list(
+            dict.fromkeys([*panelist_user_ids, *(observer_user_ids or [])])
+        ),
+        payload={
+            "candidate": candidate.full_name,
+            "stage": stage.name,
+            "when": utc_start.isoformat(),
+        },
+        commit=False,
+    )
 
     await audit.record(
         session,
@@ -618,6 +839,248 @@ async def cancel_interview(
             "warnings": warnings}
 
 
+_OUTCOMES = frozenset(
+    {InterviewStatus.COMPLETED, InterviewStatus.CANDIDATE_NO_SHOW, InterviewStatus.PANEL_NO_SHOW}
+)
+
+
+async def record_outcome(
+    session: AsyncSession,
+    user: User,
+    *,
+    interview_id: uuid.UUID,
+    outcome: InterviewStatus,
+    note: str | None = None,
+    request: Request | None = None,
+) -> dict:
+    """Mark an interview completed, or record which side did not show.
+
+    Candidate and panel no-shows are separate statuses: one is a sourcing signal
+    and one is an internal one, and a single NO_SHOW answers neither question.
+    """
+    interview = await _interview(session, user, interview_id)
+    if outcome not in _OUTCOMES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "An outcome is completed, candidate no-show or panel no-show. Use cancel "
+                "or reschedule for anything else."
+            ),
+        )
+    if interview.status is InterviewStatus.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This interview was cancelled; it has no outcome to record.",
+        )
+    if interview.scheduled_start > datetime.now(UTC) + timedelta(minutes=15):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This interview has not started yet, so its outcome cannot be recorded.",
+        )
+
+    previous = interview.status
+    interview.status = outcome
+    if outcome is InterviewStatus.COMPLETED:
+        interview.completed_at = datetime.now(UTC)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="interview",
+        entity_id=interview.id,
+        summary=(
+            f"Interview outcome recorded: {previous.value} -> {outcome.value}"
+            + (f" ({note.strip()})" if note and note.strip() else "")
+        ),
+        request=request,
+    )
+    return {"interview_id": str(interview.id), "status": interview.status.value}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reading
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _names_for(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    if not ids:
+        return {}
+    rows = await session.execute(
+        tenant_scoped(
+            select(User.id, User.full_name, User.email).where(User.id.in_(ids)), User, user
+        )
+    )
+    return {row.id: (row.full_name, row.email) for row in rows}
+
+
+async def list_interviews_for(
+    session: AsyncSession,
+    user: User,
+    *,
+    scope: str = "all",
+    candidate_id: uuid.UUID | None = None,
+    requisition_id: uuid.UUID | None = None,
+    interview_status: InterviewStatus | None = None,
+    upcoming_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Interviews this caller may see.
+
+    `mine` is the interviews the caller is on the panel of. `all` is, for HR,
+    everything; for a manager, their panels plus their own requisitions; for
+    anybody else, their panels — the same as `mine`.
+    """
+    on_my_panel = tenant_scoped(
+        select(InterviewPanelist.interview_id).where(InterviewPanelist.user_id == user.id),
+        InterviewPanelist,
+        user,
+    )
+    stmt = tenant_scoped(
+        select(Interview, Candidate, InterviewStage, Requisition)
+        .join(Candidate, Candidate.id == Interview.candidate_id)
+        .join(InterviewStage, InterviewStage.id == Interview.stage_id)
+        .join(Requisition, Requisition.id == Candidate.requisition_id),
+        Interview,
+        user,
+    )
+    if scope == "mine" or (not permissions.is_hr(user) and user.role.value != "manager"):
+        stmt = stmt.where(Interview.id.in_(on_my_panel))
+    elif not permissions.is_hr(user):
+        stmt = stmt.where(
+            or_(
+                Interview.id.in_(on_my_panel),
+                Candidate.requisition_id.in_(visibility.team_requisition_ids(user)),
+            )
+        )
+    if candidate_id is not None:
+        stmt = stmt.where(Interview.candidate_id == candidate_id)
+    if requisition_id is not None:
+        stmt = stmt.where(Candidate.requisition_id == requisition_id)
+    if interview_status is not None:
+        stmt = stmt.where(Interview.status == interview_status)
+    if upcoming_only:
+        stmt = stmt.where(Interview.scheduled_end >= datetime.now(UTC))
+
+    rows = (await session.execute(stmt.order_by(Interview.scheduled_start).limit(500))).all()
+    interview_ids = [interview.id for interview, *_ in rows]
+    panel_rows: list[InterviewPanelist] = []
+    if interview_ids:
+        panel_rows = list(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(InterviewPanelist).where(
+                            InterviewPanelist.interview_id.in_(interview_ids)
+                        ),
+                        InterviewPanelist,
+                        user,
+                    )
+                )
+            ).all()
+        )
+    names = await _names_for(session, user, {p.user_id for p in panel_rows})
+    by_interview: dict[uuid.UUID, list[InterviewPanelist]] = {}
+    for panelist in panel_rows:
+        by_interview.setdefault(panelist.interview_id, []).append(panelist)
+
+    out = []
+    for interview, candidate, stage, requisition in rows:
+        panel = by_interview.get(interview.id, [])
+        mine = next((p for p in panel if p.user_id == user.id), None)
+        oversees = permissions.is_hr(user) or visibility.is_hiring_team(user, requisition)
+        out.append(
+            {
+                "id": str(interview.id),
+                "candidate_id": str(candidate.id),
+                "candidate_name": candidate.full_name,
+                "requisition_id": str(requisition.id),
+                "requisition_code": requisition.code,
+                "requisition_title": requisition.title,
+                "stage_id": str(stage.id),
+                "stage_name": stage.name,
+                "scheduled_start": interview.scheduled_start.isoformat(),
+                "scheduled_end": interview.scheduled_end.isoformat(),
+                "candidate_timezone": interview.candidate_timezone,
+                "mode": interview.mode.value,
+                "location_or_link": interview.location_or_link,
+                "status": interview.status.value,
+                "reschedule_count": interview.reschedule_count,
+                "calendar_warnings": list(interview.calendar_warnings or []) if oversees else [],
+                "panel": [
+                    {
+                        "user_id": str(p.user_id),
+                        "name": names.get(p.user_id, ("", ""))[0],
+                        "role": p.role.value,
+                        "response": p.response_status.value,
+                        "feedback_submitted": p.feedback_submitted_at is not None,
+                    }
+                    for p in panel
+                ],
+                "my_role": mine.role.value if mine else None,
+                "my_response": mine.response_status.value if mine else None,
+                "my_feedback_submitted": bool(mine and mine.feedback_submitted_at),
+                "can_manage": permissions.is_hr(user),
+                "oversees": oversees,
+            }
+        )
+    return out
+
+
+async def interview_detail(
+    session: AsyncSession, user: User, *, interview_id: uuid.UUID
+) -> dict[str, Any]:
+    """One interview for someone on its panel, its hiring team or HR."""
+    interview, mine, requisition, oversees = await visibility.load_interview(
+        session, user, interview_id
+    )
+    stage = await _stage(session, user, interview.stage_id)
+    candidate = await session.get(Candidate, interview.candidate_id)
+    panel = await _panelists(session, user, interview.id)
+    names = await _names_for(session, user, {p.user_id for p in panel})
+    return {
+        "id": str(interview.id),
+        "candidate_id": str(interview.candidate_id),
+        "candidate_name": candidate.full_name if candidate else "",
+        "requisition_code": requisition.code if requisition else None,
+        "requisition_title": requisition.title if requisition else None,
+        "stage": {
+            "id": str(stage.id),
+            "name": stage.name,
+            "stage_type": stage.stage_type.value,
+            "duration_minutes": stage.duration_minutes,
+            "required_competencies": list(stage.required_competencies or []),
+            "feedback_required": stage.feedback_required,
+            "preparation_notes": stage.preparation_notes,
+        },
+        "scheduled_start": interview.scheduled_start.isoformat(),
+        "scheduled_end": interview.scheduled_end.isoformat(),
+        "candidate_timezone": interview.candidate_timezone,
+        "mode": interview.mode.value,
+        "location_or_link": interview.location_or_link,
+        "status": interview.status.value,
+        "reschedule_count": interview.reschedule_count,
+        "calendar_warnings": list(interview.calendar_warnings or []) if oversees else [],
+        "panel": [
+            {
+                "user_id": str(p.user_id),
+                "name": names.get(p.user_id, ("", ""))[0],
+                "email": names.get(p.user_id, ("", ""))[1] if oversees else None,
+                "role": p.role.value,
+                "response": p.response_status.value,
+                "feedback_submitted": p.feedback_submitted_at is not None,
+            }
+            for p in panel
+        ],
+        "my_role": mine.role.value if mine else None,
+        "my_feedback_submitted": bool(mine and mine.feedback_submitted_at),
+        "can_manage": permissions.is_hr(user),
+        "oversees": oversees,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Panel responses
 # ═══════════════════════════════════════════════════════════════════════════
@@ -637,8 +1100,14 @@ async def record_response(
     Immediately, not on a digest. "The interviewer declined three days ago" is
     something a recruiter can act on; "the interviewer never showed up" is not,
     and the gap between those two sentences is the entire value of this.
+
+    Outside HR, a person records only their own response.
     """
     moment = now or datetime.now(UTC)
+    if not permissions.is_hr(user) and panelist_user_id != user.id:
+        raise permissions.forbidden(
+            "You can only record your own response to an interview invitation."
+        )
     interview = await _interview(session, user, interview_id)
 
     panelist = await session.scalar(
@@ -780,7 +1249,7 @@ async def submit_feedback(
     request: Request | None = None,
 ) -> dict:
     """Record one panelist's feedback, once."""
-    from decimal import Decimal
+    from decimal import Decimal, InvalidOperation
 
     moment = now or datetime.now(UTC)
     interview = await _interview(session, user, interview_id)
@@ -800,6 +1269,14 @@ async def submit_feedback(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not on this interview's panel.",
+        )
+    if interview.status in (InterviewStatus.CANCELLED, InterviewStatus.CANDIDATE_NO_SHOW):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This interview is {interview.status.value.replace('_', ' ')}; there is "
+                "nothing to give feedback on."
+            ),
         )
 
     existing = await session.scalar(
@@ -822,7 +1299,13 @@ async def submit_feedback(
             ),
         )
 
-    decimal_ratings = {code: Decimal(str(value)) for code, value in ratings.items()}
+    try:
+        decimal_ratings = {code: Decimal(str(value)) for code, value in ratings.items()}
+    except (InvalidOperation, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Every rating has to be a number.",
+        ) from exc
     try:
         feedback_engine.validate_feedback(
             recommendation=feedback_engine.Recommendation(recommendation.value),
@@ -862,21 +1345,38 @@ async def submit_feedback(
     return {"feedback_id": str(row.id), "submitted_at": moment.isoformat()}
 
 
+async def _anchoring_protection(session: AsyncSession, user: User) -> bool:
+    """The tenant's switch. On unless the tenant has deliberately turned it off."""
+    tenant = await session.get(Tenant, user.tenant_id)
+    configured = ((tenant.settings or {}) if tenant else {}).get(
+        "interview_anchoring_protection", True
+    )
+    return configured is not False
+
+
 async def visible_feedback(
     session: AsyncSession,
     user: User,
     *,
     interview_id: uuid.UUID,
-    hide_until_submitted: bool = True,
-    viewer_is_hiring_manager: bool = False,
+    hide_until_submitted: bool | None = None,
+    viewer_is_hiring_manager: bool | None = None,
 ) -> dict:
     """What this viewer may read right now.
 
     A panelist who has not submitted sees only their own. Reading "STRONG_YES,
     brilliant" before writing your own review measurably changes what you write,
     and four opinions that anchored on the first are one opinion.
+
+    Somebody neither on the panel nor on the hiring team gets a 404.
+    `hide_until_submitted` defaults to the tenant's setting; a caller passes it
+    only from configuration, never from a request.
     """
-    interview = await _interview(session, user, interview_id)
+    interview, _, _, oversees = await visibility.load_interview(session, user, interview_id)
+    if hide_until_submitted is None:
+        hide_until_submitted = await _anchoring_protection(session, user)
+    if viewer_is_hiring_manager is None:
+        viewer_is_hiring_manager = oversees
     entries, roster = await _panel_feedback(session, user, interview)
 
     panelist = await session.scalar(
@@ -909,6 +1409,7 @@ async def visible_feedback(
                 "strengths": e.strengths,
                 "concerns": e.concerns,
                 "submitted_at": e.submitted_at.isoformat() if e.submitted_at else None,
+                "is_mine": e.panelist_id == viewer_id,
             }
             for e in visible
         ],
@@ -920,26 +1421,67 @@ async def visible_feedback(
             else ""
         ),
         "outstanding": feedback_engine.missing_feedback(panelists=roster, feedback=entries),
+        "anchoring_protection": hide_until_submitted,
     }
 
 
 async def consolidated_view(
     session: AsyncSession, user: User, *, interview_id: uuid.UUID
 ) -> dict:
-    """The hiring manager's view, once feedback is in."""
-    interview = await _interview(session, user, interview_id)
+    """The hiring manager's view, once feedback is in.
+
+    AI round scores sit beside the human panel rather than being blended into it,
+    and only with their contributing signals and a confidence — FS-ANL-02. A
+    bare Fit Score is never returned.
+    """
+    interview, _, _, oversees = await visibility.load_interview(session, user, interview_id)
+    if not oversees:
+        raise visibility.not_found("Interview")
     entries, roster = await _panel_feedback(session, user, interview)
     consolidation = feedback_engine.consolidate(feedback=entries, panelists=roster)
 
     candidate = await session.get(Candidate, interview.candidate_id)
     stage = await _stage(session, user, interview.stage_id)
+    score_rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(InterviewScore)
+                .where(
+                    InterviewScore.candidate_id == interview.candidate_id,
+                    InterviewScore.is_ai_generated.is_(True),
+                )
+                .order_by(InterviewScore.round_number),
+                InterviewScore,
+                user,
+            )
+        )
+    ).all()
+    presented = [
+        signals.present_score(
+            {
+                "id": s.id,
+                "round_type": s.round_type,
+                "round_number": s.round_number,
+                "score": s.score,
+                "max_score": s.max_score,
+                "confidence": s.confidence,
+                "is_ai_generated": s.is_ai_generated,
+                "summary": s.summary,
+                "signals": s.signals,
+                "proctoring_notes": s.proctoring_notes,
+            }
+        )
+        for s in score_rows
+    ]
     return {
         "interview_id": str(interview.id),
         "stage": stage.name,
         "candidate": candidate.full_name if candidate else "",
-        # The AI round score sits alongside the human panel rather than being
-        # blended into it — FS-ANL-02: no score without its contributing signals.
-        "ai_fit_score": str(candidate.fit_score) if candidate and candidate.fit_score else None,
+        "ai_rounds": presented,
+        "fit_score": signals.fit_score_view(
+            fit_score=candidate.fit_score if candidate else None,
+            presented_scores=presented,
+        ),
         **consolidation.as_dict(),
     }
 
@@ -975,6 +1517,124 @@ async def advance_blockers(
     return blockers
 
 
+async def advance_check(
+    session: AsyncSession, user: User, *, interview_id: uuid.UUID
+) -> dict:
+    """The advance gate, for somebody allowed to oversee this interview."""
+    _, _, _, oversees = await visibility.load_interview(session, user, interview_id)
+    if not oversees:
+        raise visibility.not_found("Interview")
+    blockers = await advance_blockers(session, user, interview_id=interview_id)
+    return {"can_advance": not blockers, "blockers": blockers}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reminders
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def send_due_interview_reminders(
+    session: AsyncSession,
+    user: User,
+    *,
+    now: datetime | None = None,
+    window_minutes: int = 15,
+) -> dict:
+    """Remind panellists of interviews starting soon. Scheduler-callable.
+
+    Run every `window_minutes`. For each configured lead time (the tenant's
+    `interview_reminder_hours`, default 24 and 1), an interview whose start falls
+    in `(now + lead - window, now + lead]` gets one reminder per panellist who
+    has not declined. Stateless on purpose: nothing is written to the interview,
+    so a run that overlaps the previous window can send a second reminder — run
+    it on a fixed cadence equal to the window.
+
+    Candidates are not reminded here: they have no login, and the notification
+    engine addresses users. That is reported in the result rather than skipped
+    silently.
+    """
+    moment = now or datetime.now(UTC)
+    tenant = await session.get(Tenant, user.tenant_id)
+    configured = ((tenant.settings or {}) if tenant else {}).get("interview_reminder_hours")
+    leads = (
+        tuple(int(h) for h in configured if isinstance(h, int | float) and 0 < h <= 168)
+        if isinstance(configured, list)
+        else DEFAULT_REMINDER_HOURS
+    ) or DEFAULT_REMINDER_HOURS
+    window = timedelta(minutes=max(1, window_minutes))
+
+    sent = 0
+    reminded_interviews: list[str] = []
+    for lead in leads:
+        target = moment + timedelta(hours=lead)
+        due = (
+            await session.execute(
+                tenant_scoped(
+                    select(Interview, Candidate, InterviewStage)
+                    .join(Candidate, Candidate.id == Interview.candidate_id)
+                    .join(InterviewStage, InterviewStage.id == Interview.stage_id)
+                    .where(
+                        Interview.status.in_(
+                            (InterviewStatus.SCHEDULED, InterviewStatus.RESCHEDULED)
+                        ),
+                        Interview.scheduled_start > target - window,
+                        Interview.scheduled_start <= target,
+                    ),
+                    Interview,
+                    user,
+                )
+            )
+        ).all()
+        for interview, candidate, stage in due:
+            recipients = [
+                p.user_id
+                for p in await _panelists(session, user, interview.id)
+                if p.response_status is not ResponseStatus.DECLINED
+            ]
+            if not recipients:
+                continue
+            await dispatch.notify(
+                session,
+                tenant_id=user.tenant_id,
+                event_key="interview.reminder",
+                recipient_user_ids=recipients,
+                payload={
+                    "candidate": candidate.full_name,
+                    "stage": stage.name,
+                    "when": interview.scheduled_start.isoformat(),
+                    "hours_before": lead,
+                    "join": interview.location_or_link or "",
+                },
+                commit=False,
+            )
+            sent += len(recipients)
+            reminded_interviews.append(str(interview.id))
+
+    if reminded_interviews:
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            actor=user,
+            action=AuditAction.UPDATE,
+            entity_type="interview",
+            entity_id=None,
+            summary=(
+                f"Interview reminders raised for {len(reminded_interviews)} interview(s), "
+                f"{sent} panellist notification(s)"
+            ),
+        )
+    return {
+        "as_of": moment.isoformat(),
+        "lead_hours": list(leads),
+        "interviews_reminded": len(reminded_interviews),
+        "notifications_raised": sent,
+        "candidate_reminders": (
+            "Not sent. Candidates have no login and the notification engine only "
+            "addresses users; the candidate portal shows their schedule instead."
+        ),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Candidate self-scheduling
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1001,7 +1661,7 @@ async def create_self_schedule_link(
     offered exactly what was approved, even if a calendar changes underneath.
     """
     moment = now or datetime.now(UTC)
-    await _stage(session, user, stage_id)
+    stage = await _stage(session, user, stage_id)
     if not slots:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1010,6 +1670,52 @@ async def create_self_schedule_link(
                 "than no link — the candidate opens it and finds an empty page."
             ),
         )
+    candidate = await session.scalar(
+        tenant_scoped(select(Candidate).where(Candidate.id == candidate_id), Candidate, user)
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    if candidate.requisition_id != stage.requisition_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This interview round belongs to a different requisition.",
+        )
+
+    cleaned: list[dict] = []
+    panel_ids: list[uuid.UUID] = []
+    for slot in slots:
+        try:
+            start = datetime.fromisoformat(str(slot["start"]))
+            end = datetime.fromisoformat(str(slot.get("end") or ""))
+            ids = [uuid.UUID(str(uid)) for uid in slot.get("panelist_user_ids", [])]
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Each slot needs an ISO start and end, and valid panellist ids.",
+            ) from exc
+        if start.tzinfo is None or end.tzinfo is None or end <= start:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Each slot needs a start and end with a timezone, and the end after "
+                    "the start. A time without a zone is an interview at the wrong hour "
+                    "for somebody."
+                ),
+            )
+        if not ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Each slot needs at least one interviewer.",
+            )
+        panel_ids.extend(ids)
+        cleaned.append(
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "panelist_user_ids": [str(uid) for uid in ids],
+            }
+        )
+    await _require_panel_members(session, user, panel_ids)
 
     token = secrets.token_urlsafe(32)
     link = SelfScheduleLink(
@@ -1017,13 +1723,94 @@ async def create_self_schedule_link(
         candidate_id=candidate_id,
         stage_id=stage_id,
         token_hash=_hash(token),
-        offered_slots=slots,
+        offered_slots=cleaned,
         candidate_timezone=candidate_timezone,
         expires_at=moment + timedelta(days=SELF_SCHEDULE_TTL_DAYS),
     )
     session.add(link)
     await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="self_schedule_link",
+        entity_id=link.id,
+        summary=f"Self-scheduling link issued for '{stage.name}' with {len(cleaned)} slot(s)",
+    )
     return link, token
+
+
+async def view_self_schedule(
+    session: AsyncSession, *, token: str, now: datetime | None = None
+) -> dict:
+    """What a candidate sees when they open a scheduling link.
+
+    Not tenant-scoped: a candidate has no tenant context and the token carries
+    it. Shows the slots in their own zone, the round's name and length, and the
+    organisation — never who else is being interviewed or the interviewers' ids.
+    """
+    moment = now or datetime.now(UTC)
+    link = await session.scalar(
+        select(SelfScheduleLink).where(SelfScheduleLink.token_hash == _hash(token))
+    )
+    if link is None or link.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="This link is no longer valid."
+        )
+    stage = await session.scalar(
+        select(InterviewStage).where(
+            InterviewStage.id == link.stage_id, InterviewStage.tenant_id == link.tenant_id
+        )
+    )
+    tenant = await session.get(Tenant, link.tenant_id)
+    booked = None
+    if link.booked_interview_id is not None:
+        interview = await session.scalar(
+            select(Interview).where(
+                Interview.id == link.booked_interview_id,
+                Interview.tenant_id == link.tenant_id,
+            )
+        )
+        if interview is not None:
+            booked = {
+                "start_utc": interview.scheduled_start.isoformat(),
+                "start_local": availability.render_for(
+                    interview.scheduled_start, interview.candidate_timezone
+                ).isoformat(),
+                "timezone": interview.candidate_timezone,
+                "mode": interview.mode.value,
+                "join_url": interview.join_url,
+                "status": interview.status.value,
+            }
+
+    zone = link.candidate_timezone
+    return {
+        "organisation": tenant.name if tenant else "",
+        "stage_name": stage.name if stage else "Interview",
+        "duration_minutes": stage.duration_minutes if stage else None,
+        "mode": stage.mode.value if stage else None,
+        "preparation_notes": stage.preparation_notes if stage else None,
+        "timezone": zone,
+        "expires_at": link.expires_at.isoformat(),
+        "expired": link.expires_at < moment,
+        "booked": booked,
+        "slots": [
+            {
+                "start": slot["start"],
+                "start_local": availability.render_for(
+                    datetime.fromisoformat(slot["start"]).astimezone(UTC), zone
+                ).isoformat(),
+                "end_local": availability.render_for(
+                    datetime.fromisoformat(slot["end"]).astimezone(UTC), zone
+                ).isoformat()
+                if slot.get("end")
+                else None,
+                "in_past": datetime.fromisoformat(slot["start"]).astimezone(UTC) <= moment,
+            }
+            for slot in link.offered_slots
+        ],
+    }
 
 
 async def book_self_schedule(
@@ -1080,6 +1867,11 @@ async def book_self_schedule(
                 "recruiter approved can be booked — otherwise this link could book any "
                 "hour of any day."
             ),
+        )
+    if chosen <= moment:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That time has already passed. Pick one of the later slots.",
         )
 
     matching = next(

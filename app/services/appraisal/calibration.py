@@ -196,8 +196,8 @@ def analyse_distribution(
     notes: list[str] = []
 
     if excluded:
-        smallest_meaningful = (
-            min((t.target_percent for t in targets if t.target_percent > ZERO), default=ZERO)
+        smallest_meaningful = min(
+            (t.target_percent for t in targets if t.target_percent > ZERO), default=ZERO
         )
         one_person = _percent(1, population)
         exclusion_reason = (
@@ -217,9 +217,14 @@ def analyse_distribution(
         if target is None:
             counts.append(
                 RatingCount(
-                    rating=rating, count=count, actual_percent=actual,
-                    target_percent=None, lower_bound=None, upper_bound=None,
-                    is_within_tolerance=True, gap_percent=ZERO,
+                    rating=rating,
+                    count=count,
+                    actual_percent=actual,
+                    target_percent=None,
+                    lower_bound=None,
+                    upper_bound=None,
+                    is_within_tolerance=True,
+                    gap_percent=ZERO,
                 )
             )
             if count:
@@ -273,8 +278,7 @@ def enforcement_blockers(
     """
     if mode not in EnforcementMode.ALL:
         raise CalibrationError(
-            f"'{mode}' is not an enforcement mode. Use one of: "
-            f"{', '.join(EnforcementMode.ALL)}."
+            f"'{mode}' is not an enforcement mode. Use one of: {', '.join(EnforcementMode.ALL)}."
         )
     if mode in (EnforcementMode.NONE, EnforcementMode.ADVISORY):
         return []
@@ -361,9 +365,7 @@ def detect_outliers(
     if threshold <= ZERO:
         raise CalibrationError("The outlier threshold must be greater than zero.")
 
-    assessable = [
-        m for m in managers if len(m.get("scores", [])) >= min_group_size
-    ]
+    assessable = [m for m in managers if len(m.get("scores", [])) >= min_group_size]
 
     profiles: list[ManagerProfile] = []
 

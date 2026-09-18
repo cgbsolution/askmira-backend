@@ -1,4 +1,4 @@
-"""Awards, values, surveys, action plans and internal comms (slice 32).
+"""Awards, values, surveys, action plans, announcements and celebrations (slice 32).
 
 Two endpoints carry the weight of the slice:
 
@@ -10,26 +10,56 @@ Two endpoints carry the weight of the slice:
   UI that renders part of it would leave the anchoring rule one template change
   away from gone.
 
+Thin: parse, gate, delegate to `app.services.culture`, serialise. No body names
+the caller's own employee record - the nominator, the respondent, the person
+acknowledging and the person setting their privacy all come from the token.
+
 `GET /culture/posture` says what is enforced and what is not built.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel, Field
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.models.culture_depth import (
-    PlanScopeEnum,
-    SurveyKindEnum,
-    TagSourceEnum,
-)
+from app.models.culture_depth import TagSourceEnum
 from app.models.user import UserRole
+from app.schemas.culture import (
+    AcknowledgeCreate,
+    ActionPlanComplete,
+    ActionPlanCreate,
+    ActionPlanItemUpdate,
+    ActionPlanRead,
+    AnnouncementCreate,
+    AnnouncementManageRead,
+    AnnouncementRead,
+    AwardCycleCreate,
+    AwardCycleRead,
+    AwardCycleStatusUpdate,
+    AwardProgrammeCreate,
+    AwardProgrammeRead,
+    AwardResultRead,
+    AwardWinnerCreate,
+    CompanyValueRead,
+    CompanyValueUpsert,
+    EventPrivacyRead,
+    EventPrivacyUpdate,
+    JuryScoreCreate,
+    MySurveyRead,
+    NominationCreate,
+    NominationRead,
+    ProgressNoteCreate,
+    SurveyCreate,
+    SurveyRead,
+    SurveyResponseCreate,
+    ValueTagCreate,
+)
+from app.services.culture import awards_portal, comms_portal, surveys_portal
 from app.services.culture import service as culture
 from app.services.culture import surveys as survey_engine
 
@@ -37,125 +67,6 @@ router = APIRouter(tags=["culture-depth"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-
-
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class ValueIn(BaseModel):
-    code: str = Field(min_length=1, max_length=64)
-    name: str = Field(min_length=1, max_length=120)
-    #: Required. A one-word value on a dropdown gets tagged by whoever is
-    #: guessing hardest, and the analytics then measure the guessing.
-    description: str = Field(min_length=1, max_length=2000)
-    icon: str | None = Field(default=None, max_length=48)
-    colour: str | None = Field(default=None, max_length=24)
-
-
-class TagIn(BaseModel):
-    source: TagSourceEnum
-    source_id: uuid.UUID
-    value_code: str = Field(min_length=1, max_length=64)
-    subject_employee_id: uuid.UUID | None = None
-    occurred_on: date
-    group_key: str | None = Field(default=None, max_length=120)
-
-
-class CycleIn(BaseModel):
-    programme_id: uuid.UUID
-    label: str = Field(min_length=1, max_length=80)
-    nominations_open_on: date
-    nominations_close_on: date
-    juror_user_ids: list[uuid.UUID] = Field(min_length=1)
-    result_announcement_date: date | None = None
-
-
-class NominationIn(BaseModel):
-    cycle_id: uuid.UUID
-    category_key: str = Field(min_length=1, max_length=64)
-    nominee_employee_id: uuid.UUID
-    nominator_employee_id: uuid.UUID
-    citation: str = Field(min_length=1, max_length=4000)
-    supporting_evidence: list[dict[str, Any]] = Field(default_factory=list)
-    value_codes: list[str] = Field(default_factory=list)
-    today: date | None = None
-
-
-class ScoreIn(BaseModel):
-    scores: dict[str, int]
-    comments: str | None = Field(default=None, max_length=4000)
-    #: Once true, the score is final. Reopening it after reading the panel is
-    #: the anchoring problem arriving by a different door.
-    submit: bool = False
-
-
-class WinnerIn(BaseModel):
-    nomination_id: uuid.UUID
-    awarded_on: date
-
-
-class SurveyIn(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-    kind: SurveyKindEnum
-    opens_on: date
-    closes_on: date
-    instrument_key: str | None = Field(default=None, max_length=64)
-    #: Cannot go below the engine's floor. A threshold an admin can set to one
-    #: is not a threshold.
-    min_responses_to_report: int = Field(
-        default=survey_engine.MIN_RESPONSES, ge=survey_engine.MIN_RESPONSES, le=500
-    )
-
-
-class ResponseIn(BaseModel):
-    employee_id: uuid.UUID
-    answers: dict[str, int]
-    free_text: str | None = Field(default=None, max_length=4000)
-    group_key: str | None = Field(default=None, max_length=120)
-    submitted_on: date | None = None
-
-
-class PlanItemIn(BaseModel):
-    description: str = Field(min_length=1, max_length=2000)
-    owner_employee_id: uuid.UUID
-    due_date: date
-
-
-class PlanIn(BaseModel):
-    survey_id: uuid.UUID
-    scope: PlanScopeEnum
-    scope_key: str = Field(min_length=1, max_length=120)
-    theme: str = Field(min_length=1, max_length=80)
-    owner_employee_id: uuid.UUID
-    due_date: date
-    items: list[PlanItemIn] = Field(min_length=1)
-
-
-class CompletePlanIn(BaseModel):
-    completed_on: date
-
-
-class AnnouncementIn(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
-    body: str = Field(min_length=1)
-    publish_at: datetime
-    audience: dict[str, list[str]] = Field(default_factory=dict)
-    expires_at: datetime | None = None
-    requires_acknowledgement: bool = False
-    channels: list[str] = Field(default_factory=lambda: ["in_app"])
-
-
-class AcknowledgeIn(BaseModel):
-    employee_id: uuid.UUID
-    channel: str | None = Field(default=None, max_length=32)
-
-
-class PrivacyIn(BaseModel):
-    employee_id: uuid.UUID
-    #: Both default to False. Opt-in means the default is no.
-    share_birthday: bool = False
-    share_work_anniversary: bool = False
-    birthday_scope: str = Field(default="team", pattern="^(team|company)$")
 
 
 # ── Posture and instruments ─────────────────────────────────────────────────
@@ -173,11 +84,7 @@ async def posture(user: CurrentUser) -> dict[str, Any]:
 
 @router.get("/culture/instruments")
 async def instruments(user: CurrentUser) -> dict[str, Any]:
-    """The validated instruments, with the source and the reason for each.
-
-    Composed from published item structures; **not psychometrically validated
-    on this population**, which the posture says too.
-    """
+    """The validated instruments, with the source and the reason for each."""
     return {
         "instruments": [i.as_dict() for i in survey_engine.INSTRUMENTS.values()],
         "min_responses": survey_engine.MIN_RESPONSES,
@@ -187,32 +94,35 @@ async def instruments(user: CurrentUser) -> dict[str, Any]:
 # ── Values ──────────────────────────────────────────────────────────────────
 
 
-@router.put("/culture/values")
+@router.put("/culture/values", response_model=CompanyValueRead)
 async def define_value(
-    body: ValueIn,
+    body: CompanyValueUpsert,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
+) -> CompanyValueRead:
     row = await culture.define_value(
         session,
         user,
         code=body.code,
-        name=body.name,
-        description=body.description,
+        name=body.name.strip(),
+        description=body.description.strip(),
         icon=body.icon,
         colour=body.colour,
+        display_order=body.display_order,
+        is_active=body.is_active,
         request=request,
     )
-    return {"value_id": str(row.id), "code": row.code, "name": row.name}
+    return CompanyValueRead.model_validate(row)
 
 
 @router.post("/culture/value-tags", status_code=status.HTTP_201_CREATED)
 async def tag_value(
-    body: TagIn,
+    body: ValueTagCreate,
     session: DbSession,
     user: CurrentUser,
+    request: Request,
 ) -> dict[str, Any]:
     permissions.require_role(
         user,
@@ -225,12 +135,13 @@ async def tag_value(
     row = await culture.tag_value(
         session,
         user,
-        source=body.source,
+        source=TagSourceEnum(body.source),
         source_id=body.source_id,
         value_code=body.value_code,
         subject_employee_id=body.subject_employee_id,
         occurred_on=body.occurred_on,
         group_key=body.group_key,
+        request=request,
     )
     return {"tag_id": str(row.id), "value_code": row.value_code}
 
@@ -241,85 +152,102 @@ async def value_analytics(
     user: CurrentUser,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Which values are lived, and which are on a wall.
-
-    Counted per source, never as a per-person score: recognition converted into
-    a rating is a popularity metric wearing a value's name.
-    """
+    """Which values are lived, counted per source - never per person."""
     return await culture.value_analytics(session, user)
 
 
 # ── Awards ──────────────────────────────────────────────────────────────────
 
 
-@router.post("/culture/award-cycles", status_code=status.HTTP_201_CREATED)
-async def open_cycle(
-    body: CycleIn,
+@router.get("/culture/award-programmes", response_model=list[AwardProgrammeRead])
+async def list_programmes(session: DbSession, user: CurrentUser) -> list[AwardProgrammeRead]:
+    return await awards_portal.list_programmes(session, user)
+
+
+@router.post(
+    "/culture/award-programmes",
+    response_model=AwardProgrammeRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_programme(
+    body: AwardProgrammeCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _hr=Depends(require_roles(*HR_ROLES)),
-) -> dict[str, Any]:
-    row = await culture.open_cycle(
-        session,
-        user,
-        programme_id=body.programme_id,
-        label=body.label,
-        nominations_open_on=body.nominations_open_on,
-        nominations_close_on=body.nominations_close_on,
-        juror_user_ids=body.juror_user_ids,
-        result_announcement_date=body.result_announcement_date,
-        request=request,
-    )
-    return {
-        "cycle_id": str(row.id),
-        "label": row.label,
-        "nominations_open_on": row.nominations_open_on.isoformat(),
-        "nominations_close_on": row.nominations_close_on.isoformat(),
-        "status": row.status.value,
-    }
+) -> AwardProgrammeRead:
+    return await awards_portal.create_programme(session, user, body, request=request)
 
 
-@router.post("/culture/nominations", status_code=status.HTTP_201_CREATED)
-async def nominate(
-    body: NominationIn,
+@router.get("/culture/award-cycles", response_model=list[AwardCycleRead])
+async def list_cycles(session: DbSession, user: CurrentUser) -> list[AwardCycleRead]:
+    return await awards_portal.list_cycles(session, user)
+
+
+@router.post(
+    "/culture/award-cycles",
+    response_model=AwardCycleRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def open_cycle(
+    body: AwardCycleCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-) -> dict[str, Any]:
-    """Put somebody forward, if the window is open.
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> AwardCycleRead:
+    return await awards_portal.open_cycle(session, user, body, request=request)
 
-    The window is checked against the cycle's stored dates, not against a status
-    flag - a status left open after the closing date would accept late entries
-    and the jury would score a different field from the advertised one.
-    """
-    permissions.require_self_or_hr(
-        user, body.nominator_employee_id, detail="You can only nominate in your own name."
+
+@router.put("/culture/award-cycles/{cycle_id}/status", response_model=AwardCycleRead)
+async def set_cycle_status(
+    cycle_id: uuid.UUID,
+    body: AwardCycleStatusUpdate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> AwardCycleRead:
+    return await awards_portal.set_cycle_status(
+        session, user, cycle_id, body.status, request=request
     )
-    row = await culture.nominate(
-        session,
-        user,
-        cycle_id=body.cycle_id,
-        category_key=body.category_key,
-        nominee_employee_id=body.nominee_employee_id,
-        nominator_employee_id=body.nominator_employee_id,
-        citation=body.citation,
-        supporting_evidence=body.supporting_evidence,
-        value_codes=body.value_codes,
-        today=body.today,
-        request=request,
-    )
-    return {
-        "nomination_id": str(row.id),
-        "category_key": row.category_key,
-        "status": row.status.value,
-    }
+
+
+@router.get("/culture/award-cycles/{cycle_id}/nominations", response_model=list[NominationRead])
+async def list_nominations(
+    cycle_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> list[NominationRead]:
+    """Every nomination for the cycle's jurors and HR; your own otherwise."""
+    return await awards_portal.list_nominations(session, user, cycle_id)
+
+
+@router.get("/culture/award-cycles/{cycle_id}/standings")
+async def standings(
+    cycle_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> dict[str, Any]:
+    return await awards_portal.standings(session, user, cycle_id)
+
+
+@router.post(
+    "/culture/nominations", response_model=NominationRead, status_code=status.HTTP_201_CREATED
+)
+async def nominate(
+    body: NominationCreate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> NominationRead:
+    """Nominate a colleague in your own name, if the window is open today."""
+    return await awards_portal.nominate(session, user, body, request=request)
 
 
 @router.post("/culture/nominations/{nomination_id}/score")
 async def score_nomination(
     nomination_id: uuid.UUID,
-    body: ScoreIn,
+    body: JuryScoreCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
@@ -329,7 +257,7 @@ async def score_nomination(
         user,
         nomination_id=nomination_id,
         scores=body.scores,
-        comments=body.comments,
+        comments=(body.comments or "").strip() or None,
         submit=body.submit,
         request=request,
     )
@@ -351,113 +279,90 @@ async def jury_view(
     session: DbSession,
     user: CurrentUser,
 ) -> dict[str, Any]:
-    """What this juror may read right now.
-
-    Filtered before the response is built. Reading another juror's score before
-    writing your own measurably changes what you write, and five opinions that
-    anchored on the first are one opinion with four signatures.
-    """
+    """What this juror may read right now - filtered before it is built."""
     return await culture.jury_view(session, user, nomination_id=nomination_id)
 
 
-@router.post("/culture/award-results", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/culture/award-results",
+    response_model=AwardResultRead,
+    status_code=status.HTTP_201_CREATED,
+)
 async def declare_winner(
-    body: WinnerIn,
+    body: AwardWinnerCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _hr=Depends(require_roles(*HR_ROLES)),
-) -> dict[str, Any]:
-    """Record a win permanently on the employee's record.
+) -> AwardResultRead:
+    """Record a win permanently and announce it on the feed, in one transaction."""
+    return await awards_portal.declare_winner(session, user, body, request=request)
 
-    Nothing posts it to the feed; the announcement is made by a person.
-    """
-    row = await culture.declare_winner(
-        session,
-        user,
-        nomination_id=body.nomination_id,
-        awarded_on=body.awarded_on,
-        request=request,
-    )
-    return {
-        "award_result_id": str(row.id),
-        "employee_id": str(row.employee_id),
-        "programme_name": row.programme_name,
-        "category_key": row.category_key,
-        "awarded_on": row.awarded_on.isoformat(),
-    }
+
+@router.get("/culture/award-results", response_model=list[AwardResultRead])
+async def list_results(session: DbSession, user: CurrentUser) -> list[AwardResultRead]:
+    return await awards_portal.list_results(session, user)
 
 
 # ── Surveys ─────────────────────────────────────────────────────────────────
 
 
-@router.post("/culture/surveys", status_code=status.HTTP_201_CREATED)
+@router.get("/culture/surveys/mine", response_model=list[MySurveyRead])
+async def my_surveys(session: DbSession, user: CurrentUser) -> list[MySurveyRead]:
+    return await surveys_portal.list_my_surveys(session, user)
+
+
+@router.get("/culture/surveys", response_model=list[SurveyRead])
+async def list_surveys(
+    session: DbSession,
+    user: CurrentUser,
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> list[SurveyRead]:
+    return await surveys_portal.list_surveys(session, user)
+
+
+@router.post("/culture/surveys", response_model=SurveyRead, status_code=status.HTTP_201_CREATED)
 async def create_survey(
-    body: SurveyIn,
+    body: SurveyCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _hr=Depends(require_roles(*HR_ROLES)),
-) -> dict[str, Any]:
-    row = await culture.create_survey(
-        session,
-        user,
-        name=body.name,
-        kind=body.kind,
-        opens_on=body.opens_on,
-        closes_on=body.closes_on,
-        instrument_key=body.instrument_key,
-        min_responses_to_report=body.min_responses_to_report,
-        request=request,
-    )
-    return {
-        "survey_id": str(row.id),
-        "name": row.name,
-        "instrument_key": row.instrument_key,
-        "min_responses_to_report": row.min_responses_to_report,
-        "status": row.status.value,
-    }
+) -> SurveyRead:
+    return await surveys_portal.create_survey(session, user, body, request=request)
 
 
-@router.post("/culture/surveys/{survey_id}/responses", status_code=201)
-async def submit_response(
-    survey_id: uuid.UUID,
-    body: ResponseIn,
-    session: DbSession,
-    user: CurrentUser,
-) -> dict[str, Any]:
-    """Submit answers.
-
-    The answers go to a table with no respondent column; a separate row records
-    that this person responded, so reminders stop. The two share nothing but the
-    survey.
-    """
-    permissions.require_self(
-        user,
-        body.employee_id,
-        detail="A survey can only be answered by the person it was sent to.",
-    )
-    return await culture.submit_response(
-        session,
-        user,
-        survey_id=survey_id,
-        employee_id=body.employee_id,
-        answers=body.answers,
-        free_text=body.free_text,
-        group_key=body.group_key,
-        submitted_on=body.submitted_on,
-    )
-
-
-@router.post("/culture/surveys/{survey_id}/close")
-async def close_survey(
-    survey_id: uuid.UUID,
+@router.post("/culture/surveys/resurvey-run")
+async def run_resurveys(
     session: DbSession,
     user: CurrentUser,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    row = await culture.close_survey(session, user, survey_id=survey_id)
-    return {"survey_id": str(row.id), "status": row.status.value}
+    """Open every re-survey wave that is due. The same function a scheduler
+    would call; no scheduler runs in this deployment."""
+    return await surveys_portal.schedule_due_resurveys(session, user.tenant_id)
+
+
+@router.post("/culture/surveys/{survey_id}/responses", status_code=status.HTTP_201_CREATED)
+async def submit_response(
+    survey_id: uuid.UUID,
+    body: SurveyResponseCreate,
+    session: DbSession,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    """Answer a survey sent to you. The answers are stored with no link to you."""
+    return await surveys_portal.respond(session, user, survey_id, body)
+
+
+@router.post("/culture/surveys/{survey_id}/close", response_model=SurveyRead)
+async def close_survey(
+    survey_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> SurveyRead:
+    return await surveys_portal.close_survey(session, user, survey_id, request=request)
 
 
 @router.get("/culture/surveys/{survey_id}/results")
@@ -481,135 +386,123 @@ async def survey_results(
 # ── Action plans ────────────────────────────────────────────────────────────
 
 
-@router.post("/culture/action-plans", status_code=status.HTTP_201_CREATED)
+@router.get("/culture/action-plans", response_model=list[ActionPlanRead])
+async def list_plans(session: DbSession, user: CurrentUser) -> list[ActionPlanRead]:
+    return await surveys_portal.list_plans(session, user)
+
+
+@router.post(
+    "/culture/action-plans", response_model=ActionPlanRead, status_code=status.HTTP_201_CREATED
+)
 async def create_plan(
-    body: PlanIn,
+    body: ActionPlanCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-) -> dict[str, Any]:
-    permissions.require_role(
-        user,
-        permissions.MANAGER_ROLES,
-        detail="Action plans are created by managers and HR.",
-    )
-    row = await culture.create_plan(
-        session,
-        user,
-        survey_id=body.survey_id,
-        scope=body.scope,
-        scope_key=body.scope_key,
-        theme=body.theme,
-        owner_employee_id=body.owner_employee_id,
-        due_date=body.due_date,
-        items=[i.model_dump() for i in body.items],
-        request=request,
-    )
-    return {
-        "plan_id": str(row.id),
-        "theme": row.theme,
-        "status": row.status.value,
-        "item_count": len(body.items),
-    }
-
-
-@router.post("/culture/action-plans/{plan_id}/complete")
-async def complete_plan(
-    plan_id: uuid.UUID,
-    body: CompletePlanIn,
-    session: DbSession,
-    user: CurrentUser,
-    request: Request,
-) -> dict[str, Any]:
-    """Complete a plan, if every item is done or explicitly dropped.
-
-    Returns 400 naming what is still open. A plan completed with open items is
-    a checkbox, and a checkbox is what the second year of a dying survey
-    programme is made of.
-    """
-    row = await culture.complete_plan(
-        session,
-        user,
-        plan_id=plan_id,
-        completed_on=body.completed_on,
-        request=request,
-    )
-    return {
-        "plan_id": str(row.id),
-        "status": row.status.value,
-        "completed_on": row.completed_on.isoformat() if row.completed_on else None,
-    }
+) -> ActionPlanRead:
+    return await surveys_portal.create_plan(session, user, body, request=request)
 
 
 @router.get("/culture/action-plans/loop")
 async def loop_report(
     session: DbSession,
     user: CurrentUser,
-    as_of: date | None = None,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Per theme: was anything done, and did the next wave move.
+    """Per theme: was anything done, and did the next wave move."""
+    return await culture.loop_report(session, user, as_of=date.today())
 
-    Either half alone is misleading. Action with no movement is effort in the
-    wrong place; movement with no action is something else that happened.
-    """
-    return await culture.loop_report(session, user, as_of=as_of or date.today())
+
+@router.patch("/culture/action-plan-items/{item_id}", response_model=ActionPlanRead)
+async def update_item(
+    item_id: uuid.UUID,
+    body: ActionPlanItemUpdate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> ActionPlanRead:
+    return await surveys_portal.update_item(session, user, item_id, body, request=request)
+
+
+@router.post("/culture/action-plans/{plan_id}/notes", response_model=ActionPlanRead)
+async def add_note(
+    plan_id: uuid.UUID,
+    body: ProgressNoteCreate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> ActionPlanRead:
+    return await surveys_portal.add_note(session, user, plan_id, body, request=request)
+
+
+@router.post("/culture/action-plans/{plan_id}/complete", response_model=ActionPlanRead)
+async def complete_plan(
+    plan_id: uuid.UUID,
+    body: ActionPlanComplete,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> ActionPlanRead:
+    """Complete a plan, if every item is done or explicitly dropped."""
+    return await surveys_portal.complete_plan(session, user, plan_id, body, request=request)
 
 
 # ── Announcements ───────────────────────────────────────────────────────────
 
 
-@router.post("/culture/announcements", status_code=status.HTTP_201_CREATED)
+@router.get("/culture/announcements", response_model=list[AnnouncementRead])
+async def my_announcements(session: DbSession, user: CurrentUser) -> list[AnnouncementRead]:
+    return await comms_portal.list_my_announcements(session, user)
+
+
+@router.get("/culture/announcements/manage", response_model=list[AnnouncementManageRead])
+async def managed_announcements(
+    session: DbSession,
+    user: CurrentUser,
+    _hr=Depends(require_roles(*HR_ROLES)),
+) -> list[AnnouncementManageRead]:
+    return await comms_portal.list_managed(session, user)
+
+
+@router.post(
+    "/culture/announcements",
+    response_model=AnnouncementManageRead,
+    status_code=status.HTTP_201_CREATED,
+)
 async def announce(
-    body: AnnouncementIn,
+    body: AnnouncementCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _hr=Depends(require_roles(*HR_ROLES)),
-) -> dict[str, Any]:
-    """Publish an announcement. **Nothing is sent** - it is stored and shown."""
-    row = await culture.announce(
-        session,
-        user,
-        title=body.title,
-        body=body.body,
-        publish_at=body.publish_at,
-        audience=body.audience,
-        expires_at=body.expires_at,
-        requires_acknowledgement=body.requires_acknowledgement,
-        channels=body.channels,
-        request=request,
-    )
-    return {
-        "announcement_id": str(row.id),
-        "content_hash": row.content_hash,
-        "requires_acknowledgement": row.requires_acknowledgement,
-        "delivery": (
-            "Stored and visible in the app. No message is sent by this slice."
-        ),
-    }
+) -> AnnouncementManageRead:
+    """Publish an announcement. Delivered to the audience now, or when its
+    publish time arrives."""
+    return await comms_portal.create_announcement(session, user, body, request=request)
 
 
-@router.post("/culture/announcements/{announcement_id}/acknowledge")
-async def acknowledge(
-    announcement_id: uuid.UUID,
-    body: AcknowledgeIn,
+@router.post("/culture/announcements/deliver-due")
+async def deliver_due(
     session: DbSession,
     user: CurrentUser,
+    _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Record that somebody read this version of this text."""
-    permissions.require_self(
-        user,
-        body.employee_id,
-        detail="Only the person an announcement was sent to can acknowledge it.",
-    )
-    return await culture.acknowledge(
-        session,
-        user,
-        announcement_id=announcement_id,
-        employee_id=body.employee_id,
-        channel=body.channel,
-    )
+    """Deliver scheduled announcements whose time has come. The same function
+    a scheduler would call; no scheduler runs in this deployment."""
+    return await culture.deliver_due_announcements(session, user.tenant_id)
+
+
+@router.post(
+    "/culture/announcements/{announcement_id}/acknowledge", response_model=AnnouncementRead
+)
+async def acknowledge(
+    announcement_id: uuid.UUID,
+    body: AcknowledgeCreate,
+    session: DbSession,
+    user: CurrentUser,
+) -> AnnouncementRead:
+    """Record that you read this version of this text."""
+    return await comms_portal.acknowledge(session, user, announcement_id, body)
 
 
 @router.get("/culture/announcements/{announcement_id}/register")
@@ -619,48 +512,27 @@ async def acknowledgement_register(
     user: CurrentUser,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Who has acknowledged the current text, and who has not - by name.
-
-    This is what a POSH or IT-policy audit asks for. An edit to the body
-    invalidates the earlier acknowledgements rather than inheriting them, and
-    those people appear as outstanding again.
-    """
-    return await culture.acknowledgement_register(
-        session, user, announcement_id=announcement_id
-    )
+    """Who has acknowledged the current text, and who has not - by name."""
+    return await comms_portal.acknowledgement_register(session, user, announcement_id)
 
 
-# ── Events calendar ─────────────────────────────────────────────────────────
+# ── Celebrations ────────────────────────────────────────────────────────────
 
 
-@router.put("/culture/event-privacy")
+@router.get("/culture/event-privacy", response_model=EventPrivacyRead)
+async def get_event_privacy(session: DbSession, user: CurrentUser) -> EventPrivacyRead:
+    return await comms_portal.get_my_event_privacy(session, user)
+
+
+@router.put("/culture/event-privacy", response_model=EventPrivacyRead)
 async def set_event_privacy(
-    body: PrivacyIn,
+    body: EventPrivacyUpdate,
     session: DbSession,
     user: CurrentUser,
-) -> dict[str, Any]:
-    """Record what this person has agreed to have announced.
-
-    Both flags default to off. A birthday is personal data and a feed post is a
-    disclosure the employee did not choose.
-    """
-    permissions.require_self_or_hr(
-        user, body.employee_id, detail="You can only change your own privacy settings."
-    )
-    row = await culture.set_event_privacy(
-        session,
-        user,
-        employee_id=body.employee_id,
-        share_birthday=body.share_birthday,
-        share_work_anniversary=body.share_work_anniversary,
-        birthday_scope=body.birthday_scope,
-    )
-    return {
-        "employee_id": str(row.employee_id),
-        "share_birthday": row.share_birthday,
-        "share_work_anniversary": row.share_work_anniversary,
-        "birthday_scope": row.birthday_scope,
-    }
+    request: Request,
+) -> EventPrivacyRead:
+    """Your own celebration sharing. Both default to off."""
+    return await comms_portal.set_my_event_privacy(session, user, body, request=request)
 
 
 @router.get("/culture/calendar")
@@ -671,6 +543,4 @@ async def calendar(
     to_date: date,
 ) -> dict[str, Any]:
     """Events in a window. Personal ones appear only where somebody opted in."""
-    return await culture.calendar(
-        session, user, from_date=from_date, to_date=to_date
-    )
+    return await culture.calendar(session, user, from_date=from_date, to_date=to_date)

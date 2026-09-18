@@ -28,11 +28,37 @@ from typing import Any, Protocol
 from app.services.documents.indian_numbers import amount_in_words, group_indian
 
 __all__ = [
+    "AVAILABLE_FIELDS",
+    "COMPUTED_HANDLERS",
     "LetterMergeError",
     "MergeContext",
     "extract_tokens",
+    "preview_render",
     "render_template",
+    "template_token_problems",
 ]
+
+#: The fields each record-backed source carries. The service builds its merge
+#: context with exactly these keys (a test holds the two together), so a
+#: template can be checked for a misspelt token when it is saved rather than
+#: when a letter is issued to somebody.
+AVAILABLE_FIELDS: dict[str, tuple[str, ...]] = {
+    "employee": (
+        "first_name",
+        "last_name",
+        "display_name",
+        "employee_code",
+        "work_email",
+        "designation",
+        "grade",
+        "date_of_joining",
+        "date_of_exit",
+        "probation_end_date",
+        "notice_period_days",
+    ),
+    "salary": ("ctc_annual", "currency", "effective_from"),
+    "tenant": ("name", "slug"),
+}
 
 # {{ employee.first_name }} — whitespace tolerated, token chars restricted.
 TOKEN_PATTERN = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}")
@@ -283,3 +309,92 @@ def render_template(
         for part in (substitute(header_html), substitute(body_html), substitute(footer_html))
         if part
     )
+
+
+# ── Authoring aids ──────────────────────────────────────────────────────────
+
+
+def _marker(token: str) -> str:
+    """A visible hole where a value could not be resolved. Preview only."""
+    return (
+        '<span style="background-color:#fdecc8;color:#7a4b00;padding:0 2px">'
+        f"[missing: {html.escape(token)}]</span>"
+    )
+
+
+def preview_render(
+    *,
+    body_html: str,
+    context: MergeContext,
+    header_html: str | None = None,
+    footer_html: str | None = None,
+    required_tokens: set[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Merge for a preview, marking holes instead of refusing.
+
+    `render_template` refuses a letter with a hole in it, which is right for a
+    letter and useless for an author, who needs to see every hole at once.
+    Nothing produced here is ever issued.
+    """
+    resolved: dict[str, str] = {}
+    problems: list[str] = []
+
+    for token in sorted(extract_tokens(header_html, body_html, footer_html)):
+        try:
+            value = _resolve(token, context)
+        except LetterMergeError as exc:
+            problems.append(f"{token}: {exc}")
+            resolved[token] = _marker(token)
+            continue
+        if not value.strip() and (required_tokens is None or token in required_tokens):
+            problems.append(f"{token}: resolves to nothing for this employee")
+            resolved[token] = _marker(token)
+            continue
+        resolved[token] = value
+
+    def substitute(fragment: str | None) -> str:
+        if not fragment:
+            return ""
+        return TOKEN_PATTERN.sub(lambda m: resolved.get(m.group(1), ""), fragment)
+
+    merged = "".join(
+        part
+        for part in (substitute(header_html), substitute(body_html), substitute(footer_html))
+        if part
+    )
+    return merged, problems
+
+
+def template_token_problems(*html_fragments: str | None) -> list[str]:
+    """Tokens that can never resolve, whoever the letter is for.
+
+    Checked when a template is saved, so a misspelt `{{employee.frist_name}}` is
+    found by its author rather than by the first person a letter is issued to.
+    `manual.*` is open-ended by design — it is whatever the issuer types.
+    """
+    problems: list[str] = []
+    for token in sorted(extract_tokens(*html_fragments)):
+        namespace, _, path = token.partition(".")
+        if namespace == "manual":
+            if not path:
+                problems.append(f"'{{{{{token}}}}}' names the manual source but no field")
+            continue
+        if namespace == "computed":
+            if path not in COMPUTED_HANDLERS:
+                problems.append(
+                    f"'{{{{{token}}}}}' is not a computed field. Available: "
+                    + ", ".join(f"computed.{name}" for name in sorted(COMPUTED_HANDLERS))
+                )
+            continue
+        fields = AVAILABLE_FIELDS.get(namespace)
+        if fields is None:
+            problems.append(
+                f"'{{{{{token}}}}}' uses an unknown source '{namespace}'. Available: "
+                + ", ".join(sorted([*AVAILABLE_FIELDS, "computed", "manual"]))
+            )
+        elif path not in fields:
+            problems.append(
+                f"'{{{{{token}}}}}' is not a field of {namespace}. Available: "
+                + ", ".join(f"{namespace}.{name}" for name in fields)
+            )
+    return problems

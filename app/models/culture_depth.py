@@ -414,6 +414,10 @@ class Survey(Base, UUIDMixin, TenantMixin, TimestampMixin):
             "min_responses_to_report >= 5", name="ck_survey_anonymity_floor"
         ),
         CheckConstraint("closes_on >= opens_on", name="ck_survey_window_ordered"),
+        CheckConstraint(
+            "resurvey_interval_days IS NULL OR resurvey_interval_days >= 30",
+            name="ck_survey_resurvey_interval",
+        ),
     )
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -440,6 +444,17 @@ class Survey(Base, UUIDMixin, TenantMixin, TimestampMixin):
         Integer, default=5, nullable=False
     )
     is_anonymous: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Days after this wave closes that the next wave opens. Null means no
+    #: re-survey is scheduled. `schedule_due_resurveys` reads it; nothing else
+    #: decides when to ask again.
+    resurvey_interval_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The wave this one re-surveys, so movement is computed between the two.
+    previous_wave_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("surveys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class SurveyParticipant(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -617,6 +632,16 @@ class Announcement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    #: When the audience was notified through the notification engine. Null
+    #: until `publish_at` has passed and delivery ran - which is what stops a
+    #: scheduled announcement being sent twice.
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: How many people with a login the delivery reached.
+    delivered_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
 
 

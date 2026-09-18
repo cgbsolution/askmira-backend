@@ -1,33 +1,33 @@
-"""Loans, advances and reimbursement components (slice 14)."""
+"""Loans, advances and reimbursement components (slice 14).
+
+Thin: parse, gate, delegate to `app.services.loans.service`, serialise. The
+employee's own routes (`/loans/mine`, claims, positions) resolve the person from
+the token through `app.core.permissions`; payroll routes are role-gated.
+"""
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.core import permissions
+from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.loans import (
     ClaimStatus,
     InterestType,
     LoanAccount,
-    LoanRepayment,
-    LoanScheme,
     LoanStatus,
     LoanType,
     ReimbursementClaim,
-    ReimbursementComponent,
 )
 from app.models.user import UserRole
-from app.services import audit
-from app.services.loans import amortisation, reimbursements
+from app.services.filings import support
+from app.services.loans import service as loan_service
 
 router = APIRouter(tags=["loans"])
 
@@ -54,7 +54,6 @@ class SchemeCreate(BaseModel):
     minimum_net_pay: Decimal = Field(default=Decimal(0), ge=0)
     allow_partial_recovery: bool = False
     requires_approval: bool = True
-    approver_roles: list[str] = Field(default_factory=list)
 
 
 class SchemeRead(BaseModel):
@@ -67,18 +66,24 @@ class SchemeRead(BaseModel):
     interest_rate: Decimal
     max_tenure_months: int
     max_amount: Decimal | None
+    max_amount_as_multiple_of_salary: Decimal | None
+    eligibility_min_service_months: int
+    moratorium_months: int
     minimum_net_pay: Decimal
     allow_partial_recovery: bool
     requires_approval: bool
     active: bool
 
 
-class LoanApply(BaseModel):
-    employee_id: uuid.UUID
+class OwnLoanApply(BaseModel):
     scheme_id: uuid.UUID
-    principal: Decimal = Field(gt=0)
+    principal: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     tenure_months: int = Field(gt=0, le=360)
-    purpose: str | None = None
+    purpose: str | None = Field(default=None, max_length=2000)
+
+
+class LoanApply(OwnLoanApply):
+    employee_id: uuid.UUID
 
 
 class LoanRead(BaseModel):
@@ -86,7 +91,10 @@ class LoanRead(BaseModel):
 
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
     scheme_id: uuid.UUID
+    scheme_name: str | None = None
     status: LoanStatus
     principal: Decimal
     interest_rate: Decimal
@@ -95,6 +103,10 @@ class LoanRead(BaseModel):
     emi_amount: Decimal
     outstanding_principal: Decimal
     carried_forward: Decimal
+    purpose: str | None
+    decision_note: str | None
+    applied_at: datetime | None
+    approved_at: datetime | None
     disbursed_at: datetime | None
     closed_at: datetime | None
 
@@ -113,15 +125,33 @@ class RepaymentRead(BaseModel):
     reason: str
 
 
+class LoanDetailRead(BaseModel):
+    loan: LoanRead
+    schedule: dict[str, Any] | None
+    repayments: list[RepaymentRead]
+
+
+class LoanDecision(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class LoanRejection(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class LoanDisbursal(BaseModel):
+    disbursed_on: date | None = None
+
+
 class PrepaymentRequest(BaseModel):
-    amount: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     mode: str = Field(pattern="^(reduce_emi|reduce_tenure)$")
 
 
 class ComponentCreate(BaseModel):
-    code: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z0-9_]+$")
     name: str = Field(min_length=1, max_length=128)
-    annual_entitlement: Decimal = Field(gt=0)
+    annual_entitlement: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     exemption_basis: str | None = Field(default=None, max_length=255)
     bill_required: bool = True
     carry_forward_within_year: bool = True
@@ -137,24 +167,15 @@ class ComponentRead(BaseModel):
     annual_entitlement: Decimal
     exemption_basis: str | None
     bill_required: bool
+    carry_forward_within_year: bool
     reminder_months_before_year_end: int
     active: bool
-
-
-class ClaimCreate(BaseModel):
-    employee_id: uuid.UUID
-    component_code: str = Field(min_length=1, max_length=64)
-    financial_year: str = Field(pattern=r"^\d{4}-\d{4}$")
-    amount: Decimal = Field(gt=0)
-    bill_storage_key: str | None = None
-    bill_date: date | None = None
-    bill_reference: str | None = Field(default=None, max_length=128)
 
 
 class ClaimVerify(BaseModel):
     status: ClaimStatus
     accepted_amount: Decimal = Field(default=Decimal(0), ge=0)
-    verification_note: str | None = None
+    verification_note: str | None = Field(default=None, max_length=2000)
 
 
 class ClaimRead(BaseModel):
@@ -162,30 +183,60 @@ class ClaimRead(BaseModel):
 
     id: uuid.UUID
     employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
     component_code: str
+    component_name: str | None = None
     financial_year: str
     amount: Decimal
     accepted_amount: Decimal
     status: ClaimStatus
     bill_date: date | None
+    bill_reference: str | None
+    has_bill: bool = False
     verification_note: str | None
     verified_at: datetime | None
+    created_at: datetime
+
+
+def _loan_read(
+    loan: LoanAccount, label: tuple[str, str] | None = None, scheme_name: str | None = None
+) -> LoanRead:
+    read = LoanRead.model_validate(loan)
+    if label:
+        read.employee_code, read.employee_name = label
+    read.scheme_name = scheme_name
+    return read
+
+
+def _claim_read(
+    claim: ReimbursementClaim,
+    label: tuple[str, str] | None = None,
+    component_name: str | None = None,
+) -> ClaimRead:
+    read = ClaimRead.model_validate(claim)
+    read.has_bill = bool(claim.bill_storage_key)
+    if label:
+        read.employee_code, read.employee_name = label
+    read.component_name = component_name
+    return read
+
+
+async def _one_loan(session, user, loan_id: uuid.UUID) -> LoanRead:
+    rows = await loan_service.list_loans(session, user)
+    for loan, label, scheme_name in rows:
+        if loan.id == loan_id:
+            return _loan_read(loan, label, scheme_name)
+    raise AssertionError("the loan was just read")  # pragma: no cover
 
 
 # ── Schemes ─────────────────────────────────────────────────────────────────
 
 
-@router.get(
-    "/loans/schemes",
-    response_model=list[SchemeRead],
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
-)
+@router.get("/loans/schemes", response_model=list[SchemeRead])
 async def list_schemes(user: CurrentUser, session: DbSession) -> list[SchemeRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(select(LoanScheme).order_by(LoanScheme.name), LoanScheme, user)
-        )
-    ).all()
+    """The loan catalogue: what is offered, on what terms. About nobody in particular."""
+    rows = await loan_service.list_schemes(session, user)
     return [SchemeRead.model_validate(row) for row in rows]
 
 
@@ -196,16 +247,48 @@ async def list_schemes(user: CurrentUser, session: DbSession) -> list[SchemeRead
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def create_scheme(
-    payload: SchemeCreate, user: CurrentUser, session: DbSession
+    payload: SchemeCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> SchemeRead:
-    scheme = LoanScheme(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(scheme)
+    scheme = await loan_service.create_scheme(
+        session, user, payload.model_dump(), request=request
+    )
     await session.commit()
     await session.refresh(scheme)
     return SchemeRead.model_validate(scheme)
 
 
-# ── Loans ───────────────────────────────────────────────────────────────────
+# ── Loans: the employee's own ───────────────────────────────────────────────
+
+
+@router.get("/loans/mine", response_model=list[LoanRead])
+async def my_loans(user: CurrentUser, session: DbSession) -> list[LoanRead]:
+    """The caller's own loans, found from user.employee_id."""
+    own = permissions.own_employee_id(user)
+    rows = await loan_service.list_loans(session, user, employee_id=own)
+    return [_loan_read(loan, label, name) for loan, label, name in rows]
+
+
+@router.post("/loans/mine", response_model=LoanRead, status_code=status.HTTP_201_CREATED)
+async def apply_for_own_loan(
+    payload: OwnLoanApply, user: CurrentUser, session: DbSession, request: Request
+) -> LoanRead:
+    """Apply for a loan for yourself."""
+    own = permissions.own_employee_id(user)
+    loan = await loan_service.apply_for_loan(
+        session,
+        user,
+        employee_id=own,
+        scheme_id=payload.scheme_id,
+        principal=payload.principal,
+        tenure_months=payload.tenure_months,
+        purpose=payload.purpose,
+        request=request,
+    )
+    await session.commit()
+    return await _one_loan(session, user, loan.id)
+
+
+# ── Loans: payroll ──────────────────────────────────────────────────────────
 
 
 @router.post(
@@ -215,113 +298,21 @@ async def create_scheme(
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
 async def apply(
-    payload: LoanApply,
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
+    payload: LoanApply, user: CurrentUser, session: DbSession, request: Request
 ) -> LoanRead:
-    """Apply for a loan. The terms are snapshotted from the scheme now.
-
-    A scheme's rate changing next year must not retroactively alter what an
-    existing borrower owes.
-    """
-    scheme = await session.scalar(
-        tenant_scoped(
-            select(LoanScheme).where(LoanScheme.id == payload.scheme_id), LoanScheme, user
-        )
-    )
-    if scheme is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan scheme not found")
-
-    employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == payload.employee_id), Employee, user
-        )
-    )
-    if employee is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-
-    if scheme.max_amount and payload.principal > Decimal(str(scheme.max_amount)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"{payload.principal} exceeds the scheme's maximum of "
-                f"{scheme.max_amount}."
-            ),
-        )
-    if payload.tenure_months > scheme.max_tenure_months:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"A tenure of {payload.tenure_months} months exceeds the scheme's "
-                f"maximum of {scheme.max_tenure_months}."
-            ),
-        )
-    if employee.date_of_joining and scheme.eligibility_min_service_months:
-        served = (date.today() - employee.date_of_joining).days // 30
-        if served < scheme.eligibility_min_service_months:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"{employee.employee_code} has {served} month(s) of service against "
-                    f"the {scheme.eligibility_min_service_months} this scheme requires."
-                ),
-            )
-
-    try:
-        schedule = amortisation.build_schedule(
-            principal=payload.principal,
-            annual_rate=Decimal(str(scheme.interest_rate)),
-            tenure_months=payload.tenure_months,
-            interest_type=scheme.interest_type.value,
-            moratorium_months=scheme.moratorium_months,
-            accrue_interest_during_moratorium=scheme.accrue_interest_during_moratorium,
-        )
-    except amortisation.AmortisationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-
-    loan = LoanAccount(
-        tenant_id=user.tenant_id,
-        employee_id=payload.employee_id,
-        scheme_id=scheme.id,
-        status=LoanStatus.APPLIED if scheme.requires_approval else LoanStatus.APPROVED,
-        principal=payload.principal,
-        interest_rate=scheme.interest_rate,
-        interest_type=scheme.interest_type,
-        tenure_months=payload.tenure_months,
-        emi_amount=schedule.emi,
-        outstanding_principal=payload.principal,
-        purpose=payload.purpose,
-        applied_at=datetime.now(UTC),
-        schedule=schedule.as_dict(),
-    )
-    session.add(loan)
-    await session.flush()
-
-    await audit.record(
+    """Apply on somebody's behalf. The terms are snapshotted from the scheme now."""
+    loan = await loan_service.apply_for_loan(
         session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.CREATE,
-        entity_type="loan_account",
-        entity_id=loan.id,
-        summary=(
-            f"{employee.employee_code} applied for {payload.principal} over "
-            f"{payload.tenure_months} months at {scheme.interest_rate}% "
-            f"({scheme.interest_type.value})"
-        ),
-        changes={
-            "principal": str(payload.principal),
-            "emi": str(schedule.emi),
-            "total_interest": str(schedule.total_interest),
-        },
+        user,
+        employee_id=payload.employee_id,
+        scheme_id=payload.scheme_id,
+        principal=payload.principal,
+        tenure_months=payload.tenure_months,
+        purpose=payload.purpose,
         request=request,
     )
     await session.commit()
-    await session.refresh(loan)
-    return LoanRead.model_validate(loan)
+    return await _one_loan(session, user, loan.id)
 
 
 @router.get(
@@ -335,61 +326,25 @@ async def list_loans(
     employee_id: uuid.UUID | None = None,
     loan_status: LoanStatus | None = None,
 ) -> list[LoanRead]:
-    stmt = select(LoanAccount).order_by(LoanAccount.created_at.desc())
-    if employee_id is not None:
-        stmt = stmt.where(LoanAccount.employee_id == employee_id)
-    if loan_status is not None:
-        stmt = stmt.where(LoanAccount.status == loan_status)
-    rows = (await session.scalars(tenant_scoped(stmt, LoanAccount, user))).all()
-    return [LoanRead.model_validate(row) for row in rows]
-
-
-@router.get(
-    "/loans/{loan_id}/schedule",
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
-)
-async def get_schedule(
-    loan_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
-    """The amortisation ledger the borrower sees.
-
-    The same one payroll recovers against — stored rather than rebuilt, so the
-    two cannot drift apart.
-    """
-    loan = await session.scalar(
-        tenant_scoped(select(LoanAccount).where(LoanAccount.id == loan_id), LoanAccount, user)
+    rows = await loan_service.list_loans(
+        session, user, employee_id=employee_id, loan_status=loan_status
     )
-    if loan is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan not found")
-    return loan.schedule
+    return [_loan_read(loan, label, name) for loan, label, name in rows]
 
 
-@router.get(
-    "/loans/{loan_id}/repayments",
-    response_model=list[RepaymentRead],
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
-)
-async def list_repayments(
-    loan_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> list[RepaymentRead]:
-    """Every recovery, and every skipped one.
+@router.get("/loans/{loan_id}", response_model=LoanDetailRead)
+async def loan_detail(loan_id: uuid.UUID, user: CurrentUser, session: DbSession) -> LoanDetailRead:
+    """A loan with its schedule and recovery ledger — the borrower's own, or payroll's.
 
-    A skipped instalment is a row too — a ledger that records only what was
-    recovered cannot explain a gap, and "why was nothing deducted in July" is a
-    question the borrower will ask.
+    The schedule is the stored one payroll recovers against, so the two cannot
+    drift apart. Skipped instalments are ledger rows with their reason.
     """
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(LoanRepayment)
-                .where(LoanRepayment.loan_account_id == loan_id)
-                .order_by(LoanRepayment.period),
-                LoanRepayment,
-                user,
-            )
-        )
-    ).all()
-    return [RepaymentRead.model_validate(row) for row in rows]
+    loan, repayments = await loan_service.loan_detail(session, user, loan_id)
+    return LoanDetailRead(
+        loan=await _one_loan(session, user, loan.id),
+        schedule=loan.schedule or None,
+        repayments=[RepaymentRead.model_validate(row) for row in repayments],
+    )
 
 
 @router.post(
@@ -398,38 +353,57 @@ async def list_repayments(
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def approve_loan(
-    loan_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+    loan_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    payload: LoanDecision | None = None,
 ) -> LoanRead:
-    loan = await session.scalar(
-        tenant_scoped(select(LoanAccount).where(LoanAccount.id == loan_id), LoanAccount, user)
-    )
-    if loan is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan not found")
-    if loan.status is not LoanStatus.APPLIED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"A loan in status '{loan.status.value}' is not awaiting approval.",
-        )
-
-    loan.status = LoanStatus.APPROVED
-    loan.approved_by_user_id = user.id
-    loan.approved_at = datetime.now(UTC)
-    await session.flush()
-
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.APPROVE,
-        entity_type="loan_account",
-        entity_id=loan.id,
-        summary=f"Approved a loan of {loan.principal}",
-        changes={"principal": str(loan.principal)},
+    await loan_service.decide_loan(
+        session, user, loan_id, approve=True, note=payload.note if payload else None,
         request=request,
     )
     await session.commit()
-    await session.refresh(loan)
-    return LoanRead.model_validate(loan)
+    return await _one_loan(session, user, loan_id)
+
+
+@router.post(
+    "/loans/{loan_id}/reject",
+    response_model=LoanRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def reject_loan(
+    loan_id: uuid.UUID,
+    payload: LoanRejection,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> LoanRead:
+    await loan_service.decide_loan(
+        session, user, loan_id, approve=False, note=payload.reason, request=request
+    )
+    await session.commit()
+    return await _one_loan(session, user, loan_id)
+
+
+@router.post(
+    "/loans/{loan_id}/disburse",
+    response_model=LoanRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def disburse_loan(
+    loan_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    payload: LoanDisbursal | None = None,
+) -> LoanRead:
+    await loan_service.disburse_loan(
+        session, user, loan_id, disbursed_on=payload.disbursed_on if payload else None,
+        request=request,
+    )
+    await session.commit()
+    return await _one_loan(session, user, loan_id)
 
 
 @router.post(
@@ -443,109 +417,21 @@ async def prepay(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Part-prepay and reschedule.
-
-    `mode` decides what the borrower actually asked for — a lower instalment,
-    or a shorter loan. Both are ordinary requests and picking one for them is
-    how a product ends up arguing about what they wanted.
-    """
-    loan = await session.scalar(
-        tenant_scoped(select(LoanAccount).where(LoanAccount.id == loan_id), LoanAccount, user)
-    )
-    if loan is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan not found")
-    if loan.status not in (LoanStatus.DISBURSED, LoanStatus.ACTIVE):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"A loan in status '{loan.status.value}' cannot be prepaid.",
-        )
-
-    recovered = (
-        await session.scalars(
-            tenant_scoped(
-                select(LoanRepayment).where(
-                    LoanRepayment.loan_account_id == loan.id,
-                    LoanRepayment.is_skipped.is_(False),
-                ),
-                LoanRepayment,
-                user,
-            )
-        )
-    ).all()
-    remaining = max(1, loan.tenure_months - len(recovered))
-
-    try:
-        schedule = amortisation.recompute_after_prepayment(
-            outstanding_principal=Decimal(str(loan.outstanding_principal)),
-            annual_rate=Decimal(str(loan.interest_rate)),
-            remaining_months=remaining,
-            prepayment=payload.amount,
-            mode=payload.mode,
-            current_emi=Decimal(str(loan.emi_amount)),
-            interest_type=loan.interest_type.value,
-        )
-    except amortisation.AmortisationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-
-    loan.outstanding_principal = schedule.principal
-    loan.emi_amount = schedule.emi
-    loan.tenure_months = len(recovered) + schedule.tenure_months
-    loan.schedule = schedule.as_dict()
-    session.add(
-        LoanRepayment(
-            tenant_id=user.tenant_id,
-            loan_account_id=loan.id,
-            period=date.today().strftime("%Y-%m"),
-            amount=payload.amount,
-            principal_component=payload.amount,
-            interest_component=Decimal(0),
-            closing_balance=schedule.principal,
-            is_prepayment=True,
-            reason=schedule.notes[0] if schedule.notes else "Part-prepayment.",
-        )
-    )
-    await session.flush()
-
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.UPDATE,
-        entity_type="loan_account",
-        entity_id=loan.id,
-        summary=f"Part-prepayment of {payload.amount} ({payload.mode})",
-        changes={
-            "amount": str(payload.amount),
-            "mode": payload.mode,
-            "new_emi": str(schedule.emi),
-            "new_tenure_months": schedule.tenure_months,
-        },
-        request=request,
+    """Part-prepay and reschedule, reducing the EMI or the tenure as asked."""
+    schedule = await loan_service.prepay_loan(
+        session, user, loan_id, amount=payload.amount, mode=payload.mode, request=request
     )
     await session.commit()
-    return schedule.as_dict()
+    return schedule
 
 
 # ── Reimbursement components ────────────────────────────────────────────────
 
 
-@router.get(
-    "/reimbursements/components",
-    response_model=list[ComponentRead],
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
-)
+@router.get("/reimbursements/components", response_model=list[ComponentRead])
 async def list_components(user: CurrentUser, session: DbSession) -> list[ComponentRead]:
-    rows = (
-        await session.scalars(
-            tenant_scoped(
-                select(ReimbursementComponent).order_by(ReimbursementComponent.code),
-                ReimbursementComponent,
-                user,
-            )
-        )
-    ).all()
+    """The reimbursement catalogue: entitlements and what each needs. Nobody in particular."""
+    rows = await loan_service.list_components(session, user)
     return [ComponentRead.model_validate(row) for row in rows]
 
 
@@ -556,52 +442,93 @@ async def list_components(user: CurrentUser, session: DbSession) -> list[Compone
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def create_component(
-    payload: ComponentCreate, user: CurrentUser, session: DbSession
+    payload: ComponentCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> ComponentRead:
-    component = ReimbursementComponent(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(component)
+    component = await loan_service.create_component(
+        session, user, payload.model_dump(), request=request
+    )
     await session.commit()
     await session.refresh(component)
     return ComponentRead.model_validate(component)
 
 
 @router.post(
+    "/reimbursements/reminders/run",
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def run_reminders(user: CurrentUser, session: DbSession) -> dict[str, int]:
+    """Warn about entitlement that will become taxable at year end.
+
+    What a monthly scheduler calls; there is none in this build.
+    """
+    raised = await loan_service.send_unclaimed_entitlement_reminders(
+        session, user.tenant_id, today=date.today()
+    )
+    return {"notifications_raised": raised}
+
+
+# ── Reimbursement claims ────────────────────────────────────────────────────
+
+
+@router.post(
     "/reimbursements/claims",
     response_model=ClaimRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES, UserRole.EMPLOYEE))],
 )
 async def submit_claim(
-    payload: ClaimCreate, user: CurrentUser, session: DbSession
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    component_code: str = Form(min_length=1, max_length=64),
+    financial_year: str = Form(pattern=r"^\d{4}-\d{4}$"),
+    amount: Decimal = Form(gt=0, max_digits=14, decimal_places=2),
+    bill_date: date | None = Form(default=None),
+    bill_reference: str | None = Form(default=None, max_length=128),
+    employee_id: uuid.UUID | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
 ) -> ClaimRead:
-    component = await session.scalar(
-        tenant_scoped(
-            select(ReimbursementComponent).where(
-                ReimbursementComponent.code == payload.component_code
-            ),
-            ReimbursementComponent,
-            user,
-        )
-    )
-    if component is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"'{payload.component_code}' is not a reimbursement component.",
-        )
-    if component.bill_required and not payload.bill_storage_key:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"{component.name} is exempt only against a bill, and none was "
-                "attached."
-            ),
-        )
+    """Claim against your own entitlement, with the bill (PDF, PNG or JPEG).
 
-    claim = ReimbursementClaim(tenant_id=user.tenant_id, **payload.model_dump())
-    session.add(claim)
+    Payroll may pass `employee_id` to claim on someone's behalf.
+    """
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only claim reimbursements for yourself"
+    )
+    bill = await file.read(support.MAX_UPLOAD_BYTES + 1) if file is not None else None
+    claim = await loan_service.submit_claim(
+        session,
+        user,
+        employee_id=target,
+        component_code=component_code,
+        financial_year=financial_year,
+        amount=amount,
+        bill_date=bill_date,
+        bill_reference=bill_reference,
+        bill=bill or None,
+        request=request,
+    )
     await session.commit()
     await session.refresh(claim)
-    return ClaimRead.model_validate(claim)
+    return _claim_read(claim)
+
+
+@router.get("/reimbursements/claims", response_model=list[ClaimRead])
+async def list_claims(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str | None = None,
+    claim_status: ClaimStatus | None = Query(default=None, alias="status"),
+    employee_id: uuid.UUID | None = None,
+) -> list[ClaimRead]:
+    """Claims: your own, or everybody's for payroll."""
+    rows = await loan_service.list_claims(
+        session,
+        user,
+        employee_id=employee_id,
+        financial_year=financial_year,
+        claim_status=claim_status,
+    )
+    return [_claim_read(claim, label, name) for claim, label, name in rows]
 
 
 @router.patch(
@@ -616,134 +543,45 @@ async def verify_claim(
     session: DbSession,
     request: Request,
 ) -> ClaimRead:
-    """Verify a bill, in full or in part.
-
-    A rejection or a partial acceptance needs a note: "rejected" with no reason
-    is not a decision the employee can act on.
-    """
-    claim = await session.scalar(
-        tenant_scoped(
-            select(ReimbursementClaim).where(ReimbursementClaim.id == claim_id),
-            ReimbursementClaim,
-            user,
-        )
-    )
-    if claim is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Claim not found")
-
-    if payload.status in (ClaimStatus.REJECTED, ClaimStatus.PARTIAL) and not (
-        payload.verification_note or ""
-    ).strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "A rejection or a partial acceptance needs a note. Without one the "
-                "employee cannot tell what to fix."
-            ),
-        )
-    if payload.accepted_amount > Decimal(str(claim.amount)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"{payload.accepted_amount} cannot be accepted against a claim of "
-                f"{claim.amount}."
-            ),
-        )
-
-    claim.status = payload.status
-    claim.accepted_amount = (
-        payload.accepted_amount if payload.status is not ClaimStatus.REJECTED else Decimal(0)
-    )
-    claim.verification_note = payload.verification_note
-    claim.verified_by_user_id = user.id
-    claim.verified_at = datetime.now(UTC)
-    await session.flush()
-
-    await audit.record(
+    """Verify a bill, in full or in part. A rejection or partial needs a note."""
+    claim = await loan_service.verify_claim(
         session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.UPDATE,
-        entity_type="reimbursement_claim",
-        entity_id=claim.id,
-        summary=(
-            f"{claim.component_code} claim of {claim.amount} marked "
-            f"{payload.status.value}, {claim.accepted_amount} accepted"
-        ),
-        changes={
-            "status": payload.status.value,
-            "accepted_amount": str(claim.accepted_amount),
-            "note": payload.verification_note,
-        },
+        user,
+        claim_id,
+        decision=payload.status,
+        accepted_amount=payload.accepted_amount,
+        note=payload.verification_note,
         request=request,
     )
     await session.commit()
     await session.refresh(claim)
-    return ClaimRead.model_validate(claim)
+    return _claim_read(claim)
 
 
-@router.get(
-    "/reimbursements/position",
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES, UserRole.EMPLOYEE))],
-)
+@router.get("/reimbursements/claims/{claim_id}/bill")
+async def claim_bill(
+    claim_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    data, mime, name = await loan_service.claim_bill(session, user, claim_id, request=request)
+    await session.commit()
+    return Response(content=data, media_type=mime, headers=support.attachment_headers(name))
+
+
+@router.get("/reimbursements/position")
 async def entitlement_position(
     user: CurrentUser,
     session: DbSession,
-    employee_id: uuid.UUID,
     financial_year: str = Query(pattern=r"^\d{4}-\d{4}$"),
+    employee_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
-    """Where the employee stands against each component, at any point.
+    """Where you stand against each component, at any point in the year.
 
     Available all year, not only at year end — the taxable-balance surprise is
     avoidable, and only avoidable in advance.
     """
-    components = (
-        await session.scalars(
-            tenant_scoped(
-                select(ReimbursementComponent).where(
-                    ReimbursementComponent.active.is_(True)
-                ),
-                ReimbursementComponent,
-                user,
-            )
-        )
-    ).all()
-
-    out: list[dict[str, Any]] = []
-    for component in components:
-        claims = (
-            await session.scalars(
-                tenant_scoped(
-                    select(ReimbursementClaim).where(
-                        ReimbursementClaim.employee_id == employee_id,
-                        ReimbursementClaim.component_code == component.code,
-                        ReimbursementClaim.financial_year == financial_year,
-                    ),
-                    ReimbursementClaim,
-                    user,
-                )
-            )
-        ).all()
-        position = reimbursements.position(
-            component_code=component.code,
-            financial_year=financial_year,
-            entitlement=Decimal(str(component.annual_entitlement)),
-            claims=[
-                {
-                    "amount": Decimal(str(c.amount)),
-                    "accepted_amount": Decimal(str(c.accepted_amount)),
-                    "status": c.status.value,
-                }
-                for c in claims
-            ],
-        )
-        year_end = date(int(financial_year.split("-")[1]), 3, 31)
-        warn, message = reimbursements.should_warn(
-            today=date.today(),
-            financial_year_end=year_end,
-            unclaimed=position.unclaimed,
-            reminder_months_before_year_end=component.reminder_months_before_year_end,
-        )
-        out.append({**position.as_dict(), "should_warn": warn, "warning": message})
-
-    return out
+    target = permissions.resolve_employee(
+        user, employee_id, detail="You can only see your own entitlements"
+    )
+    return await loan_service.entitlement_positions(
+        session, user, employee_id=target, financial_year=financial_year
+    )

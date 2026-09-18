@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -27,9 +27,16 @@ from app.models.payroll import (
 )
 from app.models.user import User
 from app.schemas.payroll import (
+    EmployeeSalaryComponentRead,
     EmployeeSalaryCreate,
     SalaryComponentCreate,
     SalaryStructureCreate,
+)
+from app.schemas.payroll_run import (
+    SalaryOverviewRead,
+    SalaryRecordRead,
+    SalaryStructureDetailRead,
+    StructureComponentDetailRead,
 )
 from app.services import audit
 from app.services.payroll.salary_structure import (
@@ -361,6 +368,132 @@ async def salary_history(
         user,
     )
     return list((await session.scalars(stmt)).all())
+
+
+def salary_record(salary: EmployeeSalary) -> SalaryRecordRead:
+    """One row of a salary series, with its structure's name."""
+    return SalaryRecordRead(
+        id=salary.id,
+        employee_id=salary.employee_id,
+        structure_id=salary.structure_id,
+        structure_name=salary.structure.name if salary.structure else None,
+        ctc_annual=Decimal(str(salary.ctc_annual)),
+        currency=salary.currency,
+        effective_from=salary.effective_from,
+        effective_to=salary.effective_to,
+        revision_reason=salary.revision_reason,
+        components=[
+            EmployeeSalaryComponentRead.model_validate(component)
+            for component in sorted(salary.components, key=lambda c: c.display_order)
+        ],
+    )
+
+
+async def salary_overview(
+    session: AsyncSession,
+    user: User,
+    *,
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> tuple[list[SalaryOverviewRead], int]:
+    """Employees and the salary each is on today — the Salaries screen's list."""
+    stmt = tenant_scoped(select(Employee).where(Employee.deleted_at.is_(None)), Employee, user)
+    count_stmt = tenant_scoped(
+        select(func.count(Employee.id)).where(Employee.deleted_at.is_(None)), Employee, user
+    )
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        condition = or_(
+            Employee.first_name.ilike(pattern),
+            Employee.last_name.ilike(pattern),
+            Employee.employee_code.ilike(pattern),
+        )
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
+
+    total = int(await session.scalar(count_stmt) or 0)
+    employees = (
+        await session.scalars(
+            stmt.order_by(Employee.employee_code).offset((page - 1) * page_size).limit(page_size)
+        )
+    ).all()
+
+    current: dict[uuid.UUID, EmployeeSalary] = {}
+    if employees:
+        salaries = (
+            await session.scalars(
+                tenant_scoped(
+                    select(EmployeeSalary).where(
+                        EmployeeSalary.employee_id.in_([e.id for e in employees]),
+                        EmployeeSalary.effective_to.is_(None),
+                    ),
+                    EmployeeSalary,
+                    user,
+                )
+            )
+        ).all()
+        for salary in salaries:
+            known = current.get(salary.employee_id)
+            if known is None or salary.effective_from > known.effective_from:
+                current[salary.employee_id] = salary
+
+    return [
+        SalaryOverviewRead(
+            employee_id=employee.id,
+            employee_code=employee.employee_code,
+            employee_name=employee.full_name,
+            designation=employee.designation,
+            status=employee.status.value,
+            current_salary=(
+                salary_record(current[employee.id]) if employee.id in current else None
+            ),
+        )
+        for employee in employees
+    ], total
+
+
+async def structure_detail(
+    session: AsyncSession, user: User, structure_id: uuid.UUID
+) -> SalaryStructureDetailRead:
+    structure = await get_structure(session, user, structure_id)
+    return SalaryStructureDetailRead(
+        id=structure.id,
+        name=structure.name,
+        description=structure.description,
+        effective_from=structure.effective_from,
+        effective_to=structure.effective_to,
+        applicable_grades=list(structure.applicable_grades or []),
+        applicable_locations=list(structure.applicable_locations or []),
+        rounding_mode=structure.rounding_mode.value,
+        rounding_precision=structure.rounding_precision,
+        active=structure.active,
+        components=[
+            StructureComponentDetailRead(
+                component_code=item.component.code,
+                component_name=item.component.name,
+                component_type=item.component.component_type,
+                calculation_type=item.component.calculation_type,
+                value=(
+                    Decimal(str(item.component.value))
+                    if item.component.value is not None
+                    else None
+                ),
+                base_component_code=item.component.base_component_code,
+                formula=item.component.formula,
+                override_value=(
+                    Decimal(str(item.override_value)) if item.override_value is not None else None
+                ),
+                override_formula=item.override_formula,
+                override_base_component_code=item.override_base_component_code,
+                counts_toward_pf=item.component.counts_toward_pf,
+                counts_toward_esi=item.component.counts_toward_esi,
+                part_of_ctc=item.component.part_of_ctc,
+                display_order=item.display_order,
+            )
+            for item in sorted(structure.components, key=lambda c: c.display_order)
+        ],
+    )
 
 
 async def active_salary_on(

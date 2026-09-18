@@ -143,10 +143,16 @@ class TaxComputation:
     hra: HraWorking | None = None
     slab_breakdown: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Taxable income from other modules that was added to gross, and amounts
+    # that would be added if still unclaimed at year end.
+    other_income: list[dict[str, str]] = field(default_factory=list)
+    pending_if_unclaimed: list[dict[str, str]] = field(default_factory=list)
 
     def as_working(self) -> dict[str, Any]:
         """The full working, for storage and for showing the employee."""
         return {
+            "other_income": self.other_income,
+            "pending_if_unclaimed": self.pending_if_unclaimed,
             "regime": self.regime,
             "gross_annual_income": str(self.gross_annual_income),
             "total_exemptions": str(self.total_exemptions),
@@ -413,6 +419,17 @@ class ProjectionInput:
     professional_tax: Decimal = ZERO
     # Employer PF contribution, deductible under 80CCD(2) in both regimes.
     employer_nps: Decimal = ZERO
+    # Taxable income from outside the salary structure, already computed by the
+    # module that owns it — the taxable part of a gratuity or an encashment,
+    # arrears received this year, a concessional-loan perquisite, entitlement
+    # left unclaimed at year end. `(code, label, amount, source, basis)`.
+    # Added to gross here and nowhere else, so each figure is counted once.
+    other_income: tuple[tuple[str, str, Decimal, str, str], ...] = ()
+    # Same shape, informational only: amounts that *would* become taxable (an
+    # unclaimed reimbursement before year end). Never added to income.
+    pending_if_unclaimed: tuple[tuple[str, str, Decimal, str, str], ...] = ()
+    # Plain-language notes from the gatherer, e.g. a missing loan rule set.
+    income_notes: tuple[str, ...] = ()
 
 
 def project(inputs: ProjectionInput, rules: dict[str, Any]) -> TaxComputation:
@@ -439,7 +456,8 @@ def project(inputs: ProjectionInput, rules: dict[str, Any]) -> TaxComputation:
         annual_tax_liability=ZERO,
     )
 
-    gross = inputs.gross_salary + inputs.previous_gross
+    other_total = sum((amount for _, _, amount, _, _ in inputs.other_income), start=ZERO)
+    gross = inputs.gross_salary + inputs.previous_gross + other_total
     computation.gross_annual_income = _money(gross)
 
     if inputs.previous_gross > ZERO:
@@ -447,6 +465,25 @@ def project(inputs: ProjectionInput, rules: dict[str, Any]) -> TaxComputation:
             f"Includes {_money(inputs.previous_gross)} from a previous employer, with "
             f"{_money(inputs.previous_tds)} already deducted there."
         )
+
+    def _line(item: tuple[str, str, Decimal, str, str]) -> dict[str, str]:
+        code, label, amount, source, basis = item
+        return {
+            "code": code,
+            "label": label,
+            "amount": str(_money(amount)),
+            "source": source,
+            "basis": basis,
+        }
+
+    computation.other_income = [_line(item) for item in inputs.other_income]
+    computation.pending_if_unclaimed = [_line(item) for item in inputs.pending_if_unclaimed]
+    if other_total > ZERO:
+        computation.notes.append(
+            f"Includes {_money(other_total)} of taxable income from outside the salary "
+            "structure: " + "; ".join(label for _, label, _, _, _ in inputs.other_income) + "."
+        )
+    computation.notes.extend(inputs.income_notes)
 
     # ── Exemptions ──────────────────────────────────────────────────────────
     exemptions = inputs.previous_exempt

@@ -200,6 +200,9 @@ from app.models.expenses import (
     ExpensePolicy,
     ExpensePolicyRule,
     ExpensePolicyViolation,
+    ExpenseReceipt,
+    ExpenseReport,
+    ExpenseReportStatusEnum,
     LimitTypeEnum,
     LocationCityTier,
     MileageRate,
@@ -218,6 +221,16 @@ from app.models.filings import (
     ReturnType,
     TdsChallan,
     TdsChallanMapping,
+)
+from app.models.goals import (
+    CheckInConfidence,
+    Goal,
+    GoalCheckIn,
+    GoalLevel,
+    GoalStatus,
+    GoalVisibility,
+    KeyResult,
+    KeyResultKind,
 )
 from app.models.grounding import (
     AgentInvocation,
@@ -240,6 +253,7 @@ from app.models.gst import (
 from app.models.hiring import (
     Candidate,
     CandidateStage,
+    CandidateStageEvent,
     InterviewScore,
     Requisition,
     RequisitionStatus,
@@ -320,6 +334,7 @@ from app.models.notifications import (
     NotificationPreference,
     NotificationStatus,
     NotificationTemplate,
+    TenantSmtpSettings,
     WhatsAppConsent,
     WhatsAppTemplate,
     WhatsAppTemplateStatus,
@@ -448,6 +463,7 @@ from app.models.rewards import (
     RewardTaxRule,
     TaxTreatmentEnum,
 )
+from app.models.scheduler import SchedulerJobRun, SchedulerRunStatus
 from app.models.tax import (
     DeclarationStatus,
     DeclarationWindow,
@@ -538,6 +554,7 @@ __all__ = [
     "CandidateDocument",
     "CandidatePortalToken",
     "CandidateStage",
+    "CandidateStageEvent",
     "CareersPageConfig",
     "Channel",
     "ChartType",
@@ -624,6 +641,9 @@ __all__ = [
     "ExpensePolicy",
     "ExpensePolicyRule",
     "ExpensePolicyViolation",
+    "ExpenseReceipt",
+    "ExpenseReport",
+    "ExpenseReportStatusEnum",
     "ExportFormat",
     "FieldSource",
     "FilingRecord",

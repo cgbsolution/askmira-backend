@@ -34,6 +34,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.documents import IssuedLetter, LetterStatus
@@ -57,7 +58,7 @@ from app.schemas.payroll import EmployeeSalaryCreate
 from app.services import audit
 from app.services.documents import letter_merge, pdf
 from app.services.documents import service as document_service
-from app.services.hiring import approval_chain, offer_terms, requisitions
+from app.services.hiring import approval_chain, approvers, offer_terms, requisitions
 from app.services.notifications import dispatch
 from app.services.payroll import service as payroll_service
 from app.services.payroll.salary_structure import (
@@ -726,6 +727,32 @@ async def approve_offer(
             detail="Every approval step on this offer has already been decided.",
         )
 
+    # Nobody signs an offer they drafted, and a step is signed only by somebody
+    # holding the role it names. Without this the route let any manager decide
+    # any step, which made the chain a list of names rather than signatures.
+    requisition = await _requisition(session, user, offer.requisition_id)
+    authority = approvers.can_decide_step(
+        approver_role=pending.approver_role,
+        user_role=user.role.value,
+        is_hiring_manager=(
+            user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
+        ),
+        is_originator=offer.created_by_user_id is not None
+        and offer.created_by_user_id == user.id,
+    )
+    if not authority.allowed:
+        raise permissions.forbidden(authority.message)
+    if not approve and not (note or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Sending an offer back needs a note. Whoever drafted it has to know what "
+                "would change the answer."
+            ),
+        )
+    if authority.on_behalf_of:
+        note = f"{note or ''} [signed on behalf of {authority.on_behalf_of}]".strip()
+
     # The approver signs the terms as they stand right now, not as they stood
     # when the step was created.
     fingerprint = offer_terms.terms_fingerprint(
@@ -1376,4 +1403,301 @@ async def convert_to_employee(
         "employee_id": str(employee.id),
         "employee_code": employee.employee_code,
         "status": offer.status.value,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Reading
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TERMINAL = frozenset(
+    {
+        OfferStatus.ACCEPTED,
+        OfferStatus.JOINED,
+        OfferStatus.DECLINED,
+        OfferStatus.REVOKED,
+        OfferStatus.LAPSED,
+        OfferStatus.DROPPED,
+    }
+)
+_NOT_REVOCABLE = frozenset(
+    {
+        OfferStatus.JOINED,
+        OfferStatus.DROPPED,
+        OfferStatus.DECLINED,
+        OfferStatus.REVOKED,
+        OfferStatus.LAPSED,
+    }
+)
+
+
+async def _user_names(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    if not ids:
+        return {}
+    rows = await session.execute(
+        tenant_scoped(select(User.id, User.full_name).where(User.id.in_(ids)), User, user)
+    )
+    return {row.id: row.full_name for row in rows}
+
+
+async def _approval_steps(
+    session: AsyncSession, user: User, offer: Offer
+) -> list[OfferApproval]:
+    rows = await session.scalars(
+        tenant_scoped(
+            select(OfferApproval)
+            .where(OfferApproval.offer_id == offer.id)
+            .order_by(OfferApproval.sequence),
+            OfferApproval,
+            user,
+        )
+    )
+    return list(rows.all())
+
+
+def _my_authority(
+    user: User, offer: Offer, requisition: Requisition, steps: list[OfferApproval]
+) -> dict[str, Any]:
+    pending = next(
+        (s for s in steps if s.decision in (ApprovalDecision.PENDING, ApprovalDecision.VOIDED)),
+        None,
+    )
+    if offer.status is not OfferStatus.PENDING_APPROVAL or pending is None:
+        return {"can_decide": False, "step": None, "message": None}
+    authority = approvers.can_decide_step(
+        approver_role=pending.approver_role,
+        user_role=user.role.value,
+        is_hiring_manager=(
+            user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
+        ),
+        is_originator=offer.created_by_user_id is not None
+        and offer.created_by_user_id == user.id,
+    )
+    return {
+        "can_decide": authority.allowed,
+        "step": pending.sequence,
+        "step_role": pending.approver_role,
+        "message": authority.message or None,
+    }
+
+
+async def approval_view(
+    session: AsyncSession, user: User, *, offer_id: uuid.UUID
+) -> dict[str, Any]:
+    """The approval payload, for HR or the requisition's hiring manager.
+
+    An offer's CTC and the parity view of what comparable employees earn are not
+    something every manager in the tenant may read.
+    """
+    offer = await _offer(session, user, offer_id)
+    requisition = await _requisition(session, user, offer.requisition_id)
+    is_hiring_manager = (
+        user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
+    )
+    if not permissions.is_hr(user) and not is_hiring_manager:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Offer not found")
+    payload = await approval_payload(session, user, offer_id=offer_id)
+    payload["my_authority"] = _my_authority(
+        user, offer, requisition, await _approval_steps(session, user, offer)
+    )
+    return payload
+
+
+async def list_offer_summaries(
+    session: AsyncSession,
+    user: User,
+    *,
+    requisition_id: uuid.UUID | None = None,
+    offer_status: OfferStatus | None = None,
+) -> list[dict[str, Any]]:
+    stmt = (
+        select(Offer, Candidate.full_name, Requisition.code)
+        .join(Candidate, Candidate.id == Offer.candidate_id)
+        .join(Requisition, Requisition.id == Offer.requisition_id)
+        .order_by(Offer.created_at.desc())
+    )
+    if requisition_id is not None:
+        stmt = stmt.where(Offer.requisition_id == requisition_id)
+    if offer_status is not None:
+        stmt = stmt.where(Offer.status == offer_status)
+    rows = (await session.execute(tenant_scoped(stmt, Offer, user))).all()
+    return [
+        {
+            "id": str(offer.id),
+            "code": offer.code,
+            "candidate_id": str(offer.candidate_id),
+            "candidate_name": name,
+            "requisition_id": str(offer.requisition_id),
+            "requisition_code": code,
+            "designation": offer.designation,
+            "grade": offer.grade,
+            "ctc_annual": str(offer.ctc_annual),
+            "joining_date": offer.joining_date.isoformat(),
+            "status": offer.status.value,
+            "valid_until": offer.valid_until.isoformat() if offer.valid_until else None,
+            "released_at": offer.released_at.isoformat() if offer.released_at else None,
+            "responded_at": offer.responded_at.isoformat() if offer.responded_at else None,
+            "outcome_reason": offer.outcome_reason,
+            "resigned_elsewhere": offer.resigned_elsewhere,
+            "converted_employee_id": (
+                str(offer.converted_employee_id) if offer.converted_employee_id else None
+            ),
+            "created_at": offer.created_at.isoformat(),
+        }
+        for offer, name, code in rows
+    ]
+
+
+async def offer_history(
+    session: AsyncSession, user: User, *, offer_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """Every transition, with the facts snapshotted at the time."""
+    offer = await _offer(session, user, offer_id)
+    events = (
+        await session.scalars(
+            tenant_scoped(
+                select(OfferEvent)
+                .where(OfferEvent.offer_id == offer.id)
+                .order_by(OfferEvent.occurred_at),
+                OfferEvent,
+                user,
+            )
+        )
+    ).all()
+    names = await _user_names(session, user, {e.actor_user_id for e in events if e.actor_user_id})
+    return [
+        {
+            "from_status": e.from_status.value if e.from_status else None,
+            "to_status": e.to_status.value,
+            "reason": e.reason,
+            "by": names.get(e.actor_user_id) if e.actor_user_id else None,
+            "occurred_at": e.occurred_at.isoformat(),
+            "facts": e.facts,
+        }
+        for e in events
+    ]
+
+
+async def offer_detail(
+    session: AsyncSession, user: User, *, offer_id: uuid.UUID
+) -> dict[str, Any]:
+    """The whole offer for HR: terms, breakup, approvals, history and what can be done."""
+    offer = await _offer(session, user, offer_id)
+    requisition = await _requisition(session, user, offer.requisition_id)
+    candidate = await session.get(Candidate, offer.candidate_id)
+    components = await _components(session, user, offer)
+    breakup = (
+        await session.scalars(
+            tenant_scoped(
+                select(OfferSalaryComponent)
+                .where(OfferSalaryComponent.offer_id == offer.id)
+                .order_by(OfferSalaryComponent.display_order),
+                OfferSalaryComponent,
+                user,
+            )
+        )
+    ).all()
+    steps = await _approval_steps(session, user, offer)
+    names = await _user_names(
+        session,
+        user,
+        {s.decided_by_user_id for s in steps if s.decided_by_user_id}
+        | ({offer.created_by_user_id} if offer.created_by_user_id else set()),
+    )
+    is_admin = user.role.value in ("tenant_admin", "hr_admin", "platform_admin")
+
+    return {
+        "offer": {
+            "id": str(offer.id),
+            "code": offer.code,
+            "status": offer.status.value,
+            "ctc_annual": str(offer.ctc_annual),
+            "currency": offer.currency,
+            "designation": offer.designation,
+            "grade": offer.grade,
+            "joining_date": offer.joining_date.isoformat(),
+            "joining_location_id": (
+                str(offer.joining_location_id) if offer.joining_location_id else None
+            ),
+            "department_id": str(offer.department_id) if offer.department_id else None,
+            "salary_structure_id": str(offer.salary_structure_id),
+            "probation_months": offer.probation_months,
+            "notice_period_days": offer.notice_period_days,
+            "valid_until": offer.valid_until.isoformat() if offer.valid_until else None,
+            "released_at": offer.released_at.isoformat() if offer.released_at else None,
+            "responded_at": offer.responded_at.isoformat() if offer.responded_at else None,
+            "outcome_reason": offer.outcome_reason,
+            "resigned_elsewhere": offer.resigned_elsewhere,
+            "letter_id": str(offer.letter_id) if offer.letter_id else None,
+            "converted_employee_id": (
+                str(offer.converted_employee_id) if offer.converted_employee_id else None
+            ),
+            "created_by": names.get(offer.created_by_user_id) if offer.created_by_user_id else None,
+        },
+        "candidate": {
+            "id": str(offer.candidate_id),
+            "name": candidate.full_name if candidate else None,
+            "email": candidate.email if candidate else None,
+            "notice_period_days": candidate.notice_period_days if candidate else None,
+        },
+        "requisition": {
+            "id": str(requisition.id),
+            "code": requisition.code,
+            "title": requisition.title,
+            "budget_ctc_min": (
+                str(requisition.budget_ctc_min) if requisition.budget_ctc_min is not None else None
+            ),
+            "budget_ctc_max": (
+                str(requisition.budget_ctc_max) if requisition.budget_ctc_max is not None else None
+            ),
+            "open_vacancies": requisition.open_vacancies,
+        },
+        "components": [
+            {
+                "kind": c.kind.value,
+                "label": c.label,
+                "amount": str(c.amount),
+                "payable_terms": c.payable_terms,
+                "counts_toward_ctc": c.counts_toward_ctc,
+            }
+            for c in components
+        ],
+        "salary_breakup": [
+            {
+                "code": c.component_code,
+                "name": c.component_name,
+                "monthly": str(c.monthly_amount),
+                "annual": str(c.annual_amount),
+                "part_of_ctc": c.part_of_ctc,
+            }
+            for c in breakup
+        ],
+        "approvals": [
+            {
+                "sequence": a.sequence,
+                "role": a.approver_role,
+                "label": a.label,
+                "reason": a.reason,
+                "decision": a.decision.value,
+                "decided_by": names.get(a.decided_by_user_id) if a.decided_by_user_id else None,
+                "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                "note": a.note,
+                "voided_by_changes": a.voided_by_changes,
+            }
+            for a in steps
+        ],
+        "history": await offer_history(session, user, offer_id=offer.id),
+        "actions": {
+            "can_edit_terms": offer.status not in _TERMINAL,
+            "can_submit": offer.status in (OfferStatus.DRAFT, OfferStatus.PENDING_APPROVAL),
+            "can_release": offer.status is OfferStatus.APPROVED,
+            "can_record_response": offer.status is OfferStatus.RELEASED,
+            "can_record_drop": offer.status is OfferStatus.ACCEPTED,
+            "can_convert": offer.status is OfferStatus.ACCEPTED
+            and offer.converted_employee_id is None,
+            "can_revoke": is_admin and offer.status not in _NOT_REVOCABLE,
+        },
+        "my_authority": _my_authority(user, offer, requisition, steps),
     }

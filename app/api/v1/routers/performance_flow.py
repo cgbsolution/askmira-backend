@@ -1,134 +1,47 @@
 """PIPs, increment cycles and promotions (slice 35).
 
-Three endpoints carry the weight:
-
 - `POST /performance/pips/{id}/check-ins` requires the employee's own account or
-  a reasoned record that they declined. Never asking is refused, because a trail
-  of manager observations with no employee response is one side of a
-  conversation.
-- `POST /performance/recommendations` returns the **budget headroom and the
-  equity comparison in the same response** as the recommendation. A parity view
-  that arrives in a report next March cannot change the number being chosen now.
-- `POST /performance/cycles/{id}/release-letters` refuses before the controlled
-  date and while approvals are outstanding.
+  a reasoned record that they declined, and is never recorded by the person on
+  the plan.
+- `POST /performance/recommendations` returns the budget headroom and the
+  equity comparison with the recommendation, takes the current CTC from the
+  salary assignment and the rating from the linked review.
+- Dates that gate a decision (letter release, promotion effect, PIP outcome)
+  are the server's today, never a date the caller supplies.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel, Field
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.models.performance_flow import EmployeeInputStateEnum, OverageModeEnum
+from app.models.performance_flow import PipStatusEnum
 from app.models.user import UserRole
+from app.schemas.performance import (
+    CheckInIn,
+    ClosePipIn,
+    DecisionIn,
+    EmployeeStatementIn,
+    IncrementCycleIn,
+    MilestoneAssessIn,
+    PipIn,
+    PromotionIn,
+    RecommendationIn,
+    ReleaseIn,
+)
 from app.services.performance import service as performance
+from app.services.performance import views
 
 router = APIRouter(tags=["performance-flow"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-
-
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class MilestoneIn(BaseModel):
-    description: str = Field(min_length=1, max_length=2000)
-    target_date: date
-    #: Required. "Improve communication" is not a standard anybody can meet or
-    #: fail, and a plan built from them cannot be defended.
-    measurable_criteria: str = Field(min_length=1, max_length=2000)
-
-
-class PipIn(BaseModel):
-    employee_id: uuid.UUID
-    start_date: date
-    end_date: date
-    reason: str = Field(min_length=1, max_length=4000)
-    expectations: str = Field(min_length=1, max_length=8000)
-    #: Required. An improvement plan the employer contributed nothing to is a
-    #: notice period with paperwork.
-    support_provided: str = Field(min_length=1, max_length=8000)
-    milestones: list[MilestoneIn] = Field(min_length=1)
-    appraisal_id: uuid.UUID | None = None
-
-
-class CheckInIn(BaseModel):
-    scheduled_for: date
-    held_on: date
-    manager_comments: str = Field(min_length=1, max_length=8000)
-    #: `not_asked` is refused by the engine. `declined` needs a reason.
-    employee_input_state: EmployeeInputStateEnum
-    employee_comments: str = Field(default="", max_length=8000)
-    decline_reason: str = Field(default="", max_length=2000)
-    milestone_id: uuid.UUID | None = None
-
-
-class ClosePipIn(BaseModel):
-    outcome: str = Field(pattern="^(successful|extended|unsuccessful|abandoned)$")
-    today: date
-    reason: str = Field(default="", max_length=4000)
-    new_end_date: date | None = None
-    #: Proceeding to an exit on a plan with gaps. A deliberate act, recorded.
-    acknowledge_weak_trail: bool = False
-
-
-class BandIn(BaseModel):
-    rating_label: str = Field(min_length=1, max_length=64)
-    min_percentage: Decimal = Field(ge=0, le=200)
-    max_percentage: Decimal = Field(ge=0, le=200)
-    recommended_percentage: Decimal = Field(ge=0, le=200)
-
-
-class CycleIn(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-    effective_from: date
-    #: The annual cost of the *rises*, not the payroll.
-    budget_total: Decimal = Field(ge=0)
-    bands: list[BandIn] = Field(min_length=1)
-    budget_by_department: dict[str, Decimal] = Field(default_factory=dict)
-    overage_mode: OverageModeEnum = OverageModeEnum.ESCALATE
-    letter_release_on: date | None = None
-    linked_appraisal_cycle_id: uuid.UUID | None = None
-
-
-class RecommendationIn(BaseModel):
-    cycle_id: uuid.UUID
-    employee_id: uuid.UUID
-    rating_label: str = Field(min_length=1, max_length=64)
-    current_ctc: Decimal = Field(gt=0)
-    percentage: Decimal = Field(ge=0, le=200)
-    justification: str | None = Field(default=None, max_length=4000)
-    promotion_to_grade: str | None = Field(default=None, max_length=32)
-    band_midpoint: Decimal | None = Field(default=None, gt=0)
-
-
-class DecisionIn(BaseModel):
-    approve: bool
-    note: str | None = Field(default=None, max_length=2000)
-
-
-class PromotionIn(BaseModel):
-    recommendation_id: uuid.UUID
-    to_position_id: uuid.UUID | None = None
-    effective_from: date
-    today: date
-
-
-class ReleaseIn(BaseModel):
-    today: date
-    #: A cycle occasionally has one genuinely stuck approval. A deliberate act
-    #: with the outstanding names recorded, not a default.
-    force_partial: bool = False
-
-
-# ── Posture ─────────────────────────────────────────────────────────────────
+HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+MANAGERS = [Depends(require_roles(*permissions.MANAGER_ROLES))]
 
 
 @router.get("/performance/posture")
@@ -137,18 +50,27 @@ async def posture(user: CurrentUser) -> dict[str, Any]:
     return performance.performance_posture()
 
 
+@router.get("/performance/people")
+async def people(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Your reporting line (everybody for HR), for the pickers on these screens."""
+    return await views.people(session, user)
+
+
 # ── PIP ─────────────────────────────────────────────────────────────────────
+
+
+@router.get("/performance/pips")
+async def list_pips(
+    user: CurrentUser, session: DbSession, pip_status: PipStatusEnum | None = None
+) -> list[dict[str, Any]]:
+    return await views.list_pips(session, user, pip_status=pip_status)
 
 
 @router.post("/performance/pips", status_code=status.HTTP_201_CREATED)
 async def open_pip(
-    body: PipIn,
-    session: DbSession,
-    user: CurrentUser,
-    request: Request,
-    _hr=Depends(require_roles(*HR_ROLES)),
+    body: PipIn, session: DbSession, user: CurrentUser, request: Request
 ) -> dict[str, Any]:
-    """Open a plan, refusing the shapes that cannot be defended later."""
+    """Open a plan for somebody in your line. Never for yourself."""
     row = await performance.open_pip(
         session,
         user,
@@ -170,6 +92,11 @@ async def open_pip(
     }
 
 
+@router.get("/performance/pips/{pip_id}")
+async def pip_detail(pip_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await views.pip_detail(session, user, pip_id)
+
+
 @router.post("/performance/pips/{pip_id}/check-ins", status_code=201)
 async def record_check_in(
     pip_id: uuid.UUID,
@@ -178,11 +105,6 @@ async def record_check_in(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Record a conversation, with both sides of it.
-
-    Returns 400 where the employee was never asked, or declined with no reason
-    recorded. Their contemporaneous account is the part with evidential value.
-    """
     row = await performance.record_check_in(
         session,
         user,
@@ -203,27 +125,59 @@ async def record_check_in(
     }
 
 
-@router.post("/performance/pips/{pip_id}/close")
+@router.post("/performance/pips/{pip_id}/milestones/{milestone_id}/assess")
+async def assess_milestone(
+    pip_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    body: MilestoneAssessIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> dict[str, Any]:
+    return await views.assess_milestone(
+        session,
+        user,
+        pip_id=pip_id,
+        milestone_id=milestone_id,
+        milestone_status=body.status,
+        note=body.note,
+        request=request,
+    )
+
+
+@router.post("/performance/pips/{pip_id}/statements", status_code=201)
+async def add_statement(
+    pip_id: uuid.UUID,
+    body: EmployeeStatementIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> dict[str, Any]:
+    """The employee's own account, in their own words."""
+    return await views.add_employee_statement(
+        session,
+        user,
+        pip_id=pip_id,
+        statement=body.statement,
+        check_in_id=body.check_in_id,
+        request=request,
+    )
+
+
+@router.post("/performance/pips/{pip_id}/close", dependencies=HR_ONLY)
 async def close_pip(
     pip_id: uuid.UUID,
     body: ClosePipIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-    _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Record an outcome.
-
-    An unsuccessful outcome on a plan whose trail has gaps returns 400 listing
-    them, unless `acknowledge_weak_trail` is set — which is recorded, because
-    falsifying a check-in to get past the check would be far worse.
-    """
     return await performance.close_pip(
         session,
         user,
         pip_id=pip_id,
         outcome=body.outcome,
-        today=body.today,
+        today=date.today(),
         reason=body.reason,
         new_end_date=body.new_end_date,
         acknowledge_weak_trail=body.acknowledge_weak_trail,
@@ -231,34 +185,18 @@ async def close_pip(
     )
 
 
-@router.get("/performance/pips/{pip_id}/evidence")
-async def evidence_pack(
-    pip_id: uuid.UUID,
-    session: DbSession,
-    user: CurrentUser,
-    today: date | None = None,
-    _hr=Depends(require_roles(*HR_ROLES)),
-) -> dict[str, Any]:
-    """Everything an employment adviser would ask for, in one payload.
-
-    The check-ins are reproduced in full rather than summarised: a précis of
-    somebody's contemporaneous account is not their account.
-    """
-    return await performance.evidence_pack(
-        session, user, pip_id=pip_id, today=today or date.today()
-    )
+@router.get("/performance/pips/{pip_id}/evidence", dependencies=HR_ONLY)
+async def evidence_pack(pip_id: uuid.UUID, session: DbSession, user: CurrentUser) -> dict[str, Any]:
+    """Everything an employment adviser would ask for, in one payload."""
+    return await performance.evidence_pack(session, user, pip_id=pip_id, today=date.today())
 
 
 # ── Increment cycle ─────────────────────────────────────────────────────────
 
 
-@router.post("/performance/cycles", status_code=status.HTTP_201_CREATED)
+@router.post("/performance/cycles", status_code=status.HTTP_201_CREATED, dependencies=ADMIN_ONLY)
 async def create_cycle(
-    body: CycleIn,
-    session: DbSession,
-    user: CurrentUser,
-    request: Request,
-    _admin=Depends(require_roles(*ADMIN_ROLES)),
+    body: IncrementCycleIn, session: DbSession, user: CurrentUser, request: Request
 ) -> dict[str, Any]:
     row = await performance.create_increment_cycle(
         session,
@@ -273,15 +211,25 @@ async def create_cycle(
         linked_appraisal_cycle_id=body.linked_appraisal_cycle_id,
         request=request,
     )
-    return {
-        "cycle_id": str(row.id),
-        "name": row.name,
-        "status": row.status.value,
-        "overage_mode": row.overage_mode.value,
-        "letter_release_on": (
-            row.letter_release_on.isoformat() if row.letter_release_on else None
-        ),
-    }
+    return {"cycle_id": str(row.id), "name": row.name, "status": row.status.value}
+
+
+@router.get("/performance/cycles", dependencies=MANAGERS)
+async def list_increment_cycles(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await views.list_increment_cycles(session, user)
+
+
+@router.get("/performance/cycles/{cycle_id}", dependencies=MANAGERS)
+async def increment_cycle(
+    cycle_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    return await views.increment_cycle_detail(session, user, cycle_id)
+
+
+@router.get("/performance/cycles/{cycle_id}/candidates", dependencies=MANAGERS)
+async def candidates(cycle_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Your reporting line (everybody for HR) with rating, band, pay and status."""
+    return await views.increment_candidates(session, user, cycle_id)
 
 
 @router.get("/performance/cycles/{cycle_id}/budget")
@@ -291,11 +239,7 @@ async def budget_view(
     user: CurrentUser,
     department_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    """What is left, for a manager who is still allocating.
-
-    Not role-gated to HR: the manager doing the allocating is the person who
-    needs it, and allocating blind is what this exists to prevent.
-    """
+    """What is left, for a manager who is still allocating."""
     permissions.require_role(
         user,
         permissions.MANAGER_ROLES,
@@ -313,11 +257,6 @@ async def recommend_increment(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Record a recommendation, with the budget and the equity view in the reply.
-
-    Returns 409 when a hard-stop budget would be exceeded, and 400 when the
-    percentage is outside its rating band with no written justification.
-    """
     await permissions.require_manager_or_hr(
         session,
         user,
@@ -339,14 +278,13 @@ async def recommend_increment(
     )
 
 
-@router.post("/performance/recommendations/{recommendation_id}/decision")
+@router.post("/performance/recommendations/{recommendation_id}/decision", dependencies=HR_ONLY)
 async def decide_recommendation(
     recommendation_id: uuid.UUID,
     body: DecisionIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-    _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
     row = await performance.decide_recommendation(
         session,
@@ -356,62 +294,42 @@ async def decide_recommendation(
         note=body.note,
         request=request,
     )
-    return {
-        "recommendation_id": str(row.id),
-        "status": row.status.value,
-        "approvals": row.approvals,
-    }
+    return {"recommendation_id": str(row.id), "status": row.status.value}
 
 
 # ── Promotion and release ───────────────────────────────────────────────────
 
 
-@router.post("/performance/promotions", status_code=status.HTTP_201_CREATED)
+@router.post("/performance/promotions", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY)
 async def apply_promotion(
-    body: PromotionIn,
-    session: DbSession,
-    user: CurrentUser,
-    request: Request,
-    _hr=Depends(require_roles(*HR_ROLES)),
+    body: PromotionIn, session: DbSession, user: CurrentUser, request: Request
 ) -> dict[str, Any]:
-    """Apply an approved promotion through the lifecycle cascade.
-
-    Grade, salary revision, position and letter together or none of them — the
-    cascade from slice 24, driven from the recommendation rather than
-    reimplemented. A future-dated promotion is raised and approved and left for
-    the due sweep.
-    """
+    """Apply an approved promotion through the lifecycle cascade."""
     return await performance.apply_promotion(
         session,
         user,
         recommendation_id=body.recommendation_id,
         to_position_id=body.to_position_id,
         effective_from=body.effective_from,
-        today=body.today,
+        today=date.today(),
         request=request,
     )
 
 
-@router.post("/performance/cycles/{cycle_id}/release-letters")
+@router.post("/performance/cycles/{cycle_id}/release-letters", dependencies=ADMIN_ONLY)
 async def release_letters(
     cycle_id: uuid.UUID,
     body: ReleaseIn,
     session: DbSession,
     user: CurrentUser,
     request: Request,
-    _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
-    """Release the cycle's letters, all together, on the controlled date.
-
-    Refuses before the date and while approvals are outstanding. Releasing the
-    approved ones "for now" is exactly the piecemeal release the controlled date
-    exists to prevent.
-    """
+    """Release the cycle's letters together, on the controlled date."""
     return await performance.release_letters(
         session,
         user,
         cycle_id=cycle_id,
-        today=body.today,
+        today=date.today(),
         force_partial=body.force_partial,
         request=request,
     )

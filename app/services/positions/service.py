@@ -1,7 +1,7 @@
 """Positions in the database: occupancy, budget views, and scenario commit.
 
 The engines above hold the arithmetic and the isolation. This module holds the
-three things that need a session.
+things that need a session.
 
 **An exit vacates a seat; it never deletes one.** The seat was approved and
 budgeted and it still exists the day after somebody leaves. `vacate` closes the
@@ -17,6 +17,11 @@ that has no session and cannot write.
 Not refused — companies genuinely hire ahead of an approval, and a product that
 blocks it will be worked around within a week. Flagged, so the person signing it
 knows what they are signing.
+
+**A headcount budget is enforced, not just stored.** Creating a seat, filling
+one, moving one into a department or committing a scenario that does either is
+refused when it would take a department — or the company — past the FTE or cost
+approved for that financial year. See `budget.py`.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -46,25 +51,66 @@ from app.models.position import (
     ScenarioStatus,
 )
 from app.models.user import User
+from app.schemas.positions import (
+    AssignmentRead,
+    BudgetRead,
+    BudgetUpsert,
+    BudgetUpsertResult,
+    ChangeIn,
+    CostCentreCreate,
+    PositionCreate,
+    PositionUpdate,
+    ScenarioCreate,
+    ScenarioSummary,
+)
 from app.services import audit
+from app.services.positions import budget as budget_engine
 from app.services.positions import headcount as headcount_engine
 from app.services.positions import orgchart, vacancy
 from app.services.positions import scenario as scenario_engine
 from app.services.reporting.ranges import financial_year_bounds, financial_year_label
 
 __all__ = [
+    "add_scenario_change",
     "assign",
+    "assignments_of",
     "budget_view",
+    "change_status",
     "commit_scenario",
+    "create_cost_centre",
+    "create_position",
+    "create_scenario",
     "discard_scenario",
+    "end_assignment",
     "fill_from_offer",
+    "list_budgets",
+    "list_cost_centres",
+    "list_positions",
+    "list_scenarios",
     "load_facts",
     "off_budget_flags",
     "org_chart",
     "project_scenario",
+    "update_position",
+    "upsert_budget",
     "vacancy_report",
     "vacate",
 ]
+
+#: A reporting chain between seats longer than this is a loop.
+MAX_CHAIN = 50
+
+
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
+def _conflict(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def _dec(value: Any) -> Decimal | None:
+    return Decimal(str(value)) if value is not None else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -109,22 +155,7 @@ async def load_facts(
             tenant_scoped(select(PositionAssignment), PositionAssignment, user)
         )
     ).all()
-    employee_ids = {a.employee_id for a in assignments}
-    labels: dict[uuid.UUID, str] = {}
-    if employee_ids:
-        people = (
-            await session.scalars(
-                tenant_scoped(
-                    select(Employee).where(Employee.id.in_(employee_ids)),
-                    Employee,
-                    user,
-                )
-            )
-        ).all()
-        labels = {
-            p.id: p.display_name or f"{p.first_name} {p.last_name or ''}".strip()
-            for p in people
-        }
+    labels = await _employee_labels(session, user, {a.employee_id for a in assignments})
 
     position_facts = [
         headcount_engine.PositionFacts(
@@ -143,12 +174,8 @@ async def load_facts(
             reports_to_position_id=(
                 str(p.reports_to_position_id) if p.reports_to_position_id else None
             ),
-            budgeted_ctc_min=(
-                Decimal(str(p.budgeted_ctc_min)) if p.budgeted_ctc_min is not None else None
-            ),
-            budgeted_ctc_max=(
-                Decimal(str(p.budgeted_ctc_max)) if p.budgeted_ctc_max is not None else None
-            ),
+            budgeted_ctc_min=_dec(p.budgeted_ctc_min),
+            budgeted_ctc_max=_dec(p.budgeted_ctc_max),
             effective_from=p.effective_from,
             effective_to=p.effective_to,
             vacated_on=p.vacated_on,
@@ -171,6 +198,21 @@ async def load_facts(
     return position_facts, assignment_facts
 
 
+async def _employee_labels(
+    session: AsyncSession, user: User, employee_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    if not employee_ids:
+        return {}
+    people = (
+        await session.scalars(
+            tenant_scoped(select(Employee).where(Employee.id.in_(employee_ids)), Employee, user)
+        )
+    ).all()
+    return {
+        p.id: p.display_name or f"{p.first_name} {p.last_name or ''}".strip() for p in people
+    }
+
+
 async def snapshots_on(
     session: AsyncSession, user: User, *, on: date
 ) -> list[headcount_engine.OccupancySnapshot]:
@@ -181,7 +223,123 @@ async def snapshots_on(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Occupancy
+# Headcount budget enforcement
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _seat(position: Position) -> budget_engine.Seat:
+    return budget_engine.Seat(
+        code=position.code,
+        fte=Decimal(str(position.fte)),
+        budgeted_ctc_max=_dec(position.budgeted_ctc_max),
+    )
+
+
+async def _seats_in_scope(
+    session: AsyncSession,
+    user: User,
+    *,
+    department_id: uuid.UUID | None,
+    on: date,
+    filled_only: bool,
+    exclude_position_id: uuid.UUID | None,
+) -> list[budget_engine.Seat]:
+    """Seats that count against a budget in the financial year containing `on`."""
+    start, end = financial_year_bounds(on)
+    stmt = select(Position).where(
+        Position.status != PositionStatus.ABOLISHED,
+        Position.effective_from <= end,
+        or_(Position.effective_to.is_(None), Position.effective_to >= start),
+    )
+    if department_id is not None:
+        stmt = stmt.where(Position.department_id == department_id)
+    if filled_only:
+        stmt = stmt.where(Position.status == PositionStatus.FILLED)
+    if exclude_position_id is not None:
+        stmt = stmt.where(Position.id != exclude_position_id)
+    rows = (await session.scalars(tenant_scoped(stmt, Position, user))).all()
+    return [_seat(row) for row in rows]
+
+
+async def _budget_rows(
+    session: AsyncSession, user: User, *, financial_year: str
+) -> list[HeadcountBudget]:
+    stmt = tenant_scoped(
+        select(HeadcountBudget).where(HeadcountBudget.financial_year == financial_year),
+        HeadcountBudget,
+        user,
+    )
+    return list((await session.scalars(stmt)).all())
+
+
+async def _department_names(session: AsyncSession, user: User) -> dict[uuid.UUID, str]:
+    rows = (await session.scalars(tenant_scoped(select(Department), Department, user))).all()
+    return {d.id: d.name for d in rows}
+
+
+async def enforce_budget(
+    session: AsyncSession,
+    user: User,
+    *,
+    on: date,
+    by_department: dict[uuid.UUID, list[budget_engine.Seat]],
+    company: list[budget_engine.Seat],
+    what: str,
+    filled_only: bool = False,
+    exclude_position_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    """Refuse, naming the limit, when the additions exceed an approved budget.
+
+    Department budgets check each department's own additions; a company budget
+    (no department) checks all of them. A scope with no budget row is not
+    enforced — no budget set is a decision the tenant has not made yet.
+    """
+    financial_year = financial_year_label(financial_year_bounds(on)[0])
+    rows = await _budget_rows(session, user, financial_year=financial_year)
+    if not rows:
+        return []
+    names = await _department_names(session, user)
+
+    checks: list[budget_engine.BudgetCheck] = []
+    for row in rows:
+        if row.department_id is None:
+            adding = company
+            scope = "the company"
+        else:
+            adding = by_department.get(row.department_id, [])
+            scope = names.get(row.department_id, "this department")
+        if not adding:
+            continue
+        counted = await _seats_in_scope(
+            session,
+            user,
+            department_id=row.department_id,
+            on=on,
+            filled_only=filled_only,
+            exclude_position_id=exclude_position_id,
+        )
+        checks.append(
+            budget_engine.check(
+                budget_engine.Budget(
+                    scope=scope,
+                    financial_year=financial_year,
+                    approved_positions=row.approved_positions,
+                    approved_cost=Decimal(str(row.approved_cost)),
+                ),
+                counted=counted,
+                adding=adding,
+                what=what,
+            )
+        )
+
+    problems = [problem for result in checks for problem in result.problems]
+    if problems:
+        raise _conflict("Refused by the headcount budget: " + " ".join(problems))
+    return [result.as_dict() for result in checks]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Positions
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -192,6 +350,257 @@ async def _position(session: AsyncSession, user: User, position_id: uuid.UUID) -
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Position not found")
     return row
+
+
+async def _check_references(
+    session: AsyncSession,
+    user: User,
+    values: dict[str, Any],
+    *,
+    position_id: uuid.UUID | None = None,
+) -> None:
+    """Every id the seat points at is in this workspace, and no reporting loop forms."""
+    for key, model, label in (
+        ("department_id", Department, "department"),
+        ("location_id", Location, "location"),
+        ("cost_centre_id", CostCentre, "cost centre"),
+    ):
+        value = values.get(key)
+        if value is not None and await session.scalar(
+            tenant_scoped(select(model.id).where(model.id == value), model, user)
+        ) is None:
+            raise _unprocessable(f"That {label} is not part of this workspace.")
+
+    parent = values.get("reports_to_position_id")
+    if parent is None:
+        return
+    if position_id is not None and parent == position_id:
+        raise _unprocessable("A position cannot report to itself.")
+    current: uuid.UUID | None = parent
+    for _ in range(MAX_CHAIN):
+        if current is None:
+            return
+        row = await session.scalar(
+            tenant_scoped(select(Position).where(Position.id == current), Position, user)
+        )
+        if row is None:
+            raise _unprocessable("The position it reports to is not part of this workspace.")
+        if position_id is not None and row.reports_to_position_id == position_id:
+            raise _unprocessable(
+                "That position already reports, directly or indirectly, to this one. "
+                "Reporting lines cannot loop."
+            )
+        current = row.reports_to_position_id
+    raise _unprocessable("The reporting chain above that position is too long, or loops.")
+
+
+async def list_positions(
+    session: AsyncSession,
+    user: User,
+    *,
+    position_status: PositionStatus | None = None,
+    department_id: uuid.UUID | None = None,
+) -> list[Position]:
+    stmt = select(Position).order_by(Position.code)
+    if position_status is not None:
+        stmt = stmt.where(Position.status == position_status)
+    if department_id is not None:
+        stmt = stmt.where(Position.department_id == department_id)
+    return list((await session.scalars(tenant_scoped(stmt, Position, user))).all())
+
+
+async def create_position(
+    session: AsyncSession,
+    user: User,
+    payload: PositionCreate,
+    *,
+    request: Request | None = None,
+) -> Position:
+    """Approve a new seat, inside the headcount budget."""
+    if await session.scalar(
+        tenant_scoped(select(Position.id).where(Position.code == payload.code), Position, user)
+    ) is not None:
+        raise _conflict(f"A position with code {payload.code} already exists")
+    values = payload.model_dump()
+    await _check_references(session, user, values)
+
+    seat = budget_engine.Seat(
+        code=payload.code, fte=payload.fte, budgeted_ctc_max=payload.budgeted_ctc_max
+    )
+    checks = await enforce_budget(
+        session,
+        user,
+        on=payload.effective_from,
+        by_department={payload.department_id: [seat]} if payload.department_id else {},
+        company=[seat],
+        what=f"Creating {payload.code}",
+    )
+
+    position = Position(
+        tenant_id=user.tenant_id,
+        approved_by_user_id=user.id,
+        approved_at=datetime.now(UTC),
+        **values,
+    )
+    session.add(position)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="position",
+        entity_id=position.id,
+        changes={**payload.model_dump(mode="json"), "budget_checks": checks},
+        summary=f"Position {position.code} approved from {position.effective_from}",
+        request=request,
+    )
+    return position
+
+
+async def update_position(
+    session: AsyncSession,
+    user: User,
+    position_id: uuid.UUID,
+    payload: PositionUpdate,
+    *,
+    request: Request | None = None,
+) -> Position:
+    """Edit a seat's shape. A change of department, FTE or ceiling is re-checked
+    against the budget as if the seat were new there."""
+    position = await _position(session, user, position_id)
+    if position.status is PositionStatus.ABOLISHED:
+        raise _conflict(f"Position {position.code} has been abolished and cannot be edited.")
+    changes = payload.model_dump(exclude_unset=True)
+    for key in ("title", "fte"):
+        if key in changes and changes[key] is None:
+            raise _unprocessable(f"'{key}' cannot be cleared.")
+    await _check_references(session, user, changes, position_id=position.id)
+
+    ceiling = changes.get("budgeted_ctc_max", _dec(position.budgeted_ctc_max))
+    floor = changes.get("budgeted_ctc_min", _dec(position.budgeted_ctc_min))
+    if ceiling is not None and floor is not None and ceiling < floor:
+        raise _unprocessable("The budgeted CTC ceiling is below its floor")
+
+    if {"department_id", "fte", "budgeted_ctc_max"} & set(changes):
+        department_id = changes.get("department_id", position.department_id)
+        seat = budget_engine.Seat(
+            code=position.code,
+            fte=changes.get("fte") or Decimal(str(position.fte)),
+            budgeted_ctc_max=ceiling,
+        )
+        await enforce_budget(
+            session,
+            user,
+            on=date.today(),
+            by_department={department_id: [seat]} if department_id else {},
+            company=[seat],
+            what=f"Changing {position.code}",
+            exclude_position_id=position.id,
+        )
+
+    diff = {
+        key: {"from": str(getattr(position, key)), "to": str(value)}
+        for key, value in changes.items()
+        if getattr(position, key) != value
+    }
+    for key, value in changes.items():
+        setattr(position, key, value)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="position",
+        entity_id=position.id,
+        changes=diff,
+        summary=f"Position {position.code} edited",
+        request=request,
+    )
+    return position
+
+
+async def change_status(
+    session: AsyncSession,
+    user: User,
+    position_id: uuid.UUID,
+    *,
+    action: str,
+    reason: str,
+    on: date | None = None,
+    request: Request | None = None,
+) -> Position:
+    """Freeze, unfreeze or abolish a seat outside a scenario. Never a delete."""
+    position = await _position(session, user, position_id)
+    effective = on or date.today()
+    previous = position.status
+
+    if action in {"freeze", "abolish"} and not reason.strip():
+        raise _unprocessable(f"A reason is needed to {action} a position.")
+
+    if action == "freeze":
+        if position.status not in {PositionStatus.APPROVED, PositionStatus.VACANT}:
+            raise _conflict(
+                f"Position {position.code} is {position.status.value}. Only an empty seat can "
+                "be frozen — a freeze stops a seat being filled."
+            )
+        position.status = PositionStatus.FROZEN
+        position.status_reason = reason.strip()
+    elif action == "unfreeze":
+        if position.status is not PositionStatus.FROZEN:
+            raise _conflict(f"Position {position.code} is not frozen.")
+        position.status = PositionStatus.VACANT if position.vacated_on else PositionStatus.APPROVED
+        position.status_reason = None
+    elif action == "abolish":
+        if position.status is PositionStatus.ABOLISHED:
+            raise _conflict(f"Position {position.code} is already abolished.")
+        if position.status is PositionStatus.FILLED:
+            raise _conflict(
+                f"Position {position.code} is filled. Vacate it before abolishing it, so the "
+                "person in it is moved deliberately rather than dropped."
+            )
+        open_rows = (
+            await session.scalars(
+                tenant_scoped(
+                    select(PositionAssignment).where(
+                        PositionAssignment.position_id == position.id,
+                        PositionAssignment.to_date.is_(None),
+                    ),
+                    PositionAssignment,
+                    user,
+                )
+            )
+        ).all()
+        for row in open_rows:
+            row.to_date = max(effective, row.from_date)
+        position.status = PositionStatus.ABOLISHED
+        position.effective_to = effective
+        position.status_reason = reason.strip()
+    else:  # pragma: no cover - the schema restricts the action
+        raise _unprocessable(f"'{action}' is not a position status change.")
+
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="position",
+        entity_id=position.id,
+        changes={
+            "status": {"from": previous.value, "to": position.status.value},
+            "reason": reason,
+        },
+        summary=f"Position {position.code} {position.status.value}",
+        request=request,
+    )
+    return position
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Occupancy
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 async def assign(
@@ -210,25 +619,30 @@ async def assign(
     A second *primary* assignment to an occupied seat is refused: two people
     cannot both hold one position, and the fix is to close the first one. Acting
     and additional-charge assignments are allowed alongside a primary — that is
-    exactly what they are for, and they do not count toward headcount.
+    exactly what they are for, and they do not count toward headcount. A primary
+    fill is also checked against the headcount budget.
     """
     position = await _position(session, user, position_id)
     if position.status is PositionStatus.ABOLISHED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Position {position.code} has been abolished. Somebody can only be "
-                "appointed to a seat that exists."
-            ),
+        raise _conflict(
+            f"Position {position.code} has been abolished. Somebody can only be "
+            "appointed to a seat that exists."
         )
     if position.status is PositionStatus.FROZEN:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Position {position.code} is frozen. Unfreeze it first — filling a "
-                "frozen seat quietly is how a hiring freeze stops meaning anything."
-            ),
+        raise _conflict(
+            f"Position {position.code} is frozen. Unfreeze it first — filling a "
+            "frozen seat quietly is how a hiring freeze stops meaning anything."
         )
+
+    employee = await session.scalar(
+        tenant_scoped(
+            select(Employee).where(Employee.id == employee_id, Employee.deleted_at.is_(None)),
+            Employee,
+            user,
+        )
+    )
+    if employee is None:
+        raise _unprocessable("That employee is not an active employee in this workspace.")
 
     if assignment_type is AssignmentType.PRIMARY:
         existing = await session.scalar(
@@ -243,14 +657,22 @@ async def assign(
             )
         )
         if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Position {position.code} is already held. Close the current "
-                    "assignment first — two people cannot both hold one seat, and "
-                    "letting them would double the headcount."
-                ),
+            raise _conflict(
+                f"Position {position.code} is already held. Close the current "
+                "assignment first — two people cannot both hold one seat, and "
+                "letting them would double the headcount."
             )
+        seat = _seat(position)
+        await enforce_budget(
+            session,
+            user,
+            on=from_date,
+            by_department={position.department_id: [seat]} if position.department_id else {},
+            company=[seat],
+            what=f"Filling {position.code}",
+            filled_only=True,
+            exclude_position_id=position.id,
+        )
 
     row = PositionAssignment(
         tenant_id=user.tenant_id,
@@ -316,6 +738,10 @@ async def vacate(
     ).all()
 
     for assignment in open_assignments:
+        if on < assignment.from_date:
+            raise _unprocessable(
+                f"{on} is before the current assignment started on {assignment.from_date}."
+            )
         assignment.to_date = on
 
     if position.status is not PositionStatus.ABOLISHED:
@@ -350,6 +776,84 @@ async def vacate(
             "against it to backfill."
         ),
     }
+
+
+async def assignments_of(
+    session: AsyncSession, user: User, position_id: uuid.UUID
+) -> list[AssignmentRead]:
+    """A seat's occupancy history, newest first."""
+    await _position(session, user, position_id)
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(PositionAssignment)
+                .where(PositionAssignment.position_id == position_id)
+                .order_by(PositionAssignment.from_date.desc()),
+                PositionAssignment,
+                user,
+            )
+        )
+    ).all()
+    labels = await _employee_labels(session, user, {row.employee_id for row in rows})
+    return [_assignment_read(row, labels) for row in rows]
+
+
+def _assignment_read(row: PositionAssignment, labels: dict[uuid.UUID, str]) -> AssignmentRead:
+    return AssignmentRead(
+        id=row.id,
+        position_id=row.position_id,
+        employee_id=row.employee_id,
+        employee_name=labels.get(row.employee_id, ""),
+        from_date=row.from_date,
+        to_date=row.to_date,
+        assignment_type=row.assignment_type,
+        counts_toward_headcount=row.assignment_type is AssignmentType.PRIMARY,
+        note=row.note,
+    )
+
+
+async def end_assignment(
+    session: AsyncSession,
+    user: User,
+    assignment_id: uuid.UUID,
+    *,
+    on: date,
+    request: Request | None = None,
+) -> AssignmentRead:
+    """Close an acting or additional-charge assignment. A primary is closed by vacating."""
+    row = await session.scalar(
+        tenant_scoped(
+            select(PositionAssignment).where(PositionAssignment.id == assignment_id),
+            PositionAssignment,
+            user,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+    if row.to_date is not None:
+        raise _conflict("This assignment has already ended.")
+    if row.assignment_type is AssignmentType.PRIMARY:
+        raise _conflict(
+            "A primary assignment ends by vacating the position, which also records when "
+            "the seat became empty."
+        )
+    if on < row.from_date:
+        raise _unprocessable(f"{on} is before the assignment started on {row.from_date}.")
+    row.to_date = on
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="position_assignment",
+        entity_id=row.id,
+        changes={"to_date": on.isoformat()},
+        summary=f"{row.assignment_type.value.replace('_', ' ')} assignment ended on {on}",
+        request=request,
+    )
+    labels = await _employee_labels(session, user, {row.employee_id})
+    return _assignment_read(row, labels)
 
 
 async def fill_from_offer(
@@ -455,11 +959,7 @@ async def off_budget_flags(
             }
         )
 
-    ceiling = (
-        Decimal(str(position.budgeted_ctc_max))
-        if position.budgeted_ctc_max is not None
-        else None
-    )
+    ceiling = _dec(position.budgeted_ctc_max)
     if requested_ctc_max is not None and ceiling is not None and requested_ctc_max > ceiling:
         flags.append(
             {
@@ -525,20 +1025,12 @@ async def budget_view(
         ).all()
         actual = {str(r.employee_id): Decimal(str(r.ctc_annual)) for r in rows}
 
-    totals = headcount_engine.aggregate(snapshots, by=by if by != "none" else None)
+    try:
+        totals = headcount_engine.aggregate(snapshots, by=by if by != "none" else None)
+    except headcount_engine.HeadcountError as exc:
+        raise _unprocessable(str(exc)) from exc
     financial_year = financial_year_label(financial_year_bounds(as_of)[0])
-
-    budgets = (
-        await session.scalars(
-            tenant_scoped(
-                select(HeadcountBudget).where(
-                    HeadcountBudget.financial_year == financial_year
-                ),
-                HeadcountBudget,
-                user,
-            )
-        )
-    ).all()
+    budgets = await _budget_rows(session, user, financial_year=financial_year)
 
     return {
         "as_of": as_of.isoformat(),
@@ -614,9 +1106,7 @@ async def org_chart(
             root_position_id=str(root_position_id) if root_position_id else None,
         )
     except orgchart.OrgChartError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise _unprocessable(str(exc)) from exc
 
     return {
         "as_of": as_of.isoformat(),
@@ -627,6 +1117,162 @@ async def org_chart(
         "vacant_seats": sum(1 for s in snapshots if not s.is_occupied),
         "total_seats": len(snapshots),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cost centres and budgets
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def list_cost_centres(session: AsyncSession, user: User) -> list[CostCentre]:
+    stmt = tenant_scoped(select(CostCentre).order_by(CostCentre.code), CostCentre, user)
+    return list((await session.scalars(stmt)).all())
+
+
+async def create_cost_centre(
+    session: AsyncSession,
+    user: User,
+    payload: CostCentreCreate,
+    *,
+    request: Request | None = None,
+) -> CostCentre:
+    if await session.scalar(
+        tenant_scoped(
+            select(CostCentre.id).where(CostCentre.code == payload.code), CostCentre, user
+        )
+    ) is not None:
+        raise _conflict(f"A cost centre with code {payload.code} already exists")
+    if payload.owner_employee_id is not None and await session.scalar(
+        tenant_scoped(
+            select(Employee.id).where(Employee.id == payload.owner_employee_id), Employee, user
+        )
+    ) is None:
+        raise _unprocessable("The owner is not an employee in this workspace.")
+    centre = CostCentre(tenant_id=user.tenant_id, **payload.model_dump())
+    session.add(centre)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="cost_centre",
+        entity_id=centre.id,
+        changes=payload.model_dump(mode="json"),
+        summary=f"Cost centre {centre.code} created",
+        request=request,
+    )
+    return centre
+
+
+async def list_budgets(
+    session: AsyncSession, user: User, *, financial_year: str | None = None
+) -> list[HeadcountBudget]:
+    stmt = select(HeadcountBudget).order_by(
+        HeadcountBudget.financial_year.desc(), HeadcountBudget.department_id
+    )
+    if financial_year:
+        stmt = stmt.where(HeadcountBudget.financial_year == financial_year)
+    return list((await session.scalars(tenant_scoped(stmt, HeadcountBudget, user))).all())
+
+
+async def upsert_budget(
+    session: AsyncSession,
+    user: User,
+    payload: BudgetUpsert,
+    *,
+    request: Request | None = None,
+) -> BudgetUpsertResult:
+    """Set a year's approved headcount and cost for a department, or the company.
+
+    A cut below what already exists is saved — it is a decision — and reported,
+    so the person making it sees that new seats and fills will now be refused.
+    """
+    for key, model, label in (
+        ("department_id", Department, "department"),
+        ("cost_centre_id", CostCentre, "cost centre"),
+    ):
+        value = getattr(payload, key)
+        if value is not None and await session.scalar(
+            tenant_scoped(select(model.id).where(model.id == value), model, user)
+        ) is None:
+            raise _unprocessable(f"That {label} is not part of this workspace.")
+
+    stmt = select(HeadcountBudget).where(HeadcountBudget.financial_year == payload.financial_year)
+    stmt = stmt.where(
+        HeadcountBudget.department_id == payload.department_id
+        if payload.department_id is not None
+        else HeadcountBudget.department_id.is_(None)
+    )
+    existing = await session.scalar(tenant_scoped(stmt, HeadcountBudget, user))
+    before = (
+        {
+            "approved_positions": existing.approved_positions,
+            "approved_cost": str(existing.approved_cost),
+        }
+        if existing
+        else None
+    )
+    row = existing or HeadcountBudget(
+        tenant_id=user.tenant_id,
+        financial_year=payload.financial_year,
+        department_id=payload.department_id,
+    )
+    row.cost_centre_id = payload.cost_centre_id
+    row.approved_positions = payload.approved_positions
+    row.approved_cost = payload.approved_cost
+    row.note = payload.note
+    row.approved_by_user_id = user.id
+    session.add(row)
+    await session.flush()
+
+    start_year = int(payload.financial_year[3:7])
+    names = await _department_names(session, user)
+    counted = await _seats_in_scope(
+        session,
+        user,
+        department_id=payload.department_id,
+        on=date(start_year, 4, 1),
+        filled_only=False,
+        exclude_position_id=None,
+    )
+    standing = budget_engine.check(
+        budget_engine.Budget(
+            scope=(
+                names.get(payload.department_id, "this department")
+                if payload.department_id
+                else "the company"
+            ),
+            financial_year=payload.financial_year,
+            approved_positions=payload.approved_positions,
+            approved_cost=payload.approved_cost,
+        ),
+        counted=counted,
+        adding=[],
+        what="Seats already approved",
+    )
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE if existing else AuditAction.CREATE,
+        entity_type="headcount_budget",
+        entity_id=row.id,
+        changes={
+            "before": before,
+            "after": {
+                "approved_positions": payload.approved_positions,
+                "approved_cost": str(payload.approved_cost),
+            },
+        },
+        summary=f"Headcount budget for {payload.financial_year} set",
+        request=request,
+    )
+    return BudgetUpsertResult(
+        budget=BudgetRead.model_validate(row),
+        over_budget=[] if standing.within_budget else [standing.as_dict()],
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -661,6 +1307,134 @@ async def _scenario(
     return row
 
 
+async def _check_change(session: AsyncSession, user: User, change: ChangeIn) -> None:
+    if change.kind != "create":
+        if change.position_id is None:
+            raise _unprocessable(f"A {change.kind} change needs the position it applies to.")
+        await _position(session, user, change.position_id)
+    elif change.position_id is not None:
+        raise _unprocessable("A create change makes a new position; it names no existing one.")
+
+
+def _summary(row: PositionScenario) -> ScenarioSummary:
+    return ScenarioSummary(
+        scenario_id=row.id,
+        name=row.name,
+        description=row.description,
+        status=row.status.value,
+        as_of=row.as_of,
+        changes=len(row.changes),
+    )
+
+
+async def list_scenarios(session: AsyncSession, user: User) -> list[ScenarioSummary]:
+    rows = await session.scalars(
+        tenant_scoped(
+            select(PositionScenario).order_by(PositionScenario.created_at.desc()),
+            PositionScenario,
+            user,
+        )
+    )
+    return [_summary(row) for row in rows.all()]
+
+
+async def create_scenario(
+    session: AsyncSession,
+    user: User,
+    payload: ScenarioCreate,
+    *,
+    request: Request | None = None,
+) -> ScenarioSummary:
+    """Start a draft. Nothing here touches a live position."""
+    if await session.scalar(
+        tenant_scoped(
+            select(PositionScenario.id).where(PositionScenario.name == payload.name),
+            PositionScenario,
+            user,
+        )
+    ) is not None:
+        raise _conflict(f"A scenario called '{payload.name}' already exists")
+    for change in payload.changes:
+        await _check_change(session, user, change)
+
+    scenario = PositionScenario(
+        tenant_id=user.tenant_id,
+        name=payload.name,
+        description=payload.description,
+        as_of=payload.as_of,
+        created_by_user_id=user.id,
+    )
+    session.add(scenario)
+    await session.flush()
+
+    for index, change in enumerate(payload.changes, start=1):
+        session.add(
+            ScenarioChange(
+                tenant_id=user.tenant_id,
+                scenario_id=scenario.id,
+                sequence=index,
+                kind=change.kind,
+                position_id=change.position_id,
+                values=change.values,
+                reason=change.reason,
+            )
+        )
+    await session.flush()
+    await session.refresh(scenario)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="position_scenario",
+        entity_id=scenario.id,
+        changes={"name": payload.name, "changes": len(payload.changes)},
+        summary=f"Scenario '{payload.name}' drafted. No live position changed.",
+        request=request,
+    )
+    return _summary(scenario)
+
+
+async def add_scenario_change(
+    session: AsyncSession,
+    user: User,
+    scenario_id: uuid.UUID,
+    change: ChangeIn,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    scenario = await _scenario(session, user, scenario_id)
+    if scenario.status is not ScenarioStatus.DRAFT:
+        raise _conflict(f"This scenario is {scenario.status.value}; it cannot be edited.")
+    await _check_change(session, user, change)
+
+    next_sequence = 1 + max((c.sequence for c in scenario.changes), default=0)
+    session.add(
+        ScenarioChange(
+            tenant_id=user.tenant_id,
+            scenario_id=scenario_id,
+            sequence=next_sequence,
+            kind=change.kind,
+            position_id=change.position_id,
+            values=change.values,
+            reason=change.reason,
+        )
+    )
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="position_scenario",
+        entity_id=scenario_id,
+        changes=change.model_dump(mode="json"),
+        summary=f"Change {next_sequence} ({change.kind}) added to scenario '{scenario.name}'",
+        request=request,
+    )
+    return {"scenario_id": str(scenario_id), "sequence": next_sequence}
+
+
 async def project_scenario(
     session: AsyncSession, user: User, *, scenario_id: uuid.UUID
 ) -> dict[str, Any]:
@@ -683,9 +1457,7 @@ async def project_scenario(
             on=row.as_of,
         )
     except scenario_engine.ScenarioError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise _unprocessable(str(exc)) from exc
 
     comparison = scenario_engine.compare(live_snapshots=live, result=result)
     return {
@@ -706,6 +1478,32 @@ async def project_scenario(
     }
 
 
+async def _scenario_budget_additions(
+    session: AsyncSession, user: User, row: PositionScenario
+) -> tuple[dict[uuid.UUID, list[budget_engine.Seat]], list[budget_engine.Seat]]:
+    """The seats a scenario would add to each department, and to the company."""
+    by_department: dict[uuid.UUID, list[budget_engine.Seat]] = {}
+    company: list[budget_engine.Seat] = []
+    for change in sorted(row.changes, key=lambda c: c.sequence):
+        values = dict(change.values or {})
+        if change.kind == scenario_engine.ChangeKind.CREATE.value:
+            seat = budget_engine.Seat(
+                code=str(values.get("code", "new position")),
+                fte=Decimal(str(values.get("fte", "1.0"))),
+                budgeted_ctc_max=_dec(values.get("budgeted_ctc_max")),
+            )
+            company.append(seat)
+            department_id = _as_uuid(values.get("department_id"))
+            if department_id is not None:
+                by_department.setdefault(department_id, []).append(seat)
+        elif change.kind == scenario_engine.ChangeKind.MOVE.value and "department_id" in values:
+            position = await _position(session, user, change.position_id)
+            target = _as_uuid(values["department_id"])
+            if target is not None and target != position.department_id:
+                by_department.setdefault(target, []).append(_seat(position))
+    return by_department, company
+
+
 async def commit_scenario(
     session: AsyncSession,
     user: User,
@@ -717,20 +1515,28 @@ async def commit_scenario(
 
     The first point at which a scenario touches anything real. Order matters: a
     scenario that moves a position and then abolishes it is a different plan from
-    one that does the reverse.
+    one that does the reverse. The seats it adds are checked against the
+    headcount budget before anything is written.
     """
     row = await _scenario(session, user, scenario_id)
     if row.status is not ScenarioStatus.DRAFT:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"This scenario is already {row.status.value}. Committing it twice "
-                "would apply the same reorg on top of itself."
-            ),
+        raise _conflict(
+            f"This scenario is already {row.status.value}. Committing it twice "
+            "would apply the same reorg on top of itself."
         )
 
     # Projected first: if the plan does not hold together, nothing is written.
     await project_scenario(session, user, scenario_id=scenario_id)
+
+    by_department, company = await _scenario_budget_additions(session, user, row)
+    await enforce_budget(
+        session,
+        user,
+        on=row.as_of,
+        by_department=by_department,
+        company=company,
+        what=f"Committing scenario '{row.name}'",
+    )
 
     moment = datetime.now(UTC)
     applied: list[str] = []
@@ -822,7 +1628,11 @@ async def commit_scenario(
 
 
 async def discard_scenario(
-    session: AsyncSession, user: User, *, scenario_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    *,
+    scenario_id: uuid.UUID,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """Throw a draft away.
 
@@ -832,16 +1642,25 @@ async def discard_scenario(
     """
     row = await _scenario(session, user, scenario_id)
     if row.status is ScenarioStatus.COMMITTED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This scenario has been committed. Discarding it would not undo the "
-                "changes — build a new scenario to reverse them."
-            ),
+        raise _conflict(
+            "This scenario has been committed. Discarding it would not undo the "
+            "changes — build a new scenario to reverse them."
         )
+    if row.status is ScenarioStatus.DISCARDED:
+        raise _conflict("This scenario has already been discarded.")
     row.status = ScenarioStatus.DISCARDED
     row.discarded_at = datetime.now(UTC)
     await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="position_scenario",
+        entity_id=row.id,
+        summary=f"Scenario '{row.name}' discarded. No live position changed.",
+        request=request,
+    )
     return {"scenario_id": str(row.id), "status": row.status.value}
 
 

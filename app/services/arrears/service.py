@@ -379,6 +379,7 @@ async def revise_salary(
         total_net_payable=summary.net_payable,
         affected_filings=summary.affected_filings,
         computed_at=datetime.now(UTC),
+        computed_by_user_id=user.id,
         requires_additional_approval=summary.net_payable > limit,
     )
     session.add(batch)
@@ -468,10 +469,16 @@ async def approve_batch(
 ) -> ArrearBatch:
     """Sign off an arrear batch for payment in a future run.
 
-    Affected filings have to be acknowledged explicitly. A revised ECR for a
-    closed month is a decision with consequences — sometimes carrying the
-    difference forward is the right answer — and silently approving past it
-    means nobody made that decision at all.
+    Four refusals:
+
+    - **The person who computed the batch cannot approve it.** An arrear is
+      money leaving the company; the second pair of eyes is the control.
+    - **Nobody approves a batch that pays themselves.**
+    - **Affected filings must be acknowledged.** A revised ECR for a closed
+      month is a decision with consequences, and approving past it silently
+      means nobody made it.
+    - **Above the threshold, two different approvers.** The first signature is
+      recorded and the batch waits for the second.
     """
     batch = await session.scalar(
         tenant_scoped(
@@ -485,6 +492,30 @@ async def approve_batch(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"A batch in status '{batch.status.value}' is not awaiting approval.",
         )
+    if batch.computed_by_user_id is not None and batch.computed_by_user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You committed this revision, so you cannot approve its arrears. A "
+                "different person has to look at it."
+            ),
+        )
+    if user.employee_id is not None:
+        own = await session.scalar(
+            tenant_scoped(
+                select(ArrearLine.id).where(
+                    ArrearLine.batch_id == batch.id,
+                    ArrearLine.employee_id == user.employee_id,
+                ),
+                ArrearLine,
+                user,
+            )
+        )
+        if own is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This batch pays arrears to you, so somebody else has to approve it.",
+            )
     if batch.affected_filings and not acknowledge_filings:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -497,9 +528,30 @@ async def approve_batch(
             ),
         )
 
-    batch.status = ArrearStatus.APPROVED
-    batch.approved_by_user_id = user.id
-    batch.approved_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    first_of_two = False
+    if batch.requires_additional_approval:
+        if batch.approved_by_user_id is None:
+            batch.approved_by_user_id = user.id
+            batch.approved_at = now
+            first_of_two = True
+        elif batch.approved_by_user_id == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "You have already given the first approval. This batch is above the "
+                    "approval threshold, so the second approval has to come from "
+                    "somebody else."
+                ),
+            )
+        else:
+            batch.additional_approved_by_user_id = user.id
+            batch.additional_approved_at = now
+            batch.status = ArrearStatus.APPROVED
+    else:
+        batch.status = ArrearStatus.APPROVED
+        batch.approved_by_user_id = user.id
+        batch.approved_at = now
     await session.flush()
 
     await audit.record(
@@ -510,10 +562,217 @@ async def approve_batch(
         entity_type="arrear_batch",
         entity_id=batch.id,
         summary=(
-            f"Approved arrears of {batch.total_net_payable} for {batch.employee_count} "
-            f"employee(s), acknowledging {len(batch.affected_filings)} affected filing(s)"
+            f"First of two approvals for arrears of {batch.total_net_payable}; a second "
+            "approver is required above the threshold"
+            if first_of_two
+            else (
+                f"Approved arrears of {batch.total_net_payable} for {batch.employee_count} "
+                f"employee(s), acknowledging {len(batch.affected_filings)} affected filing(s)"
+            )
         ),
-        changes={"acknowledged_filings": batch.affected_filings},
+        changes={
+            "acknowledged_filings": batch.affected_filings,
+            "stage": "first" if first_of_two else "final",
+        },
+        request=request,
+    )
+    return batch
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Guardrails as a preview, and read models
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def preview_guardrails(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_ids: list[uuid.UUID],
+    effective_from: date,
+) -> list[dict]:
+    """The refusals a commit would raise, collected rather than raised.
+
+    The preview shows them before anybody presses commit.
+    """
+    problems: list[dict] = []
+    for employee_id in employee_ids:
+        employee = await session.scalar(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+        if employee is None:
+            problems.append(
+                {"employee_id": str(employee_id), "employee_code": None,
+                 "message": "Employee not found."}
+            )
+            continue
+        try:
+            await _guard_revision(session, user, employee, effective_from)
+        except HTTPException as exc:
+            problems.append(
+                {
+                    "employee_id": str(employee_id),
+                    "employee_code": employee.employee_code,
+                    "message": str(exc.detail),
+                }
+            )
+    return problems
+
+
+async def employee_labels(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    if not ids:
+        return {}
+    rows = (
+        await session.scalars(
+            tenant_scoped(select(Employee).where(Employee.id.in_(ids)), Employee, user)
+        )
+    ).all()
+    return {row.id: (row.employee_code, row.full_name) for row in rows}
+
+
+async def get_batch(session: AsyncSession, user: User, batch_id: uuid.UUID) -> ArrearBatch:
+    batch = await session.scalar(
+        tenant_scoped(select(ArrearBatch).where(ArrearBatch.id == batch_id), ArrearBatch, user)
+    )
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Arrear batch not found")
+    return batch
+
+
+async def batch_lines(
+    session: AsyncSession,
+    user: User,
+    batch_id: uuid.UUID,
+    *,
+    employee_id: uuid.UUID | None = None,
+) -> list[tuple[ArrearLine, tuple[str, str] | None]]:
+    await get_batch(session, user, batch_id)
+    stmt = (
+        select(ArrearLine)
+        .where(ArrearLine.batch_id == batch_id)
+        .order_by(ArrearLine.employee_id, ArrearLine.period, ArrearLine.component_code)
+    )
+    if employee_id is not None:
+        stmt = stmt.where(ArrearLine.employee_id == employee_id)
+    lines = (await session.scalars(tenant_scoped(stmt, ArrearLine, user))).all()
+    labels = await employee_labels(session, user, {line.employee_id for line in lines})
+    return [(line, labels.get(line.employee_id)) for line in lines]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# For the payroll run (workstream W2): what is payable, and marking it paid
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def payable_arrears(
+    session: AsyncSession,
+    user: User,
+    *,
+    legal_entity_id: uuid.UUID | None = None,
+    employee_ids: set[uuid.UUID] | None = None,
+) -> list[dict]:
+    """Approved, unpaid arrears, per batch and employee, per component.
+
+    The payroll run reads this to add arrear lines to the next payslip. Each
+    component keeps its own type, because basic and an allowance are taxed and
+    counted towards PF differently.
+    """
+    stmt = select(ArrearBatch).where(
+        ArrearBatch.status == ArrearStatus.APPROVED,
+        ArrearBatch.paid_in_run_id.is_(None),
+    )
+    if legal_entity_id is not None:
+        stmt = stmt.where(ArrearBatch.legal_entity_id == legal_entity_id)
+    batches = (await session.scalars(tenant_scoped(stmt, ArrearBatch, user))).all()
+
+    out: list[dict] = []
+    for batch in batches:
+        lines = (
+            await session.scalars(
+                tenant_scoped(
+                    select(ArrearLine).where(ArrearLine.batch_id == batch.id),
+                    ArrearLine,
+                    user,
+                )
+            )
+        ).all()
+        per_employee: dict[uuid.UUID, dict[tuple[str, str, str], Decimal]] = {}
+        for line in lines:
+            if employee_ids is not None and line.employee_id not in employee_ids:
+                continue
+            key = (line.component_code, line.component_name, line.component_type)
+            bucket = per_employee.setdefault(line.employee_id, {})
+            bucket[key] = bucket.get(key, ZERO) + Decimal(str(line.difference))
+        labels = await employee_labels(session, user, set(per_employee))
+        for employee_id, components in per_employee.items():
+            earnings = sum(
+                (v for (_, _, kind), v in components.items() if kind == "earning"), ZERO
+            )
+            deductions = sum(
+                (v for (_, _, kind), v in components.items() if kind == "deduction"), ZERO
+            )
+            code, name = labels.get(employee_id, (None, None))
+            out.append(
+                {
+                    "batch_id": batch.id,
+                    "employee_id": employee_id,
+                    "employee_code": code,
+                    "employee_name": name,
+                    "from_period": batch.from_period,
+                    "to_period": batch.to_period,
+                    "components": [
+                        {
+                            "component_code": comp_code,
+                            "component_name": comp_name,
+                            "component_type": kind,
+                            "amount": amount,
+                        }
+                        for (comp_code, comp_name, kind), amount in sorted(components.items())
+                        if amount != ZERO
+                    ],
+                    "net_payable": engine_net(earnings, deductions),
+                }
+            )
+    return out
+
+
+def engine_net(earnings: Decimal, deductions: Decimal) -> Decimal:
+    """Earnings less employee deductions. Employer contributions never net in."""
+    return earnings - deductions
+
+
+async def mark_arrears_paid(
+    session: AsyncSession,
+    user: User,
+    *,
+    batch_id: uuid.UUID,
+    payroll_run_id: uuid.UUID,
+    request: Request | None = None,
+) -> ArrearBatch:
+    """Record the future run that paid a batch. The caller commits.
+
+    Only the batch changes: the run is referenced, never written.
+    """
+    batch = await get_batch(session, user, batch_id)
+    if batch.status is not ArrearStatus.APPROVED or batch.paid_in_run_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an approved, unpaid arrear batch can be marked paid.",
+        )
+    batch.paid_in_run_id = payroll_run_id
+    batch.status = ArrearStatus.PAID
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="arrear_batch",
+        entity_id=batch.id,
+        summary=f"Arrears of {batch.total_net_payable} paid in run {payroll_run_id}",
+        changes={"paid_in_run_id": str(payroll_run_id)},
         request=request,
     )
     return batch

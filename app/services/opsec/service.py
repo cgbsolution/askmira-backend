@@ -5,11 +5,13 @@ SLAs all live in the pure modules beside this. An invariant checks the isolation
 
 **What is and is not wired**, stated once here rather than implied:
 
-- Session rows can be created, listed and revoked, and the policy is evaluated —
-  **the auth middleware does not consult it yet**, so a session still ends when
-  its JWT expires rather than when the policy says.
-- Step-up challenges are created and can be satisfied — **no second factor
-  exists**, so `satisfy_challenge` records a claim rather than verifying one.
+- Session rows are created, listed and revoked, and for a tenant that has saved
+  a policy, `enforcement.py` (called from `get_current_user` on every request)
+  applies the idle timeout, the absolute lifetime, per-device revocation and the
+  privileged-role IP allowlist.
+- Step-up challenges are satisfied by re-entering the account password (checked
+  in the router). **No second factor exists** — a password re-check proves the
+  person at the keyboard knows it, not that they hold a device.
 - SIEM events are mapped and delivery health is computed — **no transport
   exists**, so `record_delivery` is called by a test and by nothing else.
 
@@ -241,6 +243,11 @@ async def list_sessions(
     """
     moment = now or datetime.now(UTC)
     policy = await session_policy(session, user)
+    policy_configured = (
+        await session.scalar(
+            tenant_scoped(select(TenantSessionPolicy.id), TenantSessionPolicy, user)
+        )
+    ) is not None
     subject = target_user_id or user.id
 
     stmt = tenant_scoped(
@@ -290,11 +297,15 @@ async def list_sessions(
         "policy": policy.as_dict(),
         "sessions": items,
         "active_count": sum(1 for i in items if i["is_usable"]),
+        "enforced": policy_configured,
         "not_built": (
-            "The auth middleware does not consult this policy yet — a session "
-            "still ends when its token expires rather than when the idle "
-            "timeout or the absolute lifetime says. These states are computed "
-            "and displayed; they are not yet enforced."
+            None
+            if policy_configured
+            else (
+                "This workspace has not saved a session policy, so the auth layer "
+                "does not consult this policy yet: a session ends when its token "
+                "expires or on a forced logout, and per-device tracking is off."
+            )
         ),
     }
 
@@ -376,10 +387,10 @@ async def revoke_session(
             "session to go idle."
             if all_for_user is not None
             else (
-                "The session row is marked revoked. **The middleware does not "
-                "read this table yet**, so a single-session revoke is currently "
-                "advisory; revoking all is immediate because it bumps the token "
-                "floor."
+                "The session row is marked revoked. Where the workspace has saved "
+                "a session policy, the next request from that device is refused; "
+                "without one, only revoking all is enforced, because it bumps the "
+                "token floor."
             )
         ),
     }
@@ -852,6 +863,138 @@ async def record_finding(
     return row
 
 
+async def registers(session: AsyncSession, user: User) -> dict[str, Any]:
+    """The drill and pen-test registers and the SIEM destinations, as rows."""
+    drills = (
+        await session.scalars(
+            tenant_scoped(select(RestoreDrill), RestoreDrill, user).order_by(
+                RestoreDrill.performed_on.desc()
+            )
+        )
+    ).all()
+    findings = (
+        await session.scalars(
+            tenant_scoped(select(PenTestFinding), PenTestFinding, user).order_by(
+                PenTestFinding.discovered_on.desc()
+            )
+        )
+    ).all()
+    destinations = (
+        await session.scalars(
+            tenant_scoped(select(SiemDestination), SiemDestination, user).order_by(
+                SiemDestination.name
+            )
+        )
+    ).all()
+    return {
+        "drills": [
+            {
+                "id": str(d.id),
+                "tier": d.tier.value,
+                "performed_on": d.performed_on.isoformat(),
+                "measured_rto_minutes": d.measured_rto_minutes,
+                "measured_rpo_minutes": d.measured_rpo_minutes,
+                "published_rto_minutes": d.published_rto_minutes,
+                "published_rpo_minutes": d.published_rpo_minutes,
+                "succeeded": d.succeeded,
+                "outcome": d.outcome.value,
+                "notes": d.notes,
+            }
+            for d in drills
+        ],
+        "findings": [
+            {
+                "id": str(f.id),
+                "reference": f.reference,
+                "title": f.title,
+                "severity": f.severity.value,
+                "area": f.area,
+                "discovered_on": f.discovered_on.isoformat(),
+                "due_on": f.due_on.isoformat(),
+                "remediated_on": f.remediated_on.isoformat() if f.remediated_on else None,
+                "risk_accepted_reason": f.risk_accepted_reason,
+                "tester": f.tester,
+            }
+            for f in findings
+        ],
+        "siem_destinations": [
+            {
+                "id": str(d.id),
+                "name": d.name,
+                "vendor": d.vendor.value,
+                "endpoint_url": d.endpoint_url,
+                "active": d.active,
+                "expected_interval_minutes": d.expected_interval_minutes,
+                "datasets": d.datasets,
+                "health_state": d.health_state.value,
+                "last_success_at": (
+                    d.last_success_at.isoformat() if d.last_success_at else None
+                ),
+                "last_failure_at": (
+                    d.last_failure_at.isoformat() if d.last_failure_at else None
+                ),
+            }
+            for d in destinations
+        ],
+    }
+
+
+async def policy_settings(session: AsyncSession, user: User) -> dict[str, Any]:
+    """The saved session policy, or the defaults marked as not saved."""
+    row = await session.scalar(
+        tenant_scoped(select(TenantSessionPolicy), TenantSessionPolicy, user)
+    )
+    if row is None:
+        defaults = access.DEFAULT_SESSION_POLICY
+        return {
+            "configured": False,
+            "idle_timeout_minutes": defaults.idle_timeout_minutes,
+            "absolute_lifetime_hours": defaults.absolute_lifetime_hours,
+            "max_concurrent_sessions": defaults.max_concurrent_sessions,
+            "enforce_ip_allowlist_for_privileged": False,
+            "ip_allowlist": [],
+        }
+    return {
+        "configured": True,
+        "idle_timeout_minutes": row.idle_timeout_minutes,
+        "absolute_lifetime_hours": row.absolute_lifetime_hours,
+        "max_concurrent_sessions": row.max_concurrent_sessions,
+        "enforce_ip_allowlist_for_privileged": row.enforce_ip_allowlist_for_privileged,
+        "ip_allowlist": list(row.ip_allowlist or []),
+    }
+
+
+async def active_sessions_everyone(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Every tracked, unrevoked session in the workspace, newest activity first."""
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(UserSession, User)
+                .join(User, User.id == UserSession.user_id)
+                .where(UserSession.revoked_at.is_(None)),
+                UserSession,
+                user,
+            )
+            .order_by(UserSession.last_seen_at.desc())
+            .limit(500)
+        )
+    ).all()
+    return [
+        {
+            "id": str(s.id),
+            "user_id": str(u.id),
+            "user_name": u.full_name,
+            "user_email": u.email,
+            "role": u.role.value,
+            "started_at": s.started_at.isoformat(),
+            "last_seen_at": s.last_seen_at.isoformat(),
+            "ip_address": str(s.ip_address) if s.ip_address else None,
+            "user_agent": s.user_agent,
+        }
+        for s, u in rows
+    ]
+
+
 async def posture(
     session: AsyncSession, user: User, *, today: date | None = None
 ) -> dict[str, Any]:
@@ -939,11 +1082,14 @@ async def posture(
             "and the record of drills against them.",
             "No third-party penetration test has been performed.",
             "No SIEM transport exists; events are mapped and never shipped.",
-            "The auth middleware does not consult the session policy, so "
-            "sessions still end at token expiry.",
-            "No second factor exists, so a step-up challenge records a claim "
-            "rather than verifying one.",
-            "No middleware calls the IP allowlist.",
+            "The session policy and IP allowlist are enforced by the auth "
+            "middleware only for a workspace that has saved a policy; the "
+            "allowlist reads the socket address, never X-Forwarded-For, so a "
+            "proxy must pass the client address to the server.",
+            "No second factor exists: step-up re-checks the account password "
+            "at the step-up endpoint, and no device factor is built.",
+            "SIEM delivery-failure alerting is computed and shown, and no alert "
+            "is sent because no transport exists.",
             "Dependency and container scanning are CI configuration and are not "
             "present in this repository.",
         ],

@@ -409,11 +409,10 @@ def posture_summary() -> dict[str, Any]:
             "go idle."
         ),
         "not_built": [
-            "Session rows are modelled and the policy is evaluated; the auth "
-            "middleware does not yet consult either — sessions still expire "
-            "only by token expiry.",
-            "Step-up challenges are modelled and no second factor is "
-            "implemented, so nothing can currently satisfy one.",
-            "The IP allowlist is evaluated and no middleware calls it.",
+            "The session policy and allowlist are enforced only once a "
+            "workspace saves a policy; unconfigured workspaces keep token-expiry "
+            "sessions.",
+            "No second factor is implemented; step-up is satisfied by "
+            "re-entering the account password.",
         ],
     }

@@ -46,9 +46,11 @@ from app.models.disbursement import (
 )
 from app.models.employee import Employee
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services import audit
-from app.services.disbursement import formats, validation
+from app.services.disbursement import formats, responses, validation
+from app.services.filings import support
+from app.services.notifications.dispatch import notify
 
 __all__ = [
     "BatchBlockedError",
@@ -663,6 +665,13 @@ async def reconcile(
     batch.status = DisbursementStatus.ACKNOWLEDGED
     await session.flush()
 
+    # A failed salary credit nobody notices until the employee calls is a
+    # serious incident, so HR Ops hear about it now. Raised inside this
+    # transaction: the reconciliation and the alert land together.
+    notified = 0
+    if failed:
+        notified = await _notify_failed_credits(session, user, batch, failed)
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -677,7 +686,13 @@ async def reconcile(
         changes={"credited": credited, "failed": len(failed), "unmatched": unmatched},
         request=request,
     )
-    return {"credited": credited, "failed": failed, "unmatched": unmatched}
+    return {
+        "credited": credited,
+        "failed": failed,
+        "unmatched": unmatched,
+        "notified": notified,
+        "parse_errors": [],
+    }
 
 
 async def supplementary_batch(
@@ -798,3 +813,182 @@ async def supplementary_batch(
         request=request,
     )
     return batch
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Failed-credit alerts, response import, and read models
+# ═══════════════════════════════════════════════════════════════════════════
+
+EVENT_CREDIT_FAILED = "payroll.disbursement.credit_failed"
+
+NOTICE_TEMPLATES = {
+    EVENT_CREDIT_FAILED: (
+        "{failed_count} salary credit(s) failed",
+        "The bank did not credit {failed_count} salary payment(s) totalling {failed_total} "
+        "in the disbursement for {period}. Reasons: {reasons}. Review them and issue a "
+        "supplementary batch in AskMira.",
+    ),
+}
+
+#: Who hears about a failed credit. HR Ops own the fix; HR admins own the money.
+ALERT_ROLES = {UserRole.HR_OPS, UserRole.HR_ADMIN}
+
+
+async def _notify_failed_credits(
+    session: AsyncSession, user: User, batch: DisbursementBatch, failed: list[dict]
+) -> int:
+    """Tell HR Ops about failed credits. Returns how many people were told."""
+    await support.ensure_event_templates(session, user.tenant_id, NOTICE_TEMPLATES)
+    recipients = await support.active_user_ids(session, user.tenant_id, roles=ALERT_ROLES)
+    if not recipients:
+        recipients = await support.active_user_ids(
+            session, user.tenant_id, roles={UserRole.TENANT_ADMIN}
+        )
+    if not recipients:
+        return 0
+    run = await session.scalar(
+        tenant_scoped(
+            select(PayrollRun).where(PayrollRun.id == batch.payroll_run_id), PayrollRun, user
+        )
+    )
+    reasons = sorted({item["reason"] for item in failed})
+    await notify(
+        session,
+        tenant_id=user.tenant_id,
+        event_key=EVENT_CREDIT_FAILED,
+        recipient_user_ids=recipients,
+        payload={
+            "batch_id": str(batch.id),
+            "failed_count": len(failed),
+            "failed_total": str(sum((Decimal(item["amount"]) for item in failed), Decimal(0))),
+            "period": f"{run.period_month:02d}/{run.period_year}" if run else "this run",
+            "reasons": "; ".join(reasons),
+        },
+        commit=False,
+    )
+    return len(recipients)
+
+
+async def import_bank_response(
+    session: AsyncSession,
+    user: User,
+    *,
+    batch_id: uuid.UUID,
+    data: bytes,
+    request: Request | None = None,
+) -> dict:
+    """Read the bank's CSV response and reconcile the batch with it."""
+    try:
+        parsed = responses.parse_response_csv(data)
+    except responses.ResponseFileError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if not parsed.rows:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No row of the response file could be read: " + " ".join(parsed.problems),
+        )
+    outcome = await reconcile(
+        session, user, batch_id=batch_id, responses=parsed.rows, request=request
+    )
+    outcome["parse_errors"] = parsed.problems
+    return outcome
+
+
+async def _user_names(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(select(User.id, User.full_name).where(User.id.in_(ids)), User, user)
+        )
+    ).all()
+    return {row_id: name for row_id, name in rows}
+
+
+async def _employee_labels(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    if not ids:
+        return {}
+    rows = (
+        await session.scalars(
+            tenant_scoped(select(Employee).where(Employee.id.in_(ids)), Employee, user)
+        )
+    ).all()
+    return {row.id: (row.employee_code, row.full_name) for row in rows}
+
+
+def _names_for(
+    batch: DisbursementBatch, names: dict[uuid.UUID, str]
+) -> tuple[DisbursementBatch, str | None, str | None]:
+    return (
+        batch,
+        names.get(batch.prepared_by_user_id) if batch.prepared_by_user_id else None,
+        names.get(batch.approved_by_user_id) if batch.approved_by_user_id else None,
+    )
+
+
+async def list_batches(
+    session: AsyncSession, user: User, *, payroll_run_id: uuid.UUID | None = None
+) -> list[tuple[DisbursementBatch, str | None, str | None]]:
+    """Batches newest first, with who prepared and approved each by name."""
+    stmt = select(DisbursementBatch).order_by(DisbursementBatch.created_at.desc())
+    if payroll_run_id is not None:
+        stmt = stmt.where(DisbursementBatch.payroll_run_id == payroll_run_id)
+    batches = (await session.scalars(tenant_scoped(stmt, DisbursementBatch, user))).all()
+    names = await _user_names(
+        session,
+        user,
+        {
+            uid
+            for batch in batches
+            for uid in (batch.prepared_by_user_id, batch.approved_by_user_id)
+            if uid
+        },
+    )
+    return [_names_for(batch, names) for batch in batches]
+
+
+async def get_batch(
+    session: AsyncSession, user: User, batch_id: uuid.UUID
+) -> tuple[DisbursementBatch, str | None, str | None]:
+    batch = await _batch(session, user, batch_id)
+    names = await _user_names(
+        session,
+        user,
+        {uid for uid in (batch.prepared_by_user_id, batch.approved_by_user_id) if uid},
+    )
+    return _names_for(batch, names)
+
+
+async def batch_lines(
+    session: AsyncSession, user: User, batch_id: uuid.UUID
+) -> list[tuple[DisbursementLine, tuple[str, str] | None]]:
+    await _batch(session, user, batch_id)
+    lines = (
+        await session.scalars(
+            tenant_scoped(
+                select(DisbursementLine).where(DisbursementLine.batch_id == batch_id),
+                DisbursementLine,
+                user,
+            )
+        )
+    ).all()
+    labels = await _employee_labels(session, user, {line.employee_id for line in lines})
+    ordered = sorted(lines, key=lambda line: labels.get(line.employee_id, ("", ""))[0])
+    return [(line, labels.get(line.employee_id)) for line in ordered]
+
+
+async def bank_accounts(
+    session: AsyncSession, user: User, *, employee_id: uuid.UUID | None = None
+) -> list[tuple[EmployeeBankAccount, tuple[str, str] | None]]:
+    stmt = select(EmployeeBankAccount).order_by(EmployeeBankAccount.created_at.desc())
+    if employee_id is not None:
+        stmt = stmt.where(EmployeeBankAccount.employee_id == employee_id)
+    rows = (await session.scalars(tenant_scoped(stmt, EmployeeBankAccount, user))).all()
+    labels = await _employee_labels(session, user, {row.employee_id for row in rows})
+    return [(row, labels.get(row.employee_id)) for row in rows]

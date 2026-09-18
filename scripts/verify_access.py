@@ -50,6 +50,7 @@ from app.models.base import Base
 from app.models.employee import Employee
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.leave import engine as leave_engine
 
 DEMO_SLUG = "askmira-demo"
 FY = "2026-27"
@@ -248,6 +249,31 @@ async def main() -> int:
                         reason=reason,
                     )
                 )
+            # A request routed to Meera's manager, and approved leave for the CEO
+            # that colleagues should see on the calendar without its type.
+            chained_leave = LeaveRequest(
+                tenant_id=tenant.id,
+                employee_id=meera.id,
+                leave_type_id=leave_type.id,
+                start_date=TODAY + dt.timedelta(days=30),
+                end_date=TODAY + dt.timedelta(days=30),
+                total_days=Decimal("1"),
+                reason="VERIFY chained",
+                approval_chain=leave_engine.build_chain(
+                    [leave_engine.Approver("manager", role_user["manager"].id, vikram.id, "Vikram")]
+                ),
+            )
+            ceo_out = LeaveRequest(
+                tenant_id=tenant.id,
+                employee_id=ceo.id,
+                leave_type_id=leave_type.id,
+                start_date=TODAY + dt.timedelta(days=10),
+                end_date=TODAY + dt.timedelta(days=11),
+                total_days=Decimal("2"),
+                reason="VERIFY CEO away",
+                status=enum_member(LeaveRequest, "status", "approved"),
+            )
+            session.add_all([chained_leave, ceo_out])
 
             req_mine = Requisition(
                 tenant_id=tenant.id,
@@ -412,6 +438,119 @@ async def main() -> int:
                     "/leave/requests",
                     expect="ok",
                     predicate=lambda b: str(ceo.id) in {r["employee_id"] for r in rows(b)},
+                ),
+                Check(
+                    "Employee cannot approve their own leave",
+                    "employee",
+                    "POST",
+                    "/leave/requests/{id}/approve",
+                    {"id": chained_leave.id},
+                ),
+                Check(
+                    "HR inbox has pending requests, never HR's own",
+                    "hr_ops",
+                    "GET",
+                    "/leave/approvals",
+                    expect="ok",
+                    predicate=lambda b: str(chained_leave.id) in {r["id"] for r in b}
+                    and all(r["employee_id"] != str(karthik.id) for r in b),
+                ),
+                Check(
+                    "Employee's approval inbox is empty",
+                    "employee",
+                    "GET",
+                    "/leave/approvals",
+                    expect="ok",
+                    predicate=lambda b: b == [],
+                ),
+                Check(
+                    "Manager's inbox has their report's request, not the CEO's",
+                    "manager",
+                    "GET",
+                    "/leave/approvals",
+                    expect="ok",
+                    predicate=lambda b: {r["id"] for r in b} >= {str(chained_leave.id)}
+                    and all(r["employee_id"] == str(meera.id) for r in b),
+                ),
+                Check(
+                    "Colleague's leave balances refused",
+                    "employee",
+                    "GET",
+                    "/leave/balances",
+                    params={"employee_id": str(ceo.id)},
+                ),
+                Check(
+                    "Manager sees their report's balances",
+                    "manager",
+                    "GET",
+                    "/leave/balances",
+                    params={"employee_id": str(meera.id)},
+                    expect="allow",
+                ),
+                Check(
+                    "Requesting leave on a colleague's behalf refused",
+                    "employee",
+                    "POST",
+                    "/leave/requests",
+                    body={
+                        "employee_id": str(ceo.id),
+                        "leave_type_id": str(leave_type.id),
+                        "start_date": (TODAY + dt.timedelta(days=20)).isoformat(),
+                        "end_date": (TODAY + dt.timedelta(days=20)).isoformat(),
+                    },
+                ),
+                Check(
+                    "Calendar shows the CEO is out, not why",
+                    "employee",
+                    "GET",
+                    "/leave/who-is-out",
+                    params={
+                        "start": TODAY.isoformat(),
+                        "end": (TODAY + dt.timedelta(days=40)).isoformat(),
+                    },
+                    expect="ok",
+                    predicate=lambda b: any(r["employee_id"] == str(ceo.id) for r in b)
+                    and all(
+                        r["leave_type_name"] is None for r in b if r["employee_id"] == str(ceo.id)
+                    ),
+                ),
+                Check(
+                    "HR sees why the CEO is out",
+                    "hr_admin",
+                    "GET",
+                    "/leave/who-is-out",
+                    params={
+                        "start": TODAY.isoformat(),
+                        "end": (TODAY + dt.timedelta(days=40)).isoformat(),
+                    },
+                    expect="ok",
+                    predicate=lambda b: any(
+                        r["employee_id"] == str(ceo.id) and r["leave_type_name"] == "Sick leave"
+                        for r in b
+                    ),
+                ),
+                Check(
+                    "Employee cannot add leave types",
+                    "employee",
+                    "POST",
+                    "/leave/types",
+                    body={"name": "VERIFY", "code": "VERIFY_X"},
+                ),
+                Check(
+                    "Employee cannot post accruals",
+                    "employee",
+                    "POST",
+                    "/leave/accruals/run",
+                ),
+                Check(
+                    "Manager can approve their report's request",
+                    "manager",
+                    "POST",
+                    "/leave/requests/{id}/approve",
+                    {"id": chained_leave.id},
+                    body={},
+                    expect="ok",
+                    predicate=lambda b: b["status"] == "approved",
                 ),
                 # Letters
                 Check(

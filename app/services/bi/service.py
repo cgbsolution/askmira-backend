@@ -65,6 +65,7 @@ __all__ = [
     "benchmark_position",
     "bi_posture",
     "create_connection",
+    "export_file",
     "list_connections",
     "list_export_runs",
     "record_contribution",
@@ -315,6 +316,86 @@ async def run_export(
         "audit row names, and the transport is not built."
     )
     return payload
+
+
+async def export_file(
+    session: AsyncSession,
+    user: User,
+    *,
+    connection_id: uuid.UUID,
+    request: Request | None = None,
+) -> tuple[str, str, dict[str, Any]]:
+    """A full export of one connection's entity, delivered as a CSV download.
+
+    The rows come from the report compiler, compiled **as the caller** — so the
+    row scope and field sensitivity are the report builder's — and are then
+    projected by `run_export` onto the connection's planned fields, which writes
+    the export run and its audit row in one commit before a byte leaves.
+    """
+    from app.services.reporting import service as reporting
+    from app.services.reporting.compiler import MAX_PAGE_SIZE, Definition, Selection
+
+    stmt = tenant_scoped(
+        select(BiConnection).where(BiConnection.id == connection_id), BiConnection, user
+    )
+    connection = (await session.execute(stmt)).scalars().first()
+    if connection is None:
+        raise _not_found("No such BI connection.")
+    entity = exposed_schema.exposed_entity(connection.entity_name)
+    try:
+        plan = export.plan_export(
+            entity_name=connection.entity_name,
+            role=connection.export_role,
+            kind=export.ExportKind.FULL,
+            destination=export.Destination(connection.destination.value),
+            destination_ref=connection.destination_ref,
+            requested_fields=connection.field_names,
+        )
+    except (export.ExportError, exposed_schema.SchemaError) as exc:
+        raise _bad_request(str(exc)) from exc
+
+    source_rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        result = await reporting.run_definition(
+            session,
+            user,
+            Definition(
+                entity_key=entity.entity_key,
+                selections=tuple(
+                    Selection(field_key=f.source, label=f.name) for f in plan.fields
+                ),
+                limit=MAX_PAGE_SIZE,
+                offset=offset,
+            ),
+            request=request,
+        )
+        keys = [column["key"] for column in result["columns"]]
+        by_source = {f.source: f.name for f in plan.fields}
+        for values in result["rows"]:
+            source_rows.append(
+                {by_source.get(key, key): value for key, value in zip(keys, values, strict=False)}
+            )
+        offset += len(result["rows"])
+        if not result["rows"] or offset >= result["total_rows"]:
+            break
+
+    payload = await run_export(
+        session,
+        user,
+        connection_id=connection.id,
+        kind=BiExportKind.FULL,
+        source_rows=source_rows,
+        request=request,
+    )
+    columns = [{"label": name} for name in plan.field_names]
+    rows = [[row.get(name) for name in plan.field_names] for row in payload["rows"]]
+    content = reporting.to_csv(columns, rows)
+    filename = f"{connection.entity_name}-{datetime.now(UTC):%Y%m%d-%H%M}.csv"
+    return content, filename, {
+        "export_run_id": payload["export_run_id"],
+        "row_count": len(rows),
+    }
 
 
 async def list_export_runs(
@@ -606,10 +687,12 @@ def bi_posture() -> dict[str, Any]:
             "and the percentile is a coarse band rather than an exact figure.",
         ],
         "not_built": [
-            "Nothing delivers an export. No Parquet file is written, no bucket "
-            "is uploaded to, and no read-only Postgres role is created - the "
-            "destination is recorded and the transport is not built.",
-            "Nothing schedules an export. A run is initiated deliberately.",
+            "An export is delivered only as a CSV download to the admin who runs "
+            "it. No Parquet file is written, no bucket is uploaded to, and no "
+            "read-only Postgres role is created - those destinations are recorded "
+            "and their transports are not built.",
+            "Nothing schedules an export: there is no bucket or role transport for "
+            "a schedule to deliver to. A run is initiated deliberately.",
             "Nothing derives a benchmark contribution from payroll "
             "automatically. A company-level figure that leaves the building on "
             "a schedule is a decision, not a default.",

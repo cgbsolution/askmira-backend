@@ -262,3 +262,38 @@ class InterviewScore(Base, UUIDMixin, TenantMixin, TimestampMixin):
     proctoring_notes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     candidate: Mapped[Candidate] = relationship(back_populates="scores")
+
+
+class CandidateStageEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """Insert-only history of a candidate's pipeline stage.
+
+    `Candidate.stage` says where somebody is; this says how they got there, who
+    moved them and why. Without it a rejection has no reason anybody can read
+    back, and stage timings (slice 36) have no dates to measure between — the
+    only alternative is reconstructing them from the audit log's prose.
+    """
+
+    __tablename__ = "candidate_stage_events"
+    __table_args__ = (
+        Index("ix_candidate_stage_events_candidate", "tenant_id", "candidate_id", "occurred_at"),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    requisition_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="CASCADE"), nullable=False
+    )
+    from_stage: Mapped[CandidateStage | None] = mapped_column(
+        Enum(CandidateStage, name="candidate_stage", create_type=False), nullable=True
+    )
+    to_stage: Mapped[CandidateStage] = mapped_column(
+        Enum(CandidateStage, name="candidate_stage", create_type=False),
+        nullable=False,
+        index=True,
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

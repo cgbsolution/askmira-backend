@@ -525,19 +525,33 @@ async def disburse_bonus(
     run_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> list[BonusComputation]:
-    """Mark an approved bonus paid.
+    """Pay an approved bonus, on its own or inside a payroll run.
 
     `run_id` is optional and usually absent: bonus is typically its own
-    disbursement ahead of a festival, not a line inside a monthly run. Where an
-    employer does choose to pay it through payroll, the run is recorded so the
-    two reconcile.
+    disbursement ahead of a festival, not a line inside a monthly run.
+
+    With a `run_id`:
+
+    - a regular run **not yet approved** has the bonus *scheduled* into it: the
+      rows stay APPROVED with `paid_in_run_id` set, the run's statutory bonus
+      input puts them on the payslips, and approving the run marks them PAID.
+      `paid_on` is then the run's payment date, not the one supplied here.
+    - a run **already approved or paid** records the bonus as paid alongside it,
+      so the two reconcile.
 
     Only approved rows are paid, and a paid row is never recomputed — which is
-    what makes the Form C "amount actually paid" column trustworthy.
+    what makes the Form C "amount actually paid" column trustworthy. A row
+    scheduled into one run is never paid separately as well.
     """
+    from app.models.payroll import PayrollRunStatus, PayrollRunType
+
     rows = await _bonus_rows(session, user, financial_year)
     approved = [
-        row for row in rows if row.status is BonusStatus.APPROVED and row.is_eligible
+        row
+        for row in rows
+        if row.status is BonusStatus.APPROVED
+        and row.is_eligible
+        and (row.paid_in_run_id is None or row.paid_in_run_id == run_id)
     ]
     if not approved:
         raise HTTPException(
@@ -555,6 +569,45 @@ async def disburse_bonus(
         if run is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found"
+            )
+        open_statuses = (
+            PayrollRunStatus.DRAFT,
+            PayrollRunStatus.PENDING_REVIEW,
+            PayrollRunStatus.FAILED,
+        )
+        if run.status in open_statuses:
+            if run.run_type is not PayrollRunType.REGULAR:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Statutory bonus rides a regular payroll run only.",
+                )
+            for row in approved:
+                row.paid_in_run_id = run.id
+            await session.flush()
+            total = sum((Decimal(str(row.amount)) for row in approved), start=Decimal(0))
+            await audit.record(
+                session,
+                tenant_id=user.tenant_id,
+                actor=user,
+                action=AuditAction.UPDATE,
+                entity_type="bonus_computation",
+                summary=(
+                    f"Scheduled statutory bonus for {financial_year} ({total} to "
+                    f"{len(approved)} employees) into the {run.period_month}/"
+                    f"{run.period_year} payroll run"
+                ),
+                changes={
+                    "financial_year": financial_year,
+                    "scheduled_in_run_id": str(run.id),
+                    "total_amount": str(total),
+                },
+                request=request,
+            )
+            return approved
+        if run.status not in (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"A payroll run in status '{run.status.value}' cannot carry a bonus.",
             )
 
     for row in approved:

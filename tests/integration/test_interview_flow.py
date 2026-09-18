@@ -44,6 +44,7 @@ from app.services.calendar.base import (
     FreeBusyResult,
 )
 from app.services.interviews import service as interview_service
+from tests.hiring.db_fixture import engine  # noqa: F401 - shadows the shared fixture
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -123,7 +124,10 @@ async def _connect(session: AsyncSession, tenant: Tenant, user: User) -> Calenda
         provider=CalendarProviderKind.GOOGLE,
         account_email=user.email,
         access_token_encrypted=encrypt_secret("token", tenant.id),
-        expires_at=NOW + timedelta(hours=1),
+        # A token that is valid now. The expiry check runs on the real clock —
+        # rightly — so pinning this to the fixed NOW made every calendar look
+        # expired once the calendar moved past NOW + 1 hour.
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     session.add(connection)
     await session.commit()
@@ -687,8 +691,13 @@ async def test_the_consolidated_view_keeps_the_disagreement_and_the_ai_score_apa
     assert view["strong_dissent"] is True
     assert "worth a conversation" in view["headline"]
     assert view["per_competency"]["comm"]["spread"] == "7"
-    # The AI round sits alongside the panel rather than blended into it.
-    assert view["ai_fit_score"] == "82.50"
+    # The AI score sits apart from the panel rather than blended into it — and a
+    # stored Fit Score with no round scores and signals behind it is withheld, not
+    # shown bare (no AI score without its contributing signals, FS-ANL-02).
+    assert view["fit_score"]["status"] == "withheld"
+    assert view["fit_score"]["value"] is None
+    assert view["fit_score"]["confidence"] is None
+    assert view["ai_rounds"] == []
     assert view["complete"] is True
 
 
@@ -805,12 +814,14 @@ async def test_an_expired_self_schedule_link_says_the_calendars_moved_on(
 ) -> None:
     stage = await _stage(session, tenant)
     candidate = await _candidate(session, tenant, stage)
+    # Every offered slot needs an interviewer; this test is about expiry, not panels.
+    panelist = await _panelist_user(session, tenant, "tz4@acme.test")
     approved = datetime(2026, 9, 8, 9, 30, tzinfo=UTC)
     _, token = await interview_service.create_self_schedule_link(
         session, hr_user, candidate_id=candidate.id, stage_id=stage.id,
         slots=[{"start": approved.isoformat(),
                 "end": (approved + timedelta(hours=1)).isoformat(),
-                "panelist_user_ids": []}],
+                "panelist_user_ids": [str(panelist.id)]}],
         now=NOW,
     )
     await session.commit()

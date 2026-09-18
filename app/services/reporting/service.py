@@ -69,11 +69,13 @@ __all__ = [
     "definition_to_json",
     "due_schedules",
     "export_report",
+    "list_schedules",
     "next_run_after",
     "reporting_tree",
     "run_definition",
     "run_saved_report",
     "run_schedule",
+    "set_schedule_active",
 ]
 
 _ORDER = {
@@ -497,12 +499,22 @@ async def export_report(
     )
 
     body = to_csv(result["columns"], result["rows"])
+    # No spreadsheet library is installed, so every export is CSV — and is named
+    # and labelled CSV. A file called .xlsx that is really CSV is a small lie
+    # that Excel repeats to the user as a warning dialog.
     return {
         **result,
-        "format": export_format.value,
+        "format": ExportFormat.CSV.value,
+        "requested_format": export_format.value,
+        "format_note": (
+            None
+            if export_format is ExportFormat.CSV
+            else "Excel workbooks are not produced by this server; this file is CSV, "
+            "which Excel opens directly."
+        ),
         "filename": (
             f"{(report.name if report else definition.entity_key)}"
-            f"-{datetime.now(UTC):%Y%m%d}.{export_format.value}"
+            f"-{datetime.now(UTC):%Y%m%d}.csv"
         ).replace(" ", "-").lower(),
         "content": body,
         # Above this, a synchronous download is a request that times out on a
@@ -588,6 +600,73 @@ async def due_schedules(
         )
     )
     return list(rows.all())
+
+
+async def list_schedules(
+    session: AsyncSession, user: User, *, include_all: bool
+) -> list[dict[str, Any]]:
+    """Schedules the caller created — or every schedule, for an admin."""
+    stmt = tenant_scoped(
+        select(ReportSchedule, Report).join(Report, Report.id == ReportSchedule.report_id),
+        ReportSchedule,
+        user,
+    )
+    if not include_all:
+        stmt = stmt.where(ReportSchedule.created_by_user_id == user.id)
+    rows = (await session.execute(stmt.order_by(ReportSchedule.created_at.desc()))).all()
+    return [
+        {
+            "id": str(schedule.id),
+            "report_id": str(report.id),
+            "report_name": report.name,
+            "cadence": schedule.cadence.value,
+            "hour_of_day": schedule.hour_of_day,
+            "day_of_week": schedule.day_of_week,
+            "day_of_month": schedule.day_of_month,
+            "timezone": schedule.timezone_name,
+            "recipients": len(schedule.recipient_user_ids or []),
+            "format": ExportFormat.CSV.value,
+            "on_empty": schedule.on_empty.value,
+            "is_active": schedule.is_active,
+            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+            "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
+            "mine": schedule.created_by_user_id == user.id,
+        }
+        for schedule, report in rows
+    ]
+
+
+async def set_schedule_active(
+    session: AsyncSession,
+    user: User,
+    *,
+    schedule_id: uuid.UUID,
+    active: bool,
+    is_admin: bool,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    schedule = await session.scalar(
+        tenant_scoped(
+            select(ReportSchedule).where(ReportSchedule.id == schedule_id), ReportSchedule, user
+        )
+    )
+    if schedule is None or (not is_admin and schedule.created_by_user_id != user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
+    schedule.is_active = active
+    if active:
+        schedule.next_run_at = next_run_after(schedule, after=datetime.now(UTC))
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="report_schedule",
+        entity_id=schedule.id,
+        summary=f"Report schedule {'resumed' if active else 'paused'}",
+        request=request,
+    )
+    await session.commit()
+    return {"id": str(schedule.id), "is_active": schedule.is_active}
 
 
 async def run_schedule(

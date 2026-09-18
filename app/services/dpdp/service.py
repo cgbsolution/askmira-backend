@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -40,6 +40,7 @@ from app.services.dpdp import consent as consent_engine
 from app.services.dpdp import rights as rights_engine
 from app.services.dpdp import transfers as transfer_engine
 from app.services.dpdp.categories import CATEGORIES
+from app.services.dpdp.contents import WITHHELD_REASON, collect_personal_data
 from app.services.dpdp.inventory import (
     build_inventory,
     coverage_gaps,
@@ -580,21 +581,96 @@ async def list_requests(
     }
 
 
+async def _principal_identities(
+    session: AsyncSession, user: User, principal_id: uuid.UUID
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """The employee record and the login a principal id refers to, in this tenant."""
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == principal_id), Employee, user)
+    )
+    login = await session.scalar(
+        tenant_scoped(
+            select(User).where(or_(User.employee_id == principal_id, User.id == principal_id)),
+            User,
+            user,
+        )
+    )
+    return (employee.id if employee else None, login.id if login else None)
+
+
+async def export_file(
+    session: AsyncSession,
+    user: User,
+    *,
+    principal_id: uuid.UUID,
+    request: Request | None = None,
+) -> tuple[dict[str, Any], str]:
+    """The access export as a file, audited before it leaves.
+
+    The caller decides who may ask: the person themselves, or an administrator
+    acting on a logged request. The audit row names which tables left.
+    """
+    document = await build_access_export(session, user, principal_id=principal_id)
+    completeness = document["completeness"]
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.EXPORT,
+        entity_type="personal_data_export",
+        entity_id=principal_id,
+        actor=user,
+        summary=(
+            f"Personal data export downloaded: {completeness['rows_exported']} row(s) "
+            f"across {completeness['tables_with_your_rows']} table(s)."
+        ),
+        changes={
+            "tables": [section["table"] for section in document["contents"]],
+            "for_self": principal_id in {user.employee_id, user.id},
+        },
+        request=request,
+    )
+    await session.commit()
+    return document, f"askmira-personal-data-{datetime.now(UTC):%Y%m%d}.json"
+
+
+async def list_my_requests(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Rights requests about the caller, newest first, with their outcomes."""
+    own = [pid for pid in (user.employee_id, user.id) if pid is not None]
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(DataPrincipalRequest).where(DataPrincipalRequest.principal_id.in_(own)),
+                DataPrincipalRequest,
+                user,
+            ).order_by(DataPrincipalRequest.received_at.desc())
+        )
+    ).all()
+    return [
+        {
+            "id": str(row.id),
+            "type": row.request_type.value,
+            "status": row.status.value,
+            "details": row.details,
+            "received_at": row.received_at.isoformat(),
+            "due_by": row.due_by.isoformat(),
+            "responded_at": row.responded_at.isoformat() if row.responded_at else None,
+            "rejection_reason": row.rejection_reason,
+            "response": row.response_payload or {},
+        }
+        for row in rows
+    ]
+
+
 async def build_access_export(
     session: AsyncSession, user: User, *, principal_id: uuid.UUID
 ) -> dict[str, Any]:
     """A readable package of everything held about one person.
 
     Organised by data category, in catalogue order, with the plain-language
-    description of each and where it came from. Not a table dump: a person
-    reading their own record should not have to know what `employee_salaries`
-    is, and an export that requires them to is a refusal wearing a JSON hat.
-
-    **What this returns today is the manifest, not the contents.** Each section
-    names the category, its lawful basis, its retention and the tables the data
-    sits in, and reports how many rows are held. Pulling the rows themselves
-    module by module is the remaining work and it is stated as missing rather
-    than approximated — see the BUILD_LOG.
+    description of each and where it came from — and then the rows themselves,
+    table by table, from every classified table linked directly to the person's
+    employee record or login (`contents.collect_personal_data`). Credential
+    material is withheld and the export says so.
     """
     inventory = build_inventory(current_schema_shape())
     grouped = inventory.by_category()
@@ -622,19 +698,30 @@ async def build_access_export(
             }
         )
 
+    employee_id, login_id = await _principal_identities(session, user, principal_id)
+    contents = await collect_personal_data(
+        session, user, employee_id=employee_id, user_id=login_id
+    )
+
     return {
         "principal_id": str(principal_id),
         "generated_at": datetime.now(UTC).isoformat(),
         "sections": sections,
         "consent": await list_consent(session, user, principal_id=principal_id),
+        "contents": contents,
         "completeness": {
             "categories_covered": len(sections),
             "modules_covered": inventory.tables_holding_personal_data,
-            "contents_included": False,
+            "contents_included": True,
+            "tables_with_your_rows": len(contents),
+            "rows_exported": sum(section["row_count"] for section in contents),
+            "truncated_tables": [s["table"] for s in contents if s["truncated"]],
+            "withheld": WITHHELD_REASON,
             "note": (
-                "This is the manifest of what is held about you and where. The "
-                "row-level contents are not yet included; that work is listed "
-                "as outstanding rather than approximated."
+                "Every row held about you in a table linked directly to your employee "
+                "record or your login is included under `contents`. A record reached "
+                "only through another one — a line of a settlement, say — is covered "
+                "by its parent. Credential material is withheld; see `withheld`."
             ),
         },
     }
@@ -654,16 +741,33 @@ async def preview_erasure(
     erasure whose partial nature is only discovered after the fact is an
     erasure the requester was misled about.
     """
+    plan = await erasure_plan_for(
+        session, user, principal_id=principal_id, legal_holds=legal_holds, today=today
+    )
+    return plan.as_dict()
+
+
+async def erasure_plan_for(
+    session: AsyncSession,
+    user: User,
+    *,
+    principal_id: uuid.UUID,
+    legal_holds: tuple[str, ...] = (),
+    today: date | None = None,
+) -> rights_engine.ErasurePlan:
+    """The category-by-category erasure decision for one person in this tenant."""
     as_of = today or datetime.now(UTC).date()
 
-    employee = await session.get(Employee, principal_id)
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == principal_id), Employee, user)
+    )
     last_working_day = employee.date_of_exit if employee else None
 
     inventory = build_inventory(current_schema_shape())
     held = tuple(dict.fromkeys(c.category_key for c in inventory.columns))
 
     try:
-        plan = rights_engine.reconcile_erasure(
+        return rights_engine.reconcile_erasure(
             held,
             requested_on=as_of,
             last_working_day=last_working_day,
@@ -672,8 +776,6 @@ async def preview_erasure(
         )
     except rights_engine.ReconciliationError as exc:
         raise _bad_request(str(exc)) from exc
-
-    return plan.as_dict()
 
 
 def _financial_year_end(reference: date) -> date:
@@ -844,6 +946,37 @@ async def raise_breach(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+async def list_breaches(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Every incident in this workspace, newest first, rehearsals included.
+
+    A summary per incident; `breach_state` is the full view with both clocks.
+    Without a list, an incident raised last week is reachable only by someone
+    who kept its id, which is not a register.
+    """
+    stmt = tenant_scoped(
+        select(BreachIncident).order_by(BreachIncident.became_aware_at.desc()),
+        BreachIncident,
+        user,
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": str(row.id),
+            "reference": row.reference,
+            "is_rehearsal": row.is_rehearsal,
+            "severity": row.severity.value,
+            "became_aware_at": row.became_aware_at.isoformat(),
+            "affected_principal_count": row.affected_principal_count,
+            "board_report_due_at": row.board_report_due_at.isoformat(),
+            "reported_to_board_at": (
+                row.reported_to_board_at.isoformat() if row.reported_to_board_at else None
+            ),
+            "notification_sent": row.notification_sent,
+        }
+        for row in rows
+    ]
 
 
 async def breach_state(
@@ -1057,9 +1190,11 @@ async def tenant_compliance_surface(
         },
         "sub_processors": transfer_engine.trust_centre_disclosure(),
         "known_gaps": [
-            "Access export returns a manifest of what is held and where; the "
-            "row-level contents are not yet assembled.",
-            "Erasure is previewed and reported, not executed — no purge job runs.",
+            "The access export covers tables linked directly to the person's "
+            "employee record or login; child rows are covered through their parent.",
+            "Erasure is executed by an administrator on an approved request. It does "
+            "not reach database backups: deleted rows are suppressed if a backup is "
+            "restored, and the audit trail is never pseudonymised.",
             "Notices ship in English and Hindi only; other Eighth Schedule "
             "languages fall back to English and say so.",
             "Nothing in the agent layer records a transfer yet, because the "

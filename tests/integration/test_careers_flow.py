@@ -46,6 +46,7 @@ from app.services.jobboards.base import (
     RateLimited,
     RawApplication,
 )
+from tests.hiring.db_fixture import engine  # noqa: F401 - shadows the shared fixture
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db

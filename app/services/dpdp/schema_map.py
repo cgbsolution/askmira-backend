@@ -159,6 +159,10 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
     ("legal_entities", "pan"): (
         "The employer's own PAN. A company's tax identifier, not a person's."
     ),
+    ("tenant_smtp_settings", "password_encrypted"): (
+        "The ciphertext of the organisation's own mail-relay password. A "
+        "credential belonging to a company's mail server, not a person's data."
+    ),
     ("identity_providers", "client_secret_encrypted"): (
         "The tenant's OAuth client secret with their identity provider. A "
         "credential belonging to an organisation."
@@ -1056,6 +1060,23 @@ TABLES: dict[str, TableClassification] = {
         USER, "account_security", {"account_email": "identity"}
     ),
     "report_runs": _p(USER, "audit_trail"),
+    # ── Added by later slices (classified by the DPDP owner) ─────────────────
+    "candidate_stage_events": _p(CAND, "recruitment"),
+    "expense_receipts": _p(EMP, "financial"),
+    "expense_reports": _p(EMP, "financial"),
+    "goals": _p(EMP, "performance"),
+    "goal_key_results": _p(EMP, "performance"),
+    "goal_check_ins": _p(EMP, "performance"),
+    "pip_employee_statements": _p(EMP, "performance"),
+    # ── Platform operations (W8) ────────────────────────────────────────────
+    "scheduler_job_runs": _none(
+        "One background job run: which job, which tenant, when, the outcome and "
+        "a tally. Handlers return counts, never people."
+    ),
+    "tenant_smtp_settings": _none(
+        "A tenant's own mail relay: host, port, an encrypted credential and the "
+        "sender address the organisation sends from."
+    ),
 }
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import HTTPException, Request, status
@@ -24,7 +24,7 @@ from app.core.security import (
     needs_rehash,
     verify_password,
 )
-from app.models.audit import AuditAction
+from app.models.audit import AuditAction, AuditLog
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, TenantRead, UserRead
@@ -41,6 +41,10 @@ DEFAULT_ENABLED_MODULES = {
     "benefits": False,
     "rewards": False,
 }
+
+#: Failed sign-ins within the window that lock an account until the window passes.
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_WINDOW = timedelta(minutes=15)
 
 INVALID_CREDENTIALS = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -141,6 +145,27 @@ async def login(
     if user is None:
         hash_password(payload.password)
         raise INVALID_CREDENTIALS
+
+    # Lockout, counted from the audit log's own failed-sign-in rows: no second
+    # counter to drift from the record, and it survives a restart.
+    window_start = datetime.now(UTC) - LOCKOUT_WINDOW
+    recent_failures = await session.scalar(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.tenant_id == user.tenant_id,
+            AuditLog.entity_id == user.id,
+            AuditLog.action == AuditAction.LOGIN_FAILED,
+            AuditLog.created_at >= window_start,
+        )
+    )
+    if (recent_failures or 0) >= LOCKOUT_THRESHOLD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many failed sign-in attempts. Try again in "
+                f"{int(LOCKOUT_WINDOW.total_seconds() // 60)} minutes, or reset your password."
+            ),
+            headers={"Retry-After": str(int(LOCKOUT_WINDOW.total_seconds()))},
+        )
 
     if not verify_password(payload.password, user.password_hash):
         await audit.record(

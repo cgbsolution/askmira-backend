@@ -244,9 +244,7 @@ def detect_self_appraisal_conflict(
         )
 
     if stage_owner_user_id != subject_user_id:
-        return ConflictCheck(
-            has_conflict=False, reason="The stage owner is not the subject."
-        )
+        return ConflictCheck(has_conflict=False, reason="The stage owner is not the subject.")
 
     upward = [u for u in escalation_chain if u != subject_user_id]
     if not upward:

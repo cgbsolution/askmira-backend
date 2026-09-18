@@ -168,10 +168,24 @@ class ArrearBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     affected_filings: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Who committed the revision. The approver must be somebody else: an arrear
+    # is money leaving the company, and the second pair of eyes is the control.
+    computed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Above the threshold a batch needs a second, different approver. Until
+    # that is recorded the batch stays PENDING_APPROVAL with the first
+    # signature on `approved_by_user_id`.
+    additional_approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    additional_approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # The future run the arrears were actually paid in.
     paid_in_run_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="SET NULL"), nullable=True

@@ -1,49 +1,47 @@
-"""Job distribution, ingestion, the careers page and the candidate portal (slice 20).
+"""Job distribution, the careers site, and the candidate portal (slice 20).
 
 Two audiences in one file, and the split is the important thing:
 
-- `/hiring/...` and `/job-boards/...` require a logged-in user and go through
+- `/job-boards/...` and `/careers/...` require a logged-in user and go through
   `tenant_scoped` like everything else.
-- `/public/careers/...` and `/public/candidate/...` have **no authentication at
-  all**, because the people using them are candidates who have no account and
-  should not need one. Tenant resolution comes from the URL slug or the portal
-  token, never from a request body — a tenant id a caller can supply is a tenant
-  id a caller can change.
+- `/public/careers/...` and `/public/candidate/...` have **no authentication**,
+  because the people using them are candidates with no account. Tenant
+  resolution comes from the URL slug or the portal token, never from a request
+  body. These routes are throttled per client address, bound in size, and the
+  apply form carries a honeypot (`app.services.hiring.public_guard`).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
-from typing import Any
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, ValidationError
 
-from app.core.crypto import encrypt_secret
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.jobboard import (
-    Application,
-    ApplicationStatus,
-    CandidateDocument,
-    CareersPageConfig,
-    ConsentPurpose,
-    JobBoard,
-    JobBoardAccount,
-    JobPosting,
-)
+from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.jobboard import ApplicationStatus, JobBoard
 from app.models.user import UserRole
+from app.services.hiring import (
+    candidate_portal,
+    careers_admin,
+    ingestion,
+    public_apply,
+    public_guard,
+    resume_files,
+)
 from app.services.hiring import careers as careers_service
-from app.services.hiring import ingestion
-from app.services.jobboards import distribution
-from app.services.jobboards.base import RawApplication
+from app.services.jobboards import distribution, overview
 
 router = APIRouter(tags=["careers"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+
+#: Room for the form fields around the largest file each route accepts.
+_FORM_OVERHEAD = 64 * 1024
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -53,10 +51,8 @@ class BoardAccountCreate(BaseModel):
     board: JobBoard
     display_name: str | None = Field(default=None, max_length=128)
     username: str | None = Field(default=None, max_length=255)
-    # Encrypted before it touches the database and never returned. A board
-    # credential can post jobs in the client's name and read their resume
-    # database.
-    secret: str = Field(min_length=1)
+    # Encrypted before it touches the database and never returned.
+    secret: str = Field(min_length=1, max_length=4096)
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -73,28 +69,10 @@ class BoardAccountRead(BaseModel):
     last_error: str | None
 
 
-class PostingRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    requisition_id: uuid.UUID
-    board: JobBoard
-    external_job_id: str | None
-    status: str
-    published_at: datetime | None
-    expires_at: datetime | None
-    next_refresh_at: datetime | None
-    next_attempt_at: datetime | None
-    last_error: str | None
-    warnings: list
-    view_count: int
-    application_count: int
-
-
 class PublishRequest(BaseModel):
     requisition_id: uuid.UUID
     board: JobBoard
-    apply_url: str | None = None
+    apply_url: str | None = Field(default=None, max_length=1024)
     refresh_interval_days: int | None = Field(default=None, ge=1, le=90)
 
 
@@ -102,62 +80,86 @@ class CareersConfigUpsert(BaseModel):
     slug: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
     is_published: bool = False
     hero_heading: str | None = Field(default=None, max_length=255)
-    hero_subheading: str | None = None
-    about_html: str | None = None
+    hero_subheading: str | None = Field(default=None, max_length=2000)
+    about_html: str | None = Field(default=None, max_length=20000)
     logo_url: str | None = Field(default=None, max_length=1024)
     hero_image_url: str | None = Field(default=None, max_length=1024)
     primary_colour: str | None = Field(default=None, max_length=9)
     accent_colour: str | None = Field(default=None, max_length=9)
     culture_enabled: bool = True
     allow_apply_without_account: bool = True
-    privacy_notice_html: str | None = None
-    privacy_notice_version: str = Field(default="1", max_length=32)
+    privacy_notice_html: str | None = Field(default=None, max_length=40000)
+    privacy_notice_version: str = Field(default="1", min_length=1, max_length=32)
     resume_retention_days: int = Field(default=730, ge=1, le=3650)
     seo_title: str | None = Field(default=None, max_length=255)
-    seo_description: str | None = None
-
-
-class PublicApplication(BaseModel):
-    """An application from the careers page.
-
-    No account, deliberately. Consent is explicit and separate per purpose —
-    a single bundled checkbox is not consent under DPDP, and it cannot be
-    withdrawn from one purpose without the other.
-    """
-
-    full_name: str = Field(min_length=1, max_length=255)
-    email: str = Field(min_length=3, max_length=320)
-    phone: str | None = Field(default=None, max_length=32)
-    resume_url: str | None = Field(default=None, max_length=1024)
-    current_company: str | None = Field(default=None, max_length=255)
-    current_ctc: Decimal | None = Field(default=None, ge=0)
-    expected_ctc: Decimal | None = Field(default=None, ge=0)
-    total_experience_years: Decimal | None = Field(default=None, ge=0)
-    notice_period_days: int | None = Field(default=None, ge=0, le=365)
-
-    # Required to process the application at all. Refused rather than assumed.
-    consent_application_processing: bool
-    # Separate, and genuinely optional: being kept on file for future roles is
-    # not something somebody agreed to by applying for one.
-    consent_talent_pool: bool = False
-    notice_version: str = Field(default="1", max_length=32)
+    seo_description: str | None = Field(default=None, max_length=1000)
 
 
 class ApplicationStatusUpdate(BaseModel):
     status: ApplicationStatus
 
 
-class DocumentUpload(BaseModel):
-    category: str = Field(min_length=1, max_length=64)
-    file_name: str = Field(min_length=1, max_length=255)
-    storage_key: str = Field(min_length=1, max_length=512)
-    content_type: str | None = Field(default=None, max_length=128)
-    size_bytes: int | None = Field(default=None, ge=0)
+class RescheduleRequestIn(BaseModel):
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+_EMAIL = TypeAdapter(EmailStr)
+
+
+def _refuse_oversize(request: Request, limit: int) -> None:
+    """Refuse a body larger than the route could ever accept.
+
+    The socket still has to receive it; a reverse proxy limit is what stops the
+    bytes arriving at all. This stops the application doing anything with them.
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit + _FORM_OVERHEAD:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="This upload is larger than we accept.",
+        )
+
+
+async def _read_upload(upload: UploadFile | None, limit: int) -> bytes | None:
+    if upload is None:
+        return None
+    data = await upload.read(limit + 1)
+    if not data:
+        return None
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"The file is larger than {limit // (1024 * 1024)} MB.",
+        )
+    return data
+
+
+def _optional_decimal(value: str | None, *, field: str, maximum: Decimal) -> Decimal | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        number = Decimal(value.strip())
+    except InvalidOperation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"{field} must be a number."
+        ) from exc
+    if number < 0 or number > maximum or not number.is_finite():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{field} is outside the accepted range.",
+        )
+    return number
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Board accounts and distribution — authenticated
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/job-boards/status", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def board_status(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Every supported board, its stored account, and plainly: no live connection verified."""
+    return await overview.board_status(session, user)
 
 
 @router.post(
@@ -167,51 +169,28 @@ class DocumentUpload(BaseModel):
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def create_board_account(
-    payload: BoardAccountCreate, user: CurrentUser, session: DbSession
+    payload: BoardAccountCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> BoardAccountRead:
-    existing = await session.scalar(
-        tenant_scoped(
-            select(JobBoardAccount).where(JobBoardAccount.board == payload.board),
-            JobBoardAccount,
-            user,
-        )
+    account = await overview.save_account(
+        session,
+        user,
+        board=payload.board,
+        display_name=payload.display_name,
+        username=payload.username,
+        secret=payload.secret,
+        settings=payload.settings,
+        request=request,
     )
-    account = existing or JobBoardAccount(tenant_id=user.tenant_id, board=payload.board)
-    account.display_name = payload.display_name
-    account.username = payload.username
-    account.settings = payload.settings
-    account.credentials_encrypted = encrypt_secret(payload.secret, user.tenant_id)
-    account.is_active = True
-    account.last_error = None
-    session.add(account)
     await session.commit()
     await session.refresh(account)
     return BoardAccountRead.model_validate(account)
-
-
-@router.get(
-    "/job-boards/accounts",
-    response_model=list[BoardAccountRead],
-    dependencies=[Depends(require_roles(*HR_ROLES))],
-)
-async def list_board_accounts(
-    user: CurrentUser, session: DbSession
-) -> list[BoardAccountRead]:
-    rows = await session.scalars(
-        tenant_scoped(select(JobBoardAccount), JobBoardAccount, user)
-    )
-    return [BoardAccountRead.model_validate(r) for r in rows.all()]
 
 
 @router.post("/job-boards/postings", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def publish_posting(
     payload: PublishRequest, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Post a requisition to a board.
-
-    A failure here comes back as a posting row that says why, never as a silent
-    absence — see `app/services/jobboards/distribution.py`.
-    """
+    """Post a requisition to a board. A failure comes back as a posting that says why."""
     result = await distribution.publish_posting(
         session,
         user,
@@ -225,19 +204,11 @@ async def publish_posting(
     return result
 
 
-@router.get(
-    "/job-boards/postings",
-    response_model=list[PostingRead],
-    dependencies=[Depends(require_roles(*HR_ROLES))],
-)
+@router.get("/job-boards/postings", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def list_postings(
     user: CurrentUser, session: DbSession, requisition_id: uuid.UUID | None = None
-) -> list[PostingRead]:
-    stmt = select(JobPosting).order_by(JobPosting.created_at.desc())
-    if requisition_id is not None:
-        stmt = stmt.where(JobPosting.requisition_id == requisition_id)
-    rows = await session.scalars(tenant_scoped(stmt, JobPosting, user))
-    return [PostingRead.model_validate(r) for r in rows.all()]
+) -> list[dict[str, Any]]:
+    return await overview.list_postings(session, user, requisition_id=requisition_id)
 
 
 @router.post(
@@ -264,77 +235,31 @@ async def close_posting(
     return result
 
 
-@router.get(
-    "/job-boards/attention", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
-async def postings_needing_attention(
-    user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
-    """Postings that are not live and are not going to become live on their own.
-
-    The whole reason PARKED exists: a job nobody posted is otherwise invisible
-    until somebody notices no applications arrived.
-    """
-    from app.models.jobboard import PostingStatus
-
-    parked = (
-        await session.scalars(
-            tenant_scoped(
-                select(JobPosting).where(JobPosting.status == PostingStatus.PARKED),
-                JobPosting,
-                user,
-            )
-        )
-    ).all()
-    due = await distribution.retryable_postings(session, user)
-    refreshes = await distribution.due_refreshes(session, user)
-    return {
-        "parked": [
-            {
-                "posting_id": str(p.id),
-                "board": p.board.value,
-                "requisition_id": str(p.requisition_id),
-                "reason": p.last_error,
-                "attempts": p.attempt_count,
-            }
-            for p in parked
-        ],
-        "retry_due": [str(p.id) for p in due],
-        "refresh_due": [str(p.id) for p in refreshes],
-    }
+@router.get("/job-boards/attention", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def postings_needing_attention(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Postings that are not live and are not going to become live on their own."""
+    return await overview.attention(session, user)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Careers page configuration — authenticated
+# Careers site configuration and candidate records — authenticated
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/careers/config", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
+async def get_careers_config(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await careers_admin.careers_config(session, user)
 
 
 @router.put("/careers/config", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def upsert_careers_config(
-    payload: CareersConfigUpsert, user: CurrentUser, session: DbSession
+    payload: CareersConfigUpsert, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    config = await session.scalar(
-        tenant_scoped(select(CareersPageConfig), CareersPageConfig, user)
+    result = await careers_admin.save_careers_config(
+        session, user, values=payload.model_dump(), request=request
     )
-    if config is None:
-        config = CareersPageConfig(tenant_id=user.tenant_id, slug=payload.slug)
-        session.add(config)
-
-    if payload.is_published and not payload.privacy_notice_html:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "A published careers page needs a privacy notice. Collecting a resume "
-                "without telling the candidate what happens to it or for how long is "
-                "not something DPDP allows, and it is the notice they consent to."
-            ),
-        )
-
-    for field, value in payload.model_dump().items():
-        setattr(config, field, value)
     await session.commit()
-    await session.refresh(config)
-    return {"slug": config.slug, "is_published": config.is_published}
+    return result
 
 
 @router.post(
@@ -342,24 +267,14 @@ async def upsert_careers_config(
     dependencies=[Depends(require_roles(*HR_ROLES))],
 )
 async def issue_portal_link(
-    candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
+    candidate_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Mint a candidate portal link.
-
-    The plaintext token is returned exactly once — only its hash is stored.
-    """
-    row, token = await careers_service.issue_portal_token(
-        session, user, candidate_id=candidate_id
+    """Mint a candidate portal link. The token is returned exactly once."""
+    result = await careers_admin.issue_portal_link(
+        session, user, candidate_id=candidate_id, request=request
     )
     await session.commit()
-    return {
-        "token": token,
-        "expires_at": row.expires_at.isoformat(),
-        "note": (
-            "This token is shown once and cannot be retrieved again. Send it to the "
-            "candidate now; issue a new link if it is lost."
-        ),
-    }
+    return result
 
 
 @router.patch(
@@ -371,17 +286,13 @@ async def set_application_status(
     payload: ApplicationStatusUpdate,
     user: CurrentUser,
     session: DbSession,
+    request: Request,
 ) -> dict[str, Any]:
-    application = await session.scalar(
-        tenant_scoped(
-            select(Application).where(Application.id == application_id), Application, user
-        )
+    result = await careers_admin.set_application_status(
+        session, user, application_id=application_id, to_status=payload.status, request=request
     )
-    if application is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    application.status = payload.status
     await session.commit()
-    return {"application_id": str(application.id), "status": application.status.value}
+    return result
 
 
 @router.get(
@@ -391,11 +302,7 @@ async def set_application_status(
 async def candidate_application_history(
     candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[dict[str, Any]]:
-    """Everything this person has ever applied for here.
-
-    "Applied three times, rejected twice at final round" is the sentence this
-    endpoint exists to make available before somebody opens a resume.
-    """
+    """Everything this person has ever applied for here."""
     rows = await ingestion.candidate_history(session, user, candidate_id=candidate_id)
     return [
         {
@@ -410,11 +317,6 @@ async def candidate_application_history(
     ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DPDP
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 @router.post(
     "/careers/candidates/{candidate_id}/erase",
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
@@ -426,7 +328,7 @@ async def erase_candidate(
     reason: str = "Candidate requested deletion",
 ) -> dict[str, Any]:
     result = await careers_service.purge_on_request(
-        session, user, candidate_id=candidate_id, reason=reason
+        session, user, candidate_id=candidate_id, reason=reason[:500]
     )
     await session.commit()
     return result
@@ -436,6 +338,7 @@ async def erase_candidate(
 async def purge_expired(
     user: CurrentUser, session: DbSession, as_of: date | None = None
 ) -> dict[str, Any]:
+    """Retention purge. Also scheduler-callable (`careers.purge_expired`)."""
     result = await careers_service.purge_expired(session, user, as_of=as_of)
     await session.commit()
     return result
@@ -454,172 +357,124 @@ async def careers_page(
     location_id: uuid.UUID | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
-    """The careers page payload, for server rendering.
-
-    Server-rendered rather than fetched by the browser, because a job page that
-    only exists after JavaScript runs is a job page Google indexes
-    inconsistently — and indexing is most of the point of having one.
-    """
-    return await careers_service.public_job_list(
-        session, slug, department_id=department_id, location_id=location_id, search=search
+    """The careers page payload, text only — no HTML reaches the page."""
+    return await candidate_portal.public_jobs(
+        session,
+        slug[:64],
+        department_id=department_id,
+        location_id=location_id,
+        search=(search or "")[:80] or None,
     )
 
 
 @router.get("/public/careers/{slug}/jobs/{code}")
 async def careers_job(slug: str, code: str, session: DbSession) -> dict[str, Any]:
-    """One job, with its schema.org JobPosting markup ready to embed."""
-    return await careers_service.public_job_detail(session, slug, code)
+    """One job, text only, with its schema.org JobPosting data."""
+    return await candidate_portal.public_job(session, slug[:64], code[:32])
 
 
 @router.post("/public/careers/{slug}/jobs/{code}/apply", status_code=status.HTTP_201_CREATED)
 async def apply(
-    slug: str, code: str, payload: PublicApplication, session: DbSession, request: Request
+    slug: str,
+    code: str,
+    request: Request,
+    session: DbSession,
+    full_name: Annotated[str, Form(min_length=1, max_length=255)],
+    email: Annotated[str, Form(min_length=3, max_length=320)],
+    consent_application_processing: Annotated[bool, Form()],
+    phone: Annotated[str | None, Form(max_length=32)] = None,
+    current_company: Annotated[str | None, Form(max_length=255)] = None,
+    total_experience_years: Annotated[str | None, Form(max_length=8)] = None,
+    notice_period_days: Annotated[int | None, Form(ge=0, le=365)] = None,
+    expected_ctc: Annotated[str | None, Form(max_length=16)] = None,
+    consent_talent_pool: Annotated[bool, Form()] = False,
+    notice_version: Annotated[str, Form(max_length=32)] = "1",
+    #: Invisible to people. Anything in it means a script filled the form.
+    website: Annotated[str | None, Form(max_length=255)] = None,
+    resume: Annotated[UploadFile | None, File()] = None,
 ) -> dict[str, Any]:
-    """Apply, without an account.
-
-    Forced signup measurably depresses application rates, and a candidate who
-    cannot finish is not a candidate.
-    """
-    config = await session.scalar(
-        select(CareersPageConfig).where(CareersPageConfig.slug == slug)
-    )
-    if config is None or not config.is_published:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No careers page here.")
-
-    if not payload.consent_application_processing:
+    """Apply without an account: consent required, resume checked from its bytes."""
+    public_guard.throttle(request, public_guard.APPLY, scope=slug[:64])
+    public_guard.refuse_honeypot(website)
+    _refuse_oversize(request, resume_files.RESUME_MAX_BYTES)
+    try:
+        clean_email = str(_EMAIL.validate_python(email.strip()))
+    except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "We cannot process an application without consent to handle the "
-                "information in it. Nothing has been saved."
-            ),
-        )
+            detail="That email address does not look right.",
+        ) from exc
 
-    from app.models.hiring import Requisition, RequisitionStatus
-
-    requisition = await session.scalar(
-        select(Requisition).where(
-            Requisition.tenant_id == config.tenant_id,
-            Requisition.code == code,
-            Requisition.status == RequisitionStatus.OPEN,
-        )
-    )
-    if requisition is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="This role is no longer open."
-        )
-
-    # A candidate has no user, so the ingestion service is handed a
-    # tenant-bearing stand-in rather than a request-supplied tenant id. The
-    # tenant came from the slug; nothing the caller sent decides it.
-    actor = _PublicActor(tenant_id=config.tenant_id)
-
-    purposes = [ConsentPurpose.APPLICATION_PROCESSING]
-    if payload.consent_talent_pool:
-        purposes.append(ConsentPurpose.TALENT_POOL_RETENTION)
-
-    outcome = await ingestion.ingest_application(
+    data = await _read_upload(resume, resume_files.RESUME_MAX_BYTES)
+    result = await public_apply.submit_application(
         session,
-        actor,
-        RawApplication(
-            external_application_id="",
-            board=JobBoard.CAREERS.value,
-            external_job_id="",
-            full_name=payload.full_name,
-            email=payload.email,
-            phone=payload.phone,
-            resume_url=payload.resume_url,
-            current_company=payload.current_company,
-            current_ctc=payload.current_ctc,
-            expected_ctc=payload.expected_ctc,
-            total_experience_years=payload.total_experience_years,
-            notice_period_days=payload.notice_period_days,
-            applied_at=datetime.now(UTC),
+        slug=slug[:64],
+        code=code[:32],
+        full_name=full_name,
+        email=clean_email,
+        phone=(phone or "").strip() or None,
+        current_company=(current_company or "").strip() or None,
+        total_experience_years=_optional_decimal(
+            total_experience_years, field="Experience", maximum=Decimal(60)
         ),
-        requisition_id=requisition.id,
-        consent_purposes=purposes,
-        notice_text=config.privacy_notice_html or "",
-        notice_version=payload.notice_version,
-        source_ip=request.client.host if request.client else None,
-    )
-    if outcome.application is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=outcome.note
-        )
-
-    row, token = await careers_service.issue_portal_token(
-        session, actor, candidate_id=outcome.candidate.id
+        notice_period_days=notice_period_days,
+        expected_ctc=_optional_decimal(
+            expected_ctc, field="Expected CTC", maximum=Decimal("999999999999")
+        ),
+        consent_application_processing=consent_application_processing,
+        consent_talent_pool=consent_talent_pool,
+        notice_version=notice_version,
+        resume=data,
+        source_ip=public_guard.client_address(request),
     )
     await session.commit()
-    return {
-        "applied": True,
-        "portal_token": token,
-        "portal_expires_at": row.expires_at.isoformat(),
-        "retention_days": config.resume_retention_days,
-        "message": (
-            "Your application is in. Use the link to check its progress — you will not "
-            "need an account."
-        ),
-    }
+    return result
 
 
 @router.get("/public/candidate/{token}")
-async def candidate_portal(token: str, session: DbSession) -> dict[str, Any]:
-    """What a candidate can see about their own applications."""
-    return await careers_service.portal_view(session, token)
-
-
-@router.post(
-    "/public/candidate/{token}/documents", status_code=status.HTTP_201_CREATED
-)
-async def upload_candidate_document(
-    token: str, payload: DocumentUpload, session: DbSession
-) -> dict[str, Any]:
-    """Pre-joining document upload, feeding slice 24.
-
-    Held under the same retention clock as the resume: a PAN card belonging to
-    somebody who never joined should not sit in a bucket for six years.
-    """
-    row = await careers_service.resolve_portal_token(session, token)
-    config = await session.scalar(
-        select(CareersPageConfig).where(CareersPageConfig.tenant_id == row.tenant_id)
-    )
-    retention_days = config.resume_retention_days if config else ingestion.DEFAULT_RETENTION_DAYS
-    now = datetime.now(UTC)
-
-    document = CandidateDocument(
-        tenant_id=row.tenant_id,
-        candidate_id=row.candidate_id,
-        category=payload.category,
-        file_name=payload.file_name,
-        storage_key=payload.storage_key,
-        content_type=payload.content_type,
-        size_bytes=payload.size_bytes,
-        uploaded_at=now,
-        retention_until=now.date() + timedelta(days=retention_days),
-    )
-    session.add(document)
+async def candidate_portal_view(token: str, request: Request, session: DbSession) -> dict[str, Any]:
+    """What a candidate can see about their own applications and interviews."""
+    public_guard.throttle(request, public_guard.PORTAL_READ)
+    result = await candidate_portal.portal_overview(session, token[:128])
     await session.commit()
-    return {
-        "document_id": str(document.id),
-        "retention_until": document.retention_until.isoformat(),
-    }
+    return result
 
 
-class _PublicActor:
-    """A tenant-bearing stand-in for services that expect a `User`.
+@router.post("/public/candidate/{token}/documents", status_code=status.HTTP_201_CREATED)
+async def upload_candidate_document(
+    token: str,
+    request: Request,
+    session: DbSession,
+    category: Annotated[str, Form(min_length=1, max_length=64)],
+    file: Annotated[UploadFile, File()],
+) -> dict[str, Any]:
+    """Pre-joining document upload. Type from the bytes; key generated; retention applied."""
+    public_guard.throttle(request, public_guard.DOCUMENT_UPLOAD)
+    _refuse_oversize(request, resume_files.DOCUMENT_MAX_BYTES)
+    data = await _read_upload(file, resume_files.DOCUMENT_MAX_BYTES)
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The file is empty."
+        )
+    result = await candidate_portal.upload_document(
+        session, token[:128], category=category, file_name=file.filename, data=data
+    )
+    await session.commit()
+    return result
 
-    A careers-page applicant has no account. What the services actually need
-    from a `User` is `tenant_id` and `id`, and both are supplied here from the
-    slug rather than from anything the caller sent — a tenant id a caller can
-    supply is a tenant id a caller can change.
-    """
 
-    __slots__ = ("employee_id", "id", "is_active", "role", "tenant_id")
-
-    def __init__(self, *, tenant_id: uuid.UUID) -> None:
-        self.tenant_id = tenant_id
-        self.id = None
-        self.role = UserRole.EMPLOYEE
-        self.employee_id = None
-        self.is_active = True
+@router.post("/public/candidate/{token}/interviews/{interview_id}/reschedule-request")
+async def request_reschedule(
+    token: str,
+    interview_id: uuid.UUID,
+    payload: RescheduleRequestIn,
+    request: Request,
+    session: DbSession,
+) -> dict[str, Any]:
+    """The candidate asks for a different time. The recruiter is told; nothing moves yet."""
+    public_guard.throttle(request, public_guard.RESCHEDULE_REQUEST)
+    result = await candidate_portal.request_reschedule(
+        session, token[:128], interview_id=interview_id, reason=payload.reason
+    )
+    await session.commit()
+    return result

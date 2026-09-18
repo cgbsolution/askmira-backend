@@ -517,15 +517,17 @@ async def test_the_export_covers_every_module_holding_personal_data(
     )
 
 
-async def test_the_export_is_honest_about_not_including_contents(
+async def test_the_export_includes_the_persons_own_rows_and_withholds_credentials(
     session, hr_user, employee
 ):
     await _configure(session, hr_user)
     export = await dpdp.build_access_export(
         session, hr_user, principal_id=employee.id
     )
-    assert export["completeness"]["contents_included"] is False
-    assert "not yet included" in export["completeness"]["note"]
+    assert export["completeness"]["contents_included"] is True
+    tables = {section["table"]: section for section in export["contents"]}
+    assert tables["employees"]["rows"][0]["work_email"] == employee.work_email
+    assert "credential" in export["completeness"]["withheld"].lower()
 
 
 async def test_the_export_explains_each_section_in_plain_language(
@@ -732,6 +734,39 @@ async def test_a_rehearsal_never_appears_in_the_breach_history(session, hr_user)
     surface = await dpdp.tenant_compliance_surface(session, hr_user, today=NOW.date())
     assert surface["breach_history"]["incidents"] == 0
     assert surface["breach_history"]["rehearsals"] == 1
+
+
+async def test_the_breach_register_lists_every_incident_newest_first(session, hr_user):
+    """An incident raised last week has to be findable without keeping its id."""
+    await _configure(session, hr_user)
+    older = await dpdp.raise_breach(
+        session,
+        hr_user,
+        reference="INC-2026-010",
+        became_aware_at=NOW - timedelta(days=7),
+        description="An older incident.",
+        affected_data_categories=("identity",),
+        affected_principal_count=3,
+        data_left_our_control=False,
+    )
+    newer = await dpdp.raise_breach(
+        session,
+        hr_user,
+        reference="REHEARSAL-10",
+        became_aware_at=NOW,
+        description="A rehearsal.",
+        affected_data_categories=("identity",),
+        affected_principal_count=3,
+        data_left_our_control=True,
+        is_rehearsal=True,
+    )
+
+    register = await dpdp.list_breaches(session, hr_user)
+
+    assert [row["id"] for row in register] == [str(newer.id), str(older.id)]
+    assert register[0]["is_rehearsal"] is True
+    assert register[1]["reference"] == "INC-2026-010"
+    assert register[1]["board_report_due_at"] == older.board_report_due_at.isoformat()
 
 
 async def test_an_incident_with_an_unclassified_category_cannot_be_graded(

@@ -1,40 +1,64 @@
-"""Income tax declaration and proof endpoints (slice 07)."""
+"""Income tax declaration and proof endpoints (slice 07).
+
+Thin: parse, gate, delegate to `app.services.tax.service`, serialise. Whose
+record a request touches is decided through `app.core.permissions` — the
+caller's own unless payroll says otherwise, and never taken from a body on
+trust.
+"""
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.core import permissions
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.tax import (
-    DeclarationStatus,
-    DeclarationWindow,
-    PreviousEmployerIncome,
-    ProofStatus,
-    TaxComputationSnapshot,
-    TaxDeclaration,
-    TaxProof,
-    TaxRegime,
-    WindowType,
-)
+from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.tax import ProofStatus, WindowType
 from app.models.user import UserRole
+from app.schemas.payroll_ops import IssuedDocumentRead
+from app.schemas.tax import (
+    DeclarationRead,
+    DeclarationUpsert,
+    Form12BBIssue,
+    HouseRentRead,
+    HouseRentUpsert,
+    PreviousEmployerRead,
+    PreviousEmployerUpsert,
+    ProofDecision,
+    ProofQueueItem,
+    ProofRead,
+    RegimeElectionRequest,
+    RegimeElectionResponse,
+    RegimeRead,
+    ReminderRunRead,
+    SnapshotRead,
+    WindowRead,
+    WindowUpsert,
+)
+from app.services.filings import support
+from app.services.tax import reminders
 from app.services.tax import service as tax_service
 from app.services.tax.service import TaxWorkflowError
 
 router = APIRouter(prefix="/tax", tags=["tax"])
 
 PAYROLL_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-
-# Money crosses the wire as a string. A JSON number is a float on the other
-# side, and a tax figure that drifts in the browser is still a wrong figure.
-Money = Decimal
+ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
 
 
 def _workflow_error(exc: TaxWorkflowError) -> HTTPException:
@@ -46,130 +70,17 @@ def _workflow_error(exc: TaxWorkflowError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
 
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class WindowUpsert(BaseModel):
-    financial_year: str = Field(pattern=r"^\d{4}-\d{2}$")
-    window_type: WindowType
-    opens_at: date
-    closes_at: date
-    allow_late_submission: bool = False
-
-
-class WindowRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    financial_year: str
-    window_type: WindowType
-    opens_at: date
-    closes_at: date
-    allow_late_submission: bool
-
-
-class RegimeElectionRequest(BaseModel):
-    financial_year: str = Field(pattern=r"^\d{4}-\d{2}$")
-    regime: TaxRegime
-    employee_id: uuid.UUID | None = None
-
-
-class RegimeElectionResponse(BaseModel):
-    financial_year: str
-    regime: TaxRegime
-    switch_count: int
-    full_year_recomputed: bool
-    months_recomputed: int = 0
-
-
-class DeclarationUpsert(BaseModel):
-    financial_year: str = Field(pattern=r"^\d{4}-\d{2}$")
-    section: str = Field(min_length=2, max_length=16)
-    sub_category: str = Field(default="", max_length=64)
-    declared_amount: Decimal = Field(ge=0)
-    description: str | None = Field(default=None, max_length=255)
-    employee_id: uuid.UUID | None = None
-
-
-class DeclarationRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employee_id: uuid.UUID
-    financial_year: str
-    section: str
-    sub_category: str
-    description: str | None
-    declared_amount: Decimal
-    status: DeclarationStatus
-
-
-class ProofUpload(BaseModel):
-    declaration_id: uuid.UUID
-    proof_amount: Decimal = Field(gt=0)
-    document_storage_key: str | None = None
-    document_name: str | None = None
-
-
-class ProofDecision(BaseModel):
-    decision: ProofStatus
-    accepted_amount: Decimal = Field(default=Decimal(0), ge=0)
-    remarks: str = Field(default="", max_length=2000)
-
-
-class ProofRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    declaration_id: uuid.UUID
-    proof_amount: Decimal
-    accepted_amount: Decimal
-    status: ProofStatus
-    verifier_remarks: str | None
-    verified_at: datetime | None
-    document_name: str | None
-
-
-class HouseRentUpsert(BaseModel):
-    financial_year: str = Field(pattern=r"^\d{4}-\d{2}$")
-    monthly_rent: list[dict[str, Any]] = Field(min_length=1, max_length=12)
-    landlord_name: str | None = Field(default=None, max_length=255)
-    landlord_pan: str | None = Field(default=None, max_length=10)
-    property_address: str | None = None
-    is_metro: bool = False
-    employee_id: uuid.UUID | None = None
-
-
-class PreviousEmployerUpsert(BaseModel):
-    financial_year: str = Field(pattern=r"^\d{4}-\d{2}$")
-    employer_name: str | None = Field(default=None, max_length=255)
-    gross_salary: Decimal = Field(ge=0)
-    tds_deducted: Decimal = Field(default=Decimal(0), ge=0)
-    pf_deducted: Decimal = Field(default=Decimal(0), ge=0)
-    professional_tax: Decimal = Field(default=Decimal(0), ge=0)
-    exempt_allowances: Decimal = Field(default=Decimal(0), ge=0)
-    document_storage_key: str | None = None
-
-
-class SnapshotRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    financial_year: str
-    regime: TaxRegime
-    computed_for_month: int
-    gross_annual_income: Decimal
-    taxable_income: Decimal
-    annual_tax_liability: Decimal
-    monthly_tds: Decimal
-    working: dict
-
-
 def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
     """Whose declaration record this touches: the caller's own, unless HR."""
     return permissions.resolve_employee(
         user, supplied, detail="You can only manage your own tax declarations"
     )
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """At most one byte past the limit, so an oversized file is refused for its
+    size without being read into memory in full."""
+    return await file.read(support.MAX_UPLOAD_BYTES + 1)
 
 
 # ── Windows ─────────────────────────────────────────────────────────────────
@@ -179,49 +90,72 @@ def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
 async def list_windows(
     user: CurrentUser, session: DbSession, financial_year: str | None = None
 ) -> list[WindowRead]:
-    stmt = tenant_scoped(
-        select(DeclarationWindow).order_by(DeclarationWindow.opens_at), DeclarationWindow, user
-    )
-    if financial_year:
-        stmt = stmt.where(DeclarationWindow.financial_year == financial_year)
-    return [WindowRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    today = date.today()
+    rows = await tax_service.list_windows(session, user, financial_year)
+    return [WindowRead.from_model(row, today) for row in rows]
 
 
 @router.put(
     "/windows",
     response_model=WindowRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def upsert_window(
-    payload: WindowUpsert, user: CurrentUser, session: DbSession
+    payload: WindowUpsert, user: CurrentUser, session: DbSession, request: Request
 ) -> WindowRead:
-    if payload.closes_at < payload.opens_at:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="A window cannot close before it opens",
-        )
-
-    window = await tax_service.window_for(
-        session, user, payload.financial_year, payload.window_type
-    )
-    if window is None:
-        window = DeclarationWindow(
-            tenant_id=user.tenant_id,
+    try:
+        window = await tax_service.upsert_window(
+            session,
+            user,
             financial_year=payload.financial_year,
             window_type=payload.window_type,
+            opens_at=payload.opens_at,
+            closes_at=payload.closes_at,
+            allow_late_submission=payload.allow_late_submission,
+            reminder_days_before=payload.reminder_days_before,
+            request=request,
         )
-        session.add(window)
-
-    window.opens_at = payload.opens_at
-    window.closes_at = payload.closes_at
-    window.allow_late_submission = payload.allow_late_submission
-
+    except TaxWorkflowError as exc:
+        raise _workflow_error(exc) from exc
     await session.commit()
     await session.refresh(window)
-    return WindowRead.model_validate(window)
+    return WindowRead.from_model(window, date.today())
+
+
+@router.post(
+    "/reminders/run",
+    response_model=ReminderRunRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def run_reminders(user: CurrentUser, session: DbSession) -> ReminderRunRead:
+    """Send the window reminders due today.
+
+    What a daily scheduler calls. There is no scheduler in this build, so HR runs
+    it; it is idempotent, so running it twice in a day sends nothing twice.
+    """
+    outcome = await reminders.send_window_reminders(
+        session, user.tenant_id, today=date.today()
+    )
+    return ReminderRunRead(
+        windows_checked=outcome.windows_checked,
+        notifications_raised=outcome.notifications_raised,
+        events=outcome.events,
+    )
 
 
 # ── Regime ──────────────────────────────────────────────────────────────────
+
+
+@router.get("/regime", response_model=RegimeRead | None)
+async def get_regime(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str,
+    employee_id: uuid.UUID | None = None,
+) -> RegimeRead | None:
+    target = _resolve_employee(user, employee_id)
+    election = await tax_service.get_election(session, user, target, financial_year)
+    return RegimeRead.model_validate(election) if election else None
 
 
 @router.post("/regime", response_model=RegimeElectionResponse)
@@ -295,17 +229,8 @@ async def list_declarations(
     employee_id: uuid.UUID | None = None,
 ) -> list[DeclarationRead]:
     target = _resolve_employee(user, employee_id)
-    stmt = tenant_scoped(
-        select(TaxDeclaration)
-        .where(
-            TaxDeclaration.employee_id == target,
-            TaxDeclaration.financial_year == financial_year,
-        )
-        .order_by(TaxDeclaration.section, TaxDeclaration.sub_category),
-        TaxDeclaration,
-        user,
-    )
-    return [DeclarationRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    rows = await tax_service.list_declarations(session, user, target, financial_year)
+    return [DeclarationRead.from_model(row) for row in rows]
 
 
 @router.put("/declarations", response_model=DeclarationRead)
@@ -329,45 +254,44 @@ async def upsert_declaration(
         raise _workflow_error(exc) from exc
 
     await session.commit()
-    await session.refresh(declaration)
-    return DeclarationRead.model_validate(declaration)
+    await session.refresh(declaration, ["proofs"])
+    return DeclarationRead.from_model(declaration)
 
 
 @router.post("/declarations/{declaration_id}/submit", response_model=DeclarationRead)
 async def submit_declaration(
-    declaration_id: uuid.UUID, user: CurrentUser, session: DbSession
+    declaration_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> DeclarationRead:
-    declaration = await session.scalar(
-        tenant_scoped(
-            select(TaxDeclaration).where(TaxDeclaration.id == declaration_id),
-            TaxDeclaration,
-            user,
+    try:
+        declaration = await tax_service.submit_declaration(
+            session, user, declaration_id, request=request
         )
-    )
-    if declaration is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Declaration not found"
-        )
-    _resolve_employee(user, declaration.employee_id)
-    if declaration.status is DeclarationStatus.LOCKED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This declaration is locked for the year and cannot be changed",
-        )
-
-    from datetime import UTC
-
-    declaration.status = DeclarationStatus.SUBMITTED
-    declaration.submitted_at = datetime.now(UTC)
+    except TaxWorkflowError as exc:
+        raise _workflow_error(exc) from exc
     await session.commit()
-    await session.refresh(declaration)
-    return DeclarationRead.model_validate(declaration)
+    await session.refresh(declaration, ["proofs"])
+    return DeclarationRead.from_model(declaration)
 
 
-@router.put("/house-rent")
+# ── House rent and previous employer ────────────────────────────────────────
+
+
+@router.get("/house-rent", response_model=HouseRentRead | None)
+async def get_house_rent(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str,
+    employee_id: uuid.UUID | None = None,
+) -> HouseRentRead | None:
+    target = _resolve_employee(user, employee_id)
+    record = await tax_service.get_house_rent(session, user, target, financial_year)
+    return HouseRentRead.from_model(record) if record else None
+
+
+@router.put("/house-rent", response_model=HouseRentRead)
 async def upsert_house_rent(
     payload: HouseRentUpsert, user: CurrentUser, session: DbSession, request: Request
-) -> dict[str, Any]:
+) -> HouseRentRead:
     """Record rent paid.
 
     Landlord PAN is enforced above a configured annual threshold, at submission
@@ -381,7 +305,7 @@ async def upsert_house_rent(
             user,
             employee_id=target,
             financial_year=payload.financial_year,
-            monthly_rent=payload.monthly_rent,
+            monthly_rent=[row.model_dump(mode="json") for row in payload.monthly_rent],
             landlord_name=payload.landlord_name,
             landlord_pan=payload.landlord_pan,
             property_address=payload.property_address,
@@ -393,18 +317,25 @@ async def upsert_house_rent(
 
     await session.commit()
     await session.refresh(record)
-    return {
-        "id": str(record.id),
-        "annual_rent": str(record.annual_rent),
-        "is_metro": record.is_metro,
-        "landlord_pan": record.landlord_pan,
-    }
+    return HouseRentRead.from_model(record)
 
 
-@router.put("/previous-employer")
+@router.get("/previous-employer", response_model=PreviousEmployerRead | None)
+async def get_previous_employer(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str,
+    employee_id: uuid.UUID | None = None,
+) -> PreviousEmployerRead | None:
+    target = _resolve_employee(user, employee_id)
+    record = await tax_service.get_previous_employer(session, user, target, financial_year)
+    return PreviousEmployerRead.from_model(record) if record else None
+
+
+@router.put("/previous-employer", response_model=PreviousEmployerRead)
 async def upsert_previous_employer(
-    payload: PreviousEmployerUpsert, user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
+    payload: PreviousEmployerUpsert, user: CurrentUser, session: DbSession, request: Request
+) -> PreviousEmployerRead:
     """Income from a previous employer this financial year.
 
     Without it a mid-year joiner is taxed as though they earned nothing before
@@ -412,31 +343,59 @@ async def upsert_previous_employer(
     filing.
     """
     employee_id = _resolve_employee(user, None)
-
-    record = await session.scalar(
-        tenant_scoped(
-            select(PreviousEmployerIncome).where(
-                PreviousEmployerIncome.employee_id == employee_id,
-                PreviousEmployerIncome.financial_year == payload.financial_year,
-            ),
-            PreviousEmployerIncome,
-            user,
-        )
+    record = await tax_service.upsert_previous_employer(
+        session,
+        user,
+        employee_id=employee_id,
+        financial_year=payload.financial_year,
+        values=payload.model_dump(exclude={"financial_year"}),
+        request=request,
     )
-    if record is None:
-        record = PreviousEmployerIncome(
-            tenant_id=user.tenant_id,
-            employee_id=employee_id,
-            financial_year=payload.financial_year,
-        )
-        session.add(record)
-
-    for field_name, value in payload.model_dump(exclude={"financial_year"}).items():
-        setattr(record, field_name, value)
-
     await session.commit()
     await session.refresh(record)
-    return {"id": str(record.id), "gross_salary": str(record.gross_salary)}
+    return PreviousEmployerRead.from_model(record)
+
+
+@router.post("/previous-employer/document", response_model=PreviousEmployerRead)
+async def attach_previous_employer_document(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: str = Form(pattern=r"^\d{4}-\d{2}$"),
+    file: UploadFile = File(...),
+) -> PreviousEmployerRead:
+    """Attach the previous employer's Form 16 Part B (PDF, PNG or JPEG)."""
+    employee_id = _resolve_employee(user, None)
+    try:
+        record = await tax_service.attach_previous_employer_document(
+            session,
+            user,
+            employee_id=employee_id,
+            financial_year=financial_year,
+            data=await _read_upload(file),
+            request=request,
+        )
+    except TaxWorkflowError as exc:
+        raise _workflow_error(exc) from exc
+    await session.commit()
+    await session.refresh(record)
+    return PreviousEmployerRead.from_model(record)
+
+
+@router.get("/previous-employer/document")
+async def previous_employer_document(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: str,
+    employee_id: uuid.UUID | None = None,
+) -> Response:
+    target = _resolve_employee(user, employee_id)
+    data, mime, name = await tax_service.previous_employer_document(
+        session, user, employee_id=target, financial_year=financial_year, request=request
+    )
+    await session.commit()
+    return Response(content=data, media_type=mime, headers=support.attachment_headers(name))
 
 
 # ── Proofs ──────────────────────────────────────────────────────────────────
@@ -444,66 +403,64 @@ async def upsert_previous_employer(
 
 @router.post("/proofs", response_model=ProofRead, status_code=status.HTTP_201_CREATED)
 async def upload_proof(
-    payload: ProofUpload, user: CurrentUser, session: DbSession
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    declaration_id: uuid.UUID = Form(...),
+    proof_amount: Decimal = Form(gt=0, max_digits=14, decimal_places=2),
+    file: UploadFile = File(...),
 ) -> ProofRead:
-    declaration = await session.scalar(
-        tenant_scoped(
-            select(TaxDeclaration).where(TaxDeclaration.id == payload.declaration_id),
-            TaxDeclaration,
-            user,
-        )
-    )
-    if declaration is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Declaration not found"
-        )
-    _resolve_employee(user, declaration.employee_id)
+    """Attach a proof document to one of your submitted declarations.
 
+    PDF, PNG or JPEG up to the upload limit. The type is read from the file's
+    contents, never its name, and the file is stored encrypted under a key the
+    server generates. The declaration must be yours unless you are payroll.
+    """
     try:
-        await tax_service.assert_window_open(
-            session, user, declaration.financial_year, WindowType.PROOF
+        proof = await tax_service.submit_proof(
+            session,
+            user,
+            declaration_id=declaration_id,
+            proof_amount=proof_amount,
+            data=await _read_upload(file),
+            document_name=file.filename,
+            request=request,
         )
     except TaxWorkflowError as exc:
         raise _workflow_error(exc) from exc
-
-    proof = TaxProof(
-        tenant_id=user.tenant_id,
-        declaration_id=declaration.id,
-        proof_amount=payload.proof_amount,
-        document_storage_key=payload.document_storage_key,
-        document_name=payload.document_name,
-    )
-    session.add(proof)
     await session.commit()
     await session.refresh(proof)
-    return ProofRead.model_validate(proof)
+    return ProofRead.from_model(proof)
 
 
 @router.get(
     "/proofs/queue",
-    response_model=list[ProofRead],
+    response_model=list[ProofQueueItem],
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
 async def verification_queue(
-    user: CurrentUser, session: DbSession, financial_year: str | None = None
-) -> list[ProofRead]:
-    """Everything awaiting verification.
-
-    The payroll team's working queue in January. Oldest first, so nothing sits
-    at the bottom for a month.
-    """
-    stmt = tenant_scoped(
-        select(TaxProof)
-        .where(TaxProof.status == ProofStatus.PENDING)
-        .order_by(TaxProof.created_at),
-        TaxProof,
-        user,
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str | None = None,
+    proof_status: Literal["pending", "all"] = Query(default="pending", alias="status"),
+) -> list[ProofQueueItem]:
+    """Proofs awaiting verification, oldest first — the payroll team's January queue."""
+    rows = await tax_service.proof_queue(
+        session, user, financial_year=financial_year, pending_only=proof_status == "pending"
     )
-    if financial_year:
-        stmt = stmt.join(TaxDeclaration).where(
-            TaxDeclaration.financial_year == financial_year
-        )
-    return [ProofRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    return [ProofQueueItem(**row) for row in rows]
+
+
+@router.get("/proofs/{proof_id}/document")
+async def proof_document(
+    proof_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """The proof as uploaded. Its owner and payroll only."""
+    data, mime, name = await tax_service.proof_document(
+        session, user, proof_id, request=request
+    )
+    await session.commit()
+    return Response(content=data, media_type=mime, headers=support.attachment_headers(name))
 
 
 @router.post(
@@ -521,9 +478,14 @@ async def verify_proof(
     """Record a verification decision.
 
     Partial acceptance is a first-class outcome. A remark is required on
-    anything but a clean full acceptance, and every decision writes an audit
-    entry.
+    anything but a clean full acceptance, every decision writes an audit entry,
+    and a verifier cannot decide a proof against their own declaration.
     """
+    if payload.decision is ProofStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A verification decision cannot be 'pending'",
+        )
     try:
         proof = await tax_service.verify_proof(
             session,
@@ -537,12 +499,12 @@ async def verify_proof(
     except TaxWorkflowError as exc:
         raise _workflow_error(exc) from exc
 
-    return ProofRead.model_validate(proof)
+    return ProofRead.from_model(proof)
 
 
 @router.post(
     "/proof-window/close",
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def close_proof_window(
     user: CurrentUser, session: DbSession, financial_year: str, request: Request
@@ -572,13 +534,13 @@ async def projection(
     """The live preview an employee sees while editing declarations.
 
     Uses declared amounts, not proved ones: before the proof window closes, the
-    impact of what they intend to claim is the useful answer.
+    impact of what they intend to claim is the useful answer. Includes taxable
+    income from gratuity, encashment, arrears, loan perquisites and unclaimed
+    reimbursements.
     """
     target = _resolve_employee(user, employee_id)
     try:
-        computation = await tax_service.live_preview(
-            session, user, target, financial_year
-        )
+        computation = await tax_service.live_preview(session, user, target, financial_year)
     except TaxWorkflowError as exc:
         raise _workflow_error(exc) from exc
     return computation.as_working()
@@ -597,17 +559,11 @@ async def list_snapshots(
     projection to compare against.
     """
     target = _resolve_employee(user, employee_id)
-    stmt = tenant_scoped(
-        select(TaxComputationSnapshot)
-        .where(
-            TaxComputationSnapshot.employee_id == target,
-            TaxComputationSnapshot.financial_year == financial_year,
-        )
-        .order_by(TaxComputationSnapshot.created_at.desc()),
-        TaxComputationSnapshot,
-        user,
-    )
-    return [SnapshotRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    rows = await tax_service.list_snapshots(session, user, target, financial_year)
+    return [SnapshotRead.model_validate(row) for row in rows]
+
+
+# ── Form 12BB ───────────────────────────────────────────────────────────────
 
 
 @router.get("/form-12bb")
@@ -617,14 +573,60 @@ async def form_12bb_preview(
     financial_year: str,
     employee_id: uuid.UUID | None = None,
 ) -> dict[str, str]:
-    """The claims table that goes into Form 12BB.
-
-    Issuing the form itself goes through the letter engine, so it inherits
-    hashing, versioning and e-signature.
-    """
+    """The claims as an escaped HTML table, for a sandboxed on-screen preview."""
     from app.services.tax.form_12bb import build_claims_table
 
     target = _resolve_employee(user, employee_id)
     return {
         "claims_table": await build_claims_table(session, user, target, financial_year)
     }
+
+
+@router.post(
+    "/form-12bb/issue",
+    response_model=IssuedDocumentRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def issue_form_12bb(
+    payload: Form12BBIssue, user: CurrentUser, session: DbSession, request: Request
+) -> IssuedDocumentRead:
+    """Issue Form 12BB through the letter engine, for the employee to e-sign."""
+    target = _resolve_employee(user, payload.employee_id)
+    try:
+        letter = await tax_service.issue_form_12bb(
+            session,
+            user,
+            employee_id=target,
+            financial_year=payload.financial_year,
+            parent_name=payload.parent_name,
+            place=payload.place,
+            request=request,
+        )
+    except TaxWorkflowError as exc:
+        raise _workflow_error(exc) from exc
+    await session.commit()
+    await session.refresh(letter)
+    return IssuedDocumentRead.from_model(letter)
+
+
+@router.get("/form-12bb/documents", response_model=list[IssuedDocumentRead])
+async def list_form_12bb(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str,
+    employee_id: uuid.UUID | None = None,
+) -> list[IssuedDocumentRead]:
+    target = _resolve_employee(user, employee_id)
+    letters = await tax_service.list_form_12bb(session, user, target, financial_year)
+    return [IssuedDocumentRead.from_model(letter) for letter in letters]
+
+
+@router.get("/form-12bb/{letter_id}/pdf")
+async def form_12bb_pdf(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    data, name = await tax_service.form_12bb_pdf(session, user, letter_id)
+    return Response(
+        content=data, media_type="application/pdf", headers=support.attachment_headers(name)
+    )
+
+
+__all__ = ["WindowType", "router"]

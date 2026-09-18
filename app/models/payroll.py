@@ -37,6 +37,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -362,6 +363,11 @@ class PayrollRuleSet(Base, UUIDMixin, TenantMixin, TimestampMixin):
     source_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Who entered this version. The person who typed the rates in is not the
+    # person who attests to them, so approval refuses the creator.
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -439,6 +445,29 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Maker-checker: whoever computed the run cannot be the one who approves it.
+    computed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # What the input providers (loans, reimbursements, arrears, …) said about
+    # this run that is not a line on anybody's payslip: a source that is not
+    # available yet, or an item left unprocessed and why. Informational — a
+    # notice never blocks approval; a review flag does.
+    #: `server_default` as well as `default`: the column is NOT NULL and was added to a
+    #: table that already had rows, so the database needs its own answer for anything
+    #: inserted outside the ORM. Declared here too, or `alembic check` reports drift.
+    input_notices: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+
     payslips: Mapped[list[Payslip]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
@@ -510,8 +539,21 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #   "rule_set_id": "...", "basis": "structure"}, ...]
     line_items: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
+    # Lines that came from other modules through `services/payroll/inputs.py` —
+    # a loan EMI, a reimbursement, arrears, a referral bonus — each with the
+    # source record it consumed. Kept apart from `line_items` on purpose: the
+    # arrears engine diffs `line_items` against a structure recomputation, and a
+    # one-off payment there would read as a component to recover.
+    input_lines: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    # The income tax projection behind `tds`: regime, projected income, slabs,
+    # deductions, months remaining, what was already deducted.
+    tds_working: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     pdf_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[PayrollRun] = relationship(back_populates="payslips")
 

@@ -1,4 +1,9 @@
-"""Requisition approval and offer management (slice 19)."""
+"""Requisition approval and offer management (slice 19).
+
+Who may sign a step is decided by `app.services.hiring.approvers`: never the
+person who raised the requisition or drafted the offer, and only somebody holding
+the role the step names.
+"""
 
 from __future__ import annotations
 
@@ -9,18 +14,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
-from app.models.offer import (
-    ApprovalChainRule,
-    ApprovalScope,
-    Offer,
-    OfferComponentKind,
-    OfferEvent,
-)
+from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.offer import ApprovalScope, OfferComponentKind, OfferStatus
 from app.models.user import UserRole
-from app.services.hiring import approval_chain
+from app.services.hiring import approval_chain, chain_rules
 from app.services.hiring import offers as offer_service
 from app.services.hiring import requisitions as requisition_service
 
@@ -28,8 +26,8 @@ router = APIRouter(tags=["offers"])
 
 HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-# Anyone who might be a step in a chain. Which of them may decide *this* offer
-# is settled by the chain itself, not by the route.
+# Anyone who might be a step in a chain. Which of them may decide *this* one is
+# settled by the chain and `approvers.can_decide_step`, not by the route.
 APPROVER_ROLES = (
     UserRole.TENANT_ADMIN,
     UserRole.HR_ADMIN,
@@ -82,15 +80,15 @@ class OfferComponentCreate(BaseModel):
     kind: OfferComponentKind
     label: str = Field(min_length=1, max_length=128)
     amount: Decimal = Field(gt=0)
-    payable_terms: str | None = None
+    payable_terms: str | None = Field(default=None, max_length=500)
     counts_toward_ctc: bool = False
 
 
 class OfferCreate(BaseModel):
     candidate_id: uuid.UUID
-    code: str = Field(min_length=1, max_length=32)
+    code: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9-]+$")
     salary_structure_id: uuid.UUID
-    ctc_annual: Decimal = Field(gt=0)
+    ctc_annual: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     joining_date: date
     designation: str = Field(min_length=1, max_length=255)
     grade: str | None = Field(default=None, max_length=32)
@@ -100,13 +98,13 @@ class OfferCreate(BaseModel):
     probation_months: int = Field(default=6, ge=0, le=24)
     notice_period_days: int = Field(default=60, ge=0, le=365)
     valid_until: date | None = None
-    components: list[OfferComponentCreate] = Field(default_factory=list)
+    components: list[OfferComponentCreate] = Field(default_factory=list, max_length=20)
 
 
 class OfferTermsUpdate(BaseModel):
     """Only the terms that can move. Anything material voids the approvals."""
 
-    ctc_annual: Decimal | None = Field(default=None, gt=0)
+    ctc_annual: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     salary_structure_id: uuid.UUID | None = None
     grade: str | None = Field(default=None, max_length=32)
     designation: str | None = Field(default=None, max_length=255)
@@ -147,6 +145,11 @@ class ReleaseRequest(BaseModel):
     valid_until: date | None = None
 
 
+class AcceptRequest(BaseModel):
+    #: The e-signature envelope or scanned acceptance this was recorded from.
+    signature_reference: str | None = Field(default=None, max_length=255)
+
+
 class ReasonRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
@@ -174,20 +177,11 @@ class ConvertRequest(BaseModel):
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def create_chain_rule(
-    payload: ChainRuleCreate, user: CurrentUser, session: DbSession
+    payload: ChainRuleCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> ChainRuleRead:
-    rule = ApprovalChainRule(
-        tenant_id=user.tenant_id,
-        scope=payload.scope,
-        sequence=payload.sequence,
-        approver_role=payload.approver_role,
-        label=payload.label,
-        ctc_min=payload.ctc_min,
-        ctc_max=payload.ctc_max,
-        grades=payload.grades,
-        only_when_over_band=payload.only_when_over_band,
+    rule = await chain_rules.create_rule(
+        session, user, values=payload.model_dump(), request=request
     )
-    session.add(rule)
     await session.commit()
     await session.refresh(rule)
     return ChainRuleRead.model_validate(rule)
@@ -201,13 +195,8 @@ async def create_chain_rule(
 async def list_chain_rules(
     user: CurrentUser, session: DbSession, scope: ApprovalScope | None = None
 ) -> list[ChainRuleRead]:
-    stmt = select(ApprovalChainRule).order_by(
-        ApprovalChainRule.scope, ApprovalChainRule.sequence
-    )
-    if scope is not None:
-        stmt = stmt.where(ApprovalChainRule.scope == scope)
-    rows = await session.scalars(tenant_scoped(stmt, ApprovalChainRule, user))
-    return [ChainRuleRead.model_validate(r) for r in rows.all()]
+    rows = await chain_rules.list_rules(session, user, scope=scope)
+    return [ChainRuleRead.model_validate(r) for r in rows]
 
 
 @router.get(
@@ -217,11 +206,7 @@ async def list_chain_rules(
 async def validate_chain_rules(
     user: CurrentUser, session: DbSession, scope: ApprovalScope
 ) -> dict[str, Any]:
-    """Check a rule set covers every CTC before an offer discovers it does not.
-
-    A gap resolves to an empty chain, which is an offer released on nobody's
-    signature — worth finding on a configuration screen rather than at release.
-    """
+    """Check a rule set covers every CTC before an offer discovers it does not."""
     rules = await requisition_service.load_rules(session, user, scope)
     try:
         approval_chain.validate_rules(rules)
@@ -235,7 +220,7 @@ async def validate_chain_rules(
 
 @router.post(
     "/hiring/requisitions/{requisition_id}/submit",
-    dependencies=[Depends(require_roles(*HR_ROLES))],
+    dependencies=[Depends(require_roles(*APPROVER_ROLES))],
 )
 async def submit_requisition(
     requisition_id: uuid.UUID,
@@ -244,6 +229,7 @@ async def submit_requisition(
     request: Request,
     live_headcount: int | None = None,
 ) -> dict[str, Any]:
+    """Send a draft for approval. HR, or the requisition's own hiring team."""
     result = await requisition_service.submit_requisition(
         session,
         user,
@@ -315,18 +301,47 @@ async def create_offer(
 
 
 @router.get(
+    "/offers", dependencies=[Depends(require_roles(*HR_ROLES))]
+)
+async def list_offers(
+    user: CurrentUser,
+    session: DbSession,
+    requisition_id: uuid.UUID | None = None,
+    offer_status: OfferStatus | None = None,
+) -> list[dict[str, Any]]:
+    return await offer_service.list_offer_summaries(
+        session, user, requisition_id=requisition_id, offer_status=offer_status
+    )
+
+
+@router.post("/offers/lapse", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def lapse_offers(
+    user: CurrentUser, session: DbSession, as_of: date | None = None
+) -> dict[str, Any]:
+    """Expire released offers past their validity date. Also scheduler-callable."""
+    result = await offer_service.lapse_due_offers(session, user, as_of=as_of)
+    await session.commit()
+    return result
+
+
+@router.get("/offers/{offer_id}", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def get_offer(offer_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await offer_service.offer_detail(session, user, offer_id=offer_id)
+
+
+@router.get(
     "/offers/{offer_id}/approval",
     dependencies=[Depends(require_roles(*APPROVER_ROLES))],
 )
 async def offer_approval_view(
     offer_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> dict[str, Any]:
-    """Everything an approver needs, in one call.
+    """Everything an approver needs — deviation and parity first — in one call.
 
-    Deviation and parity arrive with the offer rather than after it: fetched
-    separately, the approver reads the number before the flag lands underneath.
+    HR, or the requisition's hiring manager. Nobody else in the tenant reads an
+    offer's CTC.
     """
-    return await offer_service.approval_payload(session, user, offer_id=offer_id)
+    return await offer_service.approval_view(session, user, offer_id=offer_id)
 
 
 @router.patch(
@@ -408,16 +423,17 @@ async def release_offer(
 @router.post("/offers/{offer_id}/accept", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def accept_offer(
     offer_id: uuid.UUID,
+    payload: AcceptRequest,
     user: CurrentUser,
     session: DbSession,
     request: Request,
-    signature_reference: str | None = None,
 ) -> dict[str, Any]:
+    """Record the candidate's acceptance. Candidate-side e-sign is not built."""
     result = await offer_service.accept_offer(
         session,
         user,
         offer_id=offer_id,
-        signature_reference=signature_reference,
+        signature_reference=payload.signature_reference,
         request=request,
     )
     await session.commit()
@@ -495,16 +511,6 @@ async def convert_offer(
     return result
 
 
-@router.post("/offers/lapse", dependencies=[Depends(require_roles(*HR_ROLES))])
-async def lapse_offers(
-    user: CurrentUser, session: DbSession, as_of: date | None = None
-) -> dict[str, Any]:
-    """Expire released offers past their validity date."""
-    result = await offer_service.lapse_due_offers(session, user, as_of=as_of)
-    await session.commit()
-    return result
-
-
 @router.get(
     "/offers/{offer_id}/history",
     dependencies=[Depends(require_roles(*HR_ROLES))],
@@ -512,40 +518,5 @@ async def lapse_offers(
 async def offer_history(
     offer_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[dict[str, Any]]:
-    """Every transition, with the facts snapshotted at the time.
-
-    Drop rate by department, recruiter and notice period (slice 36) reads from
-    exactly this.
-    """
-    rows = await session.scalars(
-        tenant_scoped(
-            select(OfferEvent)
-            .where(OfferEvent.offer_id == offer_id)
-            .order_by(OfferEvent.occurred_at),
-            OfferEvent,
-            user,
-        )
-    )
-    return [
-        {
-            "from_status": e.from_status.value if e.from_status else None,
-            "to_status": e.to_status.value,
-            "reason": e.reason,
-            "occurred_at": e.occurred_at.isoformat(),
-            "facts": e.facts,
-        }
-        for e in rows.all()
-    ]
-
-
-@router.get(
-    "/offers", response_model=list[OfferRead], dependencies=[Depends(require_roles(*HR_ROLES))]
-)
-async def list_offers(
-    user: CurrentUser, session: DbSession, requisition_id: uuid.UUID | None = None
-) -> list[OfferRead]:
-    stmt = select(Offer).order_by(Offer.created_at.desc())
-    if requisition_id is not None:
-        stmt = stmt.where(Offer.requisition_id == requisition_id)
-    rows = await session.scalars(tenant_scoped(stmt, Offer, user))
-    return [OfferRead.model_validate(o) for o in rows.all()]
+    """Every transition, with the facts snapshotted at the time."""
+    return await offer_service.offer_history(session, user, offer_id=offer_id)

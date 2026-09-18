@@ -10,11 +10,12 @@ import uuid
 from typing import Annotated, TypeVar
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import cookies
 from app.core.security import decode_token
 from app.db.session import get_session
 from app.models.user import User, UserRole
@@ -29,20 +30,34 @@ CREDENTIALS_ERROR = HTTPException(
 
 
 async def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> User:
-    """Resolve the caller from the Bearer token.
+    """Resolve the caller from a Bearer token or the web app's session cookie.
 
     Re-loads the user on every request rather than trusting the token's claims
     wholesale, so a deactivated user or a suspended tenant loses access
     immediately instead of at token expiry.
+
+    A cookie-authenticated request that changes state must carry the CSRF
+    header (see `app.core.cookies`); a Bearer request need not, because no
+    browser attaches an Authorization header by itself.
     """
-    if credentials is None:
-        raise CREDENTIALS_ERROR
+    if credentials is not None:
+        token = credentials.credentials
+    else:
+        token = request.cookies.get(cookies.ACCESS_COOKIE)
+        if not token:
+            raise CREDENTIALS_ERROR
+        if not cookies.csrf_ok(request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This request is missing its CSRF token. Reload the page and try again.",
+            )
 
     try:
-        payload = decode_token(credentials.credentials, expected_type="access")
+        payload = decode_token(token, expected_type="access")
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -74,6 +89,13 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # The tenant's session policy: privileged-role IP allowlist, idle timeout,
+    # absolute lifetime and per-device revocation. A no-op for a tenant that
+    # has not saved a policy. Imported here because opsec imports this module.
+    from app.services.opsec.enforcement import enforce_session_policy
+
+    await enforce_session_policy(request, session, user, payload)
+
     return user
 
 
@@ -97,6 +119,26 @@ def require_roles(*roles: UserRole):
         return user
 
     return _check
+
+
+def require_module(module: str):
+    """Dependency factory refusing requests to a module the workspace has not switched on.
+
+    The sidebar hiding a module is a convenience; this is the enforcement. A
+    tenant on a plan without rewards cannot reach the rewards API by typing a URL.
+    """
+
+    async def _module_enabled(user: CurrentUser, session: DbSession) -> None:
+        from app.models.tenant import Tenant  # local: models import deps indirectly
+
+        tenant = await session.get(Tenant, user.tenant_id)
+        if tenant is None or not (tenant.enabled_modules or {}).get(module):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"The {module.replace('_', ' ')} module is not enabled for this workspace.",
+            )
+
+    return _module_enabled
 
 
 ModelT = TypeVar("ModelT")

@@ -192,8 +192,7 @@ def _competency_score(
     total_weight = sum((r.weight for r in applicable), ZERO)
     if total_weight <= ZERO:
         raise ScoringError(
-            "The applicable competencies carry no weight between them, so the average "
-            "is undefined."
+            "The applicable competencies carry no weight between them, so the average is undefined."
         )
 
     if excluded:
@@ -205,9 +204,7 @@ def _competency_score(
             "thing they were never expected to do."
         )
 
-    weighted = sum(
-        ((r.rating or ZERO) * r.weight for r in applicable), ZERO
-    )
+    weighted = sum(((r.rating or ZERO) * r.weight for r in applicable), ZERO)
     # Expressed out of 100 so the three dimensions combine on one basis.
     average = weighted / total_weight
     return (average / scale_max * HUNDRED), excluded, notes
@@ -325,8 +322,7 @@ def map_to_band(score: Decimal, bands: list[Band]) -> Band:
     for index, band in enumerate(ordered):
         if band.upper <= band.lower:
             raise ScoringError(
-                f"Band '{band.label}' runs from {band.lower} to {band.upper}, which is "
-                "not a range."
+                f"Band '{band.label}' runs from {band.lower} to {band.upper}, which is not a range."
             )
         is_top = index == len(ordered) - 1
         if band.lower <= score < band.upper or (is_top and score == band.upper):

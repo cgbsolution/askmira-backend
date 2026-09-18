@@ -53,6 +53,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -585,6 +586,13 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("travel_requests.id", ondelete="SET NULL"),
         nullable=True,
     )
+    #: The report this claim is a line of. Null for a stand-alone claim.
+    report_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("expense_reports.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     category_key: Mapped[str] = mapped_column(String(80), nullable=False)
     city_tier: Mapped[CityTierEnum] = mapped_column(
         Enum(CityTierEnum, name="expense_city_tier"), nullable=False
@@ -717,3 +725,92 @@ class ExpensePolicyViolation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     claim_amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     overage: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     incurred_on: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Reports (line items) and receipts
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class ExpenseReportStatusEnum(str, enum.Enum):
+    DRAFT = "draft"
+    SUBMITTED = "submitted"
+    APPROVED = "approved"
+    PARTIALLY_APPROVED = "partially_approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class ExpenseReport(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A claim with line items: one trip or one month, several expenses.
+
+    Each line is an `ExpenseClaim` with its own verdict, captured and judged the
+    moment it is added. The report is submitted as a whole, so a blocked line
+    stops the report rather than the rest going through quietly. Finance decides
+    line by line, because approving the taxi and rejecting the minibar is the
+    normal case, and the report status is derived from its lines.
+    """
+
+    __tablename__ = "expense_reports"
+    __table_args__ = (
+        Index("ix_expense_reports_employee", "tenant_id", "employee_id", "status"),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    travel_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("travel_requests.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[ExpenseReportStatusEnum] = mapped_column(
+        Enum(ExpenseReportStatusEnum, name="expense_report_status"),
+        default=ExpenseReportStatusEnum.DRAFT,
+        nullable=False,
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class ExpenseReceipt(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """An uploaded receipt, validated by its bytes rather than its name.
+
+    Held in the database until object storage exists. The client's filename and
+    content type are never trusted: the type is read from the file's own
+    signature, the size is capped, and it is served back only as an attachment.
+    `storage_key` is generated; `display_name` is a sanitised label, never a path.
+    """
+
+    __tablename__ = "expense_receipts"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_expense_receipt_storage_key"),
+        CheckConstraint("size_bytes > 0", name="ck_expense_receipt_size_positive"),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    storage_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)

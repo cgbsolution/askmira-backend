@@ -32,6 +32,7 @@ from app.models.recruiting import (
 from app.services.recruiting import funnel as funnel_engine
 from app.services.recruiting import interviewers as interviewer_engine
 from app.services.recruiting import service as recruiting
+from tests.hiring.db_fixture import engine  # noqa: F401 - shadows the shared fixture
 from tests.integration.conftest import requires_db
 
 pytestmark = [pytest.mark.asyncio, requires_db]

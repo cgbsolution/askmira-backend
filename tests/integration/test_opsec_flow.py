@@ -528,6 +528,11 @@ async def test_sessions_are_listed_with_the_device_and_where_from(
     assert row["user_agent"]
     assert row["approximate_location"]
     assert "hint rather than a fact" in row["location_caveat"]
+    # hr_user's tenant has saved no policy in this test, so the listing says
+    # the policy is not enforced there.
+    assert listing["enforced"] is False
+    # No policy is saved for this tenant here, so the listing says it is not enforced.
+    assert listing["enforced"] is False
     assert "does not consult this policy yet" in listing["not_built"]
 
 

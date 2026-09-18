@@ -7,21 +7,23 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.arrears import (
     ArrearBatch,
-    ArrearLine,
     ArrearStatus,
     RevisionType,
     SalaryRevision,
 )
 from app.models.payroll import EmployeeSalary
 from app.models.user import UserRole
+from app.schemas.payroll_ops import IssuedDocumentRead
+from app.services.arrears import relief_service
 from app.services.arrears import service as arrears_service
+from app.services.filings import support
 
 router = APIRouter(tags=["arrears"])
 
@@ -73,6 +75,8 @@ class ArrearLineRead(BaseModel):
     should_have_been_amount: Decimal
     difference: Decimal
     rule_set_id: uuid.UUID | None
+    employee_code: str | None = None
+    employee_name: str | None = None
 
 
 class ArrearBatchRead(BaseModel):
@@ -91,7 +95,24 @@ class ArrearBatchRead(BaseModel):
     affected_filings: list[str]
     requires_additional_approval: bool
     computed_at: datetime | None
+    computed_by_user_id: uuid.UUID | None
     approved_at: datetime | None
+    approved_by_user_id: uuid.UUID | None
+    additional_approved_at: datetime | None
+    additional_approved_by_user_id: uuid.UUID | None
+    paid_in_run_id: uuid.UUID | None
+    awaiting_additional_approval: bool = False
+
+    @classmethod
+    def from_model(cls, batch: ArrearBatch) -> ArrearBatchRead:
+        read = cls.model_validate(batch)
+        read.awaiting_additional_approval = (
+            batch.status is ArrearStatus.PENDING_APPROVAL
+            and batch.requires_additional_approval
+            and batch.approved_by_user_id is not None
+            and batch.additional_approved_by_user_id is None
+        )
+        return read
 
 
 class RevisionRead(BaseModel):
@@ -108,6 +129,38 @@ class RevisionRead(BaseModel):
 
 class ApproveRequest(BaseModel):
     acknowledge_filings: bool = False
+
+
+class PriorYearIncome(BaseModel):
+    financial_year: str = Field(pattern=r"^\d{4}-\d{2,4}$")
+    regime: str | None = Field(default=None, pattern="^(old|new)$")
+    original_taxable_income: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+
+
+class ReliefRequest(BaseModel):
+    employee_id: uuid.UUID
+    receipt_financial_year: str | None = None
+    regime: str = Field(pattern="^(old|new)$")
+    receipt_year_taxable_income: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    prior_years: list[PriorYearIncome] = Field(default_factory=list, max_length=20)
+
+
+class ReliefRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
+    arrear_batch_id: uuid.UUID
+    financial_year: str
+    arrear_amount: Decimal
+    tax_without_relief: Decimal
+    tax_with_spreading: Decimal
+    relief_amount: Decimal
+    is_beneficial: bool
+    working: dict
+    form_10e_letter_id: uuid.UUID | None
 
 
 # ── Preview ─────────────────────────────────────────────────────────────────
@@ -151,7 +204,22 @@ async def preview(
         effective_from=payload.effective_from,
     )
 
+    guardrails = await arrears_service.preview_guardrails(
+        session,
+        user,
+        employee_ids=[item.employee_id for item in payload.revisions],
+        effective_from=payload.effective_from,
+    )
+    labels = await arrears_service.employee_labels(
+        session, user, {item.employee_id for item in payload.revisions}
+    )
+
     return {
+        "guardrails": guardrails,
+        "employees": {
+            str(employee_id): {"employee_code": code, "employee_name": name}
+            for employee_id, (code, name) in labels.items()
+        },
         "summary": summary.as_dict(),
         "per_employee": {
             employee_id: [
@@ -203,7 +271,7 @@ async def revise(
     )
     await session.commit()
     await session.refresh(batch)
-    return ArrearBatchRead.model_validate(batch)
+    return ArrearBatchRead.from_model(batch)
 
 
 @router.get(
@@ -220,7 +288,7 @@ async def list_batches(
     if batch_status is not None:
         stmt = stmt.where(ArrearBatch.status == batch_status)
     rows = (await session.scalars(tenant_scoped(stmt, ArrearBatch, user))).all()
-    return [ArrearBatchRead.model_validate(row) for row in rows]
+    return [ArrearBatchRead.from_model(row) for row in rows]
 
 
 @router.get(
@@ -239,15 +307,16 @@ async def list_lines(
     Never a lump sum: basic and a travel allowance are taxed differently, count
     differently towards PF, and appear on different lines of a return.
     """
-    stmt = (
-        select(ArrearLine)
-        .where(ArrearLine.batch_id == batch_id)
-        .order_by(ArrearLine.period, ArrearLine.component_code)
+    rows = await arrears_service.batch_lines(
+        session, user, batch_id, employee_id=employee_id
     )
-    if employee_id is not None:
-        stmt = stmt.where(ArrearLine.employee_id == employee_id)
-    rows = (await session.scalars(tenant_scoped(stmt, ArrearLine, user))).all()
-    return [ArrearLineRead.model_validate(row) for row in rows]
+    out = []
+    for line, label in rows:
+        read = ArrearLineRead.model_validate(line)
+        if label:
+            read.employee_code, read.employee_name = label
+        out.append(read)
+    return out
 
 
 @router.post(
@@ -277,7 +346,7 @@ async def approve(
     )
     await session.commit()
     await session.refresh(batch)
-    return ArrearBatchRead.model_validate(batch)
+    return ArrearBatchRead.from_model(batch)
 
 
 @router.get(
@@ -295,3 +364,120 @@ async def list_revisions(
         stmt = stmt.where(SalaryRevision.employee_id == employee_id)
     rows = (await session.scalars(tenant_scoped(stmt, SalaryRevision, user))).all()
     return [RevisionRead.model_validate(row) for row in rows]
+
+
+# ── Section 89(1) relief and Form 10E ───────────────────────────────────────
+
+
+async def _relief_read(session, user, record) -> ReliefRead:
+    read = ReliefRead.model_validate(record)
+    labels = await arrears_service.employee_labels(session, user, {record.employee_id})
+    if record.employee_id in labels:
+        read.employee_code, read.employee_name = labels[record.employee_id]
+    return read
+
+
+@router.get(
+    "/arrears/batches/{batch_id}/relief-years",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def relief_years(
+    batch_id: uuid.UUID, employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Which earlier years an employee's arrear relates to, and how much of it each."""
+    return await relief_service.relief_years(session, user, batch_id, employee_id)
+
+
+@router.post(
+    "/arrears/batches/{batch_id}/relief",
+    response_model=ReliefRead,
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def compute_relief(
+    batch_id: uuid.UUID,
+    payload: ReliefRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ReliefRead:
+    """Section 89(1) relief for one employee, each year priced by its own rule set.
+
+    A relief of zero is a correct answer when spreading back is not beneficial.
+    The result needs review by a tax advisor before the employee files Form 10E.
+    """
+    record = await relief_service.compute_employee_relief(
+        session,
+        user,
+        batch_id=batch_id,
+        employee_id=payload.employee_id,
+        regime=payload.regime,
+        receipt_year_taxable_income=payload.receipt_year_taxable_income,
+        prior_years=[item.model_dump() for item in payload.prior_years],
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(record)
+    return await _relief_read(session, user, record)
+
+
+@router.get(
+    "/arrears/reliefs",
+    response_model=list[ReliefRead],
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def list_reliefs(
+    user: CurrentUser,
+    session: DbSession,
+    batch_id: uuid.UUID | None = None,
+    employee_id: uuid.UUID | None = None,
+) -> list[ReliefRead]:
+    rows = await relief_service.list_reliefs(
+        session, user, batch_id=batch_id, employee_id=employee_id
+    )
+    return [await _relief_read(session, user, row) for row in rows]
+
+
+@router.post(
+    "/arrears/reliefs/{relief_id}/form-10e",
+    response_model=IssuedDocumentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def issue_form_10e(
+    relief_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> IssuedDocumentRead:
+    letter = await relief_service.issue_form_10e(session, user, relief_id, request=request)
+    await session.commit()
+    await session.refresh(letter)
+    return IssuedDocumentRead.from_model(letter)
+
+
+@router.get(
+    "/arrears/reliefs/{relief_id}/form-10e/pdf",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def form_10e_pdf(relief_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    data, name = await relief_service.form_10e_pdf(session, user, relief_id)
+    return Response(
+        content=data, media_type="application/pdf", headers=support.attachment_headers(name)
+    )
+
+
+# ── For the payroll run ─────────────────────────────────────────────────────
+
+
+@router.get(
+    "/arrears/payable",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def payable(
+    user: CurrentUser, session: DbSession, legal_entity_id: uuid.UUID | None = None
+) -> list[dict[str, Any]]:
+    """Approved arrears not yet paid, per employee and component.
+
+    What the next payroll run pays. The run itself is another module's; this is
+    the list it reads.
+    """
+    return await arrears_service.payable_arrears(
+        session, user, legal_entity_id=legal_entity_id
+    )

@@ -608,9 +608,13 @@ def test_a_malformed_address_is_refused_rather_than_blocked():
 
 
 def test_the_access_posture_states_what_is_not_wired():
+    """Enforcement now runs on every authenticated request (`core.deps`), so the
+    honest remaining gaps are the unconfigured tenant and the missing second
+    factor — not the absence of enforcement itself."""
     posture = access.posture_summary()
     assert posture["not_built"]
-    assert any("middleware" in gap for gap in posture["not_built"])
+    assert any("unconfigured workspaces" in gap for gap in posture["not_built"])
+    assert any("second factor" in gap for gap in posture["not_built"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

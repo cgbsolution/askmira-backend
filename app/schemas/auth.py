@@ -82,7 +82,9 @@ class UserRead(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
-    email: EmailStr
+    #: Plain on the way out: validated at sign-up, and a stored address the
+    #: validator later rejects must not make the session endpoint fail.
+    email: str
     full_name: str
     phone: str | None
     role: UserRole
@@ -117,6 +119,13 @@ class AuthResponse(TokenPair):
     User and tenant ship with the tokens so the client can render the shell
     without a second round-trip.
     """
+
+    user: UserRead
+    tenant: TenantRead
+
+
+class SessionRead(BaseModel):
+    """The signed-in user and their workspace, for the web app's session bootstrap."""
 
     user: UserRead
     tenant: TenantRead

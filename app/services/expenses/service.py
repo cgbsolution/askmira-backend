@@ -56,6 +56,9 @@ from app.models.expenses import (
     ExpensePolicy,
     ExpensePolicyRule,
     ExpensePolicyViolation,
+    ExpenseReceipt,
+    ExpenseReport,
+    ExpenseReportStatusEnum,
     LimitTypeEnum,
     LocationCityTier,
     MileageRate,
@@ -311,6 +314,7 @@ async def set_mileage_rate(
         tolerance_percent=_d(tolerance_percent if tolerance_percent is not None else 15),
     )
     session.add(row)
+    await session.flush()
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -351,6 +355,7 @@ async def set_per_diem_rate(
         includes_accommodation=includes_accommodation,
     )
     session.add(row)
+    await session.flush()
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -389,6 +394,20 @@ async def record_exchange_rate(
         source=source,
     )
     session.add(row)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.RULE_CHANGE,
+        entity_type="exchange_rate_quote",
+        entity_id=row.id,
+        actor=user,
+        summary=(
+            f"Exchange rate {from_currency.upper()}/{to_currency.upper()} = {rate} on "
+            f"{quote_date.isoformat()} ({source})."
+        ),
+        request=request,
+    )
     await session.commit()
     await session.refresh(row)
     return row
@@ -595,6 +614,7 @@ async def capture_claim(
     route_km: Decimal | None = None,
     vehicle_type: str | None = None,
     per_diem_days: int | None = None,
+    report_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> dict[str, Any]:
     """Capture a claim and tell the employee the verdict in the same breath.
@@ -615,6 +635,28 @@ async def capture_claim(
     if employee is None:
         raise _not_found("No such employee in this tenant.")
 
+    if report_id is not None:
+        report = (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseReport).where(ExpenseReport.id == report_id),
+                    ExpenseReport,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if report is None:
+            raise _not_found("No such expense report in this tenant.")
+        if report.employee_id != employee_id:
+            raise _bad_request("That report belongs to a different employee.")
+        if report.status is not ExpenseReportStatusEnum.DRAFT:
+            raise _bad_request(
+                f"That report is already {report.status.value}. Lines are added only "
+                "to a draft report."
+            )
+        if travel_request_id is None:
+            travel_request_id = report.travel_request_id
+
     trip: TravelRequest | None = None
     if travel_request_id is not None:
         trip_stmt = tenant_scoped(
@@ -630,6 +672,40 @@ async def capture_claim(
                 "That trip belongs to a different employee. A claim on somebody "
                 "else's trip would settle their advance."
             )
+
+    if receipt_document_id is not None:
+        receipt_owner = (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseReceipt.employee_id).where(
+                        ExpenseReceipt.id == receipt_document_id
+                    ),
+                    ExpenseReceipt,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if receipt_owner is None:
+            raise _not_found("No such receipt in this tenant.")
+        if receipt_owner != employee_id:
+            raise _bad_request("That receipt was uploaded for a different employee.")
+        attached = (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseClaim.id)
+                    .where(ExpenseClaim.receipt_document_id == receipt_document_id)
+                    .where(ExpenseClaim.status != ExpenseClaimStatusEnum.CANCELLED),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).first()
+        if attached is not None:
+            raise _bad_request(
+                "That receipt is already attached to another claim. One bill, one claim."
+            )
+        #: The file is the evidence; nobody's say-so is.
+        has_receipt = True
 
     reported, converted = await _convert_if_foreign(
         session,
@@ -744,6 +820,7 @@ async def capture_claim(
         employee_id=employee_id,
         department_id=employee.department_id,
         travel_request_id=travel_request_id,
+        report_id=report_id,
         category_key=category_key,
         city_tier=city_tier,
         kind=kind,
@@ -822,6 +899,7 @@ async def capture_claim(
     return {
         "claim_id": str(claim.id),
         "status": claim.status.value,
+        "report_id": str(claim.report_id) if claim.report_id else None,
         "amount": str(claim.amount),
         "original_amount": str(claim.original_amount),
         "original_currency": claim.original_currency,
@@ -926,7 +1004,10 @@ async def decide_claim(
             f"{claim.status.value}."
         )
     if claim.employee_id == getattr(user, "employee_id", None):
-        raise _bad_request("A claim cannot be approved by the person who made it.")
+        raise permissions.forbidden(
+            "A claim cannot be decided by the person who made it. It goes to "
+            "somebody else in finance."
+        )
 
     claim.status = (
         ExpenseClaimStatusEnum.APPROVED if approve else ExpenseClaimStatusEnum.REJECTED
@@ -934,6 +1015,8 @@ async def decide_claim(
     claim.decided_by_user_id = user.id
     claim.decided_at = datetime.now(UTC)
     claim.decision_note = note
+    if claim.report_id is not None:
+        await _refresh_report_status(session, user, claim.report_id)
 
     await audit.record(
         session,
@@ -1060,6 +1143,7 @@ async def create_travel_request(
         approvals=[],
     )
     session.add(row)
+    await session.flush()
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1099,6 +1183,10 @@ async def decide_travel_request(
         raise _bad_request(
             f"Only a submitted travel request can be decided; this one is "
             f"{row.status.value}."
+        )
+    if row.employee_id == getattr(user, "employee_id", None):
+        raise permissions.forbidden(
+            "You cannot decide your own travel request. It goes to somebody else."
         )
 
     row.status = (
@@ -1190,6 +1278,11 @@ async def issue_advance(
             "authorising it."
         )
 
+    if trip.employee_id == getattr(user, "employee_id", None):
+        raise permissions.forbidden(
+            "You cannot issue an advance to yourself. It goes to somebody else in finance."
+        )
+
     settings = await _settings(session, user)
     facts = await _advance_facts(session, user, employee_id=trip.employee_id)
     decision = advance_engine.advance_block(
@@ -1213,6 +1306,7 @@ async def issue_advance(
         issued_by_user_id=user.id,
     )
     session.add(row)
+    await session.flush()
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1251,6 +1345,10 @@ async def settle_advance(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise _not_found("No such advance in this tenant.")
+    if row.employee_id == getattr(user, "employee_id", None):
+        raise permissions.forbidden(
+            "You cannot settle your own advance. It goes to somebody else in finance."
+        )
 
     claim_stmt = tenant_scoped(
         select(ExpenseClaim)
@@ -1382,6 +1480,332 @@ async def advance_ageing(
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Reports (claims with line items), withdrawals and policy retirement
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def settings_row(session: AsyncSession, user: User) -> TenantExpenseSettings:
+    """The tenant's expense settings, created with defaults on first read."""
+    return await _settings(session, user)
+
+
+def derive_report_status(
+    statuses: list[ExpenseClaimStatusEnum],
+) -> ExpenseReportStatusEnum | None:
+    """A submitted report's status from its lines. Pure. `None` means no lines."""
+    live = [s for s in statuses if s is not ExpenseClaimStatusEnum.CANCELLED]
+    if not statuses:
+        return None
+    if not live:
+        return ExpenseReportStatusEnum.CANCELLED
+    if any(s is ExpenseClaimStatusEnum.DRAFT for s in live):
+        return ExpenseReportStatusEnum.DRAFT
+    if any(s is ExpenseClaimStatusEnum.SUBMITTED for s in live):
+        return ExpenseReportStatusEnum.SUBMITTED
+    paid = {ExpenseClaimStatusEnum.APPROVED, ExpenseClaimStatusEnum.REIMBURSED}
+    if all(s in paid for s in live):
+        return ExpenseReportStatusEnum.APPROVED
+    if all(s is ExpenseClaimStatusEnum.REJECTED for s in live):
+        return ExpenseReportStatusEnum.REJECTED
+    return ExpenseReportStatusEnum.PARTIALLY_APPROVED
+
+
+async def _refresh_report_status(
+    session: AsyncSession, user: User, report_id: uuid.UUID
+) -> None:
+    report = (
+        await session.execute(
+            tenant_scoped(
+                select(ExpenseReport).where(ExpenseReport.id == report_id), ExpenseReport, user
+            )
+        )
+    ).scalar_one_or_none()
+    if report is None or report.status is ExpenseReportStatusEnum.DRAFT:
+        return
+    statuses = list(
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseClaim.status).where(ExpenseClaim.report_id == report_id),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).scalars()
+    )
+    derived = derive_report_status(statuses)
+    if derived is None or derived is report.status:
+        return
+    report.status = derived
+    if derived in {
+        ExpenseReportStatusEnum.APPROVED,
+        ExpenseReportStatusEnum.REJECTED,
+        ExpenseReportStatusEnum.PARTIALLY_APPROVED,
+    }:
+        report.decided_at = datetime.now(UTC)
+
+
+async def create_report(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    title: str,
+    travel_request_id: uuid.UUID | None = None,
+    request: Request | None = None,
+) -> ExpenseReport:
+    employee = (
+        await session.execute(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+    ).scalar_one_or_none()
+    if employee is None:
+        raise _not_found("No such employee in this tenant.")
+    if travel_request_id is not None:
+        trip = (
+            await session.execute(
+                tenant_scoped(
+                    select(TravelRequest).where(TravelRequest.id == travel_request_id),
+                    TravelRequest,
+                    user,
+                )
+            )
+        ).scalar_one_or_none()
+        if trip is None:
+            raise _not_found("No such travel request in this tenant.")
+        if trip.employee_id != employee_id:
+            raise _bad_request("That trip belongs to a different employee.")
+
+    row = ExpenseReport(
+        tenant_id=user.tenant_id,
+        employee_id=employee_id,
+        title=title,
+        travel_request_id=travel_request_id,
+        status=ExpenseReportStatusEnum.DRAFT,
+        created_by_user_id=user.id,
+    )
+    session.add(row)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="expense_report",
+        entity_id=row.id,
+        actor=user,
+        summary=f"Expense report '{title}' started.",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def submit_report(
+    session: AsyncSession,
+    user: User,
+    *,
+    report_id: uuid.UUID,
+    justifications: dict[uuid.UUID, str] | None = None,
+    request: Request | None = None,
+) -> ExpenseReport:
+    """Submit every draft line together, each on the verdict it was given at capture.
+
+    All or nothing: a blocked line, or one that needs a reason and has none,
+    refuses the whole report and names the line. Letting the rest through would
+    split one trip across two approvals and hide the line that mattered.
+    """
+    report = (
+        await session.execute(
+            tenant_scoped(
+                select(ExpenseReport).where(ExpenseReport.id == report_id), ExpenseReport, user
+            )
+        )
+    ).scalar_one_or_none()
+    if report is None:
+        raise _not_found("No such expense report in this tenant.")
+    permissions.require_self_or_hr(
+        user, report.employee_id, detail="You can only submit your own expense reports."
+    )
+    if report.status is not ExpenseReportStatusEnum.DRAFT:
+        raise _bad_request(f"This report is already {report.status.value}.")
+
+    lines = list(
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseClaim)
+                    .where(ExpenseClaim.report_id == report_id)
+                    .where(ExpenseClaim.status == ExpenseClaimStatusEnum.DRAFT)
+                    .order_by(ExpenseClaim.incurred_on),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).scalars()
+    )
+    if not lines:
+        raise _bad_request("This report has no draft lines to submit. Add a claim to it first.")
+
+    supplied = {k: (v or "").strip() for k, v in (justifications or {}).items()}
+    problems: list[str] = []
+    for line in lines:
+        verdict = policy_engine.VerdictKind(line.policy_verdict.value)
+        reason = supplied.get(line.id) or (line.justification or "").strip()
+        label = f"{line.category_key} on {line.incurred_on.isoformat()}"
+        if verdict is policy_engine.VerdictKind.NEEDS_JUSTIFICATION:
+            if not reason:
+                problems.append(f"{label} needs a written reason. {line.verdict_message}")
+        elif not verdict.permits_submission:
+            problems.append(f"{label} cannot be submitted. {line.verdict_message}")
+    if problems:
+        raise _bad_request("The report was not submitted. " + " | ".join(problems))
+
+    now = datetime.now(UTC)
+    for line in lines:
+        if supplied.get(line.id) and not (line.justification or "").strip():
+            line.justification = supplied[line.id]
+        if line.policy_verdict is PolicyVerdictEnum.NEEDS_JUSTIFICATION:
+            line.flagged_for_approver = True
+        line.status = ExpenseClaimStatusEnum.SUBMITTED
+        line.submitted_at = now
+    report.status = ExpenseReportStatusEnum.SUBMITTED
+    report.submitted_at = now
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="expense_report",
+        entity_id=report.id,
+        actor=user,
+        changes={"lines": [str(line.id) for line in lines]},
+        summary=f"Expense report submitted with {len(lines)} line(s).",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(report)
+    return report
+
+
+async def cancel_claim(
+    session: AsyncSession,
+    user: User,
+    *,
+    claim_id: uuid.UUID,
+    request: Request | None = None,
+) -> ExpenseClaim:
+    """Withdraw a draft. Its violation record stays — a rate that improves by
+    withdrawing claims is a metric optimising itself."""
+    claim = (
+        await session.execute(
+            tenant_scoped(
+                select(ExpenseClaim).where(ExpenseClaim.id == claim_id), ExpenseClaim, user
+            )
+        )
+    ).scalar_one_or_none()
+    if claim is None:
+        raise _not_found("No such claim in this tenant.")
+    permissions.require_self_or_hr(
+        user, claim.employee_id, detail="You can only withdraw your own claims."
+    )
+    if claim.status is not ExpenseClaimStatusEnum.DRAFT:
+        raise _bad_request(
+            f"Only a draft claim can be withdrawn; this one is {claim.status.value}."
+        )
+    claim.status = ExpenseClaimStatusEnum.CANCELLED
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="expense_claim",
+        entity_id=claim.id,
+        actor=user,
+        summary="Draft claim withdrawn.",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(claim)
+    return claim
+
+
+async def cancel_travel_request(
+    session: AsyncSession,
+    user: User,
+    *,
+    travel_request_id: uuid.UUID,
+    request: Request | None = None,
+) -> TravelRequest:
+    row = (
+        await session.execute(
+            tenant_scoped(
+                select(TravelRequest).where(TravelRequest.id == travel_request_id),
+                TravelRequest,
+                user,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise _not_found("No such travel request in this tenant.")
+    permissions.require_self_or_hr(
+        user, row.employee_id, detail="You can only cancel your own travel requests."
+    )
+    if row.status is not TravelRequestStatusEnum.SUBMITTED:
+        raise _bad_request(
+            f"Only a trip awaiting a decision can be cancelled; this one is {row.status.value}."
+        )
+    row.status = TravelRequestStatusEnum.CANCELLED
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="travel_request",
+        entity_id=row.id,
+        actor=user,
+        summary="Travel request cancelled before a decision.",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def deactivate_policy(
+    session: AsyncSession,
+    user: User,
+    *,
+    policy_id: uuid.UUID,
+    request: Request | None = None,
+) -> ExpensePolicy:
+    """Retire a policy. It is kept: claims judged under it still point at its rules."""
+    row = (
+        await session.execute(
+            tenant_scoped(
+                select(ExpensePolicy).where(ExpensePolicy.id == policy_id), ExpensePolicy, user
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise _not_found("No such expense policy in this tenant.")
+    if not row.is_active:
+        raise _bad_request("This policy is already inactive.")
+    row.is_active = False
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.RULE_CHANGE,
+        entity_type="expense_policy",
+        entity_id=row.id,
+        actor=user,
+        summary=f"Expense policy '{row.name}' v{row.effective_from.isoformat()} retired.",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
 def expense_posture() -> dict[str, Any]:
     """What this slice governs, and what it does not.
 
@@ -1416,5 +1840,7 @@ def expense_posture() -> dict[str, Any]:
             "multi-level workflow.",
             "No escalation notification for an ageing advance. The ageing "
             "report exists and nothing emails it.",
+            "Receipts are stored in the database, validated by their bytes, until "
+            "object storage exists.",
         ],
     }

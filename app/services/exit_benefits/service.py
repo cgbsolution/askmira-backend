@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
@@ -278,6 +279,15 @@ async def liability_report(
 
         by_tenure[_tenure_band(Decimal(str(accrual.service_years)))] += amount
 
+    from app.models.org import Department
+
+    department_names = {
+        str(row.id): row.name
+        for row in (
+            await session.scalars(tenant_scoped(select(Department), Department, user))
+        ).all()
+    }
+
     report = {
         "as_of": as_of.isoformat(),
         "employee_count": len(accruals),
@@ -289,6 +299,7 @@ async def liability_report(
         "by_department": [
             {
                 "department_id": department,
+                "department_name": department_names.get(department, "No department"),
                 "employee_count": department_counts[department],
                 "accrued_liability": str(amount),
             }
@@ -630,6 +641,13 @@ async def decide_encashment(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This request was already {record.status.value}",
         )
+    # HR for anyone, a manager for their reporting line, nobody for themselves.
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        record.employee_id,
+        detail="You can only decide encashment for somebody in your reporting line.",
+    )
 
     record.status = EncashmentStatus.APPROVED if approve else EncashmentStatus.REJECTED
     record.approver_user_id = user.id
@@ -650,3 +668,73 @@ async def decide_encashment(
     await session.commit()
     await session.refresh(record)
     return record
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# For the scheduler, and read models with names
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def accrue_gratuity_for_tenant(
+    session: AsyncSession, tenant_id: uuid.UUID, *, as_of: date
+) -> int:
+    """The monthly accrual job, for a scheduler with no signed-in user. Commits.
+
+    Idempotent for a date, like the manual run. Returns how many employees were
+    accrued. Refuses (HTTP 409) if the tenant has no approved configuration.
+    """
+    from app.services.filings import support
+
+    rows = await accrue_gratuity(session, support.system_actor(tenant_id), as_of=as_of)
+    return len(rows)
+
+
+async def accrual_dates(session: AsyncSession, user: User) -> list[date]:
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(GratuityAccrual.as_of_date)
+                .distinct()
+                .order_by(GratuityAccrual.as_of_date.desc()),
+                GratuityAccrual,
+                user,
+            )
+        )
+    ).all()
+    return list(rows)
+
+
+async def employee_details(
+    session: AsyncSession, user: User, ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Employee]:
+    if not ids:
+        return {}
+    rows = (
+        await session.scalars(
+            tenant_scoped(select(Employee).where(Employee.id.in_(ids)), Employee, user)
+        )
+    ).all()
+    return {row.id: row for row in rows}
+
+
+async def list_encashments(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID | None,
+    pending_only: bool,
+) -> list[EncashmentRequest]:
+    """Encashments: everybody's for HR, a manager's reporting line, or your own."""
+    stmt = select(EncashmentRequest).order_by(EncashmentRequest.created_at.desc())
+    if employee_id is not None:
+        target = permissions.resolve_employee(
+            user, employee_id, detail="You can only see your own encashment requests"
+        )
+        stmt = stmt.where(EncashmentRequest.employee_id == target)
+    else:
+        visible = await permissions.visible_employee_ids(session, user)
+        if visible is not None:
+            stmt = stmt.where(EncashmentRequest.employee_id.in_(visible or {uuid.uuid4()}))
+    if pending_only:
+        stmt = stmt.where(EncashmentRequest.status == EncashmentStatus.REQUESTED)
+    return list((await session.scalars(tenant_scoped(stmt, EncashmentRequest, user))).all())

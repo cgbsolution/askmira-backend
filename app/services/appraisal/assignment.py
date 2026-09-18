@@ -191,9 +191,7 @@ def _matches(rule: Rule, facts: EmployeeFacts, as_of: date) -> tuple[bool, str]:
     return True, "matched"
 
 
-def resolve_template(
-    *, facts: EmployeeFacts, rules: list[Rule], as_of: date
-) -> AssignmentResult:
+def resolve_template(*, facts: EmployeeFacts, rules: list[Rule], as_of: date) -> AssignmentResult:
     """The template this employee is reviewed against.
 
     Rules are evaluated in priority order, lowest number first, and the first
@@ -250,9 +248,7 @@ def resolve_all(
     and what they failed to match — a count alone would leave somebody
     guessing.
     """
-    results = [
-        resolve_template(facts=facts, rules=rules, as_of=as_of) for facts in population
-    ]
+    results = [resolve_template(facts=facts, rules=rules, as_of=as_of) for facts in population]
     return (
         [r for r in results if r.is_resolved],
         [r for r in results if not r.is_resolved],

@@ -4,7 +4,10 @@
 rupees at the rate each award was issued at, aged, split by cost centre, with an
 expected redemption rate for provisioning and a chain-integrity check beside it.
 
-`GET /rewards/posture` says what is enforced and — first in the list — that **no
+No endpoint takes a date that decides valuation, expiry or tax year from the
+client. Awards and redemptions happen today; expiry runs as of today.
+
+`GET /rewards/posture` says what is enforced and - first in the list - that **no
 tax advisor has reviewed the thresholds**, which gates the whole tax section.
 """
 
@@ -12,16 +15,33 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel, Field
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.models.rewards import TaxTreatmentEnum
+from app.models.rewards import RedemptionStatusEnum
 from app.models.user import UserRole
+from app.schemas.rewards import (
+    BudgetCreate,
+    ExpiryPolicyRead,
+    ExpiryPolicyUpdate,
+    ExpiryWarningRunRead,
+    PointsAwardCreate,
+    ReconciliationCreate,
+    ReconciliationRunRead,
+    RedemptionCreate,
+    RedemptionRead,
+    ReversalCreate,
+    RewardsImportCreate,
+    RewardsImportRead,
+    TaxRuleCreate,
+    TaxRuleRead,
+    ValuationCreate,
+    ValuationRead,
+)
+from app.services.rewards import portal
 from app.services.rewards import service as rewards
 from app.services.rewards import tax as tax_engine
 
@@ -31,81 +51,12 @@ FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
 
 
-# ── Contracts ───────────────────────────────────────────────────────────────
-
-
-class ValuationIn(BaseModel):
-    points_per_rupee: Decimal = Field(gt=0)
-    effective_from: date
-    note: str | None = Field(default=None, max_length=2000)
-
-
-class ExpiryPolicyIn(BaseModel):
-    enabled: bool
-    #: A floor of 90 days in the engine and a check constraint in the database.
-    #: Shorter and people lose points they were still choosing how to spend.
-    expire_after_days: int = Field(default=365, ge=90, le=3650)
-    notify_days_before: int = Field(default=30, ge=7, le=365)
-    #: Required. Points that quietly vanish teach people the recognition was
-    #: not real.
-    disclosure: str = Field(min_length=1, max_length=2000)
-
-
-class TaxRuleIn(BaseModel):
-    reward_type: str = Field(min_length=1, max_length=64)
-    treatment: TaxTreatmentEnum
-    exemption_threshold_per_year: Decimal = Field(ge=0)
-    effective_from: date
-    basis: str | None = Field(default=None, max_length=4000)
-    #: False unless a tax advisor is named. "Reviewed" with nobody attached is
-    #: the state this flag exists to prevent.
-    reviewed: bool = False
-    reviewed_by: str | None = Field(default=None, max_length=160)
-    reviewed_on: date | None = None
-
-
-class AwardIn(BaseModel):
-    employee_id: uuid.UUID
-    points: int = Field(gt=0, le=1_000_000)
-    awarded_on: date
-    source_type: str = Field(default="recognition", max_length=48)
-    source_id: uuid.UUID | None = None
-    manager_key: str | None = Field(default=None, max_length=120)
-
-
-class RedeemIn(BaseModel):
-    employee_id: uuid.UUID
-    points: int = Field(gt=0, le=1_000_000)
-    requested_on: date
-    item_sku: str | None = Field(default=None, max_length=64)
-    item_description: str | None = Field(default=None, max_length=2000)
-
-
-class ReverseIn(BaseModel):
-    entry_id: uuid.UUID
-    #: Shown on the employee's statement. A balance that dropped for no stated
-    #: reason is a support conversation nobody can resolve.
-    reason: str = Field(min_length=1, max_length=2000)
-    occurred_on: date
-
-
-class ReconcileIn(BaseModel):
-    period_start: date
-    period_end: date
-    period_label: str = Field(min_length=1, max_length=16)
-
-
 # ── Posture ─────────────────────────────────────────────────────────────────
 
 
 @router.get("/rewards/posture")
 async def posture(user: CurrentUser) -> dict[str, Any]:
-    """What is enforced, and what is not built.
-
-    Not role-gated. The first `not_built` line says no tax advisor has reviewed
-    the thresholds, and an employee reading their statement is entitled to know
-    that the figure marked provisional is genuinely provisional.
-    """
+    """What is enforced, and what is not built. Not role-gated."""
     return rewards.rewards_posture()
 
 
@@ -114,11 +65,7 @@ async def default_tax_rules(
     user: CurrentUser,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """The shipped defaults, every one unreviewed, with the reading behind each.
-
-    Written out so an advisor can disagree with the basis rather than only with
-    the number.
-    """
+    """The shipped defaults, every one unreviewed, with the reading behind each."""
     return {
         "rules": [
             {
@@ -142,19 +89,25 @@ async def default_tax_rules(
 # ── Configuration ───────────────────────────────────────────────────────────
 
 
+@router.get("/rewards/valuations", response_model=list[ValuationRead])
+async def list_valuations(
+    session: DbSession,
+    user: CurrentUser,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> list[ValuationRead]:
+    return await portal.list_valuations(session, user)
+
+
 @router.post("/rewards/valuations", status_code=status.HTTP_201_CREATED)
 async def set_valuation(
-    body: ValuationIn,
+    body: ValuationCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
-    """Add a valuation from a date.
-
-    The response includes what the change does **not** do: issued points keep
-    the rate they were awarded at, so the liability does not move.
-    """
+    """Add a valuation from a date. Issued points keep the rate they were
+    awarded at, so the liability does not move."""
     return await rewards.set_valuation(
         session,
         user,
@@ -165,64 +118,86 @@ async def set_valuation(
     )
 
 
-@router.put("/rewards/expiry-policy")
+@router.get("/rewards/expiry-policy", response_model=ExpiryPolicyRead)
+async def get_expiry_policy(session: DbSession, user: CurrentUser) -> ExpiryPolicyRead:
+    """The expiry policy and its disclosure - which every employee may read."""
+    return await portal.get_expiry_policy(session, user)
+
+
+@router.put("/rewards/expiry-policy", response_model=ExpiryPolicyRead)
 async def set_expiry_policy(
-    body: ExpiryPolicyIn,
+    body: ExpiryPolicyUpdate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
-    row = await rewards.set_expiry_policy(
+) -> ExpiryPolicyRead:
+    await rewards.set_expiry_policy(
         session,
         user,
         enabled=body.enabled,
         expire_after_days=body.expire_after_days,
         notify_days_before=body.notify_days_before,
-        disclosure=body.disclosure,
+        disclosure=body.disclosure.strip(),
         request=request,
     )
-    return {
-        "enabled": row.enabled,
-        "expire_after_days": row.expire_after_days,
-        "notify_days_before": row.notify_days_before,
-        "disclosure": row.disclosure,
-    }
+    return await portal.get_expiry_policy(session, user)
 
 
-@router.post("/rewards/tax-rules", status_code=status.HTTP_201_CREATED)
+@router.get("/rewards/tax-rules", response_model=list[TaxRuleRead])
+async def list_tax_rules(
+    session: DbSession,
+    user: CurrentUser,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> list[TaxRuleRead]:
+    return await portal.list_tax_rules(session, user)
+
+
+@router.post("/rewards/tax-rules", response_model=TaxRuleRead, status_code=status.HTTP_201_CREATED)
 async def set_tax_rule(
-    body: TaxRuleIn,
+    body: TaxRuleCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _admin=Depends(require_roles(*ADMIN_ROLES)),
-) -> dict[str, Any]:
+) -> TaxRuleRead:
     row = await rewards.set_tax_rule(
         session,
         user,
-        reward_type=body.reward_type,
+        reward_type=body.reward_type.strip(),
         treatment=body.treatment,
         exemption_threshold_per_year=body.exemption_threshold_per_year,
         effective_from=body.effective_from,
         basis=body.basis,
         reviewed=body.reviewed,
-        reviewed_by=body.reviewed_by,
+        reviewed_by=(body.reviewed_by or "").strip() or None,
         reviewed_on=body.reviewed_on,
         request=request,
     )
-    return {
-        "rule_id": str(row.id),
-        "reward_type": row.reward_type,
-        "treatment": row.treatment.value,
-        "reviewed": row.reviewed,
-        "note": (
-            f"Reviewed by {row.reviewed_by}."
-            if row.reviewed
-            else "Not reviewed. Payroll will refuse a taxable figure from this "
-            "rule until a tax advisor has signed it off."
-        ),
-    }
+    return TaxRuleRead.model_validate(row)
+
+
+# ── Budgets ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/rewards/budgets")
+async def budget_utilisation(
+    session: DbSession,
+    user: CurrentUser,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> dict[str, Any]:
+    return await portal.budget_report(session, user, as_of=date.today())
+
+
+@router.post("/rewards/budgets", status_code=status.HTTP_201_CREATED)
+async def create_budget(
+    body: BudgetCreate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> dict[str, Any]:
+    return await portal.create_budget(session, user, body, request=request)
 
 
 # ── The ledger ──────────────────────────────────────────────────────────────
@@ -230,16 +205,15 @@ async def set_tax_rule(
 
 @router.post("/rewards/awards", status_code=status.HTTP_201_CREATED)
 async def award_points(
-    body: AwardIn,
+    body: PointsAwardCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Award points.
+    """Award points, today.
 
-    Returns 409 when a hard-stop budget is exhausted, naming the scope and the
-    remaining allocation. The expiry disclosure is in the response so it appears
-    at the point of award rather than in a policy document.
+    Returns 409 when a hard-stop budget is exhausted. The expiry disclosure is
+    in the response so it appears at the point of award.
     """
     permissions.require_role(
         user, permissions.MANAGER_ROLES, detail="Points are awarded by managers and HR."
@@ -251,40 +225,49 @@ async def award_points(
         user,
         employee_id=body.employee_id,
         points=body.points,
-        awarded_on=body.awarded_on,
+        awarded_on=date.today(),
         source_type=body.source_type,
         source_id=body.source_id,
-        manager_key=body.manager_key,
         request=request,
     )
 
 
 @router.post("/rewards/redemptions", status_code=status.HTTP_201_CREATED)
 async def redeem_points(
-    body: RedeemIn,
+    body: RedemptionCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Spend points, valued at the rate of the lots actually consumed."""
-    permissions.require_self_or_hr(
+    """Spend points today, valued at the rate of the lots actually consumed."""
+    employee_id = permissions.resolve_employee(
         user, body.employee_id, detail="You can only redeem your own points."
     )
     return await rewards.redeem_points(
         session,
         user,
-        employee_id=body.employee_id,
+        employee_id=employee_id,
         points=body.points,
-        requested_on=body.requested_on,
+        requested_on=date.today(),
         item_sku=body.item_sku,
-        item_description=body.item_description,
+        item_description=body.item_description.strip(),
         request=request,
     )
 
 
+@router.get("/rewards/redemptions", response_model=list[RedemptionRead])
+async def list_redemptions(
+    session: DbSession,
+    user: CurrentUser,
+    redemption_status: RedemptionStatusEnum | None = None,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> list[RedemptionRead]:
+    return await portal.list_redemptions(session, user, status_filter=redemption_status)
+
+
 @router.post("/rewards/reversals", status_code=status.HTTP_201_CREATED)
 async def reverse_entry(
-    body: ReverseIn,
+    body: ReversalCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
@@ -295,8 +278,8 @@ async def reverse_entry(
         session,
         user,
         entry_id=body.entry_id,
-        reason=body.reason,
-        occurred_on=body.occurred_on,
+        reason=body.reason.strip(),
+        occurred_on=date.today(),
         request=request,
     )
 
@@ -305,18 +288,26 @@ async def reverse_entry(
 async def expire_points(
     session: DbSession,
     user: CurrentUser,
-    request: Request,
-    as_of: date | None = None,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Write EXPIRED rows for lots past the policy.
+    """Write EXPIRED rows for lots past the policy, as of today.
 
-    Called by a person or an external scheduler. **Nothing schedules it here**,
-    which the posture says.
+    The same function a scheduler would call. No scheduler runs here.
     """
-    return await rewards.expire_points(
-        session, user, as_of=as_of or date.today(), request=request
-    )
+    return await portal.run_expiry(session, user.tenant_id)
+
+
+@router.post("/rewards/expiry-warnings", response_model=ExpiryWarningRunRead)
+async def expiry_warnings(
+    session: DbSession,
+    user: CurrentUser,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> ExpiryWarningRunRead:
+    """Warn people whose points expire inside the notice window, once per date.
+
+    The same function a scheduler would call. No scheduler runs here.
+    """
+    return await portal.send_expiry_warnings(session, user.tenant_id)
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────
@@ -330,11 +321,7 @@ async def liability(
     group_by: str = "department_key",
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Outstanding points in rupees, aged, split, with a chain-integrity check.
-
-    Valued at the rate each award was issued at. A revaluation does not move
-    this number, which is the whole point.
-    """
+    """Outstanding points in rupees, aged, split, with a chain-integrity check."""
     return await rewards.liability_report(
         session, user, as_of=as_of or date.today(), group_by=group_by
     )
@@ -348,25 +335,9 @@ async def movement(
     period_end: date,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Opening, awarded, redeemed, expired, adjusted, closing.
-
-    The arithmetic is checked against the ledger rather than asserted: a
-    movement report that does not reconcile raises rather than being signed off.
-    """
+    """Opening, awarded, redeemed, expired, adjusted, closing - checked."""
     return await rewards.movement(
         session, user, period_start=period_start, period_end=period_end
-    )
-
-
-@router.get("/rewards/budgets")
-async def budget_utilisation(
-    session: DbSession,
-    user: CurrentUser,
-    as_of: date | None = None,
-    _finance=Depends(require_roles(*FINANCE_ROLES)),
-) -> dict[str, Any]:
-    return await rewards.budget_utilisation(
-        session, user, as_of=as_of or date.today()
     )
 
 
@@ -380,11 +351,7 @@ async def perquisites(
     allow_provisional: bool = False,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """What should flow into payroll and TDS.
-
-    Returns 400 for a taxable figure from an unreviewed rule unless
-    `allow_provisional` is set — and even then, nothing in payroll consumes it.
-    """
+    """What should flow into payroll and TDS. Nothing in payroll consumes it here."""
     return await rewards.perquisites(
         session,
         user,
@@ -395,6 +362,12 @@ async def perquisites(
     )
 
 
+@router.get("/rewards/me/statement")
+async def my_statement(session: DbSession, user: CurrentUser) -> dict[str, Any]:
+    """Your balance, statement, expiry and tax position for this financial year."""
+    return await portal.my_statement(session, user)
+
+
 @router.get("/rewards/statement/{employee_id}")
 async def employee_statement(
     employee_id: uuid.UUID,
@@ -403,12 +376,7 @@ async def employee_statement(
     financial_year: str,
     as_of: date | None = None,
 ) -> dict[str, Any]:
-    """One employee's balance, rows, expiry and tax position.
-
-    Shown before the payslip rather than in it. A recognition programme that
-    produces an unexplained deduction has spent money to make somebody feel
-    worse.
-    """
+    """One employee's balance, rows, expiry and tax position."""
     permissions.require_self_or_hr(
         user, employee_id, detail="You can only see your own rewards statement."
     )
@@ -421,20 +389,44 @@ async def employee_statement(
     )
 
 
+# ── Reconciliation ──────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/rewards/partner-imports",
+    response_model=RewardsImportRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_partner_records(
+    body: RewardsImportCreate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> RewardsImportRead:
+    """Load the merchandise partner's fulfilment and invoice rows, as received."""
+    return await portal.import_partner_records(session, user, body, request=request)
+
+
+@router.get("/rewards/reconciliations", response_model=list[ReconciliationRunRead])
+async def list_reconciliations(
+    session: DbSession,
+    user: CurrentUser,
+    _finance=Depends(require_roles(*FINANCE_ROLES)),
+) -> list[ReconciliationRunRead]:
+    return await portal.list_reconciliations(session, user)
+
+
 @router.post("/rewards/reconciliations", status_code=status.HTTP_201_CREATED)
 async def run_reconciliation(
-    body: ReconcileIn,
+    body: ReconciliationCreate,
     session: DbSession,
     user: CurrentUser,
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Match redemptions, fulfilments and invoices for a month.
-
-    Every kind of gap is reported separately. A fulfilment failure and a billing
-    error of the same size would cancel to zero in a net variance, and both are
-    real.
-    """
+    """Match redemptions, fulfilments and invoices for a month, every gap
+    reported separately."""
     return await rewards.run_reconciliation(
         session,
         user,
