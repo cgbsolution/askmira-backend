@@ -135,6 +135,7 @@ def recompute_period(
     period_end,
     historical_rule_sets: dict[str, PayrollRuleSet],
     designation: str | None = None,
+    not_employed_days: Decimal = ZERO,
 ) -> PeriodArrear:
     """One closed period, recomputed on the new salary.
 
@@ -167,6 +168,9 @@ def recompute_period(
             # The same attendance as the original run. An arrear is a pay
             # difference, not a re-adjudication of who turned up in March.
             lop_days=lop_days,
+            # Likewise the days before joining or after leaving: a joining
+            # month recomputed as a full month would pay days never worked.
+            not_employed_days=not_employed_days,
             rule_sets=historical_rule_sets,
             designation=designation,
         )

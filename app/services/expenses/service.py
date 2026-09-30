@@ -18,11 +18,17 @@ finance loses the only signal it had about where its limits are wrong.
 deliberate: a limit tightened between capture and submission must not turn a
 claim the employee was told was fine into a breach they cannot see.
 
-**What is and is not wired**, stated once here:
+**How the money moves**, stated once here:
 
-- A recovery from an under-spent advance is recorded with a `payroll_recovery_ref`
-  of `None` and **nothing in payroll picks it up yet**. The balance is therefore
-  visible and unrecovered rather than silently netted.
+- A submitted claim goes to the employee's line manager first, then finance.
+  Someone with no line manager who can decide it goes straight to finance.
+- An approved claim is paid at cost in the next regular payroll run
+  (`services/payroll/inputs.py`, `ExpenseClaimProvider`). The run's approval
+  marks it REIMBURSED with the run's id, so no claim is paid twice.
+- A claim on a trip with an open travel advance waits for the advance to be
+  settled. Settlement offsets the trip's claims against the advance: a
+  shortfall is recovered in payroll (`payroll_recovery_ref`), a balance owed to
+  the employee is paid in payroll (`payroll_refund_ref`).
 - Advance issue records `disbursement_batch_id` when given; **nothing puts an
   advance into a payment file automatically**.
 - Exchange rates are read from `exchange_rate_quotes`, which is populated by an
@@ -73,9 +79,12 @@ from app.models.expenses import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.attendance.service import local_today
+from app.services.documents.indian_numbers import group_indian
 from app.services.expenses import advances as advance_engine
 from app.services.expenses import policy as policy_engine
 from app.services.expenses import rates as rate_engine
+from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
     "advance_ageing",
@@ -83,7 +92,9 @@ __all__ = [
     "create_policy",
     "create_travel_request",
     "decide_claim",
+    "decide_claim_as_manager",
     "decide_travel_request",
+    "decide_travel_request_as_manager",
     "expense_posture",
     "issue_advance",
     "record_exchange_rate",
@@ -97,8 +108,115 @@ __all__ = [
 ]
 
 
+EVENT_CLAIM_AWAITING_MANAGER = "expenses.claim.awaiting_manager"
+EVENT_CLAIM_MANAGER_DECIDED = "expenses.claim.manager_decided"
+EVENT_CLAIM_DECIDED = "expenses.claim.decided"
+EVENT_TRAVEL_AWAITING_MANAGER = "expenses.travel.awaiting_manager"
+EVENT_TRAVEL_DECIDED = "expenses.travel.decided"
+
+register_event(
+    EVENT_CLAIM_AWAITING_MANAGER,
+    "{employee_name}'s expense claim needs your approval",
+    "{employee_name} claimed {amount} for {category} on {incurred_on}. Approve or reject it "
+    "under Expenses, Team approvals.",
+)
+register_event(
+    EVENT_CLAIM_MANAGER_DECIDED,
+    "Your {category} claim was {decision} by your manager",
+    "Your claim for {amount} ({category}, {incurred_on}) was {decision} by {decided_by}."
+    "{next_line}{note_line}",
+)
+register_event(
+    EVENT_CLAIM_DECIDED,
+    "Your {category} claim was {decision}",
+    "Finance {decision} your claim for {amount} ({category}, {incurred_on}).{next_line}"
+    "{note_line}",
+)
+register_event(
+    EVENT_TRAVEL_AWAITING_MANAGER,
+    "{employee_name}'s travel request needs your approval",
+    "{employee_name} plans to travel from {from_date} to {to_date}: {purpose}. Approve or "
+    "reject it under Expenses, Team approvals.",
+)
+register_event(
+    EVENT_TRAVEL_DECIDED,
+    "Your travel request was {decision}",
+    "Your trip from {from_date} to {to_date} was {decision} by {decided_by}.{next_line}"
+    "{note_line}",
+)
+
+
 def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def _rupees(value: Any) -> str:
+    return f"₹{group_indian(_d(value).quantize(Decimal('0.01')))}"
+
+
+def _day(value: date) -> str:
+    return f"{value:%d %b %Y}"
+
+
+def _category(key: str) -> str:
+    return key.replace("_", " ").strip().lower() or "expense"
+
+
+async def _login_ids(
+    session: AsyncSession, user: User, employee_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID]:
+    """The active login of each employee that has one."""
+    wanted = {eid for eid in employee_ids if eid is not None}
+    if not wanted:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(User.employee_id, User.id).where(
+                    User.employee_id.in_(wanted), User.is_active.is_(True)
+                ),
+                User,
+                user,
+            )
+        )
+    ).all()
+    return {employee_id: user_id for employee_id, user_id in rows}
+
+
+async def line_manager_login(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> tuple[Employee | None, User | None]:
+    """The employee, and the login of the line manager who decides their claims.
+
+    `None` for the login when there is nobody who could: no manager on the
+    record, a manager with no active login, or one whose login cannot take a
+    manager's decision. Such a request goes straight to finance rather than
+    waiting on someone who will never see it.
+    """
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if employee is None or employee.manager_id is None or employee.manager_id == employee.id:
+        return employee, None
+    manager_login = await session.scalar(
+        tenant_scoped(
+            select(User).where(
+                User.employee_id == employee.manager_id,
+                User.is_active.is_(True),
+                User.role.in_(list(permissions.MANAGER_ROLES)),
+            ),
+            User,
+            user,
+        )
+    )
+    return employee, manager_login
+
+
+def first_stage(has_line_manager: bool) -> tuple[ExpenseClaimStatusEnum, str]:
+    """Where a claim goes on submission, and how to say so. Pure."""
+    if has_line_manager:
+        return ExpenseClaimStatusEnum.PENDING_MANAGER, "sent to the line manager"
+    return ExpenseClaimStatusEnum.SUBMITTED, "sent to finance (no line manager to decide it)"
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -635,6 +753,15 @@ async def capture_claim(
     if employee is None:
         raise _not_found("No such employee in this tenant.")
 
+    # Judged against the workspace's date, not the server's UTC one: at 01:00
+    # IST an expense from "today" would otherwise read as tomorrow's.
+    today = await local_today(session, user)
+    if incurred_on > today:
+        raise _bad_request(
+            f"An expense cannot be claimed before it is incurred; {_day(incurred_on)} is "
+            "in the future."
+        )
+
     if report_id is not None:
         report = (
             await session.execute(
@@ -962,7 +1089,8 @@ async def submit_claim(
             f"This claim cannot be submitted. {claim.verdict_message}"
         )
 
-    claim.status = ExpenseClaimStatusEnum.SUBMITTED
+    employee, manager_login = await line_manager_login(session, user, claim.employee_id)
+    claim.status, routed = first_stage(manager_login is not None)
     claim.submitted_at = datetime.now(UTC)
 
     await audit.record(
@@ -972,12 +1100,145 @@ async def submit_claim(
         entity_type="expense_claim",
         entity_id=claim.id,
         actor=user,
+        changes={"status": claim.status.value},
         summary=(
-            f"Claim submitted ({claim.policy_verdict.value})"
+            f"Claim submitted ({claim.policy_verdict.value}) and {routed}"
             + (" — flagged for the approver." if claim.flagged_for_approver else ".")
         ),
         request=request,
     )
+    if manager_login is not None:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_CLAIM_AWAITING_MANAGER,
+            recipient_user_ids=[manager_login.id],
+            payload={
+                "employee_name": employee.full_name if employee else "A team member",
+                "amount": _rupees(claim.amount),
+                "category": _category(claim.category_key),
+                "incurred_on": _day(claim.incurred_on),
+                "claim_id": str(claim.id),
+            },
+            commit=False,
+        )
+    await session.commit()
+    await session.refresh(claim)
+    return claim
+
+
+async def _claim_for_decision(
+    session: AsyncSession, user: User, claim_id: uuid.UUID
+) -> ExpenseClaim:
+    stmt = tenant_scoped(
+        select(ExpenseClaim).where(ExpenseClaim.id == claim_id), ExpenseClaim, user
+    )
+    claim = (await session.execute(stmt)).scalar_one_or_none()
+    if claim is None:
+        raise _not_found("No such claim in this tenant.")
+    if claim.employee_id == getattr(user, "employee_id", None):
+        raise permissions.forbidden(
+            "A claim cannot be decided by the person who made it. It goes to "
+            "somebody else."
+        )
+    return claim
+
+
+async def _open_advance_on_trip(
+    session: AsyncSession, user: User, trip_id: uuid.UUID | None
+) -> bool:
+    if trip_id is None:
+        return False
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(TravelAdvance.id).where(
+                    TravelAdvance.travel_request_id == trip_id,
+                    TravelAdvance.status == AdvanceStatusEnum.ISSUED,
+                ),
+                TravelAdvance,
+                user,
+            )
+        )
+    ) is not None
+
+
+async def decide_claim_as_manager(
+    session: AsyncSession,
+    user: User,
+    *,
+    claim_id: uuid.UUID,
+    approve: bool,
+    note: str | None = None,
+    request: Request | None = None,
+) -> ExpenseClaim:
+    """The line manager's stage. An approval hands the claim to finance.
+
+    The line manager decides — or HR, standing in for a manager who is away.
+    Nobody decides their own claim.
+    """
+    claim = await _claim_for_decision(session, user, claim_id)
+    if claim.status is not ExpenseClaimStatusEnum.PENDING_MANAGER:
+        raise _bad_request(
+            f"This claim is not waiting for a manager's decision; it is "
+            f"{claim.status.value.replace('_', ' ')}."
+        )
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        claim.employee_id,
+        detail="Only the claimant's line manager, or HR, decides this claim.",
+    )
+
+    now = datetime.now(UTC)
+    claim.manager_decided_by_user_id = user.id
+    claim.manager_decided_at = now
+    claim.manager_decision_note = note
+    if approve:
+        claim.status = ExpenseClaimStatusEnum.SUBMITTED
+    else:
+        # A manager's rejection is the claim's final decision.
+        claim.status = ExpenseClaimStatusEnum.REJECTED
+        claim.decided_by_user_id = user.id
+        claim.decided_at = now
+        claim.decision_note = note
+    if claim.report_id is not None:
+        await _refresh_report_status(session, user, claim.report_id)
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.APPROVE if approve else AuditAction.REJECT,
+        entity_type="expense_claim",
+        entity_id=claim.id,
+        actor=user,
+        changes={"stage": "manager", "status": claim.status.value, "note": note},
+        summary=(
+            f"Line manager {'approved' if approve else 'rejected'} the claim"
+            + (" and sent it to finance" if approve else "")
+            + (f": {note}" if note else ".")
+        ),
+        request=request,
+    )
+    recipients = await _login_ids(session, user, {claim.employee_id})
+    if claim.employee_id in recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_CLAIM_MANAGER_DECIDED,
+            recipient_user_ids=[recipients[claim.employee_id]],
+            payload={
+                "decision": "approved" if approve else "rejected",
+                "amount": _rupees(claim.amount),
+                "category": _category(claim.category_key),
+                "incurred_on": _day(claim.incurred_on),
+                "decided_by": user.full_name,
+                "next_line": " It is now with finance." if approve else "",
+                "note_line": f" Note: {note}" if note else "",
+                "claim_id": str(claim.id),
+            },
+            commit=False,
+        )
     await session.commit()
     await session.refresh(claim)
     return claim
@@ -992,21 +1253,17 @@ async def decide_claim(
     note: str | None = None,
     request: Request | None = None,
 ) -> ExpenseClaim:
-    stmt = tenant_scoped(
-        select(ExpenseClaim).where(ExpenseClaim.id == claim_id), ExpenseClaim, user
-    )
-    claim = (await session.execute(stmt)).scalar_one_or_none()
-    if claim is None:
-        raise _not_found("No such claim in this tenant.")
+    """Finance's decision, the last stage. An approval is paid in the next payroll."""
+    claim = await _claim_for_decision(session, user, claim_id)
+    if claim.status is ExpenseClaimStatusEnum.PENDING_MANAGER:
+        raise _bad_request(
+            "This claim is waiting for the employee's line manager. It reaches finance once "
+            "they approve it."
+        )
     if claim.status is not ExpenseClaimStatusEnum.SUBMITTED:
         raise _bad_request(
-            f"Only a submitted claim can be decided; this one is "
+            f"Only a claim with finance can be decided here; this one is "
             f"{claim.status.value}."
-        )
-    if claim.employee_id == getattr(user, "employee_id", None):
-        raise permissions.forbidden(
-            "A claim cannot be decided by the person who made it. It goes to "
-            "somebody else in finance."
         )
 
     claim.status = (
@@ -1025,9 +1282,35 @@ async def decide_claim(
         entity_type="expense_claim",
         entity_id=claim.id,
         actor=user,
+        changes={"stage": "finance", "status": claim.status.value, "note": note},
         summary=f"Claim {'approved' if approve else 'rejected'}: {note or ''}".strip(),
         request=request,
     )
+    next_line = ""
+    if approve:
+        next_line = (
+            " It is settled against your travel advance for that trip."
+            if await _open_advance_on_trip(session, user, claim.travel_request_id)
+            else " It will be paid in your next payroll."
+        )
+    recipients = await _login_ids(session, user, {claim.employee_id})
+    if claim.employee_id in recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_CLAIM_DECIDED,
+            recipient_user_ids=[recipients[claim.employee_id]],
+            payload={
+                "decision": "approved" if approve else "rejected",
+                "amount": _rupees(claim.amount),
+                "category": _category(claim.category_key),
+                "incurred_on": _day(claim.incurred_on),
+                "next_line": next_line,
+                "note_line": f" Note: {note}" if note else "",
+                "claim_id": str(claim.id),
+            },
+            commit=False,
+        )
     await session.commit()
     await session.refresh(claim)
     return claim
@@ -1130,6 +1413,12 @@ async def create_travel_request(
 ) -> TravelRequest:
     if to_date < from_date:
         raise _bad_request("A trip cannot end before it starts.")
+    employee, manager_login = await line_manager_login(session, user, employee_id)
+    stage = (
+        TravelRequestStatusEnum.PENDING_MANAGER
+        if manager_login is not None
+        else TravelRequestStatusEnum.SUBMITTED
+    )
     row = TravelRequest(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
@@ -1139,7 +1428,7 @@ async def create_travel_request(
         destinations=list(destinations or []),
         estimated_cost=_d(estimated_cost),
         advance_requested=_d(advance_requested),
-        status=TravelRequestStatusEnum.SUBMITTED,
+        status=stage,
         approvals=[],
     )
     session.add(row)
@@ -1151,11 +1440,150 @@ async def create_travel_request(
         entity_type="travel_request",
         entity_id=row.id,
         actor=user,
+        changes={"status": stage.value},
         summary=(
             f"Travel request {from_date.isoformat()} to {to_date.isoformat()}, "
-            f"advance requested {advance_requested}."
+            f"advance requested {advance_requested}; sent to "
+            + ("the line manager." if manager_login is not None else "finance.")
         ),
         request=request,
+    )
+    if manager_login is not None:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_TRAVEL_AWAITING_MANAGER,
+            recipient_user_ids=[manager_login.id],
+            payload={
+                "employee_name": employee.full_name if employee else "A team member",
+                "from_date": _day(from_date),
+                "to_date": _day(to_date),
+                "purpose": purpose[:200],
+                "travel_request_id": str(row.id),
+            },
+            commit=False,
+        )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def _trip_for_decision(
+    session: AsyncSession, user: User, travel_request_id: uuid.UUID
+) -> TravelRequest:
+    stmt = tenant_scoped(
+        select(TravelRequest).where(TravelRequest.id == travel_request_id),
+        TravelRequest,
+        user,
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise _not_found("No such travel request in this tenant.")
+    if row.employee_id == getattr(user, "employee_id", None):
+        raise permissions.forbidden(
+            "You cannot decide your own travel request. It goes to somebody else."
+        )
+    return row
+
+
+async def _record_trip_decision(
+    session: AsyncSession,
+    user: User,
+    row: TravelRequest,
+    *,
+    stage: str,
+    approve: bool,
+    note: str | None,
+    request: Request | None,
+) -> None:
+    now = datetime.now(UTC)
+    # Appended, never rewritten: the approval trail is evidence for a
+    # disbursement and a rewritten one is not evidence.
+    row.approvals = [
+        *list(row.approvals or []),
+        {
+            "user_id": str(user.id),
+            "name": user.full_name,
+            "stage": stage,
+            "decision": "approved" if approve else "rejected",
+            "at": now.isoformat(),
+            "note": note or "",
+        },
+    ]
+    final = stage == "finance" or not approve
+    if final:
+        row.decided_by_user_id = user.id
+        row.decided_at = now
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.APPROVE if approve else AuditAction.REJECT,
+        entity_type="travel_request",
+        entity_id=row.id,
+        actor=user,
+        changes={"stage": stage, "status": row.status.value, "note": note},
+        summary=(
+            f"Travel request {'approved' if approve else 'rejected'} by "
+            f"{'the line manager' if stage == 'manager' else 'finance'}"
+            + (f": {note}" if note else ".")
+        ),
+        request=request,
+    )
+    recipients = await _login_ids(session, user, {row.employee_id})
+    if row.employee_id in recipients:
+        next_line = ""
+        if approve and stage == "manager":
+            next_line = " It is now with finance."
+        elif approve and _d(row.advance_requested) > 0:
+            next_line = " Finance will issue the advance you asked for."
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_TRAVEL_DECIDED,
+            recipient_user_ids=[recipients[row.employee_id]],
+            payload={
+                "decision": "approved" if approve else "rejected",
+                "from_date": _day(row.from_date),
+                "to_date": _day(row.to_date),
+                "decided_by": (
+                    f"your manager, {user.full_name}" if stage == "manager" else "finance"
+                ),
+                "next_line": next_line,
+                "note_line": f" Note: {note}" if note else "",
+                "travel_request_id": str(row.id),
+            },
+            commit=False,
+        )
+
+
+async def decide_travel_request_as_manager(
+    session: AsyncSession,
+    user: User,
+    *,
+    travel_request_id: uuid.UUID,
+    approve: bool,
+    note: str | None = None,
+    request: Request | None = None,
+) -> TravelRequest:
+    """The line manager's stage. An approval hands the trip to finance."""
+    row = await _trip_for_decision(session, user, travel_request_id)
+    if row.status is not TravelRequestStatusEnum.PENDING_MANAGER:
+        raise _bad_request(
+            f"This travel request is not waiting for a manager's decision; it is "
+            f"{row.status.value.replace('_', ' ')}."
+        )
+    await permissions.require_manager_or_hr(
+        session,
+        user,
+        row.employee_id,
+        detail="Only the traveller's line manager, or HR, decides this request.",
+    )
+    row.status = (
+        TravelRequestStatusEnum.SUBMITTED if approve else TravelRequestStatusEnum.REJECTED
+    )
+    await _record_trip_decision(
+        session, user, row, stage="manager", approve=approve, note=note, request=request
     )
     await session.commit()
     await session.refresh(row)
@@ -1171,50 +1599,24 @@ async def decide_travel_request(
     note: str | None = None,
     request: Request | None = None,
 ) -> TravelRequest:
-    stmt = tenant_scoped(
-        select(TravelRequest).where(TravelRequest.id == travel_request_id),
-        TravelRequest,
-        user,
-    )
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is None:
-        raise _not_found("No such travel request in this tenant.")
+    """Finance's decision, the last stage."""
+    row = await _trip_for_decision(session, user, travel_request_id)
+    if row.status is TravelRequestStatusEnum.PENDING_MANAGER:
+        raise _bad_request(
+            "This trip is waiting for the traveller's line manager. It reaches finance once "
+            "they approve it."
+        )
     if row.status is not TravelRequestStatusEnum.SUBMITTED:
         raise _bad_request(
-            f"Only a submitted travel request can be decided; this one is "
+            f"Only a trip with finance can be decided here; this one is "
             f"{row.status.value}."
-        )
-    if row.employee_id == getattr(user, "employee_id", None):
-        raise permissions.forbidden(
-            "You cannot decide your own travel request. It goes to somebody else."
         )
 
     row.status = (
         TravelRequestStatusEnum.APPROVED if approve else TravelRequestStatusEnum.REJECTED
     )
-    # Appended, never rewritten: the approval trail is evidence for a
-    # disbursement and a rewritten one is not evidence.
-    row.approvals = [
-        *list(row.approvals or []),
-        {
-            "user_id": str(user.id),
-            "decision": "approved" if approve else "rejected",
-            "at": datetime.now(UTC).isoformat(),
-            "note": note or "",
-        },
-    ]
-    row.decided_by_user_id = user.id
-    row.decided_at = datetime.now(UTC)
-
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        action=AuditAction.APPROVE if approve else AuditAction.REJECT,
-        entity_type="travel_request",
-        entity_id=row.id,
-        actor=user,
-        summary=f"Travel request {row.status.value}: {note or ''}".strip(),
-        request=request,
+    await _record_trip_decision(
+        session, user, row, stage="finance", approve=approve, note=note, request=request
     )
     await session.commit()
     await session.refresh(row)
@@ -1350,17 +1752,15 @@ async def settle_advance(
             "You cannot settle your own advance. It goes to somebody else in finance."
         )
 
+    # Approved claims on this trip that nothing has paid yet. One already paid
+    # in a payroll run, or already offset against another advance, has reached
+    # the employee once; counting it here would pay it again.
     claim_stmt = tenant_scoped(
         select(ExpenseClaim)
         .where(ExpenseClaim.travel_request_id == row.travel_request_id)
-        .where(
-            ExpenseClaim.status.in_(
-                [
-                    ExpenseClaimStatusEnum.APPROVED,
-                    ExpenseClaimStatusEnum.REIMBURSED,
-                ]
-            )
-        ),
+        .where(ExpenseClaim.status == ExpenseClaimStatusEnum.APPROVED)
+        .where(ExpenseClaim.reimbursed_in_run_id.is_(None))
+        .where(ExpenseClaim.advance_settlement_id.is_(None)),
         ExpenseClaim,
         user,
     )
@@ -1389,30 +1789,49 @@ async def settle_advance(
     except advance_engine.AdvanceError as exc:
         raise _bad_request(str(exc)) from exc
 
+    if settled_on > await local_today(session, user):
+        raise _bad_request("An advance cannot be settled on a date in the future.")
+
     row.claimed_against = claims_total
     row.settled_on = settled_on
     row.status = AdvanceStatusEnum.SETTLED
     row.recovered_amount = result.recovery_amount
     row.refunded_amount = result.refund_amount
 
-    session.add(
-        AdvanceSettlement(
-            tenant_id=user.tenant_id,
-            advance_id=row.id,
-            travel_request_id=row.travel_request_id,
-            advance_amount=result.advance_amount,
-            claims_total=result.claims_total,
-            outcome=SettlementOutcomeEnum(result.outcome.value),
-            recovery_amount=result.recovery_amount,
-            refund_amount=result.refund_amount,
-            # Null until payroll picks it up. Setting it here would record a
-            # recovery that has not happened.
-            payroll_recovery_ref=None,
-            settled_on=settled_on,
-            settled_by_user_id=user.id,
-            message=result.message,
-        )
+    settlement = AdvanceSettlement(
+        tenant_id=user.tenant_id,
+        advance_id=row.id,
+        travel_request_id=row.travel_request_id,
+        advance_amount=result.advance_amount,
+        claims_total=result.claims_total,
+        outcome=SettlementOutcomeEnum(result.outcome.value),
+        recovery_amount=result.recovery_amount,
+        refund_amount=result.refund_amount,
+        # Null until a payroll run's approval takes the recovery or pays the
+        # balance. Setting either here would record money that has not moved.
+        payroll_recovery_ref=None,
+        payroll_refund_ref=None,
+        settled_on=settled_on,
+        settled_by_user_id=user.id,
+        message=result.message,
     )
+    session.add(settlement)
+    await session.flush()
+
+    # The claims this advance covered are now accounted for by it. Where the
+    # advance covered them in full they are reimbursed — out of the advance.
+    # Where the trip cost more, they are reimbursed when payroll pays the
+    # balance (`AdvanceRefundProvider` marks them then).
+    paid_by_advance = result.outcome is not advance_engine.SettlementOutcome.REFUND_DUE_TO_EMPLOYEE
+    now = datetime.now(UTC)
+    for claim in claims:
+        claim.advance_settlement_id = settlement.id
+        if paid_by_advance:
+            claim.status = ExpenseClaimStatusEnum.REIMBURSED
+            claim.reimbursed_at = now
+    for report_id in {claim.report_id for claim in claims if claim.report_id}:
+        await _refresh_report_status(session, user, report_id)
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1420,6 +1839,12 @@ async def settle_advance(
         entity_type="travel_advance",
         entity_id=row.id,
         actor=user,
+        changes={
+            "outcome": result.outcome.value,
+            "claims": [str(claim.id) for claim in claims],
+            "recovery_amount": str(result.recovery_amount),
+            "refund_amount": str(result.refund_amount),
+        },
         summary=f"Advance settled: {result.outcome.value}.",
         request=request,
     )
@@ -1433,12 +1858,20 @@ async def settle_advance(
             "amount": str(result.recovery_amount),
             "reference": None,
             "note": (
-                "Recorded for payroll to recover. Nothing in payroll picks this "
-                "up automatically yet, so the balance stays visible and "
-                "unrecovered rather than being quietly netted."
+                "Recovered in the next payroll run, when it fits inside the employee's "
+                "net pay. Until then the balance stays visible as unrecovered."
             ),
         }
         if result.outcome.needs_payroll_recovery
+        else None
+    )
+    payload["payroll_refund"] = (
+        {
+            "amount": str(result.refund_amount),
+            "reference": None,
+            "note": "Paid to the employee in the next payroll run, as a non-taxable line.",
+        }
+        if result.outcome is advance_engine.SettlementOutcome.REFUND_DUE_TO_EMPLOYEE
         else None
     )
     return payload
@@ -1501,7 +1934,8 @@ def derive_report_status(
         return ExpenseReportStatusEnum.CANCELLED
     if any(s is ExpenseClaimStatusEnum.DRAFT for s in live):
         return ExpenseReportStatusEnum.DRAFT
-    if any(s is ExpenseClaimStatusEnum.SUBMITTED for s in live):
+    pending = {ExpenseClaimStatusEnum.PENDING_MANAGER, ExpenseClaimStatusEnum.SUBMITTED}
+    if any(s in pending for s in live):
         return ExpenseReportStatusEnum.SUBMITTED
     paid = {ExpenseClaimStatusEnum.APPROVED, ExpenseClaimStatusEnum.REIMBURSED}
     if all(s in paid for s in live):
@@ -1662,13 +2096,15 @@ async def submit_report(
     if problems:
         raise _bad_request("The report was not submitted. " + " | ".join(problems))
 
+    employee, manager_login = await line_manager_login(session, user, report.employee_id)
+    stage, routed = first_stage(manager_login is not None)
     now = datetime.now(UTC)
     for line in lines:
         if supplied.get(line.id) and not (line.justification or "").strip():
             line.justification = supplied[line.id]
         if line.policy_verdict is PolicyVerdictEnum.NEEDS_JUSTIFICATION:
             line.flagged_for_approver = True
-        line.status = ExpenseClaimStatusEnum.SUBMITTED
+        line.status = stage
         line.submitted_at = now
     report.status = ExpenseReportStatusEnum.SUBMITTED
     report.submitted_at = now
@@ -1680,10 +2116,26 @@ async def submit_report(
         entity_type="expense_report",
         entity_id=report.id,
         actor=user,
-        changes={"lines": [str(line.id) for line in lines]},
-        summary=f"Expense report submitted with {len(lines)} line(s).",
+        changes={"lines": [str(line.id) for line in lines], "status": stage.value},
+        summary=f"Expense report submitted with {len(lines)} line(s) and {routed}.",
         request=request,
     )
+    if manager_login is not None:
+        total = sum((_d(line.amount) for line in lines), Decimal("0"))
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_CLAIM_AWAITING_MANAGER,
+            recipient_user_ids=[manager_login.id],
+            payload={
+                "employee_name": employee.full_name if employee else "A team member",
+                "amount": _rupees(total),
+                "category": f"'{report.title}' ({len(lines)} line(s))",
+                "incurred_on": _day(min(line.incurred_on for line in lines)),
+                "report_id": str(report.id),
+            },
+            commit=False,
+        )
     await session.commit()
     await session.refresh(report)
     return report
@@ -1751,7 +2203,10 @@ async def cancel_travel_request(
     permissions.require_self_or_hr(
         user, row.employee_id, detail="You can only cancel your own travel requests."
     )
-    if row.status is not TravelRequestStatusEnum.SUBMITTED:
+    if row.status not in (
+        TravelRequestStatusEnum.PENDING_MANAGER,
+        TravelRequestStatusEnum.SUBMITTED,
+    ):
         raise _bad_request(
             f"Only a trip awaiting a decision can be cancelled; this one is {row.status.value}."
         )
@@ -1824,11 +2279,17 @@ def expense_posture() -> dict[str, Any]:
             "An advance unsettled past the tenant's threshold blocks a new one.",
             "Foreign claims store both amounts, the rate, its date, its source "
             "and the convention that chose the date.",
+            "A submitted claim or trip goes to the employee's line manager, then "
+            "to finance. Someone with no line manager who can decide goes "
+            "straight to finance. Nobody decides their own.",
+            "An approved claim is paid at cost, untaxed, in the next regular "
+            "payroll run, and marked reimbursed with that run when the run is "
+            "approved. A claim is never paid by two runs.",
+            "Claims on a trip with an open advance wait for its settlement: an "
+            "under-spent advance is recovered in payroll within net pay, and a "
+            "trip that cost more than its advance has the balance paid in payroll.",
         ],
         "not_built": [
-            "Nothing in payroll picks up a recovery from an under-spent "
-            "advance. The settlement records it and the balance stays visible "
-            "and unrecovered.",
             "No advance is placed into a disbursement batch automatically; the "
             "batch id is recorded if one is supplied.",
             "No exchange rate feed is connected. Rates are entered by an admin "
@@ -1836,10 +2297,13 @@ def expense_posture() -> dict[str, Any]:
             "than converted at a guess.",
             "No receipt OCR or category extraction. A claim arrives with its "
             "category and amount already decided by the caller.",
-            "No approval chain: a claim has one decision, not a routed "
-            "multi-level workflow.",
+            "Approval is two stages, line manager then finance. There are no "
+            "amount-based extra levels or delegation rules.",
             "No escalation notification for an ageing advance. The ageing "
             "report exists and nothing emails it.",
+            "An employee who has left is not in a payroll run, so a claim of "
+            "theirs approved after they leave is not paid automatically; add it "
+            "to their full and final settlement.",
             "Receipts are stored in the database, validated by their bytes, until "
             "object storage exists.",
         ],

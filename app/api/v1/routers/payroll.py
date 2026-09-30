@@ -224,3 +224,26 @@ async def run_payslip(
 ) -> PayslipRead:
     """One employee's payslip with the full computation trace."""
     return await payslip_service.hr_payslip(session, user, run_id, payslip_id)
+
+
+@router.get("/runs/{run_id}/payslips/{payslip_id}/pdf", response_model=None)
+async def run_payslip_pdf(
+    run_id: uuid.UUID,
+    payslip_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> Response:
+    """The payslip as a PDF. HR's copy of somebody's pay is audited."""
+    data, filename = await payslip_service.hr_payslip_pdf(
+        session, user, run_id, payslip_id, request=request
+    )
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

@@ -57,6 +57,9 @@ class VarianceFlagRead(BaseModel):
     previous_net: str
     current_net: str
     change_percent: str
+    #: Days of the period before joining or after leaving — the usual reason a
+    #: joining or leaving month swings net pay.
+    not_employed_days: str = "0"
     acknowledged: bool = False
     acknowledged_by_user_id: uuid.UUID | None = None
     acknowledged_by_name: str | None = None
@@ -186,6 +189,8 @@ class PayslipRead(BaseModel):
     working_days: Money
     paid_days: Money
     lop_days: Money
+    #: Before joining or after leaving; unpaid, and not an absence.
+    not_employed_days: Money
 
     gross_earnings: Money
     other_earnings: Money
@@ -241,6 +246,7 @@ class RegisterRowRead(BaseModel):
     working_days: Money
     paid_days: Money
     lop_days: Money
+    not_employed_days: Money
     gross_earnings: Money
     other_earnings: Money
     pf_employee: Money

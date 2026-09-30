@@ -63,11 +63,13 @@ from app.services.notifications.adapters import (
 
 __all__ = [
     "DEFAULT_PREFERENCES",
+    "DEFAULT_TEMPLATES",
     "URGENT_EVENT_KEYS",
     "DispatchOutcome",
     "NotificationError",
     "notify",
     "process_due_notifications",
+    "register_event",
     "render",
     "send_digests",
 ]
@@ -87,6 +89,8 @@ URGENT_EVENT_KEYS: frozenset[str] = frozenset(
         "security.suspicious_login",
         "attendance.device.silent",
         "system.announcement.critical",
+        # Somebody is locked out and waiting on this email.
+        "auth.password.reset",
     }
 )
 
@@ -133,6 +137,61 @@ DEFAULT_PREFERENCES: dict[str, dict[Channel, DigestMode]] = {
         Channel.IN_APP: DigestMode.IMMEDIATE,
     },
 }
+
+
+# Built-in wording per event: `(subject, body)`, rendered with the payload.
+# A tenant's own template (Settings → Notifications) wins; without one, these
+# are used, so a new workspace notifies people from day one instead of
+# silently dropping every event for want of a seeded template.
+DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
+    "leave.approval.requested": (
+        "Leave approval needed",
+        "{employee_name} has requested {leave_type} from {start_date} to {end_date}.",
+    ),
+    "leave.approval.decided": (
+        "Your leave request was {decision}",
+        "Your {leave_type} request for {start_date} to {end_date} was {decision}.",
+    ),
+    "attendance.regularisation.requested": (
+        "Attendance regularisation needed",
+        "{employee_name} has raised a regularisation for {attendance_date}.",
+    ),
+    "payroll.payslip.published": (
+        "Your payslip for {period} is ready",
+        "Your payslip for {period} is available in AskMira.",
+    ),
+    "payroll.run.failed": (
+        "Payroll run failed for {period}",
+        "The payroll run for {period} could not complete: {reason}",
+    ),
+    "culture.shoutout.received": (
+        "{from_name} gave you a shoutout",
+        "{from_name} said: {message}",
+    ),
+    "documents.letter.issued": (
+        "A document is ready for you",
+        "Your {category} letter ({reference_number}) is available in AskMira.",
+    ),
+    "system.announcement": ("{title}", "{message}"),
+}
+
+
+def register_event(
+    event_key: str,
+    subject: str,
+    body: str,
+    *,
+    preferences: dict[Channel, DigestMode] | None = None,
+) -> None:
+    """Declare an event's built-in wording, and optionally its default channels.
+
+    Modules call this at import time for the events they raise, next to the
+    code that raises them. Without a registered default an event reaches only
+    tenants that wrote their own template.
+    """
+    DEFAULT_TEMPLATES[event_key] = (subject, body)
+    if preferences is not None:
+        DEFAULT_PREFERENCES[event_key] = dict(preferences)
 
 
 @dataclass(slots=True)
@@ -190,7 +249,25 @@ async def _template_for(
         .order_by(NotificationTemplate.version.desc())
     )
     exact = await session.scalar(stmt.where(NotificationTemplate.locale == locale))
-    return exact or await session.scalar(stmt)
+    found = exact or await session.scalar(stmt)
+    if found is not None or channel is Channel.WHATSAPP:
+        # WhatsApp needs a tenant template naming an approved Meta template, so
+        # it never falls back to built-in wording.
+        return found
+    default = DEFAULT_TEMPLATES.get(event_key)
+    if default is None:
+        return None
+    # Transient: rendered from, never added to the session.
+    return NotificationTemplate(
+        tenant_id=tenant_id,
+        event_key=event_key,
+        channel=channel,
+        locale=locale,
+        subject=default[0],
+        body=default[1],
+        version=0,
+        active=True,
+    )
 
 
 # ── Policy gates ────────────────────────────────────────────────────────────
@@ -813,41 +890,13 @@ async def process_due_notifications(session: AsyncSession, tenant_id: uuid.UUID)
 async def seed_default_templates(
     session: AsyncSession, tenant_id: uuid.UUID
 ) -> list[NotificationTemplate]:
-    """Install starter templates for the shipped default events."""
-    bodies = {
-        "leave.approval.requested": (
-            "Leave approval needed",
-            "{employee_name} has requested {leave_type} from {start_date} to {end_date}.",
-        ),
-        "leave.approval.decided": (
-            "Your leave request was {decision}",
-            "Your {leave_type} request for {start_date} to {end_date} was {decision}.",
-        ),
-        "attendance.regularisation.requested": (
-            "Attendance regularisation needed",
-            "{employee_name} has raised a regularisation for {attendance_date}.",
-        ),
-        "payroll.payslip.published": (
-            "Your payslip for {period} is ready",
-            "Your payslip for {period} is available in AskMira.",
-        ),
-        "payroll.run.failed": (
-            "Payroll run failed for {period}",
-            "The payroll run for {period} could not complete: {reason}",
-        ),
-        "culture.shoutout.received": (
-            "{from_name} gave you a shoutout",
-            "{from_name} said: {message}",
-        ),
-        "documents.letter.issued": (
-            "A document is ready for you",
-            "Your {category} letter ({reference_number}) is available in AskMira.",
-        ),
-        "system.announcement": ("{title}", "{message}"),
-    }
+    """Copy the built-in templates into the tenant, so HR can edit its own copy.
 
+    Not required for delivery: `notify` falls back to `DEFAULT_TEMPLATES` for
+    any event the tenant has no template for.
+    """
     created: list[NotificationTemplate] = []
-    for event_key, (subject, body) in bodies.items():
+    for event_key, (subject, body) in DEFAULT_TEMPLATES.items():
         for channel in (Channel.EMAIL, Channel.IN_APP):
             existing = await session.scalar(
                 select(NotificationTemplate).where(

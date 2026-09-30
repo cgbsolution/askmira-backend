@@ -65,6 +65,16 @@ class ManagedUserCreated(BaseModel):
     temporary_password: str
 
 
+class EmployeeLink(BaseModel):
+    #: Null unlinks the login from any employee record.
+    employee_id: uuid.UUID | None
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class PasswordResetByAdmin(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class RoleChange(BaseModel):
     role: UserRole
     reason: str = Field(min_length=3, max_length=500)

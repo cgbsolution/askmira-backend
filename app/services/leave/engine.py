@@ -55,8 +55,11 @@ def _quantize(value: Decimal) -> Decimal:
 class DayCount:
     total: Decimal
     working_dates: tuple[date, ...]
+    #: Weekly offs and holidays in the range that are *not* charged.
     weekly_offs: tuple[date, ...]
     holidays: tuple[tuple[date, str], ...]
+    #: Offs and holidays charged anyway under the sandwich rule.
+    sandwiched: tuple[date, ...] = ()
 
 
 def count_leave_days(
@@ -66,12 +69,18 @@ def count_leave_days(
     half_day: bool,
     weekly_off_days: Sequence[int],
     holidays: Mapping[date, str],
+    sandwich: bool = False,
 ) -> DayCount:
     """What a request from `start` to `end` costs.
 
     Weekly offs and holidays inside the range are not charged: taking Friday
     to Monday off is two days of leave, not four. The dates skipped are
     returned so the screen can say why the number is smaller than the range.
+
+    Under the sandwich rule (a policy switch) an off or holiday that falls
+    *between* two days of leave in the same request is charged: Friday to
+    Monday is four days. One at either end of the range is still not charged —
+    nothing sandwiches it.
     """
     if end < start:
         raise LeaveRuleError("The leave cannot end before it starts.")
@@ -91,13 +100,57 @@ def count_leave_days(
             working.append(cursor)
         cursor += timedelta(days=1)
 
-    total = (HALF if working else ZERO) if half_day else Decimal(len(working))
+    sandwiched: list[date] = []
+    if sandwich and not half_day and len(working) >= 2:
+        first, last = working[0], working[-1]
+        sandwiched = sorted(
+            [d for d in offs if first < d < last]
+            + [d for d, _ in skipped_holidays if first < d < last]
+        )
+        offs = [d for d in offs if not first < d < last]
+        skipped_holidays = [(d, n) for d, n in skipped_holidays if not first < d < last]
+
+    total = (HALF if working else ZERO) if half_day else Decimal(len(working) + len(sandwiched))
     return DayCount(
         total=total,
         working_dates=tuple(working),
         weekly_offs=tuple(offs),
         holidays=tuple(skipped_holidays),
+        sandwiched=tuple(sandwiched),
     )
+
+
+def overlapping_requests(
+    *,
+    start: date,
+    end: date,
+    half_day: bool,
+    session: str | None,
+    existing: Sequence[tuple[date, date, bool, str | None]],
+) -> int:
+    """How many open requests clash with this one.
+
+    `existing` is `(start, end, is_half_day, half_day_session)` for each open
+    request of the same person. Two half days on the same date do not clash
+    when one is the first half and the other the second — that is a full day
+    taken as two halves, often of two different leave types. A half day with no
+    session (raised before sessions existed) clashes with any half day.
+    """
+    clashes = 0
+    for other_start, other_end, other_half, other_session in existing:
+        if other_start > end or other_end < start:
+            continue
+        halves_of_one_day = (
+            half_day
+            and other_half
+            and start == end == other_start == other_end
+            and session is not None
+            and other_session is not None
+            and session != other_session
+        )
+        if not halves_of_one_day:
+            clashes += 1
+    return clashes
 
 
 # ── Accrual ─────────────────────────────────────────────────────────────────
@@ -172,6 +225,52 @@ def accrued_to_date(
     return _quantize(quota * service_months / MONTHS_IN_YEAR)
 
 
+def accrual_schedule(
+    *,
+    annual_quota: Decimal,
+    frequency: str,
+    year: int,
+    as_of: date,
+    joined_on: date | None,
+) -> list[tuple[date, Decimal]]:
+    """Each credit behind `accrued_to_date`, dated, for the balance history.
+
+    Built from the running total at each period start, so the entries always
+    add up to exactly what `accrued_to_date` says — the history and the balance
+    card cannot disagree by a rounding paisa.
+    """
+    if as_of < date(year, 1, 1) or days(annual_quota) <= ZERO:
+        return []
+    if frequency == "monthly":
+        points = [date(year, m, 1) for m in range(1, 13)]
+    elif frequency == "quarterly":
+        points = [date(year, m, 1) for m in (1, 4, 7, 10)]
+    else:
+        points = [date(year, 1, 1)]
+    points = [p for p in points if p <= as_of]
+
+    entries: list[tuple[date, Decimal]] = []
+    running = ZERO
+    for point in points:
+        total = accrued_to_date(
+            annual_quota=annual_quota,
+            frequency=frequency,
+            year=year,
+            as_of=point,
+            joined_on=joined_on,
+        )
+        if total != running:
+            shown = joined_on if joined_on is not None and joined_on > point else point
+            entries.append((min(shown, as_of), total - running))
+            running = total
+    final = accrued_to_date(
+        annual_quota=annual_quota, frequency=frequency, year=year, as_of=as_of, joined_on=joined_on
+    )
+    if final != running:
+        entries.append((as_of, final - running))
+    return entries
+
+
 # ── Balances ────────────────────────────────────────────────────────────────
 
 
@@ -182,6 +281,10 @@ class Balance:
     carried_forward: Decimal = ZERO
     used: Decimal = ZERO
     encashed: Decimal = ZERO
+    #: HR credits and debits, comp-off credits and expiries, and the year-end
+    #: carry-out and lapse — every movement in the adjustment ledger that is
+    #: not opening balance, carry-in or encashment.
+    adjusted: Decimal = ZERO
     #: Requested but not yet decided. Not deducted from `available`, but a new
     #: request is checked against what would remain if they were all approved.
     pending: Decimal = ZERO
@@ -189,11 +292,47 @@ class Balance:
     @property
     def available(self) -> Decimal:
         """Same formula as the encashment ledger reads, so the two cannot disagree."""
-        return self.opening + self.accrued + self.carried_forward - self.used - self.encashed
+        return (
+            self.opening
+            + self.accrued
+            + self.carried_forward
+            + self.adjusted
+            - self.used
+            - self.encashed
+        )
 
     @property
     def available_after_pending(self) -> Decimal:
         return self.available - self.pending
+
+
+def year_end_split(available: Decimal, max_carry: Decimal | None) -> tuple[Decimal, Decimal]:
+    """`(carried, lapsed)` when a leave year closes.
+
+    Up to `max_carry` moves into the new year and the rest lapses. `None` means
+    uncapped — comp-off, whose credits lapse by their own expiry date instead.
+    A negative balance carries nothing and lapses nothing: the deficit stays on
+    the year it was taken in.
+    """
+    if available <= ZERO:
+        return ZERO, ZERO
+    if max_carry is None:
+        return available, ZERO
+    carried = min(available, max(ZERO, days(max_carry)))
+    return carried, available - carried
+
+
+def comp_off_lapse(*, available: Decimal, expiring: Decimal, still_valid: Decimal) -> Decimal:
+    """Comp-off days that lapse now, taking the oldest credit as used first.
+
+    `available` is the comp-off balance today, `expiring` the credits whose
+    expiry has passed and that have not been processed, `still_valid` the
+    credits not yet expired. Whatever the balance holds beyond the valid
+    credits must be left over from the expiring ones — up to their size.
+    """
+    if expiring <= ZERO:
+        return ZERO
+    return max(ZERO, min(expiring, available - still_valid))
 
 
 # ── Policy ──────────────────────────────────────────────────────────────────
@@ -210,17 +349,37 @@ class PolicyLike(Protocol):
 P = TypeVar("P", bound=PolicyLike)
 
 
+#: Genders a policy can be limited to. Anything else on an employee record
+#: (non-binary, undisclosed, nothing) excludes them from neither.
+BINARY_GENDERS = ("female", "male")
+
+
+def gender_excludes(policy_gender: str | None, employee_gender: str | None) -> bool:
+    """Whether a gender-limited policy shuts this person out.
+
+    Only a recorded gender that is the *other* one excludes. A missing or
+    undisclosed gender never does: a woman whose record is incomplete must not
+    lose maternity leave to a data gap.
+    """
+    if policy_gender is None or employee_gender not in BINARY_GENDERS:
+        return False
+    return employee_gender != policy_gender
+
+
 def select_policy(
     policies: Sequence[P],
     *,
     location_id: uuid.UUID | None,
     grade: str | None,
     on: date,
+    gender: str | None = None,
 ) -> P | None:
     """The most specific active policy covering this person on this date.
 
     A policy naming both location and grade beats one naming either, which
-    beats the catch-all. Among equals, the most recent version wins.
+    beats the catch-all. Among equals, the most recent version wins; on a tie
+    of start date too, the later one in `policies` wins, so a caller passing
+    them in creation order gets the correction rather than what it corrected.
     """
     best: P | None = None
     best_key: tuple[int, date] | None = None
@@ -233,9 +392,16 @@ def select_policy(
             continue
         if policy.grade is not None and policy.grade != grade:
             continue
-        specificity = (policy.location_id is not None) + (policy.grade is not None)
+        policy_gender = getattr(policy, "applies_to_gender", None)
+        if gender_excludes(policy_gender, gender):
+            continue
+        specificity = (
+            (policy.location_id is not None)
+            + (policy.grade is not None)
+            + (policy_gender is not None)
+        )
         key = (specificity, policy.effective_from)
-        if best_key is None or key > best_key:
+        if best_key is None or key >= best_key:
             best, best_key = policy, key
     return best
 
@@ -271,9 +437,19 @@ def assess_request(
     rules: PolicyRules | None,
     balance: Balance | None,
     overlapping: int,
+    is_paid: bool = True,
 ) -> Assessment:
-    """Every rule a request is held to, in the order a person would fix them."""
+    """Every rule a request is held to, in the order a person would fix them.
+
+    Unpaid leave has no balance to run out of: it is loss of pay, which
+    attendance and payroll account for. It needs no policy either, though a
+    policy's notice and length rules still apply when one exists.
+    """
     result = Assessment()
+    if not is_paid:
+        balance = None
+        if rules is None:
+            rules = PolicyRules()
 
     if half_day and not allows_half_day:
         result.problems.append("This leave type cannot be taken as a half day.")

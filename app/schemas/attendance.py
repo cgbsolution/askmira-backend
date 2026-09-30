@@ -16,6 +16,7 @@ from app.models.attendance import (
     AttendanceStatus,
     PunchDirection,
     PunchSource,
+    RegularisationKind,
     RegularisationStatus,
 )
 
@@ -109,6 +110,7 @@ class AttendanceDayRead(BaseModel):
     last_out: datetime | None
     late_by_minutes: int
     early_by_minutes: int
+    overtime_minutes: int = 0
     is_regularised: bool
     computation_note: str | None
 
@@ -155,14 +157,83 @@ class AttendanceSummaryResponse(BaseModel):
     employees: list[EmployeeAttendanceSummary]
 
 
+class ShiftBrief(BaseModel):
+    """A shift as the person working it needs to see it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code: str
+    name: str
+    start_time: time
+    end_time: time
+    break_minutes: int
+    grace_in_minutes: int
+    is_night_shift: bool
+    weekly_off_days: list[int]
+
+
+class CalendarHoliday(BaseModel):
+    holiday_date: date
+    name: str
+
+
+class CalendarLeave(BaseModel):
+    leave_date: date
+    leave_type: str
+    is_half_day: bool
+    #: approved | pending
+    status: str
+
+
 class MyAttendancePeriod(BaseModel):
-    """One person's days over a period, with the totals computed server-side."""
+    """One person's days over a period, with the totals computed server-side.
+
+    Also carries what a calendar needs for days that have no computed row yet —
+    the holidays that apply to this person, their approved and pending leave,
+    and the shift they are on — so the portal never guesses any of it.
+    """
 
     period_start: date
     period_end: date
     is_locked: bool
     summary: EmployeeAttendanceSummary
     days: list[AttendanceDayRead]
+    #: The workspace's local date, so "today" and "future" match the server.
+    today: date
+    date_of_joining: date | None = None
+    shift_today: ShiftBrief | None = None
+    #: Today's shift is the workspace default rather than an assignment.
+    shift_today_is_default: bool = False
+    #: No shift, roster or default applies — days cannot be judged.
+    has_no_shift: bool = False
+    shifts: list[ShiftBrief] = Field(default_factory=list)
+    holidays: list[CalendarHoliday] = Field(default_factory=list)
+    leaves: list[CalendarLeave] = Field(default_factory=list)
+
+
+class TeamMemberToday(BaseModel):
+    """One person's day so far, for a manager or HR."""
+
+    employee_id: uuid.UUID
+    employee_code: str
+    employee_name: str
+    designation: str | None = None
+    #: in | out | not_in | on_leave | holiday | week_off | on_duty | work_from_home
+    state: str
+    first_in: datetime | None = None
+    last_punch_at: datetime | None = None
+    last_direction: PunchDirection | None = None
+    shift_name: str | None = None
+    shift_start: time | None = None
+    late_by_minutes: int = 0
+    detail: str | None = None
+
+
+class TeamToday(BaseModel):
+    today: date
+    members: list[TeamMemberToday]
+    counts: dict[str, int]
 
 
 # ── Regularisation ──────────────────────────────────────────────────────────
@@ -182,7 +253,8 @@ REGULARISABLE_STATUSES = frozenset(
 class RegularisationCreate(BaseModel):
     employee_id: uuid.UUID | None = None
     attendance_date: date
-    requested_status: AttendanceStatus
+    kind: RegularisationKind = RegularisationKind.STATUS_CHANGE
+    requested_status: AttendanceStatus = AttendanceStatus.PRESENT
     reason: str = Field(min_length=3, max_length=1000)
     requested_first_in: datetime | None = None
     requested_last_out: datetime | None = None
@@ -196,6 +268,23 @@ class RegularisationCreate(BaseModel):
                 "Time off is requested as leave, which has a balance."
             )
         return value
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Give a reason.")
+        return value.strip()
+
+
+class RegularisationRangeCreate(BaseModel):
+    """On-duty or work-from-home over several days — one request per working day."""
+
+    employee_id: uuid.UUID | None = None
+    kind: RegularisationKind
+    start_date: date
+    end_date: date
+    reason: str = Field(min_length=3, max_length=1000)
 
     @field_validator("reason")
     @classmethod
@@ -222,6 +311,7 @@ class RegularisationRead(BaseModel):
     id: uuid.UUID
     employee_id: uuid.UUID
     attendance_date: date
+    kind: RegularisationKind = RegularisationKind.STATUS_CHANGE
     requested_status: AttendanceStatus
     requested_first_in: datetime | None = None
     requested_last_out: datetime | None = None
@@ -360,6 +450,7 @@ class ShiftRead(BaseModel):
     is_night_shift: bool
     weekly_off_days: list[int]
     active: bool
+    is_default: bool = False
 
 
 # ── Rosters ─────────────────────────────────────────────────────────────────

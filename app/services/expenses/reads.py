@@ -8,7 +8,9 @@ their own claim, trip or settlement.
 
 from __future__ import annotations
 
+import calendar
 import uuid
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -38,6 +40,7 @@ from app.models.expenses import (
     TravelRequestStatusEnum,
 )
 from app.models.org import Location
+from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.user import User
 from app.schemas.expenses import (
     AdvanceRead,
@@ -53,6 +56,7 @@ from app.schemas.expenses import (
     ReviewQueue,
     RuleRead,
     SettingsRead,
+    TeamQueue,
     TravelRequestRead,
 )
 from app.services.expenses import advances as advance_engine
@@ -77,13 +81,145 @@ def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
-def claim_read(claim: ExpenseClaim, employee: Employee | None) -> ClaimRead:
+@dataclass(slots=True)
+class PaymentContext:
+    """What a claim's reader needs to say where its money is."""
+
+    runs: dict[uuid.UUID, PayrollRun] = field(default_factory=dict)
+    names: dict[uuid.UUID, str] = field(default_factory=dict)
+    open_advance_trips: set[uuid.UUID] = field(default_factory=set)
+
+
+def payment_note(
+    claim: ExpenseClaim, run: PayrollRun | None, *, open_advance: bool = False
+) -> tuple[str | None, str | None, str | None]:
+    """(payroll month, run status, one sentence) for a claim. Pure.
+
+    "Paid" is said only of a run that was marked paid: an approved run has
+    committed the money but not yet sent it.
+    """
+    period = (
+        f"{calendar.month_name[run.period_month]} {run.period_year}" if run is not None else None
+    )
+    run_status = run.status.value if run is not None else None
+    status_ = claim.status
+    if status_ is ExpenseClaimStatusEnum.REIMBURSED:
+        via_advance = claim.advance_settlement_id is not None
+        if run is not None:
+            balance = " (the balance after your travel advance)" if via_advance else ""
+            if run.status is PayrollRunStatus.PAID:
+                return period, run_status, f"Paid in {period} payroll{balance}."
+            return (
+                period,
+                run_status,
+                f"Included in the approved {period} payroll{balance}; it reaches you when "
+                "that payroll is paid.",
+            )
+        if via_advance:
+            return None, None, "Settled against your travel advance for this trip."
+        return None, None, "Reimbursed."
+    if status_ is ExpenseClaimStatusEnum.APPROVED:
+        if claim.advance_settlement_id is not None:
+            return (
+                None,
+                None,
+                "Settled against your travel advance; the balance due to you is paid in your "
+                "next payroll.",
+            )
+        if open_advance:
+            return (
+                None,
+                None,
+                "Approved. It is settled against your travel advance for this trip.",
+            )
+        return None, None, "Approved. It is paid in your next payroll."
+    if status_ is ExpenseClaimStatusEnum.PENDING_MANAGER:
+        return None, None, "Waiting for your line manager's approval."
+    if status_ is ExpenseClaimStatusEnum.SUBMITTED:
+        return None, None, "With finance for a decision."
+    return None, None, None
+
+
+async def payment_context(
+    session: AsyncSession, user: User, claims: list[ExpenseClaim]
+) -> PaymentContext:
+    context = PaymentContext()
+    run_ids = {c.reimbursed_in_run_id for c in claims if c.reimbursed_in_run_id}
+    if run_ids:
+        context.runs = {
+            run.id: run
+            for run in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(PayrollRun).where(PayrollRun.id.in_(run_ids)), PayrollRun, user
+                    )
+                )
+            ).all()
+        }
+    manager_ids = {c.manager_decided_by_user_id for c in claims if c.manager_decided_by_user_id}
+    if manager_ids:
+        context.names = {
+            user_id: name
+            for user_id, name in (
+                await session.execute(
+                    tenant_scoped(
+                        select(User.id, User.full_name).where(User.id.in_(manager_ids)),
+                        User,
+                        user,
+                    )
+                )
+            ).all()
+        }
+    trip_ids = {
+        c.travel_request_id
+        for c in claims
+        if c.travel_request_id and c.status is ExpenseClaimStatusEnum.APPROVED
+    }
+    if trip_ids:
+        context.open_advance_trips = set(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(TravelAdvance.travel_request_id).where(
+                            TravelAdvance.travel_request_id.in_(trip_ids),
+                            TravelAdvance.status == AdvanceStatusEnum.ISSUED,
+                        ),
+                        TravelAdvance,
+                        user,
+                    )
+                )
+            ).all()
+        )
+    return context
+
+
+def claim_read(
+    claim: ExpenseClaim, employee: Employee | None, context: PaymentContext | None = None
+) -> ClaimRead:
+    context = context or PaymentContext()
+    run = context.runs.get(claim.reimbursed_in_run_id) if claim.reimbursed_in_run_id else None
+    period, run_status, note = payment_note(
+        claim, run, open_advance=claim.travel_request_id in context.open_advance_trips
+    )
     return ClaimRead.model_validate(claim).model_copy(
         update={
             "employee_code": employee.employee_code if employee else None,
             "employee_name": employee.full_name if employee else None,
+            "manager_decided_by_name": context.names.get(claim.manager_decided_by_user_id)
+            if claim.manager_decided_by_user_id
+            else None,
+            "reimbursed_in_period": period,
+            "reimbursed_run_status": run_status,
+            "payment_note": note,
         }
     )
+
+
+async def claim_reads(
+    session: AsyncSession, user: User, rows: list[tuple[ExpenseClaim, Employee | None]]
+) -> list[ClaimRead]:
+    context = await payment_context(session, user, [claim for claim, _ in rows])
+    return [claim_read(claim, employee, context) for claim, employee in rows]
 
 
 # ── Claims ──────────────────────────────────────────────────────────────────
@@ -106,7 +242,7 @@ async def list_claims(
         _LIST_LIMIT
     )
     rows = (await session.execute(tenant_scoped(stmt, ExpenseClaim, user))).all()
-    return [claim_read(claim, employee) for claim, employee in rows]
+    return await claim_reads(session, user, [(claim, employee) for claim, employee in rows])
 
 
 async def get_claim(session: AsyncSession, user: User, claim_id: uuid.UUID) -> ClaimRead:
@@ -124,8 +260,12 @@ async def get_claim(session: AsyncSession, user: User, claim_id: uuid.UUID) -> C
     if row is None:
         raise _not_found("No such claim in this tenant.")
     claim, employee = row
-    permissions.require_self_or_hr(user, claim.employee_id, detail="That claim is not yours.")
-    return claim_read(claim, employee)
+    if not permissions.is_hr(user) and claim.employee_id != user.employee_id:
+        # A line manager may read a claim from their team while it waits for them.
+        await permissions.require_manager_or_hr(
+            session, user, claim.employee_id, detail="That claim is not yours."
+        )
+    return (await claim_reads(session, user, [(claim, employee)]))[0]
 
 
 # ── Reports ─────────────────────────────────────────────────────────────────
@@ -176,9 +316,10 @@ async def _reports(
             )
         )
     ).all()
+    context = await payment_context(session, user, [claim for claim, _ in line_rows])
     by_report: dict[uuid.UUID, list[ClaimRead]] = {}
     for claim, employee in line_rows:
-        by_report.setdefault(claim.report_id, []).append(claim_read(claim, employee))
+        by_report.setdefault(claim.report_id, []).append(claim_read(claim, employee, context))
     return [
         _report_read(report, employee, by_report.get(report.id, []))
         for report, employee in pairs
@@ -321,13 +462,16 @@ async def _advances(
         return []
     settings = await expense_service.settings_row(session, user)
     ids = [advance.id for advance, _, _ in rows]
-    refs = {
-        advance_id: ref
-        for advance_id, ref in (
+    refs: dict[uuid.UUID, tuple[str | None, str | None]] = {
+        advance_id: (recovery_ref, refund_ref)
+        for advance_id, recovery_ref, refund_ref in (
             await session.execute(
                 tenant_scoped(
-                    select(AdvanceSettlement.advance_id, AdvanceSettlement.payroll_recovery_ref)
-                    .where(AdvanceSettlement.advance_id.in_(ids)),
+                    select(
+                        AdvanceSettlement.advance_id,
+                        AdvanceSettlement.payroll_recovery_ref,
+                        AdvanceSettlement.payroll_refund_ref,
+                    ).where(AdvanceSettlement.advance_id.in_(ids)),
                     AdvanceSettlement,
                     user,
                 )
@@ -362,7 +506,8 @@ async def _advances(
                     and outstanding > 0
                     and age > settings.advance_block_after_days
                 ),
-                payroll_recovery_ref=refs.get(advance.id),
+                payroll_recovery_ref=refs.get(advance.id, (None, None))[0],
+                payroll_refund_ref=refs.get(advance.id, (None, None))[1],
             )
         )
     return out
@@ -476,9 +621,63 @@ async def review_queue(session: AsyncSession, user: User, *, today: date) -> Rev
         else 0
     )
     return ReviewQueue(
-        claims=[claim_read(c, e) for c, e in claim_rows if c.employee_id != own],
+        claims=await claim_reads(
+            session, user, [(c, e) for c, e in claim_rows if c.employee_id != own]
+        ),
         travel_requests=[t for t in trips if t.employee_id != own],
         advances_to_settle=[a for a in advances if a.employee_id != own],
+        excluded_own=excluded,
+    )
+
+
+# ── The line manager's queue ────────────────────────────────────────────────
+
+
+async def team_queue(session: AsyncSession, user: User) -> TeamQueue:
+    """Claims and trips waiting for a line manager: the caller's reporting line.
+
+    HR sees everyone's, so a claim whose manager is away does not sit forever;
+    the decide endpoint lets HR stand in, and the screen says so. Never the
+    caller's own.
+    """
+    own = user.employee_id
+    covers_everyone = permissions.is_hr(user)
+    line: set[uuid.UUID] | None = None
+    if not covers_everyone:
+        line = await permissions.reporting_line(session, user)
+        if not line:
+            return TeamQueue(claims=[], travel_requests=[], covers_everyone=False, excluded_own=0)
+
+    claim_stmt = (
+        select(ExpenseClaim, Employee)
+        .join(Employee, Employee.id == ExpenseClaim.employee_id)
+        .where(ExpenseClaim.status == ExpenseClaimStatusEnum.PENDING_MANAGER)
+        .order_by(ExpenseClaim.submitted_at)
+    )
+    trip_stmt = (
+        select(TravelRequest, Employee)
+        .join(Employee, Employee.id == TravelRequest.employee_id)
+        .where(TravelRequest.status == TravelRequestStatusEnum.PENDING_MANAGER)
+        .order_by(TravelRequest.from_date)
+    )
+    if line is not None:
+        claim_stmt = claim_stmt.where(ExpenseClaim.employee_id.in_(line))
+        trip_stmt = trip_stmt.where(TravelRequest.employee_id.in_(line))
+
+    claim_rows = (await session.execute(tenant_scoped(claim_stmt, ExpenseClaim, user))).all()
+    trips = await _trips(session, user, trip_stmt)
+    excluded = (
+        sum(1 for claim, _ in claim_rows if claim.employee_id == own)
+        + sum(1 for trip in trips if trip.employee_id == own)
+        if own is not None
+        else 0
+    )
+    return TeamQueue(
+        claims=await claim_reads(
+            session, user, [(c, e) for c, e in claim_rows if c.employee_id != own]
+        ),
+        travel_requests=[t for t in trips if t.employee_id != own],
+        covers_everyone=covers_everyone,
         excluded_own=excluded,
     )
 

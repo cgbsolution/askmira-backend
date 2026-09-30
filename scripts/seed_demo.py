@@ -27,7 +27,7 @@ import secrets
 import string
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 
@@ -39,6 +39,7 @@ from sqlalchemy.engine import make_url
 from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import SessionLocal
+from app.models.attendance import Shift
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import Holiday, LeavePolicy, LeaveType
@@ -267,11 +268,39 @@ async def seed_time_off(session, tenant: Tenant) -> dict[str, int]:
                 )
             )
             holidays_created += 1
+    # A general shift as the workspace default, so attendance can judge every
+    # demo employee without a per-person assignment.
+    shifts_created = 0
+    has_default = await session.scalar(
+        select(Shift.id).where(Shift.tenant_id == tenant.id, Shift.is_default.is_(True))
+    )
+    if has_default is None:
+        general = await session.scalar(
+            select(Shift).where(Shift.tenant_id == tenant.id, Shift.code == "GEN")
+        )
+        if general is None:
+            general = Shift(
+                tenant_id=tenant.id,
+                code="GEN",
+                name="General shift",
+                start_time=time(9, 30),
+                end_time=time(18, 30),
+                break_minutes=60,
+                grace_in_minutes=15,
+                grace_out_minutes=15,
+                half_day_threshold_minutes=240,
+                full_day_threshold_minutes=420,
+                weekly_off_days=[6, 7],
+            )
+            session.add(general)
+            shifts_created += 1
+        general.is_default = True
     await session.flush()
     return {
         "leave_types": types_created,
         "leave_policies": policies_created,
         "holidays": holidays_created,
+        "shifts": shifts_created,
     }
 
 

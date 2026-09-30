@@ -90,6 +90,8 @@ class UserRead(BaseModel):
     role: UserRole
     is_active: bool
     is_email_verified: bool
+    #: The portal asks for a new password before anything else when set.
+    must_change_password: bool = False
     employee_id: uuid.UUID | None
     last_login_at: datetime | None
     created_at: datetime

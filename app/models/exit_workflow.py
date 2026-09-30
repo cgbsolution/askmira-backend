@@ -135,6 +135,22 @@ class ExitRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_rehire_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # ── Self-resignation ────────────────────────────────────────────────────
+    # An exit the employee submitted themselves waits for their line manager or
+    # HR to accept it; until then the employee may withdraw it. An exit HR or a
+    # manager opened is accepted when it is opened.
+    initiated_by_employee: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    employee_comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set when the employee withdrew it themselves, as distinct from HR
+    # cancelling it. Both leave the status CANCELLED; nothing is deleted.
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Set when the User is deactivated. The Employee row is never deleted —
     # see the module docstring and the slice 26 intersection.
     access_revoked_at: Mapped[datetime | None] = mapped_column(
@@ -192,6 +208,14 @@ class ClearanceItem(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set when the item is "return this asset": signing it off closes the
+    # assignment in the asset register (see `app.services.assets.exit_hooks`).
+    asset_assignment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("asset_assignments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     exit_record: Mapped[ExitRecord] = relationship(back_populates="clearance_items")
@@ -279,6 +303,14 @@ class Settlement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The payment itself, as finance recorded it: the day the money went and
+    # the bank's reference for it (UTR, cheque number). "Paid" with neither is
+    # a claim nobody can reconcile.
+    paid_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    paid_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # A hold is computed-but-not-paid. The reason is required, because "why
     # has my settlement not been paid" is the question that follows.

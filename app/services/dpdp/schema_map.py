@@ -156,6 +156,10 @@ DIRECT_IDENTIFIER_PATTERNS: tuple[str, ...] = (
 #: which hold no personal data. Every one carries the reason, because an
 #: exemption without one is indistinguishable from an oversight.
 EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
+    ("leave_policies", "applies_to_gender"): (
+        "Which population a leave policy covers ('female' for maternity leave). A rule "
+        "about a group, stored once per policy; it records nobody's gender."
+    ),
     ("legal_entities", "pan"): (
         "The employer's own PAN. A company's tax identifier, not a person's."
     ),
@@ -270,6 +274,8 @@ TABLES: dict[str, TableClassification] = {
     "competency_template_items": _none("A framework's competency rows."),
     "competency_value_links": _none("Which competency evidences which company value."),
     "clearance_templates": _none("Exit clearance checklists by department."),
+    "onboarding_templates": _none("Onboarding checklists. No person is attached to one."),
+    "onboarding_template_tasks": _none("The lines of those onboarding checklists."),
     "letter_templates": _none("Letter body templates and their merge fields."),
     "letter_template_fields": _none("The merge fields a template declares."),
     "letter_sequences": _none("Reference-number sequences for issued letters."),
@@ -362,6 +368,37 @@ TABLES: dict[str, TableClassification] = {
     ),
     "employee_work_locations": _p(EMP, "attendance"),
     "employee_documents": _p(EMP, "documents"),
+    # The extended profile. Emergency contacts, family members and nominees
+    # are about people who are not our users, so an access request from one
+    # of them has to reach this row too.
+    "employee_profiles": _p(
+        EMP,
+        "identity",
+        {
+            "personal": "identity",
+            "addresses": "identity",
+            "emergency_contacts": "dependent",
+            "family_members": "dependent",
+            "nominees": "dependent",
+            "education": "background_check",
+            "previous_employment": "background_check",
+            "photo_storage_key": "identity",
+            # Source, CTC at offer and fit score, carried over from the offer.
+            "hiring_snapshot": "compensation",
+        },
+        secondary_principal=THIRD,
+    ),
+    # A proposed change can carry a PAN, a UAN or an encrypted account number,
+    # so the payload is classified as the most sensitive thing it may hold.
+    "profile_change_requests": _p(
+        EMP,
+        "identity",
+        {
+            "proposed": "statutory_identifier",
+            "current_snapshot": "statutory_identifier",
+        },
+        secondary_principal=THIRD,
+    ),
     "employee_bank_accounts": _p(
         EMP,
         "financial",
@@ -376,6 +413,7 @@ TABLES: dict[str, TableClassification] = {
             "full_name": "identity",
             "is_email_verified": "identity",
             "password_hash": "account_security",
+            "must_change_password": "account_security",
         },
     ),
     # ── Compensation ────────────────────────────────────────────────────────
@@ -435,6 +473,9 @@ TABLES: dict[str, TableClassification] = {
     "device_punch_exceptions": _p(EMP, "attendance"),
     "leave_balances": _p(EMP, "leave"),
     "leave_requests": _p(EMP, "leave"),
+    "leave_balance_adjustments": _p(EMP, "leave"),
+    "optional_holiday_selections": _p(EMP, "leave"),
+    "comp_off_requests": _p(EMP, "leave"),
     # ── Performance and culture ─────────────────────────────────────────────
     "appraisals": _p(EMP, "performance"),
     "appraisal_stage_entries": _p(EMP, "performance"),
@@ -450,6 +491,8 @@ TABLES: dict[str, TableClassification] = {
     "position_assignments": _p(EMP, "organisational"),
     "exit_records": _p(EMP, "organisational"),
     "clearance_items": _p(EMP, "organisational"),
+    "onboarding_plans": _p(EMP, "organisational"),
+    "onboarding_tasks": _p(EMP, "organisational"),
     "issued_letters": _p(EMP, "documents"),
     # ── Recruitment ─────────────────────────────────────────────────────────
     "candidates": _p(
@@ -537,6 +580,16 @@ TABLES: dict[str, TableClassification] = {
         # account_security category: it is the evidence trail a breach
         # investigation runs on, and it is also a record of a person's
         # movements that they are entitled to see under an access request.
+    ),
+    "password_reset_tokens": _p(
+        USER,
+        "account_security",
+        {
+            "token_hash": "account_security",
+            "requested_ip": "account_security",
+        },
+        # Who asked to reset their password, from where, and whether the link
+        # was used — the trail an account-takeover investigation starts from.
     ),
     "step_up_challenges": _p(
         USER,
@@ -1068,6 +1121,43 @@ TABLES: dict[str, TableClassification] = {
     "goal_key_results": _p(EMP, "performance"),
     "goal_check_ins": _p(EMP, "performance"),
     "pip_employee_statements": _p(EMP, "performance"),
+    # ── Performance conversations: check-in replies, 1:1s, 360, private notes ──
+    "goal_check_in_comments": _p(EMP, "performance"),
+    "one_on_ones": _p(EMP, "performance"),
+    "one_on_one_items": _p(EMP, "performance"),
+    "one_on_one_private_notes": _p(EMP, "performance"),
+    "feedback_requests": _p(EMP, "performance"),
+    "feedback_reviewers": _p(EMP, "performance"),
+    "private_feedback": _p(EMP, "performance"),
+    "letter_acknowledgements": _p(
+        EMP,
+        "documents",
+        {
+            "typed_name": "identity",
+            "ip_address": "account_security",
+            "user_agent": "account_security",
+        },
+    ),
+    # ── Asset management ────────────────────────────────────────────────────
+    "asset_categories": _none(
+        "A kind of company equipment and its policy: depreciation life, whether "
+        "receipt is acknowledged, and which login collects it at exit."
+    ),
+    "assets": _none(
+        "The company's own equipment: tag, serial number, make, cost, vendor, "
+        "warranty and location. Who holds an asset is in asset_assignments."
+    ),
+    "asset_assignments": _p(EMP, "organisational", {"recovery_amount": "financial"}),
+    "asset_requests": _p(EMP, "organisational"),
+    # ── HR helpdesk ─────────────────────────────────────────────────────────
+    "helpdesk_categories": _none(
+        "A kind of request employees can raise, its SLA and the login that works "
+        "it. Describes the helpdesk, not anybody's request."
+    ),
+    "helpdesk_sequences": _none("A per-tenant counter behind ticket numbers."),
+    "helpdesk_tickets": _p(EMP, "communication"),
+    "helpdesk_comments": _p(EMP, "communication"),
+    "helpdesk_attachments": _p(EMP, "documents"),
     # ── Platform operations (W8) ────────────────────────────────────────────
     "scheduler_job_runs": _none(
         "One background job run: which job, which tenant, when, the outcome and "

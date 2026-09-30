@@ -106,7 +106,7 @@ def wrap_document(
 <style>{DEFAULT_PAGE_CSS}{extra_css}</style>
 </head><body>
 <div id="page-footer">
-  {reference_number} &nbsp;&middot;&nbsp; Page <pdf:pagenumber> of <pdf:pagecount>
+  {reference_number} &nbsp;|&nbsp; Page <pdf:pagenumber> of <pdf:pagecount>
 </div>
 <div style="border-bottom:1pt solid #14595c;padding-bottom:8pt;margin-bottom:18pt">
   {logo}

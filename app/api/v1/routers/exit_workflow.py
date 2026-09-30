@@ -26,7 +26,7 @@ from app.models.exit_workflow import (
 )
 from app.models.user import UserRole
 from app.schemas.payroll_ops import IssuedDocumentRead
-from app.services.exit_workflow import operations
+from app.services.exit_workflow import clearance_tasks, operations, resignation
 from app.services.exit_workflow import service as exit_service
 from app.services.exit_workflow import settlement as settlement_engine
 from app.services.filings import support
@@ -74,6 +74,28 @@ class ExitRead(BaseModel):
     settlement_id: uuid.UUID | None
     settlement_status: SettlementStatus | None
     created_at: datetime
+    # Self-resignation: who started it, and whether it has been accepted.
+    initiated_by_employee: bool
+    employee_comments: str | None
+    accepted_at: datetime | None
+    accepted_by_name: str | None
+    withdrawn_at: datetime | None
+    awaiting_acceptance: bool
+
+
+class ResignationCreate(BaseModel):
+    """The employee's own resignation. Whose it is comes from the login."""
+
+    reason: str = Field(min_length=3, max_length=2000)
+    #: Omitted: today plus the contractual notice period.
+    requested_last_working_day: date | None = None
+    comments: str | None = Field(default=None, max_length=2000)
+
+
+class ResignationAccept(BaseModel):
+    #: Omitted: the date the employee proposed.
+    approved_last_working_day: date | None = None
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class ReasonRequest(BaseModel):
@@ -126,7 +148,27 @@ class ClearanceItemRead(BaseModel):
     owner_role: str
     owner_user_id: uuid.UUID | None
     owner_name: str | None
+    #: Set on a "return this asset" item. Marked not returned with no amount,
+    #: it recovers the asset's current book value.
+    asset_assignment_id: uuid.UUID | None = None
     can_update: bool
+
+
+class ClearanceTaskRead(BaseModel):
+    """A clearance item waiting on the caller."""
+
+    item_id: uuid.UUID
+    exit_id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str
+    employee_code: str
+    photo_url: str | None
+    last_working_day: date | None
+    department: str
+    description: str
+    is_mandatory: bool
+    owner_role: str
+    created_at: datetime
 
 
 class ClearanceUpdate(BaseModel):
@@ -207,7 +249,18 @@ class SettlementRead(BaseModel):
     computed_at: datetime | None
     approved_at: datetime | None
     paid_at: datetime | None
+    #: How the money went, as finance recorded it.
+    paid_on: date | None = None
+    payment_reference: str | None = None
+    paid_by_name: str | None = None
     statement_letter_id: uuid.UUID | None
+
+
+class SettlementPaymentIn(BaseModel):
+    """The payment as it left the bank: the date and the bank's reference."""
+
+    paid_on: date
+    payment_reference: str = Field(min_length=3, max_length=120)
 
 
 class NoticeRecoveryRequest(BaseModel):
@@ -392,6 +445,69 @@ async def create_exit(
     return await _exit_read(session, user, record)
 
 
+@router.post("/exits/resign", response_model=ExitRead, status_code=status.HTTP_201_CREATED)
+async def resign(
+    payload: ResignationCreate, user: CurrentUser, session: DbSession, request: Request
+) -> ExitRead:
+    """Submit your own resignation. It waits for your line manager or HR to accept it."""
+    _ = user.employee_id  # always the caller's own record
+    record = await resignation.resign(
+        session,
+        user,
+        reason=payload.reason,
+        requested_last_working_day=payload.requested_last_working_day,
+        comments=payload.comments,
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(record)
+    return await _exit_read(session, user, record)
+
+
+@router.get("/exits/mine", response_model=ExitRead | None)
+async def my_exit(user: CurrentUser, session: DbSession) -> ExitRead | None:
+    """Your latest exit record, or null when there is none."""
+    _ = user.employee_id  # the caller's own exit only
+    record = await resignation.my_exit(session, user)
+    return await _exit_read(session, user, record) if record is not None else None
+
+
+@router.post("/exits/{exit_id}/withdraw", response_model=ExitRead)
+async def withdraw(
+    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> ExitRead:
+    """Withdraw your own resignation while nobody has accepted it."""
+    _ = user.employee_id  # the caller's own exit; anybody else's is a 404
+    record = await resignation.withdraw(
+        session, user, exit_id, reason=payload.reason, request=request
+    )
+    await session.commit()
+    return await _exit_read(session, user, record)
+
+
+@router.post(
+    "/exits/{exit_id}/accept",
+    response_model=ExitRead,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def accept(
+    exit_id: uuid.UUID, payload: ResignationAccept, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> ExitRead:
+    """Accept a submitted resignation: the leaver's line manager or HR, never the leaver."""
+    record = await resignation.accept(
+        session,
+        user,
+        exit_id,
+        approved_last_working_day=payload.approved_last_working_day,
+        note=payload.note,
+        request=request,
+    )
+    await session.commit()
+    return await _exit_read(session, user, record)
+
+
 @router.get(
     "/exits",
     response_model=list[ExitRead],
@@ -466,27 +582,31 @@ async def revoke(
 
 
 # ── Clearance ───────────────────────────────────────────────────────────────
+# Not role-gated: a named item owner (the IT admin collecting the laptop) often
+# signs in as an employee. Who may see an exit's checklist is
+# `operations.visible_exit`, and who may sign an item off is
+# `require_item_permission`, both per record.
 
 
-@router.get(
-    "/exits/{exit_id}/clearance",
-    response_model=list[ClearanceItemRead],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
-)
+@router.get("/exits/clearance/mine", response_model=list[ClearanceTaskRead])
+async def my_clearance_tasks(user: CurrentUser, session: DbSession) -> list[ClearanceTaskRead]:
+    """Clearance items that name you, or wait on you as the leaver's line manager."""
+    _ = user.id  # the caller's own tasks only
+    return [ClearanceTaskRead(**row) for row in await clearance_tasks.my_tasks(session, user)]
+
+
+@router.get("/exits/{exit_id}/clearance", response_model=list[ClearanceItemRead])
 async def list_clearance(
     exit_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[ClearanceItemRead]:
+    """HR, the leaver's reporting line, the leaver, or a named owner of one of its items."""
     return [
         ClearanceItemRead(**row)
         for row in await operations.list_clearance(session, user, exit_id)
     ]
 
 
-@router.patch(
-    "/exits/clearance/{item_id}",
-    response_model=ClearanceItemRead,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
-)
+@router.patch("/exits/clearance/{item_id}", response_model=ClearanceItemRead)
 async def update_clearance(
     item_id: uuid.UUID,
     payload: ClearanceUpdate,
@@ -666,6 +786,32 @@ async def approve_settlement(
     """Sign off for payment — or, where the net is negative, for a demand."""
     settlement = await operations.approve_settlement(
         session, user, settlement_id, request=request
+    )
+    await session.commit()
+    await session.refresh(settlement)
+    return await _settlement_read(session, user, settlement)
+
+
+@router.post(
+    "/exits/settlements/{settlement_id}/mark-paid",
+    response_model=SettlementRead,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def mark_settlement_paid(
+    settlement_id: uuid.UUID,
+    payload: SettlementPaymentIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SettlementRead:
+    """Record that an approved settlement was paid: the date and the bank reference."""
+    settlement = await operations.mark_settlement_paid(
+        session,
+        user,
+        settlement_id,
+        paid_on=payload.paid_on,
+        payment_reference=payload.payment_reference,
+        request=request,
     )
     await session.commit()
     await session.refresh(settlement)

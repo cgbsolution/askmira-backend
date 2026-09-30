@@ -22,6 +22,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -799,14 +800,39 @@ async def _anonymise_row(
             )
         )
     ]
-    if not columns:
+    values: dict[str, Any] = {name: None for name in columns}
+    # A required JSON column the classification names (profile sections, a
+    # change request's payload) cannot be nulled, so it is emptied instead.
+    # Leaving it would keep addresses, family and nominees after "erasure".
+    if classification is not None:
+        for column in table.columns:
+            if (
+                not column.nullable
+                and isinstance(column.type, JSONB)
+                and column.name in classification.columns
+            ):
+                values[column.name] = _empty_json(column)
+    if not values:
         return False
     result = await session.execute(
         update(table)
         .where(table.c.tenant_id == user.tenant_id, table.c.id == record_id)
-        .values({name: None for name in columns})
+        .values(values)
     )
     return bool(result.rowcount)
+
+
+def _empty_json(column: Any) -> dict | list:
+    """An empty value of the shape the column's default produces: `{}` or `[]`."""
+    default = column.default
+    if default is not None and getattr(default, "is_callable", False):
+        try:
+            value = default.arg(None)
+        except TypeError:
+            value = None
+        if isinstance(value, list):
+            return []
+    return {}
 
 
 def public_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:

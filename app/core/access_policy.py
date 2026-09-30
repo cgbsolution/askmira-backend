@@ -28,11 +28,14 @@ Rules, as the prefix of each entry:
 from __future__ import annotations
 
 from app.core.access_policies import (
+    assets,
     culture,
     documents,
     expenses,
+    helpdesk,
     hiring,
     identity,
+    onboarding,
     payroll,
     payroll_run,
     people,
@@ -59,6 +62,9 @@ _MODULES = (
     performance,
     rewards,
     platform,
+    onboarding,
+    helpdesk,
+    assets,
 )
 
 

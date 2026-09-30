@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, Enum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -189,7 +202,160 @@ class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # ── Verification (self-uploaded documents) ─────────────────────────────
+    # `not_required` for what HR put in the vault; `pending` for what the
+    # employee uploaded themselves, until HR verifies or rejects it. A
+    # self-uploaded degree certificate is a claim until somebody has looked.
+    verification_status: Mapped[str] = mapped_column(
+        String(16), default="not_required", server_default="not_required", nullable=False,
+        index=True,
+    )
+    verified_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Required on a rejection: "rejected" alone tells the employee nothing to fix.
+    verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     employee: Mapped[Employee] = relationship(back_populates="documents")
+
+
+class DocumentVerification(str, enum.Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+
+class EmployeeProfile(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """The extended employee record: one row per employee, one JSONB column per section.
+
+    Why JSONB per section rather than columns or child tables. Each section is
+    read and written as a unit — an employee saves "my education", never one
+    degree's end year — and every write is validated by a typed Pydantic model
+    (`app.schemas.employee_profile`) before it lands, so the shape is enforced
+    at the only door in. None of it is queried across employees: nobody asks
+    "everyone whose second emergency contact is a sibling". Six child tables
+    would buy joins nobody runs and a migration for every field a customer asks
+    for.
+
+    What stays a column elsewhere, and why: PAN, UAN, the Aadhaar last four, PF
+    and ESI numbers remain on `employees`, because payroll, tax and the
+    statutory returns read them there; the salary account stays in
+    `employee_bank_accounts`, encrypted, because disbursement reads it there.
+
+    `hiring_snapshot` is what the offer carried in (source, CTC at offer, fit
+    score). HR only — it is never in a self-service or directory read, which is
+    why it is here and not in `employees.custom_fields`.
+    """
+
+    __tablename__ = "employee_profiles"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", name="uq_employee_profile_employee"),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    personal: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    addresses: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    emergency_contacts: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    family_members: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    nominees: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    education: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    previous_employment: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+
+    #: A generated storage key (never a URL a person typed). The public
+    #: `employees.photo_url` points at the API route that serves it.
+    photo_storage_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    hiring_snapshot: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
+
+
+class ProfileChangeStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
+class ProfileChangeRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """An employee asking HR to change a sensitive part of their own record.
+
+    Legal name, date of birth, statutory identifiers, the salary account,
+    addresses and nominees are changed this way: each one either reaches a
+    statutory return or decides where money goes. The request keeps what was
+    on the record when it was raised (`current_snapshot`) so the reviewer sees
+    the change, not just the new value — and so an approval refuses if the
+    record has moved underneath it.
+
+    Approval applies the change in the same transaction as the status change
+    and its audit row. Rows are never deleted; a withdrawn or rejected request
+    stays as history.
+    """
+
+    __tablename__ = "profile_change_requests"
+    __table_args__ = (
+        # One open request per section per person. Two pending PAN changes
+        # would leave the reviewer choosing between them blind.
+        Index(
+            "uq_profile_change_one_pending",
+            "tenant_id",
+            "employee_id",
+            "section",
+            unique=True,
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+        CheckConstraint(
+            "status = 'PENDING' OR decided_at IS NOT NULL",
+            name="ck_profile_change_decided_has_time",
+        ),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    section: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[ProfileChangeStatus] = mapped_column(
+        Enum(ProfileChangeStatus, name="profile_change_status"),
+        default=ProfileChangeStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    proposed: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    current_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EmployeeWorkLocation(Base, UUIDMixin, TenantMixin, TimestampMixin):

@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmployeeWorkLocation, EmploymentStatus
+from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.org import LegalEntity
 from app.models.payroll import (
     PayrollRuleSet,
@@ -72,9 +73,11 @@ from app.services.payroll.tds import (
     financial_year_for,
     fy_start_month,
     months_remaining,
+    without_income_paid_by_payroll,
 )
 from app.services.tax import service as tax_service
 from app.services.tax.computation import TaxRuleError
+from app.services.tax.sources import PAID_THROUGH_PAYROLL
 
 # Rule types resolved for every run. Professional Tax and the Labour Welfare
 # Fund are state levies, so they are resolved per employee by their location.
@@ -101,6 +104,32 @@ def period_bounds(year: int, month: int) -> tuple[date, date]:
 
 def period_label(year: int, month: int) -> str:
     return f"{calendar.month_name[month]} {year}"
+
+
+def employment_window(
+    *,
+    period_start: date,
+    period_end: date,
+    joined_on: date | None,
+    left_on: date | None,
+) -> tuple[date, date] | None:
+    """The days of the period the person was employed, or `None` for none.
+
+    Attendance writes no rows before someone joins or after they leave, so
+    loss of pay alone would pay a 15th-of-the-month joiner for the whole month.
+    The window is what makes those days unpaid.
+    """
+    first = max(period_start, joined_on) if joined_on else period_start
+    last = min(period_end, left_on) if left_on else period_end
+    if first > last:
+        return None
+    return first, last
+
+
+def days_outside(period_start: date, period_end: date, window: tuple[date, date]) -> Decimal:
+    """Calendar days of the period before the window opens and after it closes."""
+    first, last = window
+    return Decimal((first - period_start).days + (period_end - last).days)
 
 
 def _not_found() -> HTTPException:
@@ -434,16 +463,58 @@ async def compute_run(
     variances: list[dict] = []
     review_flags: list[str] = []
     errors: list[str] = []
+    employment_notices: list[str] = []
+    leaving_on = await _agreed_last_days(session, user, employee_ids)
 
     for employee in employees:
+        # Days before joining and after leaving are unpaid. The exit date is
+        # the recorded one, or — for someone still serving notice — the last
+        # working day their exit agreed.
+        left_on = employee.date_of_exit or leaving_on.get(employee.id)
+        window = employment_window(
+            period_start=start,
+            period_end=end,
+            joined_on=employee.date_of_joining,
+            left_on=left_on,
+        )
+        if window is None:
+            employment_notices.append(
+                f"{employee.employee_code} is not paid by this run: "
+                + (
+                    f"they join on {employee.date_of_joining:%d %b %Y}, after the period."
+                    if employee.date_of_joining and employee.date_of_joining > end
+                    else f"their last working day was {left_on:%d %b %Y}, before the period."
+                )
+            )
+            continue
+        outside = days_outside(start, end, window)
+        if outside:
+            paid_window = (window[1] - window[0]).days + 1
+            if employee.date_of_joining and employee.date_of_joining > start:
+                employment_notices.append(
+                    f"{employee.employee_code} joined on {employee.date_of_joining:%d %b %Y}: "
+                    f"paid for {paid_window} of {working_days} day(s)."
+                )
+            if left_on and left_on < end:
+                employment_notices.append(
+                    f"{employee.employee_code}'s last working day is {left_on:%d %b %Y}: paid "
+                    f"for {paid_window} of {working_days} day(s) in this run. Their full and "
+                    "final settlement must not pay these days again."
+                )
+
         salary = await active_salary_on(session, user, employee.id, run.effective_date)
+        if salary is None and left_on is not None and left_on < end:
+            # A leaver's salary is the one in force on their last day.
+            salary = await active_salary_on(session, user, employee.id, left_on)
         if salary is None:
             errors.append(f"{employee.employee_code}: no salary assigned for {run.effective_date}")
             continue
 
         try:
+            # Loss of pay inside the employed days only: an absence recorded
+            # outside them is already unpaid as a day not employed.
             lop = await attendance_service.get_lop_days(
-                session, user, employee.id, start, end, require_lock=True
+                session, user, employee.id, window[0], window[1], require_lock=True
             )
         except AttendanceLockError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -504,7 +575,7 @@ async def compute_run(
                     rule_set_id=str(tds_rules.id),
                     financial_year=fy_label,
                     months_remaining=months_remaining(run.period_month, tds_rules.rules),
-                    base=base,
+                    base=without_income_paid_by_payroll(base, PAID_THROUGH_PAYROLL),
                     prior=prior_pay.get(employee.id, PriorPay()),
                     declaration_basis=declaration_basis,
                 )
@@ -520,6 +591,7 @@ async def compute_run(
                     period_end=end,
                     working_days=working_days,
                     lop_days=lop,
+                    not_employed_days=outside,
                     rule_sets=employee_rules,
                     pf_election=pf_election,
                     esi_contributing_at_period_start=contributing_at_start,
@@ -543,6 +615,7 @@ async def compute_run(
                 working_days=computation.working_days,
                 paid_days=computation.paid_days,
                 lop_days=computation.lop_days,
+                not_employed_days=computation.not_employed_days,
                 gross_earnings=computation.gross_earnings,
                 total_deductions=computation.total_deductions,
                 net_pay=computation.net_pay,
@@ -605,6 +678,9 @@ async def compute_run(
                         "previous_net": str(prior),
                         "current_net": str(computation.net_pay),
                         "change_percent": str(change.quantize(Decimal("0.01"))),
+                        # A joining or leaving month swings net pay for a
+                        # reason the reviewer should see beside the number.
+                        "not_employed_days": str(computation.not_employed_days),
                         "acknowledged": False,
                         "acknowledged_by_user_id": None,
                         "acknowledged_at": None,
@@ -666,9 +742,19 @@ async def compute_run(
     run.variance_flags = variances
     # Run-level flags go last, so the first flag stays the first employee's.
     run.review_flags = review_flags + run_flags
-    run.input_notices = [
-        {"kind": "source", **report.as_dict()} for report in collected.reports
-    ] + [{"kind": "notice", **notice} for notice in collected.notices]
+    run.input_notices = (
+        [{"kind": "source", **report.as_dict()} for report in collected.reports]
+        + [{"kind": "notice", **notice} for notice in collected.notices]
+        + [
+            {
+                "kind": "notice",
+                "key": "employment",
+                "label": "Joiners and leavers",
+                "message": message,
+            }
+            for message in employment_notices
+        ]
+    )
     run.rule_set_snapshot = {key: str(value.id) for key, value in rule_sets.items()}
     run.processed_at = datetime.now(UTC)
     run.status = PayrollRunStatus.PENDING_REVIEW
@@ -1002,7 +1088,9 @@ async def mark_paid(
             )
         run.payment_date = payment_date
     elif run.payment_date is None:
-        run.payment_date = now.date()
+        # The workspace's date, not the server's: at 01:00 IST the UTC date is
+        # still yesterday.
+        run.payment_date = await attendance_service.local_today(session, user)
 
     run.status = PayrollRunStatus.PAID
     run.paid_at = now
@@ -1128,6 +1216,36 @@ async def _prior_financial_year(
         for employee_id, values in totals.items()
     }
     return prior, lines
+
+
+async def _agreed_last_days(
+    session: AsyncSession, user: User, employee_ids: frozenset[uuid.UUID]
+) -> dict[uuid.UUID, date]:
+    """The agreed last working day of everyone with an open exit.
+
+    `Employee.date_of_exit` is written only when access is revoked, which is
+    usually after the last payroll that should pay them; until then the exit
+    record's approved last day is the date employment ends.
+    """
+    if not employee_ids:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(ExitRecord.employee_id, ExitRecord.approved_last_working_day)
+                .where(
+                    ExitRecord.employee_id.in_(employee_ids),
+                    ExitRecord.status != ExitStatus.CANCELLED,
+                    ExitRecord.approved_last_working_day.is_not(None),
+                )
+                .order_by(ExitRecord.created_at),
+                ExitRecord,
+                user,
+            )
+        )
+    ).all()
+    # The latest exit wins, should there ever be more than one open.
+    return {employee_id: last_day for employee_id, last_day in rows}
 
 
 async def _professional_tax_state(

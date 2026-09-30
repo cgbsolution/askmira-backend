@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -61,6 +62,12 @@ class DocumentRead(BaseModel):
     is_employee_visible: bool
     uploaded_by_user_id: uuid.UUID | None
     created_at: datetime
+    #: `not_required` (HR put it there), `pending`, `verified` or `rejected`.
+    verification_status: str
+    #: Whether the employee uploaded it themselves.
+    self_uploaded: bool
+    verified_at: datetime | None
+    verification_note: str | None
 
 
 class DocumentUpdate(BaseModel):
@@ -73,3 +80,27 @@ class DocumentUpdate(BaseModel):
     category: DocumentCategory | None = None
     valid_until: date | None = None
     is_employee_visible: bool | None = None
+
+
+#: What an employee may upload to their own vault. Contracts, payslips and
+#: policy acknowledgements are HR's to issue, not the employee's to supply.
+SELF_UPLOAD_CATEGORIES: frozenset[DocumentCategory] = frozenset(
+    {
+        DocumentCategory.ID_PROOF,
+        DocumentCategory.ADDRESS_PROOF,
+        DocumentCategory.EDUCATION,
+        DocumentCategory.EXPERIENCE,
+        DocumentCategory.TAX,
+        DocumentCategory.MEDICAL,
+        DocumentCategory.OTHER,
+    }
+)
+
+
+class DocumentVerify(BaseModel):
+    """HR's decision on a document the employee uploaded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["verified", "rejected"]
+    note: str | None = Field(default=None, max_length=1000)

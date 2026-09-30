@@ -9,9 +9,12 @@ from fastapi import APIRouter, Query, Request, status
 from app.core.deps import CurrentUser, DbSession
 from app.models.goals import GoalStatus
 from app.schemas.goals import (
+    GoalCheckInCommentCreate,
+    GoalCheckInCommentRead,
     GoalCheckInCreate,
     GoalCheckInRead,
     GoalCreate,
+    GoalCycleRead,
     GoalRead,
     GoalScope,
     GoalScoreRead,
@@ -55,6 +58,12 @@ async def alignable(
 ) -> list[GoalRead]:
     """Goals a goal for this owner may align to."""
     return await goals_service.alignable_parents(session, user, owner_employee_id=owner_employee_id)
+
+
+@router.get("/cycles", response_model=list[GoalCycleRead])
+async def goal_cycles(user: CurrentUser, session: DbSession) -> list[GoalCycleRead]:
+    """Review cycles a goal may count towards. Readable by everybody who sets goals."""
+    return await goals_service.cycles_for_goals(session, user)
 
 
 @router.get("/score", response_model=GoalScoreRead)
@@ -109,3 +118,21 @@ async def list_check_ins(
     goal_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[GoalCheckInRead]:
     return await goals_service.list_check_ins(session, user, goal_id)
+
+
+@router.post(
+    "/{goal_id}/check-ins/{check_in_id}/comments",
+    response_model=GoalCheckInCommentRead,
+    status_code=201,
+)
+async def comment_on_check_in(
+    goal_id: uuid.UUID,
+    check_in_id: uuid.UUID,
+    payload: GoalCheckInCommentCreate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> GoalCheckInCommentRead:
+    return await goals_service.comment_on_check_in(
+        session, user, goal_id, check_in_id, payload, request=request
+    )

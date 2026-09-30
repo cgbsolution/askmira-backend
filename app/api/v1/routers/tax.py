@@ -9,7 +9,6 @@ trust.
 from __future__ import annotations
 
 import uuid
-from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -28,6 +27,7 @@ from fastapi import (
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.audit import AuditAction
 from app.models.tax import ProofStatus, WindowType
 from app.models.user import UserRole
 from app.schemas.payroll_ops import IssuedDocumentRead
@@ -50,8 +50,10 @@ from app.schemas.tax import (
     WindowRead,
     WindowUpsert,
 )
+from app.services import audit
+from app.services.attendance.service import local_today
 from app.services.filings import support
-from app.services.tax import reminders
+from app.services.tax import form16, reminders
 from app.services.tax import service as tax_service
 from app.services.tax.service import TaxWorkflowError
 
@@ -90,7 +92,7 @@ async def _read_upload(file: UploadFile) -> bytes:
 async def list_windows(
     user: CurrentUser, session: DbSession, financial_year: str | None = None
 ) -> list[WindowRead]:
-    today = date.today()
+    today = await local_today(session, user)
     rows = await tax_service.list_windows(session, user, financial_year)
     return [WindowRead.from_model(row, today) for row in rows]
 
@@ -119,7 +121,7 @@ async def upsert_window(
         raise _workflow_error(exc) from exc
     await session.commit()
     await session.refresh(window)
-    return WindowRead.from_model(window, date.today())
+    return WindowRead.from_model(window, await local_today(session, user))
 
 
 @router.post(
@@ -134,7 +136,7 @@ async def run_reminders(user: CurrentUser, session: DbSession) -> ReminderRunRea
     it; it is idempotent, so running it twice in a day sends nothing twice.
     """
     outcome = await reminders.send_window_reminders(
-        session, user.tenant_id, today=date.today()
+        session, user.tenant_id, today=await local_today(session, user)
     )
     return ReminderRunRead(
         windows_checked=outcome.windows_checked,
@@ -624,6 +626,54 @@ async def list_form_12bb(
 @router.get("/form-12bb/{letter_id}/pdf")
 async def form_12bb_pdf(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
     data, name = await tax_service.form_12bb_pdf(session, user, letter_id)
+    return Response(
+        content=data, media_type="application/pdf", headers=support.attachment_headers(name)
+    )
+
+
+# ── Form 16 Part B ──────────────────────────────────────────────────────────
+
+
+@router.get("/form-16")
+async def form_16_years(
+    user: CurrentUser,
+    session: DbSession,
+    employee_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    """Each financial year with approved payroll, and whether its Part B is ready."""
+    target = _resolve_employee(user, employee_id)
+    return await form16.list_form16_years(session, user, target)
+
+
+@router.get("/form-16/pdf", response_model=None)
+async def form_16_pdf(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    employee_id: uuid.UUID | None = None,
+) -> Response:
+    """Form 16 Part B for one financial year, computed from the year's approved payroll."""
+    target = _resolve_employee(user, employee_id)
+    try:
+        statement = await form16.form16_statement(session, user, target, financial_year)
+        data = form16.render_form16_pdf(statement)
+    except form16.Form16UnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if target != user.employee_id:
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.EXPORT,
+            entity_type="form_16",
+            entity_id=target,
+            actor=user,
+            changes={"financial_year": financial_year},
+            summary=f"Downloaded Form 16 Part B for {financial_year} of another employee",
+            request=request,
+        )
+        await session.commit()
+    name = f"Form16-PartB-{statement['employee']['code']}-{financial_year}.pdf"
     return Response(
         content=data, media_type="application/pdf", headers=support.attachment_headers(name)
     )

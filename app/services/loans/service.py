@@ -41,9 +41,11 @@ from app.models.loans import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.attendance.service import local_today
+from app.services.documents.indian_numbers import group_indian
 from app.services.filings import support
 from app.services.loans import amortisation, recovery, reimbursements
-from app.services.notifications.dispatch import notify
+from app.services.notifications.dispatch import notify, register_event
 
 ZERO = Decimal(0)
 #: Months of service are counted in 30-day blocks for scheme eligibility.
@@ -174,7 +176,8 @@ async def apply_for_loan(
                 "This scheme needs a minimum period of service, and there is no joining "
                 "date on the employee record."
             )
-        served = (date.today() - employee.date_of_joining).days // DAYS_PER_SERVICE_MONTH
+        today = await local_today(session, user)
+        served = (today - employee.date_of_joining).days // DAYS_PER_SERVICE_MONTH
         if served < scheme.eligibility_min_service_months:
             raise _refuse(
                 f"{employee.employee_code} has {served} month(s) of service against the "
@@ -356,7 +359,7 @@ async def disburse_loan(
             "approved first.",
             status.HTTP_409_CONFLICT,
         )
-    when = disbursed_on or date.today()
+    when = disbursed_on or await local_today(session, user)
     loan.status = LoanStatus.DISBURSED
     loan.disbursed_at = datetime.combine(when, datetime.min.time(), tzinfo=UTC)
     await session.flush()
@@ -389,7 +392,7 @@ async def prepay_loan(
         raise _refuse(
             f"A loan in status '{loan.status.value}' cannot be prepaid.", status.HTTP_409_CONFLICT
         )
-    period = date.today().strftime("%Y-%m")
+    period = (await local_today(session, user)).strftime("%Y-%m")
     recovered = (
         await session.scalars(
             tenant_scoped(
@@ -691,7 +694,7 @@ async def submit_claim(
         )
     if component.bill_required and not bill:
         raise _refuse(f"{component.name} is exempt only against a bill, and none was attached.")
-    if bill_date is not None and bill_date > date.today():
+    if bill_date is not None and bill_date > await local_today(session, user):
         raise _refuse("A bill cannot be dated in the future.")
 
     stored = (
@@ -824,6 +827,46 @@ async def verify_claim(
         },
         request=request,
     )
+    recipients = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == claim.employee_id, User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_CLAIM_DECIDED,
+            recipient_user_ids=recipients,
+            payload={
+                "component": claim.component_code,
+                "decision": {
+                    ClaimStatus.VERIFIED: "accepted",
+                    ClaimStatus.PARTIAL: "partly accepted",
+                    ClaimStatus.REJECTED: "rejected",
+                }.get(decision, decision.value),
+                "amount": f"₹{group_indian(Decimal(str(claim.amount)).quantize(Decimal('0.01')))}",
+                "accepted": (
+                    f"₹{group_indian(Decimal(str(claim.accepted_amount)).quantize(Decimal('0.01')))}"
+                ),
+                "next_line": (
+                    " The accepted amount is paid, tax-free, in your next payroll."
+                    if decision is not ClaimStatus.REJECTED
+                    else ""
+                ),
+                "note_line": f" Note: {claim.verification_note}" if claim.verification_note else "",
+                "claim_id": str(claim.id),
+            },
+            commit=False,
+        )
     return claim
 
 
@@ -869,7 +912,7 @@ async def entitlement_positions(
     permissions.require_self_or_hr(
         user, employee_id, detail="You can only see your own entitlements"
     )
-    moment = today or date.today()
+    moment = today or await local_today(session, user)
     out: list[dict[str, Any]] = []
     for component in await list_components(session, user, active_only=True):
         claims = (
@@ -914,6 +957,14 @@ async def entitlement_positions(
         )
     return out
 
+
+EVENT_CLAIM_DECIDED = "payroll.reimbursement.decided"
+register_event(
+    EVENT_CLAIM_DECIDED,
+    "Your {component} bill was {decision}",
+    "Payroll {decision} your {component} bill of {amount}: {accepted} accepted.{next_line}"
+    "{note_line}",
+)
 
 EVENT_UNCLAIMED = "payroll.reimbursement.unclaimed"
 NOTICE_TEMPLATES = {

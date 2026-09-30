@@ -52,6 +52,7 @@ __all__ = [
     "compute_monthly_tds",
     "financial_year_for",
     "fy_start_month",
+    "without_income_paid_by_payroll",
 ]
 
 ZERO = Decimal(0)
@@ -258,6 +259,22 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
         annual_liability=with_projection.annual_tax_liability,
         working=working,
     )
+
+
+def without_income_paid_by_payroll(
+    base: ProjectionInput, paid_by_payroll: frozenset[str]
+) -> ProjectionInput:
+    """The year's other income, less what the run itself pays as input lines.
+
+    Arrears and in-service encashment reach the payslip as input lines with
+    their taxable amount, which this module taxes in the month they are paid
+    (`one_off_taxable`, then `PriorPay.one_off_taxable`). Left in the base's
+    `other_income` as well, the same rupee would be taxed twice.
+    """
+    kept = tuple(line for line in base.other_income if line[0] not in paid_by_payroll)
+    if len(kept) == len(base.other_income):
+        return base
+    return replace(base, other_income=kept)
 
 
 def months_remaining(period_month: int, rules: dict[str, Any]) -> int:

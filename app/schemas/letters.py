@@ -174,6 +174,13 @@ class LetterRead(BaseModel):
     has_pdf: bool
     has_signed_pdf: bool
     revoked_reason: str | None
+    # ── In-portal acknowledgement (separate from e-signature) ──────────────
+    acknowledged_at: datetime | None = None
+    #: The name the employee typed when they accepted.
+    acknowledged_name: str | None = None
+    acknowledgement_requested_at: datetime | None = None
+    #: True when the caller is the employee and may acknowledge it now.
+    can_acknowledge: bool = False
 
 
 class LetterContentRead(BaseModel):
@@ -216,3 +223,10 @@ class VerifyRead(BaseModel):
     reference_number: str
     content_hash: str
     intact: bool
+
+
+class LetterAcknowledgeRequest(BaseModel):
+    """The employee's acceptance: their name, typed, and an explicit yes."""
+
+    typed_name: str = Field(min_length=1, max_length=255)
+    accept: bool

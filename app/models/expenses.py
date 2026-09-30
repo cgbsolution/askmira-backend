@@ -105,17 +105,32 @@ class PolicyVerdictEnum(str, enum.Enum):
 
 
 class ExpenseClaimStatusEnum(str, enum.Enum):
+    """Where a claim is. Submission routes it to the line manager first.
+
+    ``SUBMITTED`` is the finance stage: a claim sits there once its line
+    manager has approved it, or straight after submission when the employee
+    has no line manager with a login to decide it. Existing rows keep meaning
+    what they meant, which is why the finance stage kept the old name.
+    """
+
     #: Captured and evaluated. A blocked claim never leaves this state.
     DRAFT = "draft"
+    #: Waiting for the line manager.
+    PENDING_MANAGER = "pending_manager"
+    #: Waiting for finance.
     SUBMITTED = "submitted"
     APPROVED = "approved"
     REJECTED = "rejected"
+    #: Paid — in a payroll run (`reimbursed_in_run_id`), or out of a travel
+    #: advance it was settled against (`advance_settlement_id`).
     REIMBURSED = "reimbursed"
     CANCELLED = "cancelled"
 
 
 class TravelRequestStatusEnum(str, enum.Enum):
     DRAFT = "draft"
+    #: Waiting for the line manager. ``SUBMITTED`` is the finance stage.
+    PENDING_MANAGER = "pending_manager"
     SUBMITTED = "submitted"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -538,6 +553,9 @@ class AdvanceSettlement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     payroll_recovery_ref: Mapped[str | None] = mapped_column(
         String(120), nullable=True
     )
+    #: The same for a balance owed *to* the employee: paid in the next payroll
+    #: run, and null until a run approved that payment.
+    payroll_refund_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     settled_on: Mapped[date] = mapped_column(Date, nullable=False)
     settled_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -674,6 +692,32 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: The line manager's stage, kept apart from finance's final decision so
+    #: both approvals stay on the record.
+    manager_decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    manager_decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    manager_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: The payroll run that paid this claim. Set when the run is approved,
+    #: never at compute, so a claim is paid by exactly one approved run.
+    reimbursed_in_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    reimbursed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: The travel-advance settlement this claim was offset against. A claim
+    #: covered by an advance is not paid again through payroll.
+    advance_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("advance_settlements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class ExpensePolicyViolation(Base, UUIDMixin, TenantMixin, TimestampMixin):

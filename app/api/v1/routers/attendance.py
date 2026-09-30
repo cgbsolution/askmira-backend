@@ -55,6 +55,7 @@ from app.schemas.attendance import (
     RegularisationCreate,
     RegularisationDecision,
     RegularisationQueueItem,
+    RegularisationRangeCreate,
     RegularisationRead,
     RosterAssignmentCreate,
     RosterCreate,
@@ -64,6 +65,7 @@ from app.schemas.attendance import (
     ShiftCreate,
     ShiftRead,
     ShiftUpdate,
+    TeamToday,
     UnlockRequest,
     WorkLocationCreate,
     WorkLocationRead,
@@ -132,8 +134,8 @@ async def list_punches(
     date_from: date = Query(alias="from"),
     date_to: date = Query(alias="to"),
 ) -> list[PunchRead]:
-    target = permissions.resolve_employee(
-        user, employee_id, detail="You can only see your own punches"
+    target = await review.viewable_employee(
+        session, user, employee_id, detail="You can only see your own or your team's punches"
     )
     rows = await review.list_punches(
         session, user, employee_id=target, start=date_from, end=date_to
@@ -236,8 +238,8 @@ async def list_days(
     date_from: date = Query(alias="from"),
     date_to: date = Query(alias="to"),
 ) -> list[AttendanceDayRead]:
-    target = permissions.resolve_employee(
-        user, employee_id, detail="You can only see your own attendance"
+    target = await review.viewable_employee(
+        session, user, employee_id, detail="You can only see your own or your team's attendance"
     )
     rows = await review.list_days(session, user, employee_id=target, start=date_from, end=date_to)
     return [AttendanceDayRead.model_validate(row) for row in rows]
@@ -251,11 +253,28 @@ async def my_period(
     date_from: date = Query(alias="from"),
     date_to: date = Query(alias="to"),
 ) -> MyAttendancePeriod:
-    """Days and totals for one person — payable days and LOP worked out here."""
-    target = permissions.resolve_employee(
-        user, employee_id, detail="You can only see your own attendance"
+    """Days and totals for one person — payable days and LOP worked out here.
+
+    Also the holidays, leave and shift a calendar needs for days not yet
+    computed. Your own, your reporting line's (as their manager), or anyone's
+    for HR.
+    """
+    target = await review.viewable_employee(
+        session, user, employee_id, detail="You can only see your own or your team's attendance"
     )
     return await review.my_period(session, user, employee_id=target, start=date_from, end=date_to)
+
+
+@router.get(
+    "/team/today",
+    response_model=TeamToday,
+    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+)
+async def team_today(
+    user: CurrentUser, session: DbSession, department_id: uuid.UUID | None = None
+) -> TeamToday:
+    """Who is in, out, on leave or not in yet — a manager's team, or everyone for HR."""
+    return await review.team_today(session, user, department_id=department_id)
 
 
 @router.post(
@@ -326,11 +345,37 @@ async def raise_regularisation(
         attendance_date=payload.attendance_date,
         requested_status=payload.requested_status,
         reason=payload.reason,
+        kind=payload.kind,
         requested_first_in=payload.requested_first_in,
         requested_last_out=payload.requested_last_out,
         request=request,
     )
     return RegularisationRead.model_validate(record)
+
+
+@router.post(
+    "/regularisations/range",
+    response_model=list[RegularisationRead],
+    status_code=status.HTTP_201_CREATED,
+)
+async def raise_regularisation_range(
+    payload: RegularisationRangeCreate, user: CurrentUser, session: DbSession, request: Request
+) -> list[RegularisationRead]:
+    """On-duty or work-from-home over several days; week offs and holidays are skipped."""
+    employee_id = permissions.resolve_employee(
+        user, payload.employee_id, detail="You can only request this for yourself"
+    )
+    records = await attendance_service.raise_regularisation_range(
+        session,
+        user,
+        employee_id=employee_id,
+        start=payload.start_date,
+        end=payload.end_date,
+        kind=payload.kind,
+        reason=payload.reason,
+        request=request,
+    )
+    return [RegularisationRead.model_validate(row) for row in records]
 
 
 @router.get("/regularisations", response_model=list[RegularisationRead])
@@ -479,6 +524,20 @@ async def update_shift(
 ) -> ShiftRead:
     return ShiftRead.model_validate(
         await setup.update_shift(session, user, shift_id, payload, request)
+    )
+
+
+@router.post(
+    "/shifts/{shift_id}/default",
+    response_model=ShiftRead,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def make_default_shift(
+    shift_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> ShiftRead:
+    """The shift that applies to anyone with no shift or roster assignment."""
+    return ShiftRead.model_validate(
+        await setup.set_default_shift(session, user, shift_id, request)
     )
 
 

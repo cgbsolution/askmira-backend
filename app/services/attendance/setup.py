@@ -110,10 +110,17 @@ async def create_shift(
     if duplicate is not None:
         raise _conflict(f"A shift with code {code} already exists")
 
+    # The first shift a workspace creates becomes its default, so people with
+    # no assignment are judged against something from day one. HR can move the
+    # default to another shift at any time.
+    has_default = await session.scalar(
+        tenant_scoped(select(Shift.id).where(Shift.is_default.is_(True)), Shift, user)
+    )
     shift = Shift(
         tenant_id=user.tenant_id,
         code=code,
         active=True,
+        is_default=has_default is None,
         **{field: getattr(data, field) for field in _SHIFT_FIELDS},
     )
     session.add(shift)
@@ -146,6 +153,10 @@ async def update_shift(
     for field in _SHIFT_FIELDS:
         setattr(shift, field, getattr(data, field))
     shift.active = data.active
+    if not shift.active and shift.is_default:
+        raise _conflict(
+            "This is the default shift. Make another shift the default before deactivating it."
+        )
     after = _snapshot(shift)
 
     await audit.record(
@@ -159,6 +170,48 @@ async def update_shift(
         summary=(
             f"Updated shift {shift.code}. Days already computed keep their values "
             "until recomputed; a locked period needs an audited unlock first."
+        ),
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(shift)
+    return shift
+
+
+async def set_default_shift(
+    session: AsyncSession, user: User, shift_id: uuid.UUID, request: Request | None = None
+) -> Shift:
+    """Make one shift the workspace default; the previous default stops being it."""
+    shift = await _shift(session, user, shift_id)
+    if not shift.active:
+        raise _conflict("An inactive shift cannot be the default.")
+    previous = (
+        await session.scalars(
+            tenant_scoped(
+                select(Shift).where(Shift.is_default.is_(True), Shift.id != shift.id),
+                Shift,
+                user,
+            )
+        )
+    ).all()
+    for row in previous:
+        row.is_default = False
+    await session.flush()
+    shift.is_default = True
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="shift",
+        entity_id=shift.id,
+        actor=user,
+        changes={
+            "is_default": {"from": False, "to": True},
+            "previous_default": [row.code for row in previous],
+        },
+        summary=(
+            f"Made {shift.code} the default shift. It applies to anyone without a shift or "
+            "roster assignment; days already computed keep their values until recomputed."
         ),
         request=request,
     )

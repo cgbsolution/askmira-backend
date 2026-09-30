@@ -30,37 +30,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
-from app.models.appraisal import AppraisalCycle
+from app.models.appraisal import AppraisalCycle, CycleStatus
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.goals import (
+    CheckInConfidence,
     Goal,
     GoalCheckIn,
+    GoalCheckInComment,
     GoalLevel,
     GoalStatus,
     GoalVisibility,
     KeyResult,
 )
+from app.models.notifications import Channel, DigestMode
 from app.models.user import User
 from app.schemas.goals import (
+    GoalCheckInCommentCreate,
+    GoalCheckInCommentRead,
     GoalCheckInCreate,
     GoalCheckInRead,
     GoalCreate,
+    GoalCycleRead,
     GoalRead,
     GoalScoreRead,
     GoalUpdate,
     KeyResultCreate,
     KeyResultRead,
+    LatestCheckInRead,
 )
 from app.services import audit
 from app.services.goals import engine
+from app.services.notifications.dispatch import notify, register_event
 from app.services.performance import notices
 
 __all__ = [
     "add_key_result",
     "alignable_parents",
     "check_in",
+    "comment_on_check_in",
     "create_goal",
+    "cycles_for_goals",
     "employee_goal_score",
     "get_goal",
     "goal_score_for",
@@ -70,6 +80,13 @@ __all__ = [
 ]
 
 MAX_LINE_DEPTH = permissions.MAX_REPORTING_DEPTH
+
+register_event(
+    "performance.goal.check_in_commented",
+    "{actor_name} replied to a check-in on '{goal_title}'",
+    "{actor_name} replied to the check-in on your goal '{goal_title}': {comment}",
+    preferences={Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE},
+)
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -235,6 +252,7 @@ async def _read_many(
                 )
             ).all()
         }
+    latest = await _latest_check_ins(session, user, [g.id for g in goals])
     out: list[GoalRead] = []
     for goal in goals:
         parent = parents.get(goal.parent_goal_id) if goal.parent_goal_id else None
@@ -282,9 +300,41 @@ async def _read_many(
                 created_at=goal.created_at,
                 updated_at=goal.updated_at,
                 can_edit=viewer.can_edit(goal) and goal.status is not GoalStatus.CANCELLED,
+                latest_check_in=latest.get(goal.id),
             )
         )
     return out
+
+
+async def _latest_check_ins(
+    session: AsyncSession, user: User, goal_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, LatestCheckInRead]:
+    """The newest check-in on each goal, in one query."""
+    if not goal_ids:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(GoalCheckIn, User.full_name)
+                .outerjoin(User, User.id == GoalCheckIn.recorded_by_user_id)
+                .where(GoalCheckIn.goal_id.in_(goal_ids))
+                .order_by(GoalCheckIn.goal_id, GoalCheckIn.recorded_at.desc())
+                .distinct(GoalCheckIn.goal_id),
+                GoalCheckIn,
+                user,
+            )
+        )
+    ).all()
+    return {
+        row.goal_id: LatestCheckInRead(
+            confidence=row.confidence,
+            note=row.note,
+            progress_after=_d(row.progress_after),
+            recorded_by_name=name,
+            recorded_at=row.recorded_at,
+        )
+        for row, name in rows
+    }
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────
@@ -376,10 +426,33 @@ async def alignable_parents(
 async def list_check_ins(
     session: AsyncSession, user: User, goal_id: uuid.UUID
 ) -> list[GoalCheckInRead]:
+    """The goal's history, newest first, each check-in with its replies."""
     goal = await _goal(session, user, goal_id)
     viewer = await _viewer(session, user)
     if not viewer.can_view(goal):
         raise permissions.forbidden("This goal is not shared with you.")
+    can_comment = viewer.can_edit(goal)
+    comments: dict[uuid.UUID, list[GoalCheckInCommentRead]] = {}
+    for comment, author in (
+        await session.execute(
+            tenant_scoped(
+                select(GoalCheckInComment, User.full_name)
+                .outerjoin(User, User.id == GoalCheckInComment.author_user_id)
+                .where(GoalCheckInComment.goal_id == goal.id)
+                .order_by(GoalCheckInComment.created_at),
+                GoalCheckInComment,
+                user,
+            )
+        )
+    ).all():
+        comments.setdefault(comment.check_in_id, []).append(
+            GoalCheckInCommentRead(
+                id=comment.id,
+                author_name=author,
+                body=comment.body,
+                created_at=comment.created_at,
+            )
+        )
     rows = (
         await session.execute(
             tenant_scoped(
@@ -405,8 +478,39 @@ async def list_check_ins(
             note=row.note,
             recorded_by_name=actor_name,
             recorded_at=row.recorded_at,
+            comments=comments.get(row.id, []),
+            can_comment=can_comment,
         )
         for row, kr_title, actor_name in rows
+    ]
+
+
+async def cycles_for_goals(session: AsyncSession, user: User) -> list[GoalCycleRead]:
+    """Review cycles a goal may count towards: every cycle that is not closed.
+
+    Readable by everybody. Without it an employee setting their own goal could
+    not link it to a cycle, and a goal due outside the review period would
+    silently never count.
+    """
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(AppraisalCycle).where(AppraisalCycle.status != CycleStatus.CLOSED),
+                AppraisalCycle,
+                user,
+            ).order_by(AppraisalCycle.period_start.desc())
+        )
+    ).all()
+    return [
+        GoalCycleRead(
+            id=c.id,
+            name=c.name,
+            cycle_type=c.cycle_type,
+            status=c.status,
+            period_start=c.period_start,
+            period_end=c.period_end,
+        )
+        for c in rows
     ]
 
 
@@ -787,7 +891,12 @@ async def check_in(
     *,
     request: Request | None = None,
 ) -> GoalRead:
-    """Record progress on one key result and recompute the goal, in one commit."""
+    """Record progress and recompute the goal, in one commit.
+
+    A new value moves one key result. A status on its own ("at risk, waiting on
+    legal") is a check-in too — the history is how a review conversation finds
+    out what happened in March. `done` completes the goal.
+    """
     goal = await _goal(session, user, goal_id)
     viewer = await _viewer(session, user)
     if not viewer.can_view(goal):
@@ -803,29 +912,55 @@ async def check_in(
         )
 
     key_results = (await _key_results(session, user, [goal.id]))[goal.id]
-    target = next((kr for kr in key_results if kr.id == payload.key_result_id), None)
-    if target is None:
-        raise _not_found("That key result is not part of this goal.")
-
-    previous = _d(target.current_value)
-    target.current_value = payload.value
-    progress = _progress(key_results)
+    target: KeyResult | None = None
+    previous: Decimal | None = None
+    if payload.key_result_id is not None:
+        target = next((kr for kr in key_results if kr.id == payload.key_result_id), None)
+        if target is None:
+            raise _not_found("That key result is not part of this goal.")
+        previous = _d(target.current_value)
+        target.current_value = payload.value
+    progress = _progress(key_results) if key_results else _d(goal.progress_percent)
     goal.progress_percent = progress
+
+    completed = payload.confidence is CheckInConfidence.DONE
+    if completed:
+        goal.status = GoalStatus.COMPLETED
+        goal.completed_at = datetime.now(UTC)
 
     row = GoalCheckIn(
         tenant_id=user.tenant_id,
         goal_id=goal.id,
-        key_result_id=target.id,
+        key_result_id=target.id if target else None,
         previous_value=previous,
         new_value=payload.value,
         progress_after=progress,
         confidence=payload.confidence,
-        note=payload.note,
+        note=(payload.note or "").strip() or None,
         recorded_by_user_id=user.id,
         recorded_at=datetime.now(UTC),
     )
     session.add(row)
     await session.flush()
+    changes: dict[str, Any] = {"goal_id": str(goal.id), "progress_after": str(progress)}
+    if target is not None:
+        changes |= {
+            "key_result_id": str(target.id),
+            "previous_value": str(previous),
+            "new_value": str(payload.value),
+        }
+    if payload.confidence is not None:
+        changes["status"] = payload.confidence.value
+    if completed:
+        changes["goal_status"] = {
+            "from": GoalStatus.ACTIVE.value,
+            "to": GoalStatus.COMPLETED.value,
+        }
+    summary = (
+        f"Checked in on '{target.title}': {previous} to {payload.value}"
+        if target is not None
+        else f"Checked in on goal '{goal.title}'"
+    )
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -833,19 +968,95 @@ async def check_in(
         entity_type="goal_check_in",
         entity_id=row.id,
         actor=user,
-        changes={
-            "goal_id": str(goal.id),
-            "key_result_id": str(target.id),
-            "previous_value": str(previous),
-            "new_value": str(payload.value),
-            "progress_after": str(progress),
-        },
-        summary=f"Checked in on '{target.title}': {previous} to {payload.value}",
+        changes=changes,
+        summary=summary + (" and marked it done" if completed else ""),
         request=request,
     )
     await session.commit()
     await session.refresh(goal)
     return (await _read_many(session, user, [goal], viewer))[0]
+
+
+async def comment_on_check_in(
+    session: AsyncSession,
+    user: User,
+    goal_id: uuid.UUID,
+    check_in_id: uuid.UUID,
+    payload: GoalCheckInCommentCreate,
+    *,
+    request: Request | None = None,
+) -> GoalCheckInCommentRead:
+    """Reply to a check-in. The owner, their line above them, and HR.
+
+    The same people who may record progress may answer it — a manager replying
+    "I'll unblock the vendor" is part of the goal's record, and a colleague the
+    goal is merely visible to is not.
+    """
+    goal = await _goal(session, user, goal_id)
+    viewer = await _viewer(session, user)
+    if not viewer.can_view(goal):
+        raise permissions.forbidden("This goal is not shared with you.")
+    if not viewer.can_edit(goal):
+        raise permissions.forbidden(
+            "Check-ins are answered by the goal's owner, somebody above them in the line, or HR."
+        )
+    check = await session.scalar(
+        tenant_scoped(
+            select(GoalCheckIn).where(
+                GoalCheckIn.id == check_in_id, GoalCheckIn.goal_id == goal.id
+            ),
+            GoalCheckIn,
+            user,
+        )
+    )
+    if check is None:
+        raise _not_found("That check-in is not part of this goal.")
+
+    body = payload.body.strip()
+    if not body:
+        raise _unprocessable("Write something to reply with.")
+    comment = GoalCheckInComment(
+        tenant_id=user.tenant_id,
+        check_in_id=check.id,
+        goal_id=goal.id,
+        author_user_id=user.id,
+        body=body,
+    )
+    session.add(comment)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="goal_check_in_comment",
+        entity_id=comment.id,
+        actor=user,
+        changes={"goal_id": str(goal.id), "check_in_id": str(check.id)},
+        summary=f"Replied to a check-in on goal '{goal.title}'",
+        request=request,
+    )
+
+    owner_user = await notices.user_ids_for_employees(session, user, [goal.owner_employee_id])
+    recipients = {uid for uid in (*owner_user.values(), check.recorded_by_user_id) if uid}
+    recipients.discard(user.id)
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key="performance.goal.check_in_commented",
+            recipient_user_ids=sorted(recipients, key=str),
+            payload={
+                "actor_name": user.full_name,
+                "goal_title": goal.title,
+                "comment": body[:200],
+            },
+            commit=False,
+        )
+    await session.commit()
+    await session.refresh(comment)
+    return GoalCheckInCommentRead(
+        id=comment.id, author_name=user.full_name, body=comment.body, created_at=comment.created_at
+    )
 
 
 # ── The goal score ──────────────────────────────────────────────────────────

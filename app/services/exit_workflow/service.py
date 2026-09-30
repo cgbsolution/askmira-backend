@@ -40,6 +40,7 @@ from app.models.exit_workflow import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.assets import exit_hooks as asset_exit_hooks
 from app.services.exit_workflow import settlement as settlement_engine
 
 __all__ = [
@@ -47,7 +48,10 @@ __all__ = [
     "compute_settlement",
     "hold_settlement",
     "initiate_exit",
+    "notice_shortfall",
+    "open_exit",
     "revoke_access",
+    "status_for_shortfall",
 ]
 
 ZERO = Decimal(0)
@@ -100,6 +104,62 @@ async def initiate_exit(
         employee_id,
         detail="You can only start an exit for somebody in your reporting line.",
     )
+    record = await open_exit(
+        session,
+        user,
+        employee,
+        exit_type=exit_type,
+        resignation_date=resignation_date,
+        requested_last_working_day=requested_last_working_day,
+        approved_last_working_day=approved_last_working_day,
+        notice_period_days=notice_period_days,
+        reason=reason,
+        request=request,
+    )
+    # Opened by HR or the line manager, so accepted as it is opened. Only an
+    # exit the employee submitted waits for somebody to accept it.
+    record.accepted_at = datetime.now(UTC)
+    record.accepted_by_user_id = user.id
+    await session.flush()
+    return record
+
+
+def notice_shortfall(notice_days: int, resignation_date: date, last_day: date | None) -> int:
+    """Days of notice not served, if the exit ends on `last_day`."""
+    if last_day is None or not notice_days:
+        return 0
+    return max(0, notice_days - (last_day - resignation_date).days)
+
+
+def status_for_shortfall(shortfall: int) -> ExitStatus:
+    """Serving notice when the notice is served in full; otherwise initiated,
+    where the shortfall is waived or recovered before anything else moves."""
+    return ExitStatus.NOTICE_PERIOD if shortfall == 0 else ExitStatus.INITIATED
+
+
+async def open_exit(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    *,
+    exit_type: ExitType,
+    resignation_date: date,
+    requested_last_working_day: date | None = None,
+    approved_last_working_day: date | None = None,
+    notice_period_days: int | None = None,
+    reason: str | None = None,
+    initiated_by_employee: bool = False,
+    employee_comments: str | None = None,
+    request: Request | None = None,
+) -> ExitRecord:
+    """The exit itself, once the caller is known to be allowed to open it.
+
+    Shared by HR's path (`initiate_exit`) and the employee's own resignation
+    (`app.services.exit_workflow.resignation`), so the duplicate check, the
+    notice arithmetic, the clearance checklist and the asset hook are one
+    implementation. Does not commit.
+    """
+    employee_id = employee.id
 
     existing = await session.scalar(
         tenant_scoped(
@@ -127,22 +187,25 @@ async def initiate_exit(
     )
 
     last_day = approved_last_working_day or requested_last_working_day
-    shortfall = 0
-    if last_day is not None and notice_days:
-        served = (last_day - resignation_date).days
-        shortfall = max(0, notice_days - served)
+    shortfall = notice_shortfall(notice_days, resignation_date, last_day)
 
     record = ExitRecord(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
         exit_type=exit_type,
-        status=ExitStatus.NOTICE_PERIOD if shortfall == 0 else ExitStatus.INITIATED,
+        # A resignation the employee submitted waits in `initiated` for somebody
+        # to accept it, whatever its notice arithmetic says.
+        status=(
+            ExitStatus.INITIATED if initiated_by_employee else status_for_shortfall(shortfall)
+        ),
         resignation_date=resignation_date,
         requested_last_working_day=requested_last_working_day,
         approved_last_working_day=approved_last_working_day,
         notice_period_days=notice_days,
         notice_shortfall_days=shortfall,
         reason=reason,
+        initiated_by_employee=initiated_by_employee,
+        employee_comments=employee_comments,
     )
     session.add(record)
     await session.flush()
@@ -172,6 +235,8 @@ async def initiate_exit(
                 owner_user_id=template.owner_user_id,
             )
         )
+    # Every asset the leaver still holds becomes a "return it" item.
+    await asset_exit_hooks.add_exit_clearance(session, user, record, request=request)
 
     employee.status = EmploymentStatus.ON_NOTICE
     await session.flush()
@@ -184,7 +249,9 @@ async def initiate_exit(
         entity_type="exit_record",
         entity_id=record.id,
         summary=(
-            f"Opened a {exit_type.value} exit for {employee.employee_code} from "
+            f"{'Resignation submitted by' if initiated_by_employee else 'Opened a'} "
+            f"{'' if initiated_by_employee else exit_type.value + ' exit for '}"
+            f"{employee.employee_code} from "
             f"{resignation_date}"
             f"{f', {shortfall} day(s) of notice short' if shortfall else ''}"
         ),
@@ -235,6 +302,10 @@ async def clear_item(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Signing an item off needs an outcome other than 'pending'.",
         )
+    # An asset item marked not returned recovers its book value unless a figure was typed.
+    recovery_amount = await asset_exit_hooks.recovery_for_clearance(
+        session, user, item, outcome, recovery_amount
+    )
 
     if outcome is ClearanceStatus.WAIVED and not (waiver_reason or "").strip():
         raise HTTPException(
@@ -280,6 +351,8 @@ async def clear_item(
         },
         request=request,
     )
+    # An asset item closes the assignment it stands for in the asset register.
+    await asset_exit_hooks.on_clearance_signed(session, user, item, request=request)
     return item
 
 
@@ -603,7 +676,13 @@ async def revoke_access(
         account.is_active = False
 
     employee.status = EmploymentStatus.EXITED
-    employee.date_of_exit = record.approved_last_working_day or date.today()
+    if record.approved_last_working_day is not None:
+        employee.date_of_exit = record.approved_last_working_day
+    else:
+        # The workspace's date, not the server's UTC one.
+        from app.services.attendance.service import local_today
+
+        employee.date_of_exit = await local_today(session, user)
     employee.is_active = False
 
     record.access_revoked_at = datetime.now(UTC)

@@ -48,6 +48,7 @@ from app.models.employee import Employee
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.user import User, UserRole
 from app.services import audit
+from app.services.attendance.service import local_today
 from app.services.disbursement import formats, responses, validation
 from app.services.filings import support
 from app.services.notifications.dispatch import notify
@@ -402,7 +403,7 @@ async def regenerate_batch(
         user,
         payroll_run_id=batch.payroll_run_id,
         bank_profile_id=batch.bank_profile_id,
-        value_date=batch.value_date or date.today(),
+        value_date=batch.value_date or await local_today(session, user),
         request=request,
     )
 

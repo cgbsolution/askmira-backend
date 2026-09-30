@@ -19,6 +19,7 @@ from app.schemas.letters import (
     BulkJobRead,
     DraftPreviewRequest,
     IssueRequest,
+    LetterAcknowledgeRequest,
     LetterContentRead,
     LetterRead,
     MergeFieldsRead,
@@ -34,6 +35,7 @@ from app.schemas.letters import (
     TemplateVersionRead,
     VerifyRead,
 )
+from app.services.documents import acknowledgement
 from app.services.documents import service as letter_service
 
 router = APIRouter(tags=["documents"])
@@ -291,6 +293,39 @@ async def send_for_signature(
     return await letter_service.send_for_signature(
         session, user, letter_id, provider_name=payload.provider, request=request
     )
+
+
+# ── In-portal acknowledgement ──────────────────────────────────────────────
+
+
+@router.post(
+    "/letters/{letter_id}/request-acknowledgement",
+    response_model=LetterRead,
+    dependencies=HR_ONLY,
+)
+async def request_acknowledgement(
+    letter_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> LetterRead:
+    """Ask the employee to read and acknowledge the letter. Asking again reminds them."""
+    return await acknowledgement.request_acknowledgement(
+        session, user, letter_id, request=request
+    )
+
+
+@router.post("/letters/{letter_id}/acknowledge", response_model=LetterRead)
+async def acknowledge(
+    letter_id: uuid.UUID,
+    payload: LetterAcknowledgeRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> LetterRead:
+    """The employee accepts a letter issued to them, with their typed name.
+
+    Separate from e-signature: this records acceptance in the portal, with the
+    letter's content hash, the time and the address it came from.
+    """
+    return await acknowledgement.acknowledge(session, user, letter_id, payload, request=request)
 
 
 # ── Webhook ─────────────────────────────────────────────────────────────────

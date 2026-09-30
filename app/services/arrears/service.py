@@ -271,6 +271,7 @@ async def preview_arrears(
                         new_salary=salary,
                         working_days=Decimal(str(payslip.working_days)),
                         lop_days=Decimal(str(payslip.lop_days)),
+                        not_employed_days=Decimal(str(payslip.not_employed_days or 0)),
                         period_start=start,
                         period_end=date(run.period_year, run.period_month, last),
                         historical_rule_sets=rule_sets,

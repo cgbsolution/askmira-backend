@@ -168,6 +168,12 @@ class PayrollInput:
     period_end: date
     working_days: Decimal
     lop_days: Decimal = Decimal(0)
+    # Days of the period before the employee joined or after they left. They
+    # are unpaid exactly as loss of pay is — the components the tenant prorates
+    # for LOP are prorated for them too — but reported apart, because they are
+    # not an absence and an employee reading "14 days loss of pay" in their
+    # joining month would rightly ask what they missed.
+    not_employed_days: Decimal = Decimal(0)
     # {rule_type: PayrollRuleSet} already resolved for the run's effective date.
     rule_sets: dict[str, PayrollRuleSet] = field(default_factory=dict)
 
@@ -247,6 +253,8 @@ class PayrollComputation:
     other_earnings: Decimal = Decimal(0)
     input_lines: list[ComputedInputLine] = field(default_factory=list)
     tds_working: dict[str, Any] | None = None
+    # Unpaid days outside employment (before joining, after leaving).
+    not_employed_days: Decimal = Decimal(0)
 
 
 def _require_rule_set(rule_sets: dict[str, PayrollRuleSet], rule_type: str) -> PayrollRuleSet:
@@ -332,18 +340,36 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     salary = payroll_input.employee_salary
     working_days = payroll_input.working_days
     lop_days = payroll_input.lop_days
+    not_employed_days = payroll_input.not_employed_days
 
     if working_days <= 0:
         raise PayrollRuleError("Working days must be greater than zero")
     if lop_days < 0:
         raise PayrollRuleError("Loss-of-pay days cannot be negative")
-    if lop_days > working_days:
+    if not_employed_days < 0:
+        raise PayrollRuleError("Days outside employment cannot be negative")
+    if not_employed_days >= working_days:
         raise PayrollRuleError(
-            f"Loss-of-pay days ({lop_days}) exceed working days ({working_days})"
+            f"The employee was not employed on any day of this period "
+            f"({not_employed_days} of {working_days} days); they are not paid by it."
+        )
+    if lop_days + not_employed_days > working_days:
+        raise PayrollRuleError(
+            f"Loss-of-pay days ({lop_days}) and days outside employment "
+            f"({not_employed_days}) exceed working days ({working_days})"
         )
 
-    paid_days = working_days - lop_days
+    unpaid_days = lop_days + not_employed_days
+    paid_days = working_days - unpaid_days
     lop_factor = paid_days / working_days
+    unpaid_note = ", ".join(
+        part
+        for part in (
+            f"{lop_days} loss of pay" if lop_days > 0 else "",
+            f"{not_employed_days} not employed" if not_employed_days > 0 else "",
+        )
+        if part
+    )
 
     # ── 1. Prorate ──────────────────────────────────────────────────────────
     lines: list[ComputedLine] = []
@@ -351,9 +377,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
 
     for component in sorted(salary.components, key=lambda c: c.display_order):
         full = Decimal(str(component.monthly_amount))
-        if component.pro_rate_on_lop and lop_days > 0:
+        if component.pro_rate_on_lop and unpaid_days > 0:
             amount = _money(full * lop_factor)
-            basis = f"structure, prorated {paid_days}/{working_days} days"
+            basis = f"structure, prorated {paid_days}/{working_days} days ({unpaid_note})"
         else:
             amount = _money(full)
             basis = "structure"
@@ -717,6 +743,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         other_earnings=_money(other_earnings),
         input_lines=computed_inputs,
         tds_working=tds_working,
+        not_employed_days=not_employed_days,
     )
 
 

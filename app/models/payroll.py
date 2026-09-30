@@ -506,6 +506,11 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     working_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)
     paid_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)
     lop_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)
+    # Days of the period before the employee joined or after they left. Unpaid,
+    # like loss of pay, but kept apart from it: it is not an absence.
+    not_employed_days: Mapped[float] = mapped_column(
+        Numeric(5, 2), default=0, server_default=text("0"), nullable=False
+    )
 
     gross_earnings: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     total_deductions: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)

@@ -65,11 +65,15 @@ def _last_day_of_previous_month(today: date) -> date:
 async def _attendance_recompute(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.attendance import service as attendance
 
-    day = ctx.today - timedelta(days=1)
-    written = await attendance.recompute_range(
-        session, ctx.actor, employee_ids=None, start=day, end=day
-    )
-    return {"date": day.isoformat(), "days_written": written}
+    return await attendance.nightly_recompute(session, ctx.actor, as_of=ctx.today)
+
+
+async def _sync_manager_roles(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.identity.roles import promote_all_line_managers
+
+    promoted = await promote_all_line_managers(session, ctx.actor)
+    await session.commit()
+    return {"logins_promoted": promoted}
 
 
 async def _leave_accruals(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
@@ -77,6 +81,12 @@ async def _leave_accruals(session: AsyncSession, ctx: JobContext) -> dict[str, A
 
     result = await leave.run_accruals(session, ctx.actor, year=ctx.today.year)
     return {"year": result.year, "balances_updated": result.balances_updated}
+
+
+async def _leave_year_end(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.leave import ledger
+
+    return _tally(await ledger.year_end_job(session, ctx.actor, today=ctx.today))
 
 
 async def _device_silence(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
@@ -129,6 +139,33 @@ async def _probation_reminders(session: AsyncSession, ctx: JobContext) -> dict[s
     return _tally(await lifecycle.send_probation_reminders(session, ctx.actor, on=ctx.today))
 
 
+async def _asset_return_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.assets import service as assets
+
+    return _tally(await assets.send_return_due_reminders(session, ctx.actor, on=ctx.today))
+
+
+async def _activate_joiners(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.onboarding import service as onboarding
+
+    return _tally(await onboarding.activate_due_joiners(session, ctx.actor, on=ctx.today))
+
+
+async def _onboarding_overdue(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.onboarding import service as onboarding
+
+    return _tally(await onboarding.send_overdue_reminders(session, ctx.actor, on=ctx.today))
+
+
+# ── Performance ─────────────────────────────────────────────────────────────
+
+
+async def _feedback_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.performance import feedback
+
+    return _tally(await feedback.send_due_reminders(session, ctx.actor, on=ctx.today))
+
+
 # ── Hiring ──────────────────────────────────────────────────────────────────
 
 
@@ -173,6 +210,15 @@ async def _points_expiry(session: AsyncSession, ctx: JobContext) -> dict[str, An
     from app.services.rewards import service as rewards
 
     return _tally(await rewards.expire_points(session, ctx.actor, as_of=ctx.today))
+
+
+# ── Helpdesk ────────────────────────────────────────────────────────────────
+
+
+async def _helpdesk_auto_close(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.helpdesk import service as helpdesk
+
+    return _tally(await helpdesk.auto_close_resolved(session, ctx.actor, now=ctx.now))
 
 
 # ── Reports ─────────────────────────────────────────────────────────────────
@@ -233,11 +279,25 @@ JOBS: tuple[Job, ...] = (
     Job(
         key="attendance.nightly_recompute",
         name="Attendance recompute",
-        description="Recomputes yesterday's attendance days from punches, leave and holidays.",
+        description=(
+            "Recomputes the last three days from punches, leave, holidays and approved "
+            "corrections, and backfills any day since last month that was never computed."
+        ),
         cadence=Cadence.daily(hour=1),
         handler=_attendance_recompute,
-        source="app.services.attendance.service.recompute_range",
+        source="app.services.attendance.service.nightly_recompute",
         module="leave",
+    ),
+    Job(
+        key="identity.sync_manager_roles",
+        name="Manager access",
+        description=(
+            "Gives the manager role to anyone who has direct reports but still signs in as "
+            "an employee, so their team's requests have someone to decide them."
+        ),
+        cadence=Cadence.daily(hour=0),
+        handler=_sync_manager_roles,
+        source="app.services.identity.roles.promote_all_line_managers",
     ),
     Job(
         key="leave.monthly_accruals",
@@ -246,6 +306,18 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.monthly(day=1, hour=2),
         handler=_leave_accruals,
         source="app.services.leave.service.run_accruals",
+        module="leave",
+    ),
+    Job(
+        key="leave.year_end",
+        name="Leave year-end and comp-off expiry",
+        description=(
+            "On 1 January carries each balance forward up to its policy limit and lapses the "
+            "rest; every day, lapses comp-off credits past their expiry that were not used."
+        ),
+        cadence=Cadence.daily(hour=0),
+        handler=_leave_year_end,
+        source="app.services.leave.ledger.year_end_job",
         module="leave",
     ),
     Job(
@@ -298,6 +370,41 @@ JOBS: tuple[Job, ...] = (
         source="app.services.lifecycle.service.send_probation_reminders",
     ),
     Job(
+        key="assets.return_reminders",
+        name="Asset return reminders",
+        description="Reminds holders of assets due back within three days, or overdue, once.",
+        cadence=Cadence.daily(hour=9),
+        handler=_asset_return_reminders,
+        source="app.services.assets.service.send_return_due_reminders",
+    ),
+    Job(
+        key="onboarding.activate_joiners",
+        name="Activate new joiners",
+        description="Moves pre-joiners whose joining date has arrived to active, audited.",
+        cadence=Cadence.daily(hour=0),
+        handler=_activate_joiners,
+        source="app.services.onboarding.service.activate_due_joiners",
+    ),
+    Job(
+        key="onboarding.overdue_reminders",
+        name="Onboarding overdue reminders",
+        description="Tells each assignee, once, about onboarding tasks that went overdue.",
+        cadence=Cadence.daily(hour=9),
+        handler=_onboarding_overdue,
+        source="app.services.onboarding.service.send_overdue_reminders",
+    ),
+    Job(
+        key="performance.feedback_reminders",
+        name="360 feedback reminders",
+        description=(
+            "Reminds colleagues whose requested feedback is due within two days or overdue, "
+            "at most every two days each, and stops two weeks after the due date."
+        ),
+        cadence=Cadence.daily(hour=9),
+        handler=_feedback_reminders,
+        source="app.services.performance.feedback.send_due_reminders",
+    ),
+    Job(
         key="hiring.lapse_offers",
         name="Lapse expired offers",
         description="Expires released offers past their validity date.",
@@ -332,6 +439,14 @@ JOBS: tuple[Job, ...] = (
         handler=_points_expiry,
         source="app.services.rewards.service.expire_points",
         module="rewards",
+    ),
+    Job(
+        key="helpdesk.auto_close_resolved",
+        name="Close resolved helpdesk tickets",
+        description="Closes tickets resolved more than 7 days ago that nobody reopened or rated.",
+        cadence=Cadence.daily(hour=2),
+        handler=_helpdesk_auto_close,
+        source="app.services.helpdesk.service.auto_close_resolved",
     ),
     Job(
         key="reports.scheduled_distribution",

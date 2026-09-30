@@ -31,11 +31,12 @@ from app.models.exit_benefits import (
     GratuityConfig,
     GratuityPayout,
 )
-from app.models.leave import LeaveBalance, LeaveType
 from app.models.user import User
 from app.services import audit
+from app.services.attendance.service import local_today
 from app.services.exit_benefits.encashment import EncashmentError, compute_encashment
 from app.services.exit_benefits.gratuity import GratuityError, compute_gratuity
+from app.services.leave import ledger as leave_ledger
 from app.services.payroll.service import active_salary_on
 
 ZERO = Decimal(0)
@@ -462,43 +463,16 @@ async def compute_exit_gratuity(
 async def available_leave_balance(
     session: AsyncSession, user: User, employee_id: uuid.UUID, leave_type_code: str, year: int
 ) -> Decimal:
-    """Read the balance from the leave ledger.
+    """The balance the leave module shows on the Time page — read, never recomputed.
 
-    Read, never recomputed. Two places computing a balance is two places to
-    disagree, and the one that disagrees at exit is the one an employee
-    disputes.
+    Two places computing a leave balance is two places to disagree, and the one
+    that disagrees at exit is the one an employee disputes. So this asks the
+    leave ledger for its live figure (accrual to date, carry-forward, HR
+    adjustments, leave taken, earlier encashments) rather than summing the
+    stored row, whose `accrued` catches up only when the row is next written.
     """
-    leave_type = await session.scalar(
-        tenant_scoped(
-            select(LeaveType).where(LeaveType.code == leave_type_code), LeaveType, user
-        )
-    )
-    if leave_type is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No leave type with code {leave_type_code}",
-        )
-
-    balance = await session.scalar(
-        tenant_scoped(
-            select(LeaveBalance).where(
-                LeaveBalance.employee_id == employee_id,
-                LeaveBalance.leave_type_id == leave_type.id,
-                LeaveBalance.year == year,
-            ),
-            LeaveBalance,
-            user,
-        )
-    )
-    if balance is None:
-        return ZERO
-
-    return (
-        Decimal(str(balance.opening_balance))
-        + Decimal(str(balance.accrued))
-        + Decimal(str(balance.carried_forward))
-        - Decimal(str(balance.used))
-        - Decimal(str(balance.encashed))
+    return await leave_ledger.live_available(
+        session, user, employee_id=employee_id, leave_type_code=leave_type_code, year=year
     )
 
 
@@ -531,7 +505,10 @@ async def request_encashment(
             detail=f"No encashment policy is configured for {leave_type_code}",
         )
 
-    year = int(financial_year.split("-")[0])
+    # The leave year is the calendar year the balance lives in today, whatever
+    # the financial year: in February the balance is next year's row, the old
+    # one having been carried forward and closed on 1 January.
+    year = leave_ledger.leave_year_today()
     balance = await available_leave_balance(
         session, user, employee_id, leave_type_code, year
     )
@@ -553,7 +530,7 @@ async def request_encashment(
     already_days = Decimal(str(already.days_approved)) if already else ZERO
 
     wages = await wage_basis_for(
-        session, user, employee_id, date.today(), policy.formula_basis
+        session, user, employee_id, await local_today(session, user), policy.formula_basis
     )
 
     try:
@@ -590,6 +567,17 @@ async def request_encashment(
     )
     session.add(record)
     await session.flush()
+    if record.status is EncashmentStatus.APPROVED:
+        # The days leave the balance in the same transaction as the approval.
+        await leave_ledger.post_encashment(
+            session,
+            user,
+            employee_id=employee_id,
+            leave_type_code=leave_type_code,
+            year=year,
+            days=result.days_approved,
+            source_id=record.id,
+        )
 
     await audit.record(
         session,
@@ -649,6 +637,18 @@ async def decide_encashment(
         detail="You can only decide encashment for somebody in your reporting line.",
     )
 
+    if approve:
+        # Debited now, against the live balance: a leave approved since the
+        # request was raised may have spent the same days, which refuses it.
+        await leave_ledger.post_encashment(
+            session,
+            user,
+            employee_id=record.employee_id,
+            leave_type_code=record.leave_type_code,
+            year=leave_ledger.leave_year_today(),
+            days=Decimal(str(record.days_approved)),
+            source_id=record.id,
+        )
     record.status = EncashmentStatus.APPROVED if approve else EncashmentStatus.REJECTED
     record.approver_user_id = user.id
     record.decided_at = datetime.now(UTC)

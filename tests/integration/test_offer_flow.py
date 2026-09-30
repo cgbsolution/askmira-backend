@@ -23,7 +23,7 @@ from app.models.documents import (
     LetterTemplate,
     LetterTemplateField,
 )
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import Employee, EmployeeProfile, EmploymentStatus
 from app.models.hiring import Candidate, CandidateStage, Requisition, RequisitionStatus
 from app.models.offer import (
     ApprovalChainRule,
@@ -858,11 +858,17 @@ async def test_joining_creates_an_employee_with_nothing_re_keyed(
     assert employee.probation_end_date == date(2027, 5, 3)
 
     # The pre-hire record travels with them rather than being thrown away at
-    # the moment they become an employee.
-    assert employee.custom_fields["candidate_id"] == str(candidate.id)
-    assert employee.custom_fields["fit_score"] == "82.50"
-    assert employee.custom_fields["source"] == "referral"
-    assert employee.custom_fields["notice_period_days_at_offer"] == 90
+    # the moment they become an employee - in the HR-only hiring snapshot, not
+    # in the custom fields the person sees on their own profile.
+    profile = await session.scalar(
+        select(EmployeeProfile).where(EmployeeProfile.employee_id == employee.id)
+    )
+    assert profile is not None
+    assert profile.hiring_snapshot["candidate_id"] == str(candidate.id)
+    assert profile.hiring_snapshot["fit_score"] == "82.50"
+    assert profile.hiring_snapshot["source"] == "referral"
+    assert profile.hiring_snapshot["notice_period_days_at_offer"] == 90
+    assert "fit_score" not in (employee.custom_fields or {})
 
     await session.refresh(candidate)
     assert candidate.converted_employee_id == employee.id

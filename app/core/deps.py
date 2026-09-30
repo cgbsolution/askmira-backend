@@ -82,7 +82,10 @@ async def get_current_user(
 
     # A token minted before a forced logout or password change is dead.
     issued_at = payload.get("iat")
-    if user.tokens_valid_from and issued_at and issued_at < user.tokens_valid_from.timestamp():
+    # Whole seconds: `iat` has no fraction, so a sign-in in the same second as
+    # the reset would otherwise read as older than it and be refused.
+    cutoff = int(user.tokens_valid_from.timestamp()) if user.tokens_valid_from else None
+    if cutoff is not None and issued_at and issued_at < cutoff:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session was ended. Please sign in again.",

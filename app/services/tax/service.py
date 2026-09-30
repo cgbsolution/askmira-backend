@@ -49,8 +49,11 @@ from app.models.tax import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.attendance.service import local_today
 from app.services.documents import service as documents_service
+from app.services.documents.indian_numbers import group_indian
 from app.services.filings import support
+from app.services.notifications.dispatch import notify, register_event
 from app.services.payroll.service import active_salary_on
 from app.services.tax import form_12bb, sources
 from app.services.tax.computation import (
@@ -71,6 +74,20 @@ _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9 ._()-]+")
 
 class TaxWorkflowError(ValueError):
     """A workflow rule was violated: a closed window, a missing PAN."""
+
+
+def _rupees(value: object) -> str:
+    return f"₹{group_indian(Decimal(str(value or 0)).quantize(Decimal('0.01')))}"
+
+
+EVENT_PROOF_DECIDED = "tax.proof.decided"
+register_event(
+    EVENT_PROOF_DECIDED,
+    "Your {section} proof was {decision}",
+    "Payroll {decision} your {section} proof for {financial_year}: {accepted} accepted of "
+    "{proved} proved.{remarks_line} Your income tax for the rest of the year is worked out "
+    "on the accepted amount.",
+)
 
 
 # ── Rule set resolution ─────────────────────────────────────────────────────
@@ -245,7 +262,7 @@ async def assert_window_open(
             f"No {window_type.value} window is configured for {financial_year}."
         )
 
-    moment = on or date.today()
+    moment = on or await local_today(session, user)
     if window.is_open(moment) or window.allow_late_submission:
         return
 
@@ -980,6 +997,13 @@ async def verify_proof(
     proof.verifier_user_id = user.id
     proof.verifier_remarks = remarks.strip() or None
     proof.verified_at = datetime.now(UTC)
+    declaration = await session.scalar(
+        tenant_scoped(
+            select(TaxDeclaration).where(TaxDeclaration.id == proof.declaration_id),
+            TaxDeclaration,
+            user,
+        )
+    )
 
     await audit.record(
         session,
@@ -1004,6 +1028,40 @@ async def verify_proof(
         ),
         request=request,
     )
+    recipients = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(User.employee_id == owner, User.is_active.is_(True)),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if recipients and declaration is not None:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_PROOF_DECIDED,
+            recipient_user_ids=recipients,
+            payload={
+                "section": declaration.section,
+                "financial_year": declaration.financial_year,
+                "decision": {
+                    ProofStatus.VERIFIED: "accepted",
+                    ProofStatus.PARTIALLY_ACCEPTED: "partly accepted",
+                    ProofStatus.REJECTED: "rejected",
+                }.get(status_decision, status_decision.value),
+                "accepted": _rupees(accepted_amount),
+                "proved": _rupees(proof.proof_amount),
+                "remarks_line": (
+                    f" Remark: {proof.verifier_remarks}" if proof.verifier_remarks else ""
+                ),
+                "proof_id": str(proof.id),
+            },
+            commit=False,
+        )
     await session.commit()
     await session.refresh(proof)
     return proof

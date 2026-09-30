@@ -38,7 +38,7 @@ from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.documents import IssuedLetter, LetterStatus
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import Employee, EmployeeProfile, EmploymentStatus
 from app.models.hiring import Candidate, CandidateStage, Requisition
 from app.models.offer import (
     VACANCY_RELEASING_STATUSES,
@@ -1323,6 +1323,13 @@ async def convert_to_employee(
     # Months, not 30-day blocks: a naive 30-day month puts a six-month
     # probation six days early, which is a real date somebody is confirmed on.
     probation_end = offer.joining_date + relativedelta(months=offer.probation_months)
+    # Pre-joining until the joining date arrives (India's today, not the
+    # server's); the onboarding scheduler job activates them on the day.
+    from app.services.onboarding import rules as onboarding_rules
+
+    employment_status = onboarding_rules.joining_status(
+        offer.joining_date, onboarding_rules.india_today()
+    )
 
     employee = Employee(
         tenant_id=user.tenant_id,
@@ -1338,26 +1345,46 @@ async def convert_to_employee(
         department_id=offer.department_id,
         designation=offer.designation,
         grade=offer.grade,
-        status=EmploymentStatus.ACTIVE,
+        status=employment_status,
         date_of_joining=offer.joining_date,
         probation_end_date=probation_end,
         notice_period_days=offer.notice_period_days,
-        # The pre-hire record travels with them, which is what makes interview
-        # signal queryable against post-hire outcomes rather than thrown away
-        # at the moment they become an employee.
-        custom_fields={
-            "source": candidate.source,
-            "offer_code": offer.code,
-            "candidate_id": str(candidate.id),
-            "expected_ctc": str(candidate.expected_ctc) if candidate.expected_ctc else None,
-            "current_ctc_at_offer": (
-                str(candidate.current_ctc) if candidate.current_ctc else None
-            ),
-            "notice_period_days_at_offer": candidate.notice_period_days,
-            "fit_score": str(candidate.fit_score) if candidate.fit_score else None,
-        },
     )
     session.add(employee)
+    await session.flush()
+
+    # The pre-hire record travels with them, which is what makes interview
+    # signal queryable against post-hire outcomes rather than thrown away at
+    # the moment they become an employee. It goes into the HR-only
+    # `hiring_snapshot`, not `custom_fields`: custom fields are shown on the
+    # person's own profile, and their fit score and the CTC they were offered
+    # against are HR's working, not self-service.
+    session.add(
+        EmployeeProfile(
+            tenant_id=user.tenant_id,
+            employee_id=employee.id,
+            personal={},
+            addresses={},
+            emergency_contacts=[],
+            family_members=[],
+            nominees=[],
+            education=[],
+            previous_employment=[],
+            hiring_snapshot={
+                "source": candidate.source,
+                "offer_code": offer.code,
+                "candidate_id": str(candidate.id),
+                "expected_ctc": (
+                    str(candidate.expected_ctc) if candidate.expected_ctc else None
+                ),
+                "current_ctc_at_offer": (
+                    str(candidate.current_ctc) if candidate.current_ctc else None
+                ),
+                "notice_period_days_at_offer": candidate.notice_period_days,
+                "fit_score": str(candidate.fit_score) if candidate.fit_score else None,
+            },
+        )
+    )
     await session.flush()
 
     # Payroll's own assignment path, with the offer's structure and CTC. Not a
@@ -1395,9 +1422,19 @@ async def convert_to_employee(
             f"{candidate.full_name} joined under offer {offer.code} as {employee_code}; "
             "employee record and salary carried forward from the offer"
         ),
-        changes={"offer_id": str(offer.id), "candidate_id": str(candidate.id)},
+        changes={
+            "offer_id": str(offer.id),
+            "candidate_id": str(candidate.id),
+            "status": employment_status.value,
+        },
         request=request,
     )
+
+    # The tenant's onboarding checklist, when it keeps a default one. Never
+    # blocks the conversion: a refusal there is dropped in its own savepoint.
+    from app.services.onboarding import service as onboarding_service
+
+    await onboarding_service.auto_start_on_conversion(session, user, employee, request=request)
     return {
         "offer_id": str(offer.id),
         "employee_id": str(employee.id),

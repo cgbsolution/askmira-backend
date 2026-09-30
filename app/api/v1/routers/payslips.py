@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
 from app.core.deps import CurrentUser, DbSession
 from app.schemas.payroll_run import PayslipRead, PayslipSummaryRead, SalaryRecordRead
@@ -30,6 +30,21 @@ async def my_payslip(
 ) -> PayslipRead:
     """One of your published payslips, with its computation trace."""
     return await payslip_service.my_payslip(session, user, payslip_id)
+
+
+@router.get("/my-payslips/{payslip_id}/pdf", response_model=None)
+async def my_payslip_pdf(payslip_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """One of your published payslips as a PDF to keep."""
+    data, filename = await payslip_service.my_payslip_pdf(session, user, payslip_id)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/my-salary", response_model=list[SalaryRecordRead])

@@ -37,6 +37,8 @@ from app.models.documents import (
 )
 from app.models.employee import Employee
 from app.models.hiring import Candidate
+from app.models.letter_acknowledgement import LetterAcknowledgement
+from app.models.notifications import Channel, DigestMode
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.letters import (
@@ -64,8 +66,71 @@ from app.services.documents.letter_merge import (
 from app.services.documents.pdf import Letterhead, PdfRenderError, content_hash, render_pdf
 from app.services.documents.seed_templates import REVIEW_BANNER, SEED_TEMPLATES
 from app.services.documents.signature import SignatureError, get_provider
+from app.services.notifications.dispatch import notify, register_event
 from app.services.payroll.service import active_salary_on
 from app.services.storage import StorageError, get_storage
+
+#: Letters an employee may open and acknowledge in the portal. A letter still
+#: held for approval has not been issued to anybody yet; a revoked one has
+#: been withdrawn.
+ACKNOWLEDGEABLE = frozenset({LetterStatus.APPROVED, LetterStatus.SENT, LetterStatus.SIGNED})
+
+_PROMPT = {Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE}
+register_event(
+    "documents.letter.issued",
+    "Your {letter_name} is ready",
+    "Your {letter_name} ({reference_number}) has been issued. Open Documents to read it "
+    "and acknowledge it.",
+    preferences=_PROMPT,
+)
+register_event(
+    "documents.letter.acknowledgement_requested",
+    "Please acknowledge your {letter_name}",
+    "{actor_name} asked you to read and acknowledge your {letter_name} "
+    "({reference_number}). Open Documents to do it.",
+    preferences=_PROMPT,
+)
+register_event(
+    "documents.letter.acknowledged",
+    "{employee_name} acknowledged {reference_number}",
+    "{employee_name} read and acknowledged their {letter_name} ({reference_number}).",
+)
+
+
+async def notify_letter_issued(
+    session: AsyncSession, user: User, letter: IssuedLetter, letter_name: str
+) -> None:
+    """Tell the employee a letter is waiting for them, in the caller's transaction.
+
+    Only once it is really issued — approved, not held for approval — and only
+    to an employee with a login. An offer letter to a candidate goes through the
+    offer, not here.
+    """
+    if letter.employee_id is None or letter.status not in ACKNOWLEDGEABLE:
+        return
+    recipients = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == letter.employee_id, User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if not recipients:
+        return
+    await notify(
+        session,
+        tenant_id=user.tenant_id,
+        event_key="documents.letter.issued",
+        recipient_user_ids=recipients,
+        payload={"letter_name": letter_name, "reference_number": letter.reference_number},
+        commit=False,
+    )
 
 
 def financial_year(on: date) -> str:
@@ -684,6 +749,7 @@ async def issue_letter(
         summary=f"Issued {template.category.value} letter {reference} to {employee.employee_code}",
         request=request,
     )
+    await notify_letter_issued(session, user, letter, template.name)
 
     if commit:
         try:
@@ -907,6 +973,31 @@ async def _letter_reads(
         names |= {
             row.id: f"{row.full_name} (candidate)" for row in (await session.execute(stmt)).all()
         }
+    acks: dict[uuid.UUID, LetterAcknowledgement] = {}
+    if letters:
+        stmt = tenant_scoped(
+            select(LetterAcknowledgement).where(
+                LetterAcknowledgement.letter_id.in_([letter.id for letter in letters])
+            ),
+            LetterAcknowledgement,
+            user,
+        )
+        acks = {row.letter_id: row for row in (await session.scalars(stmt)).all()}
+
+    def _ack(letter: IssuedLetter) -> dict[str, Any]:
+        row = acks.get(letter.id)
+        acknowledged = row is not None and row.acknowledged_at is not None
+        return {
+            "acknowledged_at": row.acknowledged_at if row else None,
+            "acknowledged_name": row.typed_name if row else None,
+            "acknowledgement_requested_at": row.requested_at if row else None,
+            "can_acknowledge": (
+                not acknowledged
+                and letter.employee_id is not None
+                and letter.employee_id == user.employee_id
+                and letter.status in ACKNOWLEDGEABLE
+            ),
+        }
 
     return [
         LetterRead(
@@ -928,9 +1019,17 @@ async def _letter_reads(
             has_pdf=True,
             has_signed_pdf=bool(letter.signed_pdf_storage_key),
             revoked_reason=letter.revoked_reason,
+            **_ack(letter),
         )
         for letter in letters
     ]
+
+
+async def letter_reads(
+    session: AsyncSession, user: User, letters: list[IssuedLetter]
+) -> list[LetterRead]:
+    """The read shape of letters the caller has already been allowed to see."""
+    return await _letter_reads(session, user, letters)
 
 
 async def list_letters(
@@ -1065,6 +1164,7 @@ async def approve_letter(
         summary=f"Approved letter {letter.reference_number}",
         request=request,
     )
+    await notify_letter_issued(session, user, letter, template.name)
     await session.commit()
     await session.refresh(letter)
     return (await _letter_reads(session, user, [letter]))[0]

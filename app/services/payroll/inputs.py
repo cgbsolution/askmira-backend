@@ -4,10 +4,11 @@
 PAID ONCE, AND TRACEABLE TO WHERE IT CAME FROM
 ═══════════════════════════════════════════════════════════════════════════════
 
-Loan EMIs, salary reimbursements, leave encashment, statutory bonus, arrears,
-reward perquisites, referral bonuses and travel-advance recoveries are each
-owned by another module. Payroll does not re-decide any of them: it reads their
-tables, and each provider turns what is due into lines on a payslip.
+Loan EMIs, salary reimbursements, approved expense claims, leave encashment,
+statutory bonus, arrears, reward perquisites, referral bonuses and travel-advance
+recoveries and balances are each owned by another module. Payroll does not
+re-decide any of them: it reads their tables, and each provider turns what is
+due into lines on a payslip.
 
 Two phases, deliberately separate:
 
@@ -44,7 +45,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_scoped
 from app.models.arrears import ArrearBatch, ArrearLine, ArrearStatus
 from app.models.exit_benefits import EncashmentRequest, EncashmentStatus
-from app.models.expenses import AdvanceSettlement, SettlementOutcomeEnum, TravelAdvance
+from app.models.expenses import (
+    AdvanceSettlement,
+    AdvanceStatusEnum,
+    ExpenseClaim,
+    ExpenseClaimStatusEnum,
+    SettlementOutcomeEnum,
+    TravelAdvance,
+)
 from app.models.loans import (
     ClaimStatus,
     InterestType,
@@ -68,8 +76,10 @@ __all__ = [
     "InputConsumedElsewhereError",
     "ProviderReport",
     "RunScope",
+    "advance_refund_line",
     "collect_inputs",
     "consume_inputs",
+    "expense_claim_line",
 ]
 
 ZERO = Decimal(0)
@@ -375,8 +385,8 @@ class LoanEmiProvider(InputProvider):
 class ReimbursementProvider(InputProvider):
     """Verified reimbursement-component claims, paid exempt up to the entitlement.
 
-    Salary reimbursements only. An expense claim is business expenditure and is
-    not paid through payroll.
+    Salary reimbursements only. An expense claim is business expenditure, paid
+    at cost by `ExpenseClaimProvider` and never against an entitlement here.
     """
 
     key = "reimbursements"
@@ -632,7 +642,12 @@ class StatutoryBonusProvider(InputProvider):
         if row is None or row.paid_in_run_id != run.id or row.status is not BonusStatus.APPROVED:
             raise _conflict("A statutory bonus on this run")
         row.status = BonusStatus.PAID
-        row.paid_on = run.payment_date or datetime.now(UTC).date()
+        if run.payment_date is not None:
+            row.paid_on = run.payment_date
+        else:
+            from app.services.attendance.service import local_today
+
+            row.paid_on = await local_today(session, user)
 
 
 # ── Arrears ─────────────────────────────────────────────────────────────────
@@ -1019,6 +1034,252 @@ class AdvanceRecoveryProvider(InputProvider):
         settlement.payroll_recovery_ref = _reference(run)
 
 
+# ── Expense reimbursements ──────────────────────────────────────────────────
+
+
+def expense_claim_line(
+    *,
+    claim_id: uuid.UUID,
+    category_key: str,
+    amount: Decimal,
+    incurred_on: date,
+    original_amount: Decimal | None = None,
+    original_currency: str = "INR",
+) -> InputLine:
+    """One approved expense claim as a payslip line: paid at cost, never taxed.
+
+    Business expenditure reimbursed at what it cost is not income, so the line
+    carries no taxable amount — unlike a salary reimbursement component, which
+    is exempt only against a bill and up to an entitlement.
+    """
+    if not isinstance(amount, Decimal):
+        raise TypeError("An expense reimbursement must be a Decimal, not a float")
+    label = category_key.replace("_", " ").strip().capitalize() or "Expense"
+    spent = (
+        f" ({original_currency} {original_amount} converted)"
+        if original_amount is not None and original_currency.upper() != "INR"
+        else ""
+    )
+    return InputLine(
+        provider=ExpenseClaimProvider.key,
+        code="EXPENSE_REIMB",
+        name=f"Expense reimbursement: {label}",
+        kind=InputKind.REIMBURSEMENT,
+        amount=amount,
+        taxable_amount=ZERO,
+        basis=(
+            f"Approved {label.lower()} claim of {amount}{spent}, incurred "
+            f"{incurred_on:%d %b %Y}. Business expenditure paid at cost; not taxable."
+        ),
+        source={"type": ExpenseClaimProvider.source_type, "id": str(claim_id)},
+    )
+
+
+def advance_refund_line(
+    *,
+    settlement_id: uuid.UUID,
+    refund_amount: Decimal,
+    advance_amount: Decimal,
+    claims_total: Decimal,
+    settled_on: date,
+) -> InputLine:
+    """A trip that cost more than its advance: the balance owed to the employee."""
+    if not isinstance(refund_amount, Decimal):
+        raise TypeError("An advance refund must be a Decimal, not a float")
+    return InputLine(
+        provider=AdvanceRefundProvider.key,
+        code="ADVANCE_REFUND",
+        name="Travel advance: balance due to you",
+        kind=InputKind.REIMBURSEMENT,
+        amount=refund_amount,
+        taxable_amount=ZERO,
+        basis=(
+            f"Approved trip claims of {claims_total} exceeded the {advance_amount} advance; "
+            f"settled on {settled_on:%d %b %Y}. Not taxable."
+        ),
+        source={"type": AdvanceRefundProvider.source_type, "id": str(settlement_id)},
+    )
+
+
+class ExpenseClaimProvider(InputProvider):
+    """Approved expense claims not yet paid, reimbursed at cost in the next run.
+
+    A claim on a trip whose travel advance is still open waits: the advance
+    already put money in the employee's hands for that trip, and settling it
+    decides what is still owed (see `AdvanceRefundProvider`). Paying the claim
+    here as well would pay the trip twice.
+    """
+
+    key = "expense_claims"
+    label = "Expense reimbursements"
+    source_type = "expense_claim"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        claims = (
+            await session.scalars(
+                tenant_scoped(
+                    select(ExpenseClaim)
+                    .where(
+                        ExpenseClaim.employee_id.in_(scope.employee_ids),
+                        ExpenseClaim.status == ExpenseClaimStatusEnum.APPROVED,
+                        ExpenseClaim.reimbursed_in_run_id.is_(None),
+                        ExpenseClaim.advance_settlement_id.is_(None),
+                        ExpenseClaim.amount > 0,
+                    )
+                    .order_by(ExpenseClaim.incurred_on, ExpenseClaim.created_at),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).all()
+        if not claims:
+            return output
+
+        trip_ids = {claim.travel_request_id for claim in claims if claim.travel_request_id}
+        open_trips: set[uuid.UUID] = set()
+        if trip_ids:
+            open_trips = set(
+                (
+                    await session.scalars(
+                        tenant_scoped(
+                            select(TravelAdvance.travel_request_id).where(
+                                TravelAdvance.travel_request_id.in_(trip_ids),
+                                TravelAdvance.status == AdvanceStatusEnum.ISSUED,
+                            ),
+                            TravelAdvance,
+                            user,
+                        )
+                    )
+                ).all()
+            )
+
+        waiting = 0
+        for claim in claims:
+            if claim.travel_request_id in open_trips:
+                waiting += 1
+                continue
+            output.lines[claim.employee_id].append(
+                expense_claim_line(
+                    claim_id=claim.id,
+                    category_key=claim.category_key,
+                    amount=_d(claim.amount),
+                    incurred_on=claim.incurred_on,
+                    original_amount=_d(claim.original_amount),
+                    original_currency=claim.original_currency or "INR",
+                )
+            )
+        if waiting:
+            output.notices.append(
+                f"{waiting} approved claim(s) are on trips whose travel advance is not settled "
+                "yet. They are paid through the advance settlement, not directly, so the trip "
+                "is not paid twice."
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        claim = await session.scalar(
+            tenant_scoped(
+                select(ExpenseClaim).where(ExpenseClaim.id == uuid.UUID(line["source"]["id"])),
+                ExpenseClaim,
+                user,
+            )
+        )
+        if (
+            claim is None
+            or claim.status is not ExpenseClaimStatusEnum.APPROVED
+            or claim.reimbursed_in_run_id not in (None, run.id)
+            or claim.advance_settlement_id is not None
+        ):
+            raise _conflict("An expense claim on this run")
+        claim.status = ExpenseClaimStatusEnum.REIMBURSED
+        claim.reimbursed_in_run_id = run.id
+        claim.reimbursed_at = datetime.now(UTC)
+
+
+class AdvanceRefundProvider(InputProvider):
+    """A settled trip that cost more than its advance: the balance, paid in the run.
+
+    Consuming it also marks the trip's claims reimbursed: the advance paid the
+    first part of them and this run pays the rest.
+    """
+
+    key = "advance_refunds"
+    label = "Travel advance balances due"
+    source_type = "advance_refund"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        rows = (
+            await session.execute(
+                tenant_scoped(
+                    select(AdvanceSettlement, TravelAdvance)
+                    .join(TravelAdvance, AdvanceSettlement.advance_id == TravelAdvance.id)
+                    .where(
+                        AdvanceSettlement.outcome == SettlementOutcomeEnum.REFUND_DUE_TO_EMPLOYEE,
+                        AdvanceSettlement.refund_amount > 0,
+                        AdvanceSettlement.payroll_refund_ref.is_(None),
+                        AdvanceSettlement.settled_on <= scope.period_end,
+                        TravelAdvance.employee_id.in_(scope.employee_ids),
+                    ),
+                    AdvanceSettlement,
+                    user,
+                )
+            )
+        ).all()
+        for settlement, advance in rows:
+            output.lines[advance.employee_id].append(
+                advance_refund_line(
+                    settlement_id=settlement.id,
+                    refund_amount=_d(settlement.refund_amount),
+                    advance_amount=_d(settlement.advance_amount),
+                    claims_total=_d(settlement.claims_total),
+                    settled_on=settlement.settled_on,
+                )
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        settlement = await session.scalar(
+            tenant_scoped(
+                select(AdvanceSettlement).where(
+                    AdvanceSettlement.id == uuid.UUID(line["source"]["id"])
+                ),
+                AdvanceSettlement,
+                user,
+            )
+        )
+        reference = _reference(run)
+        if settlement is None or settlement.payroll_refund_ref not in (None, reference):
+            raise _conflict("A travel advance balance on this run")
+        settlement.payroll_refund_ref = reference
+        now = datetime.now(UTC)
+        claims = (
+            await session.scalars(
+                tenant_scoped(
+                    select(ExpenseClaim).where(
+                        ExpenseClaim.advance_settlement_id == settlement.id,
+                        ExpenseClaim.status == ExpenseClaimStatusEnum.APPROVED,
+                    ),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).all()
+        for claim in claims:
+            claim.status = ExpenseClaimStatusEnum.REIMBURSED
+            claim.reimbursed_in_run_id = run.id
+            claim.reimbursed_at = now
+
+
 # ── Not yet available ───────────────────────────────────────────────────────
 
 
@@ -1061,6 +1322,8 @@ PROVIDERS: tuple[InputProvider, ...] = (
     EncashmentProvider(),
     ReferralBonusProvider(),
     ReimbursementProvider(),
+    ExpenseClaimProvider(),
+    AdvanceRefundProvider(),
     RewardPerquisiteProvider(),
     AdvanceRecoveryProvider(),
     LoanEmiProvider(),

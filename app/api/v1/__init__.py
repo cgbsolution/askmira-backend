@@ -8,6 +8,7 @@ from app.api.v1.routers import (
     appraisal,
     approvals,
     arrears,
+    assets,
     attendance,
     auth,
     autonomy,
@@ -27,10 +28,12 @@ from app.api.v1.routers import (
     exit_benefits,
     exit_workflow,
     expenses,
+    feedback,
     filings,
     goals,
     grounding,
     gst,
+    helpdesk,
     hiring,
     interviews,
     leave,
@@ -39,6 +42,8 @@ from app.api.v1.routers import (
     loans,
     notifications,
     offers,
+    onboarding,
+    one_on_ones,
     opsec,
     org,
     payroll,
@@ -106,6 +111,8 @@ api_router.include_router(gst.router)
 api_router.include_router(opsec.router)
 api_router.include_router(performance_flow.router)
 api_router.include_router(goals.router)
+api_router.include_router(one_on_ones.router)
+api_router.include_router(feedback.router)
 api_router.include_router(recruiting.router, dependencies=_module("hiring"))
 api_router.include_router(rewards.router, dependencies=_module("rewards"))
 api_router.include_router(exit_benefits.router, dependencies=_module("payroll"))
@@ -118,3 +125,6 @@ api_router.include_router(culture.router, dependencies=_module("culture"))
 api_router.include_router(hiring.router, dependencies=_module("hiring"))
 api_router.include_router(admin.router)
 api_router.include_router(approvals.router)
+api_router.include_router(assets.router)
+api_router.include_router(onboarding.router)
+api_router.include_router(helpdesk.router)

@@ -80,6 +80,10 @@ class CheckInConfidence(str, enum.Enum):
     ON_TRACK = "on_track"
     AT_RISK = "at_risk"
     OFF_TRACK = "off_track"
+    #: The owner says the goal is finished. The check-in completes the goal in
+    #: the same transaction, so "done" in the history and a completed goal
+    #: cannot disagree.
+    DONE = "done"
 
 
 class Goal(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -190,3 +194,28 @@ class GoalCheckIn(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GoalCheckInComment(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A reply to one check-in — usually the manager's. Insert-only, like the check-in.
+
+    A comment is attached to the check-in it answers rather than to the goal,
+    so "at risk, blocked on the vendor" and "I'll chase the vendor" stay next to
+    each other in the history.
+    """
+
+    __tablename__ = "goal_check_in_comments"
+    __table_args__ = (
+        Index("ix_goal_check_in_comments_check_in", "tenant_id", "check_in_id"),
+    )
+
+    check_in_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("goal_check_ins.id", ondelete="CASCADE"), nullable=False
+    )
+    goal_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)

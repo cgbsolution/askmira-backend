@@ -12,8 +12,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.models.appraisal import CycleStatus, CycleType
 from app.models.goals import (
     CheckInConfidence,
     GoalLevel,
@@ -74,6 +75,16 @@ class KeyResultRead(BaseModel):
     progress: Decimal
 
 
+class LatestCheckInRead(BaseModel):
+    """The most recent check-in on a goal, for the goal list."""
+
+    confidence: CheckInConfidence | None
+    note: str | None
+    progress_after: Decimal
+    recorded_by_name: str | None
+    recorded_at: datetime
+
+
 class GoalRead(BaseModel):
     id: uuid.UUID
     owner_employee_id: uuid.UUID | None
@@ -95,13 +106,37 @@ class GoalRead(BaseModel):
     updated_at: datetime
     #: True when the caller may edit the goal and record progress on it.
     can_edit: bool
+    latest_check_in: LatestCheckInRead | None = None
 
 
 class GoalCheckInCreate(BaseModel):
-    key_result_id: uuid.UUID
-    value: Decimal = Field(max_digits=18, decimal_places=4)
+    """A progress update. A new value for one key result, a status, a note — or
+    any combination, as long as it says something."""
+
+    key_result_id: uuid.UUID | None = None
+    value: Decimal | None = Field(default=None, max_digits=18, decimal_places=4)
+    #: `done` completes the goal in the same transaction.
     confidence: CheckInConfidence | None = None
     note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> GoalCheckInCreate:
+        if (self.key_result_id is None) != (self.value is None):
+            raise ValueError("A new value needs the key result it belongs to, and vice versa.")
+        if self.value is None and self.confidence is None and not (self.note or "").strip():
+            raise ValueError("A check-in needs a new value, a status or a note.")
+        return self
+
+
+class GoalCheckInCommentCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class GoalCheckInCommentRead(BaseModel):
+    id: uuid.UUID
+    author_name: str | None
+    body: str
+    created_at: datetime
 
 
 class GoalCheckInRead(BaseModel):
@@ -115,6 +150,20 @@ class GoalCheckInRead(BaseModel):
     note: str | None
     recorded_by_name: str | None
     recorded_at: datetime
+    comments: list[GoalCheckInCommentRead] = Field(default_factory=list)
+    #: True when the caller may reply to this check-in.
+    can_comment: bool = False
+
+
+class GoalCycleRead(BaseModel):
+    """A review cycle a goal may count towards. Name and period only."""
+
+    id: uuid.UUID
+    name: str
+    cycle_type: CycleType
+    status: CycleStatus
+    period_start: date
+    period_end: date
 
 
 class GoalScoreRead(BaseModel):

@@ -6,9 +6,12 @@ passwords. Supabase provides the Postgres instance and nothing else.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import jwt
 from fastapi import HTTPException, Request, status
@@ -25,10 +28,13 @@ from app.core.security import (
     verify_password,
 )
 from app.models.audit import AuditAction, AuditLog
+from app.models.employee import Employee, EmploymentStatus
+from app.models.notifications import Channel, DigestMode
 from app.models.tenant import Tenant
-from app.models.user import User, UserRole
+from app.models.user import PasswordResetToken, User, UserRole
 from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, TenantRead, UserRead
 from app.services import audit
+from app.services.notifications.dispatch import notify, register_event
 
 # Modules a pilot tenant starts with. V2+ modules are switched on per tenant.
 DEFAULT_ENABLED_MODULES = {
@@ -117,6 +123,24 @@ async def signup(
     )
     session.add(user)
     await session.flush()
+
+    # The founder is a person in the company too: without an employee record
+    # they could not punch, apply for leave or see a payslip, and every
+    # self-service screen would tell them their login is not linked.
+    first, _, last = payload.full_name.strip().partition(" ")
+    employee = Employee(
+        tenant_id=tenant.id,
+        employee_code="EMP0001",
+        first_name=first or payload.full_name.strip(),
+        last_name=last.strip() or None,
+        work_email=payload.email.lower(),
+        phone=payload.phone,
+        date_of_joining=datetime.now(ZoneInfo("Asia/Kolkata")).date(),
+        status=EmploymentStatus.ACTIVE,
+    )
+    session.add(employee)
+    await session.flush()
+    user.employee_id = employee.id
 
     await audit.record(
         session,
@@ -235,7 +259,10 @@ async def refresh(session: AsyncSession, refresh_token: str) -> AuthResponse:
         )
 
     issued_at = payload.get("iat")
-    if user.tokens_valid_from and issued_at and issued_at < user.tokens_valid_from.timestamp():
+    # Whole seconds: `iat` has no fraction, so a sign-in in the same second as
+    # the reset would otherwise read as older than it and be refused.
+    cutoff = int(user.tokens_valid_from.timestamp()) if user.tokens_valid_from else None
+    if cutoff is not None and issued_at and issued_at < cutoff:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session was ended. Please sign in again.",
@@ -261,6 +288,7 @@ async def change_password(
         )
 
     user.password_hash = hash_password(new_password)
+    user.must_change_password = False
     # Invalidates every token issued before now, on every device.
     user.tokens_valid_from = datetime.now(UTC)
 
@@ -272,6 +300,138 @@ async def change_password(
         entity_id=user.id,
         actor=user,
         summary="Password changed; all existing sessions invalidated",
+        request=request,
+    )
+    await session.commit()
+
+
+# ── Forgot password ─────────────────────────────────────────────────────────
+
+RESET_TOKEN_LIFETIME = timedelta(minutes=30)
+RESET_REQUESTS_PER_HOUR = 3
+
+register_event(
+    "auth.password.reset",
+    "Reset your AskMira password",
+    "Hi {name}, use this link to set a new AskMira password: {link} — it works once and "
+    "expires in {minutes} minutes. If you did not ask for this, ignore this email; your "
+    "password has not changed.",
+    preferences={Channel.EMAIL: DigestMode.IMMEDIATE},
+)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _web_app_url() -> str:
+    base = settings.WEB_APP_URL or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "")
+    return base.rstrip("/")
+
+
+async def request_password_reset(
+    session: AsyncSession, email: str, request: Request | None = None
+) -> None:
+    """Email a single-use reset link, if the address belongs to an active login.
+
+    Answers the same way whether or not the address exists, so the endpoint
+    cannot be used to find out who has an account.
+    """
+    user = await session.scalar(select(User).where(func.lower(User.email) == email.lower()))
+    if user is None or not user.is_active:
+        return
+
+    now = datetime.now(UTC)
+    # A throttle, so the endpoint cannot be used to flood someone's inbox.
+    recent = await session.scalar(
+        select(func.count(PasswordResetToken.id)).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.created_at >= now - timedelta(hours=1),
+        )
+    )
+    if (recent or 0) >= RESET_REQUESTS_PER_HOUR:
+        return
+
+    # Only the newest link works: asking again retires the earlier ones.
+    outstanding = (
+        await session.scalars(
+            select(PasswordResetToken).where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > now,
+            )
+        )
+    ).all()
+    for row in outstanding:
+        row.expires_at = now
+
+    token = secrets.token_urlsafe(32)
+    session.add(
+        PasswordResetToken(
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            token_hash=_token_hash(token),
+            expires_at=now + RESET_TOKEN_LIFETIME,
+            requested_ip=request.client.host if request and request.client else None,
+        )
+    )
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=user.id,
+        actor_user_id=user.id,
+        summary="Password reset link requested",
+        request=request,
+    )
+    await notify(
+        session,
+        tenant_id=user.tenant_id,
+        event_key="auth.password.reset",
+        recipient_user_ids=[user.id],
+        payload={
+            "name": user.full_name.split(" ")[0],
+            "link": f"{_web_app_url()}/reset-password?token={token}",
+            "minutes": int(RESET_TOKEN_LIFETIME.total_seconds() // 60),
+        },
+        commit=False,
+    )
+    await session.commit()
+
+
+async def reset_password(
+    session: AsyncSession, token: str, new_password: str, request: Request | None = None
+) -> None:
+    """Set a new password from a reset link, and sign out every existing session."""
+    row = await session.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == _token_hash(token))
+    )
+    now = datetime.now(UTC)
+    if row is None or row.used_at is not None or row.expires_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link is invalid or has expired. Ask for a new one.",
+        )
+    user = await session.get(User, row.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link is invalid or has expired. Ask for a new one.",
+        )
+
+    row.used_at = now
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    user.tokens_valid_from = now
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=user.id,
+        actor_user_id=user.id,
+        summary="Password reset from an emailed link; all existing sessions invalidated",
         request=request,
     )
     await session.commit()

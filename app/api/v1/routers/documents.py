@@ -15,12 +15,15 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, Up
 from app.core import permissions
 from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.employee import DocumentVerification
 from app.schemas.documents import (
     CATEGORY_LABELS,
+    SELF_UPLOAD_CATEGORIES,
     CategoryRead,
     DocumentCategory,
     DocumentRead,
     DocumentUpdate,
+    DocumentVerify,
 )
 from app.services.documents import vault
 
@@ -34,14 +37,27 @@ async def list_categories(user: CurrentUser) -> list[CategoryRead]:
     return [CategoryRead(value=value, label=label) for value, label in CATEGORY_LABELS.items()]
 
 
+@router.get("/categories/self-upload", response_model=list[CategoryRead])
+async def self_upload_categories(user: CurrentUser) -> list[CategoryRead]:
+    """What an employee may upload to their own record."""
+    return [
+        CategoryRead(value=value, label=label)
+        for value, label in CATEGORY_LABELS.items()
+        if value in SELF_UPLOAD_CATEGORIES
+    ]
+
+
 @router.get("", response_model=list[DocumentRead])
 async def list_documents(
     user: CurrentUser,
     session: DbSession,
     employee_id: uuid.UUID | None = None,
     category: DocumentCategory | None = None,
+    verification: DocumentVerification | None = None,
 ) -> list[DocumentRead]:
-    return await vault.list_documents(session, user, employee_id=employee_id, category=category)
+    return await vault.list_documents(
+        session, user, employee_id=employee_id, category=category, verification=verification
+    )
 
 
 @router.get("/expiring", response_model=list[DocumentRead], dependencies=HR_ONLY)
@@ -84,6 +100,42 @@ async def upload(
         is_employee_visible=is_employee_visible,
         request=request,
     )
+
+
+@router.post("/mine", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
+async def upload_mine(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    category: Annotated[DocumentCategory, Form()],
+    title: Annotated[str, Form(min_length=1, max_length=255)],
+    file: Annotated[UploadFile, File()],
+    valid_until: Annotated[date | None, Form()] = None,
+) -> DocumentRead:
+    """Add a document to your own record. It waits for HR to verify it."""
+    _ = user.employee_id  # always the caller's own record, never one named in the form
+    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    return await vault.upload_own_document(
+        session,
+        user,
+        category=category,
+        title=title,
+        data=data,
+        valid_until=valid_until,
+        request=request,
+    )
+
+
+@router.post("/{document_id}/verify", response_model=DocumentRead, dependencies=HR_ONLY)
+async def verify(
+    document_id: uuid.UUID,
+    payload: DocumentVerify,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> DocumentRead:
+    """Verify or reject a document the employee uploaded; a rejection says why."""
+    return await vault.verify_document(session, user, document_id, payload, request=request)
 
 
 @router.get("/{document_id}/download")

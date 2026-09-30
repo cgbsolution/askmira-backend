@@ -1,14 +1,14 @@
-"""Employee master endpoints (FRD 5.1)."""
+"""Employee master endpoints (FRD 5.1), the extended profile and profile change requests."""
 
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 
-from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.models.employee import EmploymentStatus
+from app.models.employee import EmploymentStatus, ProfileChangeStatus
 from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.employee import (
@@ -18,11 +18,23 @@ from app.schemas.employee import (
     EmployeeSummary,
     EmployeeUpdate,
 )
+from app.schemas.employee_profile import (
+    CelebrationsRead,
+    ChangeRequestCreate,
+    ChangeRequestDecision,
+    ChangeRequestRead,
+    ChangeRequestRejection,
+    EmployeeProfileRead,
+    ProfileUpdate,
+)
 from app.services import employee as employee_service
+from app.services import employee_profile as profile_service
+from app.services.employee_profile import PHOTO_MAX_BYTES
 
 router = APIRouter(prefix="/employees", tags=["core-hr"])
 
 HR_WRITE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
+HR_ONLY = [Depends(require_roles(*HR_WRITE_ROLES))]
 
 
 @router.get("", response_model=Page[EmployeeSummary])
@@ -34,6 +46,9 @@ async def list_employees(
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
+    current: bool = Query(
+        default=False, description="Everybody who has not left: every status but exited."
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[EmployeeSummary]:
@@ -45,6 +60,7 @@ async def list_employees(
         location_id=location_id,
         manager_id=manager_id,
         status_filter=employment_status.value if employment_status else None,
+        current_only=current,
         offset=(page - 1) * page_size,
         limit=page_size,
     )
@@ -60,7 +76,7 @@ async def list_employees(
     "",
     response_model=EmployeeRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*HR_WRITE_ROLES))],
+    dependencies=HR_ONLY,
 )
 async def create_employee(
     payload: EmployeeCreate, user: CurrentUser, session: DbSession, request: Request
@@ -69,14 +85,23 @@ async def create_employee(
     return EmployeeRead.model_validate(employee)
 
 
-# `/me` is declared before `/{employee_id}` so it is not parsed as an id.
+# Literal paths (`/me`, `/celebrations`, `/change-requests`) are declared before
+# `/{employee_id}` so they are not parsed as an id.
+
+
+@router.get("/celebrations", response_model=CelebrationsRead)
+async def celebrations(
+    user: CurrentUser, session: DbSession, days: int = Query(default=30, ge=1, le=90)
+) -> CelebrationsRead:
+    """Upcoming birthdays and work anniversaries, for people who chose to share them."""
+    return await employee_service.celebrations(session, user, days=days)
 
 
 @router.get("/me", response_model=EmployeeRead)
 async def get_my_record(user: CurrentUser, session: DbSession) -> EmployeeRead:
     """The caller's own full record, found through the login's own link."""
     employee = await employee_service.get_own_employee(session, user)
-    return EmployeeRead.model_validate(employee)
+    return await employee_service.employee_view(session, user, employee)
 
 
 @router.patch("/me", response_model=EmployeeRead)
@@ -85,7 +110,128 @@ async def update_my_contact(
 ) -> EmployeeRead:
     """Self-service contact details. Employment fields are not in the contract."""
     employee = await employee_service.update_own_contact(session, user, payload, request)
-    return EmployeeRead.model_validate(employee)
+    return await employee_service.employee_view(session, user, employee)
+
+
+@router.get("/me/profile", response_model=EmployeeProfileRead)
+async def get_my_profile(user: CurrentUser, session: DbSession) -> EmployeeProfileRead:
+    employee = await employee_service.get_own_employee(session, user)
+    return await profile_service.read_profile(session, user, employee.id)
+
+
+@router.put("/me/profile", response_model=EmployeeProfileRead)
+async def update_my_profile(
+    payload: ProfileUpdate, user: CurrentUser, session: DbSession, request: Request
+) -> EmployeeProfileRead:
+    """Save one of your own non-sensitive sections. Sensitive ones are a change request."""
+    employee = await employee_service.get_own_employee(session, user)
+    return await profile_service.write_section(
+        session, user, employee.id, payload.change, request=request
+    )
+
+
+@router.get("/me/change-requests", response_model=list[ChangeRequestRead])
+async def my_change_requests(user: CurrentUser, session: DbSession) -> list[ChangeRequestRead]:
+    employee = await employee_service.get_own_employee(session, user)
+    return await profile_service.list_change_requests(session, user, employee_id=employee.id)
+
+
+@router.post(
+    "/me/change-requests",
+    response_model=ChangeRequestRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def raise_change_request(
+    payload: ChangeRequestCreate, user: CurrentUser, session: DbSession, request: Request
+) -> ChangeRequestRead:
+    """Ask HR to change your legal name, date of birth, identifiers, bank, address or nominees."""
+    _ = user.employee_id  # the caller's own record; the service refuses anything else
+    return await profile_service.create_change_request(
+        session, user, payload.change, payload.reason, request=request
+    )
+
+
+@router.put("/me/photo", response_model=EmployeeRead)
+async def upload_my_photo(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+) -> EmployeeRead:
+    employee = await employee_service.get_own_employee(session, user)
+    data = await file.read(PHOTO_MAX_BYTES + 1)
+    saved = await profile_service.set_photo(session, user, employee.id, data, request=request)
+    return await employee_service.employee_view(session, user, saved)
+
+
+@router.delete("/me/photo", response_model=EmployeeRead)
+async def remove_my_photo(
+    user: CurrentUser, session: DbSession, request: Request
+) -> EmployeeRead:
+    employee = await employee_service.get_own_employee(session, user)
+    saved = await profile_service.remove_photo(session, user, employee.id, request=request)
+    return await employee_service.employee_view(session, user, saved)
+
+
+@router.get(
+    "/change-requests", response_model=list[ChangeRequestRead], dependencies=HR_ONLY
+)
+async def list_change_requests(
+    user: CurrentUser,
+    session: DbSession,
+    request_status: ProfileChangeStatus | None = Query(default=None, alias="status"),
+    employee_id: uuid.UUID | None = None,
+) -> list[ChangeRequestRead]:
+    """HR's queue of profile change requests."""
+    return await profile_service.list_change_requests(
+        session, user, employee_id=employee_id, status_filter=request_status
+    )
+
+
+@router.post(
+    "/change-requests/{request_id}/approve",
+    response_model=ChangeRequestRead,
+    dependencies=HR_ONLY,
+)
+async def approve_change_request(
+    request_id: uuid.UUID,
+    payload: ChangeRequestDecision,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ChangeRequestRead:
+    """Approve, and apply the change in the same transaction."""
+    return await profile_service.decide_change_request(
+        session, user, request_id, approve=True, note=payload.note, request=request
+    )
+
+
+@router.post(
+    "/change-requests/{request_id}/reject",
+    response_model=ChangeRequestRead,
+    dependencies=HR_ONLY,
+)
+async def reject_change_request(
+    request_id: uuid.UUID,
+    payload: ChangeRequestRejection,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ChangeRequestRead:
+    return await profile_service.decide_change_request(
+        session, user, request_id, approve=False, note=payload.note, request=request
+    )
+
+
+@router.post("/change-requests/{request_id}/withdraw", response_model=ChangeRequestRead)
+async def withdraw_change_request(
+    request_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> ChangeRequestRead:
+    """Take back your own pending request."""
+    _ = user.employee_id  # only the requester; anybody else's request is a 404
+    return await profile_service.withdraw_change_request(
+        session, user, request_id, request=request
+    )
 
 
 @router.get("/{employee_id}", response_model=EmployeeRead)
@@ -93,34 +239,67 @@ async def get_employee(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> EmployeeRead:
     employee = await employee_service.get_employee(session, user, employee_id)
-    record = EmployeeRead.model_validate(employee)
-    if employee.id == user.employee_id or permissions.is_hr(user):
-        return record
-    # A colleague's profile is the directory view. Nobody outside HR sees
-    # another person's date of birth, phone, personal email, gender or custom
-    # fields; a line manager also keeps the employment fields for their own
-    # reporting line.
-    hidden: dict[str, object] = {
-        "personal_email": None,
-        "phone": None,
-        "date_of_birth": None,
-        "gender": None,
-        "custom_fields": {},
-    }
-    if not await permissions.is_line_manager_of(session, user, employee.id):
-        hidden |= {
-            "grade": None,
-            "probation_end_date": None,
-            "notice_period_days": None,
-            "date_of_exit": None,
-        }
-    return record.model_copy(update=hidden)
+    return await employee_service.employee_view(session, user, employee)
+
+
+@router.get("/{employee_id}/profile", response_model=EmployeeProfileRead)
+async def get_profile(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> EmployeeProfileRead:
+    """The extended profile: the person themselves and HR only."""
+    return await profile_service.read_profile(session, user, employee_id)
+
+
+@router.put("/{employee_id}/profile", response_model=EmployeeProfileRead, dependencies=HR_ONLY)
+async def update_profile(
+    employee_id: uuid.UUID,
+    payload: ProfileUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> EmployeeProfileRead:
+    """HR writes any section of somebody else's profile directly."""
+    return await profile_service.write_section(
+        session, user, employee_id, payload.change, request=request
+    )
+
+
+@router.get("/{employee_id}/change-requests", response_model=list[ChangeRequestRead])
+async def employee_change_requests(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[ChangeRequestRead]:
+    """One person's requests: theirs to see, and HR's."""
+    return await profile_service.list_change_requests(session, user, employee_id=employee_id)
+
+
+@router.get("/{employee_id}/photo", response_class=Response)
+async def get_photo(employee_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """A colleague's photo, as the directory shows it beside their name."""
+    mime, data = await profile_service.photo(session, user, employee_id)
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.put("/{employee_id}/photo", response_model=EmployeeRead, dependencies=HR_ONLY)
+async def upload_photo(
+    employee_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+) -> EmployeeRead:
+    data = await file.read(PHOTO_MAX_BYTES + 1)
+    saved = await profile_service.set_photo(session, user, employee_id, data, request=request)
+    return await employee_service.employee_view(session, user, saved)
 
 
 @router.patch(
     "/{employee_id}",
     response_model=EmployeeRead,
-    dependencies=[Depends(require_roles(*HR_WRITE_ROLES))],
+    dependencies=HR_ONLY,
 )
 async def update_employee(
     employee_id: uuid.UUID,

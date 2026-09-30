@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # error. This hands the raw string to the validator, which is what the
     # validator was written for.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+    # Where the web portal lives, for links in emails (password reset). Falls
+    # back to the first CORS origin, which is the portal in every deployment.
+    WEB_APP_URL: str | None = None
 
     # ── Secret encryption at rest (slice 04) ───────────────────────────────
     # A distinct key from JWT_SECRET_KEY on purpose: reusing the token-signing

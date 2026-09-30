@@ -24,20 +24,30 @@ from app.models.attendance import (
     AttendancePunch,
     AttendanceRegularisation,
     AttendanceStatus,
+    PunchDirection,
+    RegularisationKind,
     RegularisationStatus,
+    Shift,
 )
 from app.models.employee import Employee, EmploymentStatus
+from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
 from app.models.user import User
 from app.schemas.attendance import (
     AttendanceDayRead,
     AttendanceException,
     AttendanceExceptionReport,
     AttendanceSummaryResponse,
+    CalendarHoliday,
+    CalendarLeave,
     EmployeeAttendanceSummary,
     MyAttendancePeriod,
     RegularisationQueueItem,
+    ShiftBrief,
+    TeamMemberToday,
+    TeamToday,
 )
 from app.services.attendance import service as attendance_service
+from app.services.leave.holidays import holidays_for_employees
 
 MAX_RANGE_DAYS = 93
 
@@ -123,6 +133,21 @@ async def list_days(
     return await _days(session, user, start, end, {employee_id})
 
 
+async def viewable_employee(
+    session: AsyncSession, user: User, employee_id: uuid.UUID | None, *, detail: str
+) -> uuid.UUID:
+    """Whose attendance the caller may read: own, reporting line's, or anyone's for HR."""
+    if employee_id is None or employee_id == user.employee_id:
+        return permissions.own_employee_id(user)
+    if permissions.is_hr(user) or await permissions.manages(session, user, employee_id):
+        return employee_id
+    raise permissions.forbidden(detail)
+
+
+def _brief(shift: Shift) -> ShiftBrief:
+    return ShiftBrief.model_validate(shift)
+
+
 async def my_period(
     session: AsyncSession, user: User, *, employee_id: uuid.UUID, start: date, end: date
 ) -> MyAttendancePeriod:
@@ -130,13 +155,224 @@ async def my_period(
     employee = await _employee(session, user, employee_id)
     days = await _days(session, user, start, end, {employee_id})
     lock = await attendance_service.active_lock_covering(session, user, start, end)
+    today = await attendance_service.local_today(session, user)
+
+    resolver = await attendance_service.ShiftResolver.load(
+        session, user, [employee_id], today, today
+    )
+    plan_today = resolver.resolve(employee_id, today)
+
+    shift_ids = {d.shift_id for d in days if d.shift_id is not None}
+    shifts: dict[uuid.UUID, Shift] = {}
+    if shift_ids:
+        shifts = {
+            row.id: row
+            for row in (
+                await session.scalars(
+                    tenant_scoped(select(Shift).where(Shift.id.in_(shift_ids)), Shift, user)
+                )
+            ).all()
+        }
+    if plan_today.shift is not None:
+        shifts[plan_today.shift.id] = plan_today.shift
+
+    holidays = (await holidays_for_employees(session, user, [employee_id], start, end)).get(
+        employee_id, {}
+    )
+
+    leave_rows = (
+        await session.execute(
+            tenant_scoped(
+                select(LeaveRequest, LeaveType.name)
+                .join(LeaveType, LeaveType.id == LeaveRequest.leave_type_id)
+                .where(
+                    LeaveRequest.employee_id == employee_id,
+                    LeaveRequest.status.in_(
+                        [LeaveRequestStatus.APPROVED, LeaveRequestStatus.PENDING]
+                    ),
+                    LeaveRequest.start_date <= end,
+                    LeaveRequest.end_date >= start,
+                ),
+                LeaveRequest,
+                user,
+            )
+        )
+    ).all()
+    leaves: list[CalendarLeave] = []
+    for leave, type_name in leave_rows:
+        cursor = max(leave.start_date, start)
+        while cursor <= min(leave.end_date, end):
+            leaves.append(
+                CalendarLeave(
+                    leave_date=cursor,
+                    leave_type=type_name,
+                    is_half_day=leave.is_half_day,
+                    status=leave.status.value,
+                )
+            )
+            cursor += timedelta(days=1)
+
     return MyAttendancePeriod(
         period_start=start,
         period_end=end,
         is_locked=lock is not None,
         summary=summarise(employee, days),
         days=[AttendanceDayRead.model_validate(d) for d in days],
+        today=today,
+        date_of_joining=employee.date_of_joining,
+        shift_today=_brief(plan_today.shift) if plan_today.shift is not None else None,
+        shift_today_is_default=plan_today.from_default,
+        has_no_shift=plan_today.shift is None and not plan_today.roster_week_off,
+        shifts=[_brief(row) for row in shifts.values()],
+        holidays=[
+            CalendarHoliday(holiday_date=day, name=name) for day, name in sorted(holidays.items())
+        ],
+        leaves=leaves,
     )
+
+
+async def team_today(
+    session: AsyncSession, user: User, *, department_id: uuid.UUID | None = None
+) -> TeamToday:
+    """Who is in, out, on leave or not in yet today — a manager's team, or everyone for HR."""
+    today = await attendance_service.local_today(session, user)
+    scope = await _others_in_scope(session, user)
+    stmt = select(Employee).where(
+        Employee.deleted_at.is_(None),
+        Employee.status.not_in([EmploymentStatus.PRE_JOINING, EmploymentStatus.EXITED]),
+    )
+    if department_id is not None:
+        stmt = stmt.where(Employee.department_id == department_id)
+    if scope is not None:
+        if not scope:
+            return TeamToday(today=today, members=[], counts={})
+        stmt = stmt.where(Employee.id.in_(scope))
+    stmt = stmt.order_by(Employee.first_name)
+    employees = list((await session.scalars(tenant_scoped(stmt, Employee, user))).all())
+    ids = [e.id for e in employees]
+    if not ids:
+        return TeamToday(today=today, members=[], counts={})
+
+    zones = await attendance_service.employee_timezones(session, user, ids)
+    resolver = await attendance_service.ShiftResolver.load(session, user, ids, today, today)
+    holidays = await holidays_for_employees(session, user, ids, today, today)
+
+    punches = (
+        await session.scalars(
+            tenant_scoped(
+                select(AttendancePunch)
+                .where(
+                    AttendancePunch.employee_id.in_(ids),
+                    AttendancePunch.punched_at
+                    >= datetime.combine(
+                        today - timedelta(days=1), datetime.min.time(), tzinfo=UTC
+                    ),
+                )
+                .order_by(AttendancePunch.punched_at),
+                AttendancePunch,
+                user,
+            )
+        )
+    ).all()
+    by_person: dict[uuid.UUID, list[AttendancePunch]] = {}
+    for punch in punches:
+        if punch.punched_at.astimezone(zones.get(punch.employee_id, UTC)).date() == today:
+            by_person.setdefault(punch.employee_id, []).append(punch)
+
+    leave_today = {
+        row[0]: row[1]
+        for row in (
+            await session.execute(
+                tenant_scoped(
+                    select(LeaveRequest.employee_id, LeaveType.name)
+                    .join(LeaveType, LeaveType.id == LeaveRequest.leave_type_id)
+                    .where(
+                        LeaveRequest.employee_id.in_(ids),
+                        LeaveRequest.status == LeaveRequestStatus.APPROVED,
+                        LeaveRequest.start_date <= today,
+                        LeaveRequest.end_date >= today,
+                    ),
+                    LeaveRequest,
+                    user,
+                )
+            )
+        ).all()
+    }
+    remote_today = {
+        row.employee_id: row.kind
+        for row in (
+            await session.scalars(
+                tenant_scoped(
+                    select(AttendanceRegularisation).where(
+                        AttendanceRegularisation.employee_id.in_(ids),
+                        AttendanceRegularisation.attendance_date == today,
+                        AttendanceRegularisation.status == RegularisationStatus.APPROVED,
+                        AttendanceRegularisation.kind.in_(
+                            [RegularisationKind.ON_DUTY, RegularisationKind.WORK_FROM_HOME]
+                        ),
+                    ),
+                    AttendanceRegularisation,
+                    user,
+                )
+            )
+        ).all()
+    }
+
+    members: list[TeamMemberToday] = []
+    for employee in employees:
+        plan = resolver.resolve(employee.id, today)
+        shift = plan.shift
+        own = by_person.get(employee.id, [])
+        first_in = next((p.punched_at for p in own if p.direction is PunchDirection.IN), None)
+        last = own[-1] if own else None
+        late = 0
+        if shift is not None and first_in is not None:
+            zone = zones.get(employee.id, UTC)
+            scheduled = datetime.combine(today, shift.start_time, tzinfo=zone)
+            minutes = int((first_in - scheduled).total_seconds() // 60)
+            late = minutes if minutes > shift.grace_in_minutes else 0
+
+        detail: str | None = None
+        if last is not None:
+            state = "in" if last.direction is PunchDirection.IN else "out"
+        elif employee.id in leave_today:
+            state, detail = "on_leave", leave_today[employee.id]
+        elif employee.id in remote_today:
+            state = (
+                "on_duty" if remote_today[employee.id] is RegularisationKind.ON_DUTY
+                else "work_from_home"
+            )
+        elif today in holidays.get(employee.id, {}):
+            state, detail = "holiday", holidays[employee.id][today]
+        elif plan.roster_week_off or (
+            shift is not None and today.isoweekday() in (shift.weekly_off_days or [])
+        ):
+            state = "week_off"
+        else:
+            state = "not_in"
+
+        members.append(
+            TeamMemberToday(
+                employee_id=employee.id,
+                employee_code=employee.employee_code,
+                employee_name=employee.full_name,
+                designation=employee.designation,
+                state=state,
+                first_in=first_in,
+                last_punch_at=last.punched_at if last else None,
+                last_direction=last.direction if last else None,
+                shift_name=shift.name if shift else None,
+                shift_start=shift.start_time if shift else None,
+                late_by_minutes=late,
+                detail=detail,
+            )
+        )
+
+    counts: dict[str, int] = {}
+    for member in members:
+        counts[member.state] = counts.get(member.state, 0) + 1
+    counts["late"] = sum(1 for m in members if m.late_by_minutes > 0)
+    return TeamToday(today=today, members=members, counts=counts)
 
 
 async def period_summaries(
@@ -288,6 +524,7 @@ async def pending_regularisations(
                 id=reg.id,
                 employee_id=reg.employee_id,
                 attendance_date=reg.attendance_date,
+                kind=reg.kind,
                 requested_status=reg.requested_status,
                 requested_first_in=reg.requested_first_in,
                 requested_last_out=reg.requested_last_out,

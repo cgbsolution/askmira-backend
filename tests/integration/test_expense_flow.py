@@ -1096,14 +1096,18 @@ async def test_another_tenants_advances_do_not_block_this_ones_employee(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_posture_says_payroll_does_not_pick_up_the_recovery():
-    """The single most misleading thing this slice could imply is that an
-    under-spent advance is recovered automatically. It is not."""
+async def test_the_posture_says_how_payroll_pays_and_recovers():
+    """The posture states what actually happens to the money: approved claims
+    are paid in the next payroll run, and an under-spent advance is recovered
+    there. It must not claim otherwise in either direction."""
     posture = expenses.expense_posture()
-    joined = " ".join(posture["not_built"]).lower()
-    assert "nothing in payroll picks up a recovery" in joined
-    assert "no receipt ocr" in joined
-    assert "no exchange rate feed" in joined
+    enforced = " ".join(posture["enforced"]).lower()
+    not_built = " ".join(posture["not_built"]).lower()
+    assert "paid at cost, untaxed, in the next regular payroll run" in enforced
+    assert "under-spent advance is recovered in payroll" in enforced
+    assert "nothing in payroll picks up" not in not_built
+    assert "no receipt ocr" in not_built
+    assert "no exchange rate feed" in not_built
 
 
 async def test_a_claim_on_someone_elses_trip_is_refused(

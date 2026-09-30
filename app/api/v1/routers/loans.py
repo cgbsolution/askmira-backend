@@ -26,6 +26,7 @@ from app.models.loans import (
     ReimbursementClaim,
 )
 from app.models.user import UserRole
+from app.services.attendance.service import local_today
 from app.services.filings import support
 from app.services.loans import service as loan_service
 
@@ -462,7 +463,7 @@ async def run_reminders(user: CurrentUser, session: DbSession) -> dict[str, int]
     What a monthly scheduler calls; there is none in this build.
     """
     raised = await loan_service.send_unclaimed_entitlement_reminders(
-        session, user.tenant_id, today=date.today()
+        session, user.tenant_id, today=await local_today(session, user)
     )
     return {"notifications_raised": raised}
 

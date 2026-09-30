@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint, false
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,11 @@ class User(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Set when an admin issues a temporary password; the portal sends the
+    # person to change it before anything else, and a change clears it.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
 
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Bumped on password change and forced logout; refresh tokens issued before
@@ -73,3 +78,22 @@ class User(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<User {self.email} ({self.role.value})>"
+
+
+class PasswordResetToken(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A single-use "forgot password" link.
+
+    Only a SHA-256 of the token is stored: the database never holds anything
+    that could reset a password if it leaked. Used or expired rows stay, as the
+    record that a reset was asked for.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)

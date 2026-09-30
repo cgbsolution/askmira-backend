@@ -21,6 +21,7 @@ approvals, say) is reported as unavailable rather than failing the whole inbox.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -29,6 +30,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import Select, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -58,9 +60,20 @@ from app.models.retention import RetentionRun, RetentionRunStatus
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.approvals import ApprovalInboxRead, ApprovalItemRead, ApprovalSourceRead
+from app.services import employee_profile as profile_service
+from app.services.assets import service as assets_service
+from app.services.documents import vault as documents_vault
+from app.services.exit_workflow import clearance_tasks
+from app.services.exit_workflow import resignation as resignation_service
+from app.services.expenses import inbox as expense_inbox
+from app.services.leave import comp_off as comp_off_service
 from app.services.leave import service as leave_service
+from app.services.payroll import inbox as payroll_inbox
+from app.services.performance import feedback as feedback_service
 
 __all__ = ["SOURCES", "inbox"]
+
+logger = logging.getLogger(__name__)
 
 ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.TENANT_ADMIN, UserRole.HR_ADMIN})
 EVERYONE: frozenset[UserRole] = frozenset(UserRole) - {UserRole.PLATFORM_ADMIN}
@@ -446,10 +459,16 @@ class Source:
 #: Each role set is the gate on that module's decide endpoint.
 SOURCES: tuple[Source, ...] = (
     Source("leave", "Time off", "/time", EVERYONE, _leave, module="leave"),
+    # Comp-off approvers are line managers (promoted to the manager role when
+    # they gain reports) or HR; the Time page lists them for anyone named.
+    Source(
+        "leave_comp_off", "Comp-off claims", "/time", permissions.MANAGER_ROLES,
+        comp_off_service.approval_items, module="leave",
+    ),
     Source(
         "attendance_regularisation",
         "Attendance corrections",
-        "/time/attendance-review",
+        "/time/attendance-review?tab=regularisations",
         permissions.MANAGER_ROLES,
         _regularisations,
         module="leave",
@@ -459,6 +478,15 @@ SOURCES: tuple[Source, ...] = (
         _expense_claims,
     ),
     Source("travel_request", "Travel requests", "/expenses/review", permissions.HR_ROLES, _travel),
+    # The line manager's stage, before finance: the caller's own reporting line.
+    Source(
+        "expense_claim_manager", "Team expense claims", "/expenses/team",
+        permissions.MANAGER_ROLES, expense_inbox.manager_claim_items,
+    ),
+    Source(
+        "travel_request_manager", "Team travel requests", "/expenses/team",
+        permissions.MANAGER_ROLES, expense_inbox.manager_travel_items,
+    ),
     Source(
         "requisition", "Requisitions", "/hiring", permissions.HR_ROLES, _requisitions,
         module="hiring",
@@ -471,6 +499,18 @@ SOURCES: tuple[Source, ...] = (
         _settlements, module="payroll",
     ),
     Source(
+        "payroll_run", "Payroll runs to approve", "/payroll", ADMIN_ROLES,
+        payroll_inbox.run_approval_items, module="payroll",
+    ),
+    Source(
+        "tax_proof", "Tax proofs to verify", "/payroll/tax-proofs", permissions.HR_ROLES,
+        payroll_inbox.tax_proof_items, module="payroll",
+    ),
+    Source(
+        "reimbursement_claim", "Reimbursement bills", "/payroll/loans", permissions.HR_ROLES,
+        payroll_inbox.reimbursement_claim_items, module="payroll",
+    ),
+    Source(
         "retention_run", "Retention runs", "/compliance/retention", ADMIN_ROLES, _retention_runs
     ),
     Source(
@@ -479,6 +519,30 @@ SOURCES: tuple[Source, ...] = (
     ),
     Source("agent_proposal", "AI proposals", "/compliance/ai", permissions.HR_ROLES,
            _agent_proposals),
+    Source(
+        "asset_request", "Asset requests", "/assets/requests", permissions.MANAGER_ROLES,
+        assets_service.approvals_inbox,
+    ),
+    Source(
+        "profile_change", "Profile changes", "/people/change-requests", permissions.HR_ROLES,
+        profile_service.inbox_items,
+    ),
+    Source(
+        "document_verification", "Documents to verify", "/docs", permissions.HR_ROLES,
+        documents_vault.pending_verification_items,
+    ),
+    Source(
+        "resignation", "Resignations", "/people/exits", permissions.MANAGER_ROLES,
+        resignation_service.inbox_items,
+    ),
+    Source(
+        "clearance_task", "Clearance tasks", "/people/clearance", EVERYONE,
+        clearance_tasks.inbox_items,
+    ),
+    Source(
+        "feedback_request", "Feedback to give", "/performance/feedback?tab=give", EVERYONE,
+        feedback_service.inbox_items,
+    ),
 )
 
 
@@ -498,12 +562,25 @@ async def inbox(session: AsyncSession, user: User) -> ApprovalInboxRead:
         except HTTPException:
             continue
         try:
-            found = await source.fetch(session, user)
+            # A savepoint per source: one queue failing (a table not yet
+            # migrated, a bad row) must not abort the transaction and take the
+            # whole inbox — and the home screen that counts it — down with it.
+            async with session.begin_nested():
+                found = await source.fetch(session, user)
         except HTTPException as exc:
             sources.append(
                 ApprovalSourceRead(
                     key=source.key, label=source.label, count=0, available=False,
                     note=str(exc.detail),
+                )
+            )
+            continue
+        except SQLAlchemyError:
+            logger.exception("Approvals source %s could not be read", source.key)
+            sources.append(
+                ApprovalSourceRead(
+                    key=source.key, label=source.label, count=0, available=False,
+                    note="This queue could not be read just now.",
                 )
             )
             continue

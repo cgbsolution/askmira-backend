@@ -7,7 +7,7 @@ two floats together.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -90,6 +90,16 @@ class ExchangeRateIn(BaseModel):
     to_currency: str = Field(default="INR", min_length=3, max_length=3, pattern=r"^[A-Za-z]{3}$")
 
 
+def _latest_date_anywhere() -> date:
+    """Today in the timezone furthest ahead (UTC+14).
+
+    A cheap first check that needs no database: a date after this is in the
+    future everywhere. The service repeats the check against the workspace's
+    own date, which is the one that decides.
+    """
+    return datetime.now(timezone(timedelta(hours=14))).date()
+
+
 class ClaimIn(BaseModel):
     #: Omit to claim for yourself. Only finance may file for somebody else.
     employee_id: uuid.UUID | None = None
@@ -111,6 +121,13 @@ class ClaimIn(BaseModel):
     route_km: Decimal | None = Field(default=None, ge=0)
     vehicle_type: str | None = Field(default=None, max_length=40)
     per_diem_days: int | None = Field(default=None, ge=1, le=366)
+
+    @field_validator("incurred_on")
+    @classmethod
+    def _not_in_the_future(cls, value: date) -> date:
+        if value > _latest_date_anywhere():
+            raise ValueError("An expense cannot be claimed before it is incurred.")
+        return value
 
 
 class SubmitIn(BaseModel):
@@ -213,6 +230,20 @@ class ClaimRead(BaseModel):
     decided_at: datetime | None
     decision_note: str | None
     created_at: datetime | None = None
+    #: The line manager's stage.
+    manager_decided_at: datetime | None = None
+    manager_decision_note: str | None = None
+    manager_decided_by_name: str | None = None
+    #: How the claim was paid, once it was.
+    reimbursed_in_run_id: uuid.UUID | None = None
+    reimbursed_at: datetime | None = None
+    advance_settlement_id: uuid.UUID | None = None
+    #: "October 2026" — the payroll month that paid it.
+    reimbursed_in_period: str | None = None
+    #: The paying run's status: approved (money not yet sent) or paid.
+    reimbursed_run_status: str | None = None
+    #: One sentence for the claimant: where the money is.
+    payment_note: str | None = None
 
 
 class ReceiptRead(BaseModel):
@@ -279,8 +310,10 @@ class AdvanceRead(BaseModel):
     outstanding: Decimal
     age_days: int
     is_blocking: bool
-    #: Null until payroll picks the recovery up. Nothing in payroll does yet.
+    #: Null until a payroll run's approval takes the recovery.
     payroll_recovery_ref: str | None = None
+    #: Null until a payroll run's approval pays a balance owed to the employee.
+    payroll_refund_ref: str | None = None
 
 
 class BlockStatus(BaseModel):
@@ -297,6 +330,16 @@ class ReviewQueue(BaseModel):
     travel_requests: list[TravelRequestRead]
     advances_to_settle: list[AdvanceRead]
     #: Things excluded because the caller is the person they are about.
+    excluded_own: int
+
+
+class TeamQueue(BaseModel):
+    """Claims and trips waiting for a line manager's decision."""
+
+    claims: list[ClaimRead]
+    travel_requests: list[TravelRequestRead]
+    #: True when the caller sees everyone's (HR standing in), not only their team's.
+    covers_everyone: bool
     excluded_own: int
 
 

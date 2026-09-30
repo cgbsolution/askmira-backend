@@ -10,9 +10,11 @@ Who may call what:
 - Everybody, for themselves: claims, receipts, reports, trips, their advances and
   whether a new advance would be blocked. An employee id from the request goes
   through `app.core.permissions`; only finance may name somebody else.
-- Finance (tenant admin, HR admin, HR ops): the review queue, decisions,
-  advances, settlement, ageing, violation rates and configuration reads.
-  Nobody decides their own claim, trip, advance or settlement.
+- Line managers: the team queue, and the first decision on a claim or trip from
+  their reporting line. HR can stand in for a manager who is away.
+- Finance (tenant admin, HR admin, HR ops): the review queue, the final
+  decisions, advances, settlement, ageing, violation rates and configuration
+  reads. Nobody decides their own claim, trip, advance or settlement.
 - Tenant and HR admins: policy, tier, mileage, per-diem and settings writes.
 """
 
@@ -69,9 +71,11 @@ from app.schemas.expenses import (
     SettingsRead,
     SettleIn,
     SubmitIn,
+    TeamQueue,
     TravelRequestIn,
     TravelRequestRead,
 )
+from app.services.attendance.service import local_today
 from app.services.expenses import reads, receipt_store, receipts
 from app.services.expenses import service as expenses
 
@@ -79,6 +83,7 @@ router = APIRouter(tags=["expenses"])
 
 FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
 ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+MANAGER_ROLES = (*FINANCE_ROLES, UserRole.MANAGER)
 
 Scope = Literal["mine", "all"]
 
@@ -448,7 +453,7 @@ async def decide_claim(
     request: Request,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """Approve or reject, with a reason for a rejection. Never your own claim."""
+    """Finance's decision, with a reason for a rejection. Never your own claim."""
     claim = await expenses.decide_claim(
         session, user, claim_id=claim_id, approve=body.approve, note=body.note, request=request
     )
@@ -457,6 +462,22 @@ async def decide_claim(
         "status": claim.status.value,
         "decided_at": claim.decided_at.isoformat() if claim.decided_at else None,
     }
+
+
+@router.post("/expenses/claims/{claim_id}/manager-decision", response_model=ClaimRead)
+async def manager_decide_claim(
+    claim_id: uuid.UUID,
+    body: DecisionIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _manager=Depends(require_roles(*MANAGER_ROLES)),
+) -> ClaimRead:
+    """The line manager's decision. An approval sends the claim on to finance."""
+    await expenses.decide_claim_as_manager(
+        session, user, claim_id=claim_id, approve=body.approve, note=body.note, request=request
+    )
+    return await reads.get_claim(session, user, claim_id)
 
 
 @router.get("/expenses/violation-rates")
@@ -530,7 +551,15 @@ async def review_queue(
     session: DbSession, user: CurrentUser, _finance=Depends(require_roles(*FINANCE_ROLES))
 ) -> ReviewQueue:
     """Claims, trips and advance settlements waiting on finance — never the caller's own."""
-    return await reads.review_queue(session, user, today=date.today())
+    return await reads.review_queue(session, user, today=await local_today(session, user))
+
+
+@router.get("/expenses/team-queue", response_model=TeamQueue)
+async def team_queue(
+    session: DbSession, user: CurrentUser, _manager=Depends(require_roles(*MANAGER_ROLES))
+) -> TeamQueue:
+    """Claims and trips waiting for a line manager: the caller's reporting line."""
+    return await reads.team_queue(session, user)
 
 
 # ── Travel and advances ─────────────────────────────────────────────────────
@@ -612,6 +641,30 @@ async def decide_travel_request(
     return await reads.get_travel_request(session, user, row.id)
 
 
+@router.post(
+    "/expenses/travel-requests/{travel_request_id}/manager-decision",
+    response_model=TravelRequestRead,
+)
+async def manager_decide_travel_request(
+    travel_request_id: uuid.UUID,
+    body: DecisionIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _manager=Depends(require_roles(*MANAGER_ROLES)),
+) -> TravelRequestRead:
+    """The line manager's decision on a trip. An approval sends it on to finance."""
+    row = await expenses.decide_travel_request_as_manager(
+        session,
+        user,
+        travel_request_id=travel_request_id,
+        approve=body.approve,
+        note=body.note,
+        request=request,
+    )
+    return await reads.get_travel_request(session, user, row.id)
+
+
 @router.get("/expenses/advances", response_model=list[AdvanceRead])
 async def list_advances(
     session: DbSession,
@@ -625,7 +678,7 @@ async def list_advances(
         user,
         employee_id=_whose(user, scope, employee_id),
         status_filter=status_filter,
-        today=date.today(),
+        today=await local_today(session, user),
     )
 
 
@@ -640,7 +693,9 @@ async def block_status(
     target = permissions.resolve_employee(
         user, employee_id, detail="You can only check your own advances."
     )
-    return await reads.block_status(session, user, employee_id=target, today=as_of or date.today())
+    return await reads.block_status(
+        session, user, employee_id=target, today=as_of or await local_today(session, user)
+    )
 
 
 @router.post("/expenses/advances", status_code=status.HTTP_201_CREATED, response_model=AdvanceRead)
@@ -661,7 +716,7 @@ async def issue_advance(
         disbursement_batch_id=body.disbursement_batch_id,
         request=request,
     )
-    return await reads.get_advance(session, user, row.id, today=date.today())
+    return await reads.get_advance(session, user, row.id, today=await local_today(session, user))
 
 
 @router.post("/expenses/advances/{advance_id}/settle")
@@ -689,7 +744,7 @@ async def advance_ageing(
 ) -> dict[str, Any]:
     """Outstanding advances by age, for the person who chases them."""
     return await expenses.advance_ageing(
-        session, user, as_of=as_of or date.today(), employee_id=employee_id
+        session, user, as_of=as_of or await local_today(session, user), employee_id=employee_id
     )
 
 
@@ -703,7 +758,7 @@ async def block_check(
 ) -> dict[str, Any]:
     """Whether this employee may take another advance; 409 with the reason if not."""
     report = await expenses.advance_ageing(
-        session, user, as_of=as_of or date.today(), employee_id=employee_id
+        session, user, as_of=as_of or await local_today(session, user), employee_id=employee_id
     )
     if report["blocking_count"]:
         raise HTTPException(

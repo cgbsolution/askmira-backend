@@ -13,7 +13,10 @@ ENDPOINTS: dict[str, str] = {
     "GET /expenses/claims": (
         "permissions: your own claims; everybody's only for finance (scope=all)."
     ),
-    "GET /expenses/claims/{claim_id}": "permissions: your own claim unless finance.",
+    "GET /expenses/claims/{claim_id}": (
+        "permissions: your own claim, one from your reporting line for its line manager, "
+        "or any for finance."
+    ),
     "POST /expenses/claims/{claim_id}/submit": "permissions: your own claim unless finance.",
     "POST /expenses/claims/{claim_id}/cancel": "permissions: your own draft claim unless finance.",
     "POST /expenses/reports": "permissions: your own expense reports unless finance.",

@@ -36,6 +36,7 @@ from app.models.appraisal import (
     Appraisal,
     AppraisalCycle,
     AppraisalStageEntry,
+    CycleStatus,
 )
 from app.models.audit import AuditAction
 from app.models.calibration import (
@@ -72,6 +73,7 @@ __all__ = [
     "reopen_session",
     "session_workspace",
     "set_session_status",
+    "sync_cycle_status",
 ]
 
 
@@ -133,6 +135,53 @@ async def _cycle(session: AsyncSession, user: User, cycle_id: uuid.UUID) -> Appr
     if cycle is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cycle not found")
     return cycle
+
+
+async def sync_cycle_status(
+    session: AsyncSession, user: User, cycle_id: uuid.UUID, *, request: Request | None = None
+) -> CycleStatus:
+    """Keep the cycle's status in step with its calibration sessions.
+
+    A live cycle is `in_calibration` while any of its sessions is in progress
+    and unlocked, and `active` again once every session is locked or cancelled.
+    A draft or closed cycle is never moved from here. The change is audited in
+    the caller's transaction, alongside the session change that caused it.
+    """
+    cycle = await _cycle(session, user, cycle_id)
+    if cycle.status not in (CycleStatus.ACTIVE, CycleStatus.IN_CALIBRATION):
+        return cycle.status
+    live = await session.scalar(
+        tenant_scoped(
+            select(func.count(CalibrationSession.id)).where(
+                CalibrationSession.cycle_id == cycle_id,
+                CalibrationSession.status == SessionStatus.IN_PROGRESS,
+                CalibrationSession.locked_at.is_(None),
+            ),
+            CalibrationSession,
+            user,
+        )
+    )
+    wanted = CycleStatus.IN_CALIBRATION if live else CycleStatus.ACTIVE
+    if wanted is not cycle.status:
+        previous = cycle.status
+        cycle.status = wanted
+        await session.flush()
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            actor=user,
+            action=AuditAction.UPDATE,
+            entity_type="appraisal_cycle",
+            entity_id=cycle.id,
+            summary=(
+                f"'{cycle.name}' is in calibration"
+                if wanted is CycleStatus.IN_CALIBRATION
+                else f"'{cycle.name}' has no calibration session open"
+            ),
+            changes={"status": {"from": previous.value, "to": wanted.value}},
+            request=request,
+        )
+    return wanted
 
 
 async def _calibration_session(
@@ -529,6 +578,7 @@ async def set_session_status(
         changes={"status": calib.status.value},
         request=request,
     )
+    await sync_cycle_status(session, user, calib.cycle_id, request=request)
     return calib
 
 
@@ -945,6 +995,7 @@ async def apply_change(
         },
         request=request,
     )
+    await sync_cycle_status(session, user, calib.cycle_id, request=request)
     return change
 
 
@@ -1045,6 +1096,7 @@ async def lock_session(
         changes={"applied": applied, "total_changes": len(changes)},
         request=request,
     )
+    await sync_cycle_status(session, user, calib.cycle_id, request=request)
     return {
         "session_id": str(calib.id),
         "ratings_written": applied,
@@ -1088,6 +1140,7 @@ async def reopen_session(
         changes={"reason": reason, "previous_lock": previous},
         request=request,
     )
+    await sync_cycle_status(session, user, calib.cycle_id, request=request)
     return calib
 
 

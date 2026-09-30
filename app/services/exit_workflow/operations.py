@@ -11,8 +11,10 @@ is the public check a relieving or experience letter should pass before issue.
 
 from __future__ import annotations
 
+import calendar
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -43,8 +45,10 @@ from app.models.user import User, UserRole
 from app.services import audit
 from app.services.arrears import service as arrears_service
 from app.services.documents import service as documents_service
+from app.services.documents.indian_numbers import group_indian
 from app.services.exit_workflow import statement
 from app.services.filings import support
+from app.services.notifications.dispatch import notify, register_event
 
 ZERO = Decimal(0)
 
@@ -212,6 +216,9 @@ async def _enrich(
         return []
     ids = [record.id for record in records]
     labels = await _labels(session, user, {record.employee_id for record in records})
+    acceptors = await _user_names(
+        session, user, {r.accepted_by_user_id for r in records if r.accepted_by_user_id}
+    )
     items = (
         await session.scalars(
             tenant_scoped(
@@ -264,6 +271,16 @@ async def _enrich(
                 "settlement_id": settlement.id if settlement else None,
                 "settlement_status": settlement.status if settlement else None,
                 "created_at": record.created_at,
+                "initiated_by_employee": record.initiated_by_employee,
+                "employee_comments": record.employee_comments,
+                "accepted_at": record.accepted_at,
+                "accepted_by_name": acceptors.get(record.accepted_by_user_id)
+                if record.accepted_by_user_id
+                else None,
+                "withdrawn_at": record.withdrawn_at,
+                "awaiting_acceptance": (
+                    record.accepted_at is None and record.status is not ExitStatus.CANCELLED
+                ),
             }
         )
     return out
@@ -281,6 +298,28 @@ async def cancel_exit(
     record = await _record(session, user, exit_id)
     if user.employee_id is not None and record.employee_id == user.employee_id:
         raise permissions.forbidden("This is your own exit. Somebody else has to cancel it.")
+    return await cancel_record(
+        session, user, record, reason=reason, summary=f"Cancelled the exit: {reason}",
+        request=request,
+    )
+
+
+async def cancel_record(
+    session: AsyncSession,
+    user: User,
+    record: ExitRecord,
+    *,
+    reason: str,
+    summary: str,
+    request: Request | None = None,
+) -> ExitRecord:
+    """The cancellation itself, once the caller is known to be allowed to.
+
+    Shared by HR's cancel and the employee's own withdrawal of a resignation
+    nobody has accepted yet, so the settled-or-revoked refusals and the return
+    to active status are one implementation.
+    """
+    exit_id = record.id
     if record.status in (ExitStatus.SETTLED, ExitStatus.CANCELLED) or record.access_revoked_at:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -311,7 +350,7 @@ async def cancel_exit(
         action=AuditAction.UPDATE,
         entity_type="exit_record",
         entity_id=record.id,
-        summary=f"Cancelled the exit: {reason}",
+        summary=summary,
         changes={"status": ExitStatus.CANCELLED.value, "reason": reason},
         request=request,
     )
@@ -400,6 +439,9 @@ async def list_clearance(
                 "owner_role": item.owner_role,
                 "owner_user_id": item.owner_user_id,
                 "owner_name": names.get(item.owner_user_id) if item.owner_user_id else None,
+                # An asset item recovers the asset's book value when marked not
+                # returned with no figure typed; the screen says so.
+                "asset_assignment_id": item.asset_assignment_id,
                 "can_update": await can_update_item(session, user, item, record),
             }
         )
@@ -552,6 +594,9 @@ async def settlement_reads(
     if not settlements:
         return []
     labels = await _labels(session, user, {row.employee_id for row in settlements})
+    payers = await _user_names(
+        session, user, {row.paid_by_user_id for row in settlements if row.paid_by_user_id}
+    )
     records = {
         row.id: row
         for row in (
@@ -594,6 +639,9 @@ async def settlement_reads(
                 "computed_at": row.computed_at,
                 "approved_at": row.approved_at,
                 "paid_at": row.paid_at,
+                "paid_on": row.paid_on,
+                "payment_reference": row.payment_reference,
+                "paid_by_name": payers.get(row.paid_by_user_id) if row.paid_by_user_id else None,
                 "statement_letter_id": row.statement_letter_id,
             }
         )
@@ -799,6 +847,36 @@ async def settlement_sources(
         "their basis: payroll and the tax projection hold those figures, and the tax at exit "
         "needs Compliance SME review."
     )
+    # A regular run computed while the leaver was still on notice paid them up
+    # to their last working day. Entering those days again here pays them twice.
+    last_day = record.approved_last_working_day or record.requested_last_working_day
+    if last_day is not None:
+        from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
+
+        paid_slip = (
+            await session.execute(
+                tenant_scoped(
+                    select(Payslip.paid_days, PayrollRun.period_month, PayrollRun.period_year)
+                    .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                    .where(
+                        Payslip.employee_id == employee_id,
+                        PayrollRun.period_year == last_day.year,
+                        PayrollRun.period_month == last_day.month,
+                        PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                    ),
+                    Payslip,
+                    user,
+                )
+            )
+        ).first()
+        if paid_slip is not None:
+            paid_days, month, year = paid_slip
+            notes.append(
+                f"The {calendar.month_name[month]} {year} payroll run already paid "
+                f"{format(Decimal(str(paid_days)).normalize(), 'f')} day(s) of the final month, "
+                "up to the "
+                f"last working day. Do not enter those days again as final-month salary."
+            )
     return {
         "exit_id": exit_id,
         "suggestions": suggestions,
@@ -896,6 +974,198 @@ async def approve_settlement(
         ),
         changes={"net_amount": str(settlement.net_amount), "is_demand": is_demand},
         request=request,
+    )
+    await _tell_the_leaver(
+        session,
+        user,
+        settlement,
+        EVENT_SETTLEMENT_APPROVED,
+        {
+            "outcome": (
+                f"a demand for {_rupees(-_amount(settlement.net_amount))} that you owe the "
+                "company"
+                if is_demand
+                else f"{_rupees(settlement.net_amount)} due to you"
+            ),
+            "next_line": (
+                " HR will contact you about repaying it."
+                if is_demand
+                else " You will be told when it has been paid."
+            ),
+        },
+    )
+    return settlement
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Payment
+# ═══════════════════════════════════════════════════════════════════════════
+
+EVENT_SETTLEMENT_APPROVED = "exits.settlement.approved"
+EVENT_SETTLEMENT_PAID = "exits.settlement.paid"
+
+register_event(
+    EVENT_SETTLEMENT_APPROVED,
+    "Your full and final settlement has been approved",
+    "Your full and final settlement was approved: {outcome}.{next_line}",
+)
+register_event(
+    EVENT_SETTLEMENT_PAID,
+    "Your full and final settlement has been paid",
+    "{amount} was paid to you on {paid_on}, bank reference {payment_reference}.",
+)
+
+#: A bank reference is a UTR, an IMPS/NEFT reference or a cheque number:
+#: letters, digits and a little punctuation, never free text.
+_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 /._-]{2,119}$")
+
+
+def _rupees(value: object) -> str:
+    return f"₹{group_indian(_amount(value).quantize(Decimal('0.01')))}"
+
+
+async def _tell_the_leaver(
+    session: AsyncSession,
+    user: User,
+    settlement: Settlement,
+    event_key: str,
+    payload: dict[str, Any],
+) -> None:
+    """Notify the leaver, inside the caller's transaction.
+
+    Only while they still have an active login: once access is revoked there is
+    nobody to notify in the product, and the issued statement is how they hear.
+    """
+    recipients = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == settlement.employee_id, User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=event_key,
+            recipient_user_ids=recipients,
+            payload={**payload, "settlement_id": str(settlement.id)},
+            commit=False,
+        )
+
+
+async def mark_settlement_paid(
+    session: AsyncSession,
+    user: User,
+    settlement_id: uuid.UUID,
+    *,
+    paid_on: date,
+    payment_reference: str,
+    request: Request | None = None,
+) -> Settlement:
+    """Record that an approved settlement's money reached the leaver. The caller commits.
+
+    Approval says the company owes it; this says the company paid it, when,
+    and under which bank reference — the three things a leaver asking "where
+    is my money" and an auditor reconciling the bank statement both need.
+    """
+    settlement = await _settlement(session, user, settlement_id)
+    _not_own_settlement(user, settlement, "record payment of")
+    if settlement.status is SettlementStatus.PAID:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This settlement was already paid on {settlement.paid_on:%d %b %Y}"
+                if settlement.paid_on
+                else "This settlement was already paid."
+            ),
+        )
+    if settlement.status is SettlementStatus.DEMAND_RAISED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This settlement is a demand on the employee: they owe the company. A demand "
+                "is recovered from them, not paid to them."
+            ),
+        )
+    if settlement.status is not SettlementStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Only an approved settlement can be paid; this one is "
+                f"{settlement.status.value.replace('_', ' ')}."
+            ),
+        )
+
+    reference = " ".join(payment_reference.split())
+    if not _REFERENCE.match(reference):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Give the bank's reference for the payment (UTR, NEFT/IMPS reference or "
+                "cheque number): 3 to 120 letters, digits, spaces, '/', '.', '_' or '-'."
+            ),
+        )
+    from app.services.attendance.service import local_today, tenant_timezone
+
+    today = await local_today(session, user)
+    if paid_on > today:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A payment cannot be recorded for a date in the future.",
+        )
+    if settlement.approved_at is not None:
+        approved_on = settlement.approved_at.astimezone(await tenant_timezone(session, user))
+        if paid_on < approved_on.date():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"The settlement was approved on {approved_on:%d %b %Y}; it cannot "
+                    "have been paid before that."
+                ),
+            )
+
+    settlement.status = SettlementStatus.PAID
+    settlement.paid_on = paid_on
+    settlement.payment_reference = reference
+    settlement.paid_by_user_id = user.id
+    settlement.paid_at = datetime.now(UTC)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="settlement",
+        entity_id=settlement.id,
+        summary=(
+            f"Recorded payment of the settlement: {settlement.net_amount} on "
+            f"{paid_on.isoformat()}, reference {reference}"
+        ),
+        changes={
+            "status": SettlementStatus.PAID.value,
+            "net_amount": str(settlement.net_amount),
+            "paid_on": paid_on.isoformat(),
+            "payment_reference": reference,
+        },
+        request=request,
+    )
+    await _tell_the_leaver(
+        session,
+        user,
+        settlement,
+        EVENT_SETTLEMENT_PAID,
+        {
+            "amount": _rupees(settlement.net_amount),
+            "paid_on": f"{paid_on:%d %b %Y}",
+            "payment_reference": reference,
+        },
     )
     return settlement
 

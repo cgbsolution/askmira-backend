@@ -22,10 +22,12 @@ from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.platform_admin import (
     ActiveChange,
+    EmployeeLink,
     ManagedUserCreate,
     ManagedUserCreated,
     ManagedUserRead,
     ModuleToggle,
+    PasswordResetByAdmin,
     RoleChange,
     TenantSettingsUpdate,
 )
@@ -152,6 +154,35 @@ async def change_active(
     return await user_admin.set_active(
         session, user, user_id=user_id, active=payload.active, reason=payload.reason,
         request=request,
+    )
+
+
+@router.patch("/users/{user_id}/employee", response_model=ManagedUserRead)
+async def link_employee(
+    user_id: uuid.UUID,
+    payload: EmployeeLink,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ManagedUserRead:
+    """Link a login to its employee record (or unlink it). Self-service depends on it."""
+    return await user_admin.link_employee(
+        session, user, user_id=user_id, employee_id=payload.employee_id, reason=payload.reason,
+        request=request,
+    )
+
+
+@router.post("/users/{user_id}/reset-password", response_model=ManagedUserCreated)
+async def reset_password(
+    user_id: uuid.UUID,
+    payload: PasswordResetByAdmin,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ManagedUserCreated:
+    """Issue a one-time password the person must change at sign-in. Shown once."""
+    return await user_admin.issue_temporary_password(
+        session, user, user_id=user_id, reason=payload.reason, request=request
     )
 
 

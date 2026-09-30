@@ -46,6 +46,10 @@ ENDPOINTS: dict[str, str] = {
     "GET /tax/form-12bb/{letter_id}/pdf": (
         "permissions: the issued form must be yours unless payroll."
     ),
+    "GET /tax/form-16": "permissions: your own Form 16 years unless payroll.",
+    "GET /tax/form-16/pdf": (
+        "permissions: your own Form 16 Part B unless payroll; payroll downloads are audited."
+    ),
     # ── Loans ───────────────────────────────────────────────────────────────
     "GET /loans/schemes": "reference: the loan catalogue - terms, about nobody in particular.",
     "GET /loans/mine": "permissions: the caller's own loans, from the token.",

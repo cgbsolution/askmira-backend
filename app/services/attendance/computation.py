@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 
-from app.models.attendance import AttendanceStatus, PunchDirection, Shift
+from app.models.attendance import AttendanceStatus, PunchDirection, RegularisationKind, Shift
 
 __all__ = [
     "ComputedDay",
@@ -48,6 +48,7 @@ __all__ = [
     "PunchRecord",
     "attendance_window",
     "compute_day",
+    "scheduled_minutes",
 ]
 
 # How far before a shift starts, and after it ends, a punch still counts as
@@ -79,8 +80,18 @@ class DayInputs:
     on_approved_leave: bool = False
     leave_is_half_day: bool = False
     leave_is_paid: bool = True
-    # An approved regularisation overriding the derived status.
+    # An approved regularisation overriding the derived status, and the in and
+    # out times it corrected, when it was fixing a missed punch.
     regularised_status: AttendanceStatus | None = None
+    regularised_kind: RegularisationKind | None = None
+    regularised_first_in: datetime | None = None
+    regularised_last_out: datetime | None = None
+    # A roster rotation day with no shift: a week off even though no shift is
+    # in force to carry weekly-off days.
+    roster_week_off: bool = False
+    # A week off or holiday inside unpaid leave under the sandwich rule: the
+    # leave charged it, so it is loss of pay rather than a paid off day.
+    sandwiched_unpaid_leave: bool = False
     # Shift times are wall-clock times where the person works.
     timezone: tzinfo = UTC
 
@@ -95,6 +106,7 @@ class ComputedDay:
     last_out: datetime | None = None
     late_by_minutes: int = 0
     early_by_minutes: int = 0
+    overtime_minutes: int = 0
     is_regularised: bool = False
     note: str = ""
 
@@ -202,12 +214,15 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
 
     # ── An approved regularisation wins outright ────────────────────────────
     if inputs.regularised_status is not None:
+        return _regularised(inputs)
+
+    # ── Sandwiched inside unpaid leave ──────────────────────────────────────
+    if inputs.sandwiched_unpaid_leave:
         return ComputedDay(
             attendance_date=day,
-            status=inputs.regularised_status,
-            payable_fraction=_payable_for(inputs.regularised_status),
-            is_regularised=True,
-            note="Set by an approved regularisation",
+            status=AttendanceStatus.LOP,
+            payable_fraction=Decimal(0),
+            note="Off day inside leave without pay (sandwich rule)",
         )
 
     # ── 1. Holiday ──────────────────────────────────────────────────────────
@@ -220,7 +235,7 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         )
 
     # ── 2. Weekly off ───────────────────────────────────────────────────────
-    if _is_weekly_off(shift, day):
+    if inputs.roster_week_off or _is_weekly_off(shift, day):
         return ComputedDay(
             attendance_date=day,
             status=AttendanceStatus.WEEK_OFF,
@@ -316,23 +331,9 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         )
 
     # ── 6. Grace ────────────────────────────────────────────────────────────
-    late_by = 0
-    early_by = 0
-
-    if first_in is not None:
-        scheduled_in = _combine(day, shift.start_time, inputs.timezone)
-        lateness = int((first_in - scheduled_in).total_seconds() // 60)
-        # Grace is forgiveness, not a shifted start: 8 minutes late against a
-        # 10-minute grace is 0 late, 12 minutes late is 12 — not 2.
-        late_by = lateness if lateness > shift.grace_in_minutes else 0
-
-    if last_out is not None:
-        if shift.is_night_shift or shift.end_time <= shift.start_time:
-            scheduled_out = _combine(day + timedelta(days=1), shift.end_time, inputs.timezone)
-        else:
-            scheduled_out = _combine(day, shift.end_time, inputs.timezone)
-        earliness = int((scheduled_out - last_out).total_seconds() // 60)
-        early_by = earliness if earliness > shift.grace_out_minutes else 0
+    # Grace is forgiveness, not a shifted start: 8 minutes late against a
+    # 10-minute grace is 0 late, 12 minutes late is 12 — not 2.
+    late_by, early_by = _late_and_early(shift, day, first_in, last_out, inputs.timezone)
 
     return ComputedDay(
         attendance_date=day,
@@ -343,7 +344,97 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         last_out=last_out,
         late_by_minutes=late_by,
         early_by_minutes=early_by,
+        overtime_minutes=(
+            _overtime(shift, worked_minutes) if status is AttendanceStatus.PRESENT else 0
+        ),
         note=note,
+    )
+
+
+def scheduled_minutes(shift: Shift) -> int:
+    """The shift's working minutes: start to end, less the break."""
+    start = datetime.combine(date(2000, 1, 1), shift.start_time)
+    end = datetime.combine(date(2000, 1, 1), shift.end_time)
+    if shift.is_night_shift or shift.end_time <= shift.start_time:
+        end += timedelta(days=1)
+    return max(0, int((end - start).total_seconds() // 60) - shift.break_minutes)
+
+
+def _overtime(shift: Shift, worked_minutes: int) -> int:
+    return max(0, worked_minutes - scheduled_minutes(shift))
+
+
+def _late_and_early(
+    shift: Shift,
+    day: date,
+    first_in: datetime | None,
+    last_out: datetime | None,
+    tz: tzinfo,
+) -> tuple[int, int]:
+    late_by = 0
+    early_by = 0
+    if first_in is not None:
+        scheduled_in = _combine(day, shift.start_time, tz)
+        lateness = int((first_in - scheduled_in).total_seconds() // 60)
+        late_by = lateness if lateness > shift.grace_in_minutes else 0
+    if last_out is not None:
+        if shift.is_night_shift or shift.end_time <= shift.start_time:
+            scheduled_out = _combine(day + timedelta(days=1), shift.end_time, tz)
+        else:
+            scheduled_out = _combine(day, shift.end_time, tz)
+        earliness = int((scheduled_out - last_out).total_seconds() // 60)
+        early_by = earliness if earliness > shift.grace_out_minutes else 0
+    return late_by, early_by
+
+
+_REGULARISED_NOTES = {
+    RegularisationKind.MISSED_PUNCH: "Missed punch corrected by an approved regularisation",
+    RegularisationKind.STATUS_CHANGE: "Set by an approved regularisation",
+    RegularisationKind.ON_DUTY: "On duty (approved)",
+    RegularisationKind.WORK_FROM_HOME: "Work from home (approved)",
+}
+
+
+def _regularised(inputs: DayInputs) -> ComputedDay:
+    """The day as an approved regularisation says it was.
+
+    The status is the approver's decision. The times are the corrected ones
+    where the employee supplied them, and otherwise what the punches show, so a
+    forgotten punch-out fixed to 18:30 keeps the real 09:32 punch-in, and the
+    worked, late and early minutes follow from the pair.
+    """
+    day = inputs.attendance_date
+    status = inputs.regularised_status
+    assert status is not None
+    _worked, punched_in, punched_out, _unpaired = _pair_punches(inputs.punches)
+    first_in = inputs.regularised_first_in or punched_in
+    last_out = inputs.regularised_last_out or punched_out
+
+    worked = 0
+    late_by = early_by = overtime = 0
+    shift = inputs.shift
+    if first_in is not None and last_out is not None and last_out > first_in:
+        worked = int((last_out - first_in).total_seconds() // 60)
+        if shift is not None:
+            worked = max(0, worked - shift.break_minutes)
+    if shift is not None and status in {AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY}:
+        late_by, early_by = _late_and_early(shift, day, first_in, last_out, inputs.timezone)
+        if status is AttendanceStatus.PRESENT:
+            overtime = _overtime(shift, worked)
+
+    kind = inputs.regularised_kind or RegularisationKind.STATUS_CHANGE
+    return ComputedDay(
+        attendance_date=day,
+        status=status,
+        payable_fraction=_payable_for(status),
+        worked_minutes=worked,
+        first_in=first_in,
+        last_out=last_out,
+        late_by_minutes=late_by,
+        early_by_minutes=early_by,
+        overtime_minutes=overtime,
+        is_regularised=True,
+        note=_REGULARISED_NOTES[kind],
     )
 
 

@@ -32,12 +32,14 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     Time,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -73,6 +75,23 @@ class AttendanceStatus(str, enum.Enum):
     NEEDS_REGULARISATION = "needs_regularisation"
 
 
+class RegularisationKind(str, enum.Enum):
+    """What the employee is asking for. All four are decided the same way.
+
+    - MISSED_PUNCH: they were there but a punch is missing; the corrected in
+      and/or out time is applied on approval.
+    - STATUS_CHANGE: the derived status is wrong (a half day that was a full one).
+    - ON_DUTY: working away from the office — client site, travel, training.
+    - WORK_FROM_HOME: working remotely. Both count as present once approved,
+      and both may be requested ahead of time.
+    """
+
+    MISSED_PUNCH = "missed_punch"
+    STATUS_CHANGE = "status_change"
+    ON_DUTY = "on_duty"
+    WORK_FROM_HOME = "work_from_home"
+
+
 class RegularisationStatus(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -93,7 +112,15 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "shifts"
-    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_shifts_tenant_code"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_shifts_tenant_code"),
+        Index(
+            "uq_shifts_one_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
 
     code: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -119,6 +146,13 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # The workspace's general shift: evaluates anyone with no shift or roster
+    # assignment on a date. At most one per tenant (partial unique index).
+    # Without it, an unassigned employee's days cannot be judged at all.
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     def __repr__(self) -> str:
         return f"<Shift {self.code} {self.start_time}-{self.end_time}>"
@@ -307,6 +341,11 @@ class AttendanceDay(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     late_by_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     early_by_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Worked beyond the shift's scheduled hours. Informational: nothing pays it
+    # automatically, so an overtime policy stays a payroll decision.
+    overtime_minutes: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
 
     is_regularised: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Why the computation landed where it did — shown to the employee, so it
@@ -331,6 +370,13 @@ class AttendanceRegularisation(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
     )
     attendance_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+
+    kind: Mapped[RegularisationKind] = mapped_column(
+        Enum(RegularisationKind, name="regularisation_kind"),
+        default=RegularisationKind.STATUS_CHANGE,
+        server_default=RegularisationKind.STATUS_CHANGE.name,
+        nullable=False,
+    )
 
     requested_status: Mapped[AttendanceStatus] = mapped_column(
         Enum(AttendanceStatus, name="attendance_status"), nullable=False

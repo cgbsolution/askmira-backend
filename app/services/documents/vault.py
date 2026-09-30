@@ -13,6 +13,11 @@ letter quietly removed from one's own file is exactly the case this stops.
 **The file never trusts the client.** Size and type are checked server-side from
 the bytes, the storage key is generated, and the stored file is written before
 the row and removed again if the row does not commit.
+
+**What an employee uploads is a claim until HR has looked.** An employee may add
+their own ID proof, certificates and relieving letters; each lands as
+`pending` verification and HR verifies or rejects it with a note. HR's own
+uploads are `not_required` — HR is the one who would verify them.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
@@ -30,10 +35,18 @@ from app.core import permissions
 from app.core.config import settings
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import Employee, EmployeeDocument
+from app.models.employee import DocumentVerification, Employee, EmployeeDocument
 from app.models.user import User
-from app.schemas.documents import DocumentCategory, DocumentRead, DocumentUpdate
+from app.schemas.documents import (
+    CATEGORY_LABELS,
+    SELF_UPLOAD_CATEGORIES,
+    DocumentCategory,
+    DocumentRead,
+    DocumentUpdate,
+    DocumentVerify,
+)
 from app.services import audit
+from app.services.notifications.dispatch import notify, register_event
 from app.services.storage import FileRejectedError, StorageError, get_storage, validate_upload
 
 __all__ = [
@@ -41,9 +54,27 @@ __all__ = [
     "download_document",
     "expiring_documents",
     "list_documents",
+    "pending_verification_items",
     "update_document",
     "upload_document",
+    "upload_own_document",
+    "verify_document",
 ]
+
+EVENT_UPLOADED = "people.document.uploaded"
+EVENT_VERIFIED = "people.document.verified"
+
+register_event(
+    EVENT_UPLOADED,
+    "Document to verify: {employee_name}",
+    "{employee_name} uploaded '{title}' ({category}) to their record. It is waiting for "
+    "HR to verify it.",
+)
+register_event(
+    EVENT_VERIFIED,
+    "Your document '{title}' was {decision}",
+    "HR {decision} '{title}'. {note}",
+)
 
 _EXTENSIONS = {"application/pdf": ".pdf", "image/png": ".png", "image/jpeg": ".jpg"}
 
@@ -69,6 +100,10 @@ def _read(document: EmployeeDocument, employee: Employee, *, today: date) -> Doc
         is_employee_visible=document.is_employee_visible,
         uploaded_by_user_id=document.uploaded_by_user_id,
         created_at=document.created_at,
+        verification_status=document.verification_status,
+        self_uploaded=document.verification_status != DocumentVerification.NOT_REQUIRED.value,
+        verified_at=document.verified_at,
+        verification_note=document.verification_note,
     )
 
 
@@ -118,6 +153,7 @@ async def list_documents(
     *,
     employee_id: uuid.UUID | None = None,
     category: DocumentCategory | None = None,
+    verification: DocumentVerification | None = None,
 ) -> list[DocumentRead]:
     """HR: anybody's, or everybody's. Everyone else: their own visible ones."""
     stmt = tenant_scoped(
@@ -140,6 +176,8 @@ async def list_documents(
         )
     if category is not None:
         stmt = stmt.where(EmployeeDocument.category == category.value)
+    if verification is not None:
+        stmt = stmt.where(EmployeeDocument.verification_status == verification.value)
 
     today = date.today()
     rows = (await session.execute(stmt)).all()
@@ -383,3 +421,240 @@ async def delete_document(
     # still points at it.
     with contextlib.suppress(StorageError):
         await get_storage().delete(key)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Self-upload and verification
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _checked(data: bytes):
+    if len(data) > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
+                "limit."
+            ),
+        )
+    try:
+        return validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
+    except FileRejectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
+        ) from exc
+
+
+async def _hr_logins(session: AsyncSession, user: User) -> list[uuid.UUID]:
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(User.id).where(
+                    User.role.in_(permissions.HR_ROLES),
+                    User.is_active.is_(True),
+                    User.id != user.id,
+                ),
+                User,
+                user,
+            )
+        )
+    ).all()
+    return list(rows)
+
+
+async def upload_own_document(
+    session: AsyncSession,
+    user: User,
+    *,
+    category: DocumentCategory,
+    title: str,
+    data: bytes,
+    valid_until: date | None = None,
+    request: Request | None = None,
+) -> DocumentRead:
+    """An employee adds a document to their own record, pending HR verification.
+
+    The employee is always the owner — the id comes from the login, never from
+    the form. HR admins use this too for their own record, and another HR
+    person verifies it.
+    """
+    own = permissions.own_employee_id(user)
+    if category not in SELF_UPLOAD_CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"'{CATEGORY_LABELS[category]}' documents are issued by HR, not uploaded "
+                "by the employee."
+            ),
+        )
+    employee = await _employee(session, user, own)
+    kind = _checked(data)
+
+    storage = get_storage()
+    key = storage.new_key(user.tenant_id, "documents", kind.extension)
+    try:
+        await storage.put(key, data)
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    try:
+        document = EmployeeDocument(
+            tenant_id=user.tenant_id,
+            employee_id=employee.id,
+            category=category.value,
+            title=title.strip(),
+            file_url=key,
+            file_size_bytes=len(data),
+            mime_type=kind.mime_type,
+            valid_until=valid_until,
+            is_employee_visible=True,
+            uploaded_by_user_id=user.id,
+            verification_status=DocumentVerification.PENDING.value,
+        )
+        session.add(document)
+        await session.flush()
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.CREATE,
+            entity_type="employee_document",
+            entity_id=document.id,
+            actor=user,
+            changes={
+                "employee_code": employee.employee_code,
+                "category": category.value,
+                "title": document.title,
+                "mime_type": kind.mime_type,
+                "size_bytes": len(data),
+                "verification_status": DocumentVerification.PENDING.value,
+            },
+            summary=f"{employee.employee_code} uploaded '{document.title}' for verification",
+            request=request,
+        )
+        recipients = await _hr_logins(session, user)
+        if recipients:
+            await notify(
+                session,
+                tenant_id=user.tenant_id,
+                event_key=EVENT_UPLOADED,
+                recipient_user_ids=recipients,
+                payload={
+                    "employee_name": employee.full_name,
+                    "title": document.title,
+                    "category": CATEGORY_LABELS[category],
+                },
+                commit=False,
+            )
+        await session.commit()
+    except BaseException:
+        with contextlib.suppress(StorageError):
+            await storage.delete(key)
+        raise
+
+    await session.refresh(document)
+    return _read(document, employee, today=date.today())
+
+
+async def verify_document(
+    session: AsyncSession,
+    user: User,
+    document_id: uuid.UUID,
+    payload: DocumentVerify,
+    *,
+    request: Request | None = None,
+) -> DocumentRead:
+    """HR verifies or rejects a document an employee uploaded. Never their own."""
+    permissions.require_hr(user, detail="Only HR can verify a document.")
+    document, employee = await _document(session, user, document_id)
+    _refuse_own_record(user, document.employee_id)
+    if document.verification_status != DocumentVerification.PENDING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Only a document waiting for verification can be verified or rejected; "
+                f"this one is '{document.verification_status.replace('_', ' ')}'."
+            ),
+        )
+    note = (payload.note or "").strip() or None
+    if payload.decision == "rejected" and not note:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say why it is rejected, so the employee knows what to upload instead.",
+        )
+
+    document.verification_status = payload.decision
+    document.verified_by_user_id = user.id
+    document.verified_at = datetime.now(UTC)
+    document.verification_note = note
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.APPROVE if payload.decision == "verified" else AuditAction.REJECT,
+        entity_type="employee_document",
+        entity_id=document.id,
+        actor=user,
+        changes={"verification_status": payload.decision, "note": note},
+        summary=(
+            f"{payload.decision.capitalize()} '{document.title}' in "
+            f"{employee.employee_code}'s vault"
+        ),
+        request=request,
+    )
+    recipients = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == employee.id, User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_VERIFIED,
+            recipient_user_ids=recipients,
+            payload={"title": document.title, "decision": payload.decision, "note": note or ""},
+            commit=False,
+        )
+    await session.commit()
+    await session.refresh(document)
+    return _read(document, employee, today=date.today())
+
+
+async def pending_verification_items(session: AsyncSession, user: User) -> list[dict]:
+    """Self-uploaded documents waiting for HR, for the approvals inbox. Never your own."""
+    if not permissions.is_hr(user):
+        return []
+    stmt = tenant_scoped(
+        select(EmployeeDocument, Employee)
+        .join(Employee, Employee.id == EmployeeDocument.employee_id)
+        .where(EmployeeDocument.verification_status == DocumentVerification.PENDING.value)
+        .order_by(EmployeeDocument.created_at),
+        EmployeeDocument,
+        user,
+    )
+    if user.employee_id is not None:
+        stmt = stmt.where(EmployeeDocument.employee_id != user.employee_id)
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "id": document.id,
+            "title": f"Verify '{document.title}'",
+            "subject_name": employee.full_name,
+            "detail": CATEGORY_LABELS.get(
+                DocumentCategory(document.category), document.category
+            )
+            if document.category in {c.value for c in DocumentCategory}
+            else document.category,
+            "submitted_at": document.created_at,
+        }
+        for document, employee in rows
+    ]

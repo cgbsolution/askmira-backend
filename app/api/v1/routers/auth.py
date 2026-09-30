@@ -17,8 +17,10 @@ from app.models.tenant import Tenant
 from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     RefreshRequest,
+    ResetPasswordRequest,
     SessionRead,
     SignupRequest,
     TenantRead,
@@ -115,6 +117,22 @@ async def change_password(
     await auth_service.change_password(
         session, user, payload.current_password, payload.new_password, request
     )
+
+
+@router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED, response_model=None)
+async def forgot_password(
+    payload: ForgotPasswordRequest, session: DbSession, request: Request
+) -> None:
+    """Email a reset link. The answer is the same whether or not the address has an account."""
+    await auth_service.request_password_reset(session, payload.email, request)
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def reset_password(
+    payload: ResetPasswordRequest, session: DbSession, request: Request
+) -> None:
+    """Set a new password from an emailed link. Every existing session ends."""
+    await auth_service.reset_password(session, payload.token, payload.new_password, request)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

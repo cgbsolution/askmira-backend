@@ -34,6 +34,7 @@ from app.models.attendance import (
     AttendanceStatus,
     PunchDirection,
     PunchSource,
+    RegularisationKind,
     RegularisationStatus,
     Roster,
     RosterAssignment,
@@ -43,9 +44,11 @@ from app.models.attendance import (
 )
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
-from app.models.leave import Holiday, LeaveRequest, LeaveRequestStatus, LeaveType
+from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
+from app.models.notifications import Channel, DigestMode
 from app.models.org import Location
-from app.models.user import User
+from app.models.tenant import Tenant
+from app.models.user import User, UserRole
 from app.services import audit
 from app.services.attendance.computation import (
     ComputedDay,
@@ -54,6 +57,8 @@ from app.services.attendance.computation import (
     attendance_window,
     compute_day,
 )
+from app.services.leave.holidays import holidays_for_employees
+from app.services.notifications.dispatch import notify, register_event
 
 EARTH_RADIUS_METRES = 6_371_000
 
@@ -160,77 +165,154 @@ async def record_punch(
 # ── Inputs for a day ────────────────────────────────────────────────────────
 
 
-async def _resolve_shift(
-    session: AsyncSession, user: User, employee_id: uuid.UUID, on_date: date
-) -> Shift | None:
-    """The shift in force on a date — a direct assignment, or a roster position.
+@dataclass(frozen=True, slots=True)
+class ShiftPlan:
+    """What an employee is scheduled to work on one date, and why."""
 
-    A direct shift assignment wins over a roster: a temporary reassignment is
-    the more specific statement of intent.
+    shift: Shift | None
+    # A roster rotation day with no shift: a week off.
+    roster_week_off: bool = False
+    # Nothing was assigned; the workspace's default shift applies.
+    from_default: bool = False
+
+
+class ShiftResolver:
+    """Which shift is in force for each employee on each date, loaded in bulk.
+
+    Resolution order: a direct shift assignment (the most specific statement
+    of intent), then a roster rotation, then the workspace's default shift.
+    Three queries for any number of employees and days — resolving per
+    employee-day is what made a month's recompute time out.
     """
-    assignment = await session.scalar(
+
+    def __init__(
+        self,
+        assignments: dict[uuid.UUID, list[ShiftAssignment]],
+        rosters: dict[uuid.UUID, list[RosterAssignment]],
+        default_shift: Shift | None,
+    ) -> None:
+        self._assignments = assignments
+        self._rosters = rosters
+        self.default_shift = default_shift
+
+    @classmethod
+    async def load(
+        cls,
+        session: AsyncSession,
+        user: User,
+        employee_ids: list[uuid.UUID],
+        start: date,
+        end: date,
+    ) -> ShiftResolver:
+        assignments: dict[uuid.UUID, list[ShiftAssignment]] = {}
+        rosters: dict[uuid.UUID, list[RosterAssignment]] = {}
+        if employee_ids:
+            for row in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(ShiftAssignment)
+                        .where(
+                            ShiftAssignment.employee_id.in_(employee_ids),
+                            ShiftAssignment.effective_from <= end,
+                            or_(
+                                ShiftAssignment.effective_to.is_(None),
+                                ShiftAssignment.effective_to >= start,
+                            ),
+                        )
+                        .order_by(ShiftAssignment.effective_from.desc()),
+                        ShiftAssignment,
+                        user,
+                    )
+                )
+            ).all():
+                assignments.setdefault(row.employee_id, []).append(row)
+            for row in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(RosterAssignment)
+                        .where(
+                            RosterAssignment.employee_id.in_(employee_ids),
+                            RosterAssignment.effective_from <= end,
+                            or_(
+                                RosterAssignment.effective_to.is_(None),
+                                RosterAssignment.effective_to >= start,
+                            ),
+                        )
+                        .order_by(RosterAssignment.effective_from.desc()),
+                        RosterAssignment,
+                        user,
+                    )
+                )
+            ).all():
+                rosters.setdefault(row.employee_id, []).append(row)
+        default_shift = await default_shift_for(session, user)
+        return cls(assignments, rosters, default_shift)
+
+    def resolve(self, employee_id: uuid.UUID, on_date: date) -> ShiftPlan:
+        for assignment in self._assignments.get(employee_id, []):
+            if assignment.effective_from <= on_date and (
+                assignment.effective_to is None or assignment.effective_to >= on_date
+            ):
+                return ShiftPlan(shift=assignment.shift)
+
+        for roster_assignment in self._rosters.get(employee_id, []):
+            if roster_assignment.effective_from <= on_date and (
+                roster_assignment.effective_to is None
+                or roster_assignment.effective_to >= on_date
+            ):
+                roster: Roster = roster_assignment.roster
+                if roster.cycle_days <= 0:
+                    break
+                # Position in the rotation. Modulo handles dates before the anchor too.
+                offset = (on_date - roster_assignment.cycle_start_date).days % roster.cycle_days
+                day = next((d for d in roster.days if d.day_index == offset), None)
+                if day is None:
+                    break
+                if day.shift is None:
+                    return ShiftPlan(shift=None, roster_week_off=True)
+                return ShiftPlan(shift=day.shift)
+
+        if self.default_shift is not None:
+            return ShiftPlan(shift=self.default_shift, from_default=True)
+        return ShiftPlan(shift=None)
+
+
+async def default_shift_for(session: AsyncSession, user: User) -> Shift | None:
+    """The workspace's general shift, if HR has marked one."""
+    return await session.scalar(
         tenant_scoped(
-            select(ShiftAssignment)
-            .where(
-                ShiftAssignment.employee_id == employee_id,
-                ShiftAssignment.effective_from <= on_date,
-                or_(
-                    ShiftAssignment.effective_to.is_(None),
-                    ShiftAssignment.effective_to >= on_date,
-                ),
-            )
-            .order_by(ShiftAssignment.effective_from.desc()),
-            ShiftAssignment,
+            select(Shift).where(Shift.is_default.is_(True), Shift.active.is_(True)),
+            Shift,
             user,
         )
     )
-    if assignment is not None:
-        return assignment.shift
-
-    roster_assignment = await session.scalar(
-        tenant_scoped(
-            select(RosterAssignment)
-            .where(
-                RosterAssignment.employee_id == employee_id,
-                RosterAssignment.effective_from <= on_date,
-                or_(
-                    RosterAssignment.effective_to.is_(None),
-                    RosterAssignment.effective_to >= on_date,
-                ),
-            )
-            .order_by(RosterAssignment.effective_from.desc()),
-            RosterAssignment,
-            user,
-        )
-    )
-    if roster_assignment is None:
-        return None
-
-    roster: Roster = roster_assignment.roster
-    if roster.cycle_days <= 0:
-        return None
-
-    # Position in the rotation. Modulo handles dates before the anchor too.
-    offset = (on_date - roster_assignment.cycle_start_date).days % roster.cycle_days
-    day = next((d for d in roster.days if d.day_index == offset), None)
-    return day.shift if day is not None else None
 
 
-async def _holidays_for(
-    session: AsyncSession, user: User, start: date, end: date
-) -> dict[date, str]:
-    stmt = tenant_scoped(
-        select(Holiday).where(Holiday.holiday_date >= start, Holiday.holiday_date <= end),
-        Holiday,
-        user,
-    )
-    return {h.holiday_date: h.name for h in (await session.scalars(stmt)).all()}
+async def resolve_shift_plan(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, on_date: date
+) -> ShiftPlan:
+    resolver = await ShiftResolver.load(session, user, [employee_id], on_date, on_date)
+    return resolver.resolve(employee_id, on_date)
+
+
+@dataclass(frozen=True, slots=True)
+class UnpaidLeaveSpan:
+    """An approved full-day unpaid request, for finding sandwiched off days."""
+
+    start: date
+    end: date
+    total_days: Decimal
 
 
 async def _leave_days_for(
     session: AsyncSession, user: User, employee_id: uuid.UUID, start: date, end: date
-) -> dict[date, tuple[bool, bool]]:
-    """Approved leave by date → `(is_half_day, is_paid)`."""
+) -> tuple[dict[date, tuple[bool, bool]], list[UnpaidLeaveSpan]]:
+    """Approved leave by date → `(is_half_day, is_paid)`, and the unpaid spans.
+
+    Two half days on one date (a first half and a second half) are one full
+    day: on leave if both halves are paid, loss of pay if neither is, and a
+    half-payable day when only one is.
+    """
     stmt = (
         tenant_scoped(
             select(LeaveRequest, LeaveType)
@@ -246,29 +328,100 @@ async def _leave_days_for(
         )
     )
     result: dict[date, tuple[bool, bool]] = {}
+    unpaid: list[UnpaidLeaveSpan] = []
     for leave, leave_type in (await session.execute(stmt)).all():
+        if not leave_type.is_paid and not leave.is_half_day:
+            unpaid.append(
+                UnpaidLeaveSpan(
+                    start=leave.start_date,
+                    end=leave.end_date,
+                    total_days=Decimal(str(leave.total_days)),
+                )
+            )
         cursor = max(leave.start_date, start)
         last = min(leave.end_date, end)
         while cursor <= last:
-            result[cursor] = (leave.is_half_day, leave_type.is_paid)
+            entry = (leave.is_half_day, leave_type.is_paid)
+            earlier = result.get(cursor)
+            if earlier is not None and earlier[0] and entry[0]:
+                both_paid = earlier[1] and entry[1]
+                either_paid = earlier[1] or entry[1]
+                # Full day paid, full day unpaid, or one paid half: half-payable.
+                if both_paid:
+                    entry = (False, True)
+                elif either_paid:
+                    entry = (True, False)
+                else:
+                    entry = (False, False)
+            result[cursor] = entry
             cursor += timedelta(days=1)
-    return result
+    return result, unpaid
+
+
+def _sandwiched_unpaid_days(
+    spans: list[UnpaidLeaveSpan], is_off: Any
+) -> set[date]:
+    """Offs strictly between the first and last working day of unpaid leave that charged them.
+
+    The leave engine charges them under a policy's sandwich rule; a request
+    charged more days than it has working days is one where that happened.
+    """
+    found: set[date] = set()
+    for span in spans:
+        working: list[date] = []
+        offs: list[date] = []
+        cursor = span.start
+        while cursor <= span.end:
+            (offs if is_off(cursor) else working).append(cursor)
+            cursor += timedelta(days=1)
+        if len(working) >= 2 and span.total_days > len(working):
+            found |= {d for d in offs if working[0] < d < working[-1]}
+    return found
 
 
 async def _regularisations_for(
     session: AsyncSession, user: User, employee_id: uuid.UUID, start: date, end: date
-) -> dict[date, AttendanceStatus]:
+) -> dict[date, AttendanceRegularisation]:
+    """The approved regularisation per date; the most recently decided one wins."""
     stmt = tenant_scoped(
-        select(AttendanceRegularisation).where(
+        select(AttendanceRegularisation)
+        .where(
             AttendanceRegularisation.employee_id == employee_id,
             AttendanceRegularisation.status == RegularisationStatus.APPROVED,
             AttendanceRegularisation.attendance_date >= start,
             AttendanceRegularisation.attendance_date <= end,
-        ),
+        )
+        .order_by(AttendanceRegularisation.decided_at.asc().nulls_first()),
         AttendanceRegularisation,
         user,
     )
-    return {r.attendance_date: r.requested_status for r in (await session.scalars(stmt)).all()}
+    return {r.attendance_date: r for r in (await session.scalars(stmt)).all()}
+
+
+async def _locked_dates(
+    session: AsyncSession, user: User, start: date, end: date
+) -> set[date]:
+    """Dates inside any active lock that overlaps the range."""
+    locks = (
+        await session.scalars(
+            tenant_scoped(
+                select(AttendancePeriodLock).where(
+                    AttendancePeriodLock.unlocked_at.is_(None),
+                    AttendancePeriodLock.period_start <= end,
+                    AttendancePeriodLock.period_end >= start,
+                ),
+                AttendancePeriodLock,
+                user,
+            )
+        )
+    ).all()
+    locked: set[date] = set()
+    for lock in locks:
+        cursor = max(lock.period_start, start)
+        while cursor <= min(lock.period_end, end):
+            locked.add(cursor)
+            cursor += timedelta(days=1)
+    return locked
 
 
 # ── Recomputation ───────────────────────────────────────────────────────────
@@ -282,17 +435,27 @@ async def recompute_range(
     start: date,
     end: date,
     force: bool = False,
+    skip_locked: bool = False,
+    missing_only: bool = False,
     request: Request | None = None,
     commit: bool = True,
 ) -> int:
     """Recompute `AttendanceDay` for a date range.
 
-    Idempotent: the computation is a pure function of punches, leave, holidays
-    and shift, so running it twice writes identical values.
+    Idempotent: the computation is a pure function of punches, leave, holidays,
+    regularisations and shift, so running it twice writes identical values.
 
-    Refuses a locked period unless `force`, which only an explicit unlock sets.
+    Only days that are over are written. A day whose attendance window is still
+    open (today, or last night's shift still running) is left alone: judging it
+    now would record a missed punch-out for somebody who simply has not left
+    yet. Each person's range is also clipped to their employment — nobody is
+    absent before they joined or after they left.
+
+    A locked period is refused unless `force` (which only an explicit unlock
+    sets); with `skip_locked` its days are skipped instead, for the nightly job.
+    `missing_only` computes only days that have no row yet (backfill).
     `commit=False` leaves the transaction open for a caller that writes its own
-    change (a regularisation decision) in the same commit.
+    change (a regularisation decision, a leave approval) in the same commit.
     """
     if end < start:
         raise HTTPException(
@@ -300,35 +463,59 @@ async def recompute_range(
             detail="End date cannot be before start date",
         )
 
+    locked: set[date] = set()
     if not force:
-        lock = await active_lock_covering(session, user, start, end)
-        if lock is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Attendance for {lock.period_start} to {lock.period_end} is locked. "
-                    "Unlock the period first — the unlock is audited."
-                ),
-            )
+        if skip_locked:
+            locked = await _locked_dates(session, user, start, end)
+        else:
+            lock = await _any_lock_overlapping(session, user, start, end)
+            if lock is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Attendance for {lock.period_start} to {lock.period_end} is locked. "
+                        "Unlock the period first — the unlock is audited."
+                    ),
+                )
 
-    if employee_ids is None:
-        stmt = tenant_scoped(
-            select(Employee.id).where(
-                Employee.deleted_at.is_(None),
-                Employee.status != EmploymentStatus.PRE_JOINING,
-            ),
-            Employee,
-            user,
-        )
-        employee_ids = list((await session.scalars(stmt)).all())
+    people_stmt = select(
+        Employee.id, Employee.date_of_joining, Employee.date_of_exit
+    ).where(
+        Employee.deleted_at.is_(None),
+        Employee.status != EmploymentStatus.PRE_JOINING,
+    )
+    if employee_ids is not None:
+        people_stmt = people_stmt.where(Employee.id.in_(employee_ids))
+    people = (await session.execute(tenant_scoped(people_stmt, Employee, user))).all()
+    ids = [row[0] for row in people]
 
-    holidays = await _holidays_for(session, user, start, end)
-    zones = await employee_timezones(session, user, employee_ids)
+    holidays = await holidays_for_employees(session, user, ids, start, end)
+    zones = await employee_timezones(session, user, ids)
+    resolver = await ShiftResolver.load(session, user, ids, start, end)
+    now = datetime.now(UTC)
     written = 0
 
-    for employee_id in employee_ids:
-        leave = await _leave_days_for(session, user, employee_id, start, end)
-        regularisations = await _regularisations_for(session, user, employee_id, start, end)
+    for employee_id, joined, left in people:
+        first = max(start, joined) if joined else start
+        last = min(end, left) if left else end
+        if last < first:
+            continue
+        zone = zones.get(employee_id, UTC)
+
+        leave, unpaid_spans = await _leave_days_for(session, user, employee_id, first, last)
+        regularisations = await _regularisations_for(session, user, employee_id, first, last)
+        employee_holidays = holidays.get(employee_id, {})
+
+        def is_off(day: date, employee_id: uuid.UUID = employee_id) -> bool:
+            plan = resolver.resolve(employee_id, day)
+            weekly = plan.shift.weekly_off_days if plan.shift is not None else []
+            return (
+                plan.roster_week_off
+                or day.isoweekday() in (weekly or [])
+                or day in holidays.get(employee_id, {})
+            )
+
+        sandwiched = _sandwiched_unpaid_days(unpaid_spans, is_off)
 
         # Punches are fetched once for the whole range, widened by a day on
         # each side so a night shift's post-midnight OUT is available.
@@ -337,10 +524,10 @@ async def recompute_range(
             .where(
                 AttendancePunch.employee_id == employee_id,
                 AttendancePunch.punched_at >= datetime.combine(
-                    start - timedelta(days=1), datetime.min.time(), tzinfo=UTC
+                    first - timedelta(days=1), datetime.min.time(), tzinfo=UTC
                 ),
                 AttendancePunch.punched_at <= datetime.combine(
-                    end + timedelta(days=2), datetime.min.time(), tzinfo=UTC
+                    last + timedelta(days=2), datetime.min.time(), tzinfo=UTC
                 ),
             )
             .order_by(AttendancePunch.punched_at),
@@ -352,53 +539,73 @@ async def recompute_range(
         existing_stmt = tenant_scoped(
             select(AttendanceDay).where(
                 AttendanceDay.employee_id == employee_id,
-                AttendanceDay.attendance_date >= start,
-                AttendanceDay.attendance_date <= end,
+                AttendanceDay.attendance_date >= first,
+                AttendanceDay.attendance_date <= last,
             ),
             AttendanceDay,
             user,
         )
         existing = {d.attendance_date: d for d in (await session.scalars(existing_stmt)).all()}
 
-        zone = zones.get(employee_id, UTC)
-        cursor = start
-        while cursor <= end:
-            shift = await _resolve_shift(session, user, employee_id, cursor)
+        cursor = first
+        while cursor <= last:
+            day = cursor
+            cursor += timedelta(days=1)
+            if day in locked or (missing_only and day in existing):
+                continue
 
+            plan = resolver.resolve(employee_id, day)
+            shift = plan.shift
             if shift is not None:
-                window_start, window_end = attendance_window(shift, cursor, zone)
-                day_punches = [
-                    PunchRecord(punched_at=p.punched_at, direction=p.direction)
-                    for p in all_punches
-                    if window_start <= p.punched_at <= window_end
-                ]
+                window_start, window_end = attendance_window(shift, day, zone)
             else:
-                day_punches = [
-                    PunchRecord(punched_at=p.punched_at, direction=p.direction)
-                    for p in all_punches
-                    if p.punched_at.astimezone(zone).date() == cursor
-                ]
+                window_start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+                window_end = window_start + timedelta(days=1)
+            regularisation = regularisations.get(day)
+            if window_end > now and regularisation is None:
+                # Still in progress (or ahead); the nightly job computes it once
+                # it is over. A row left from earlier inputs — leave since
+                # cancelled, say — is derived data and goes.
+                stale = existing.get(day)
+                if stale is not None:
+                    await session.delete(stale)
+                continue
 
-            leave_entry = leave.get(cursor)
+            day_punches = [
+                PunchRecord(punched_at=p.punched_at, direction=p.direction)
+                for p in all_punches
+                if window_start <= p.punched_at <= window_end
+            ]
+            leave_entry = leave.get(day)
             computed = compute_day(
                 DayInputs(
                     employee_id=employee_id,
-                    attendance_date=cursor,
+                    attendance_date=day,
                     shift=shift,
                     punches=day_punches,
-                    is_holiday=cursor in holidays,
-                    holiday_name=holidays.get(cursor),
+                    is_holiday=day in employee_holidays,
+                    holiday_name=employee_holidays.get(day),
                     on_approved_leave=leave_entry is not None,
                     leave_is_half_day=leave_entry[0] if leave_entry else False,
                     leave_is_paid=leave_entry[1] if leave_entry else True,
-                    regularised_status=regularisations.get(cursor),
+                    regularised_status=(
+                        regularisation.requested_status if regularisation else None
+                    ),
+                    regularised_kind=regularisation.kind if regularisation else None,
+                    regularised_first_in=(
+                        regularisation.requested_first_in if regularisation else None
+                    ),
+                    regularised_last_out=(
+                        regularisation.requested_last_out if regularisation else None
+                    ),
+                    roster_week_off=plan.roster_week_off,
+                    sandwiched_unpaid_leave=day in sandwiched,
                     timezone=zone,
                 )
             )
 
-            _upsert_day(session, user, employee_id, shift, computed, existing.get(cursor))
+            _upsert_day(session, user, employee_id, shift, computed, existing.get(day))
             written += 1
-            cursor += timedelta(days=1)
 
     await audit.record(
         session,
@@ -407,7 +614,7 @@ async def recompute_range(
         entity_type="attendance_day",
         actor=user,
         summary=(
-            f"Recomputed attendance for {len(employee_ids)} employee(s), "
+            f"Recomputed attendance for {len(ids)} employee(s), "
             f"{start} to {end} ({written} days)"
         ),
         request=request,
@@ -415,6 +622,22 @@ async def recompute_range(
     if commit:
         await session.commit()
     return written
+
+
+async def _any_lock_overlapping(
+    session: AsyncSession, user: User, start: date, end: date
+) -> AttendancePeriodLock | None:
+    return await session.scalar(
+        tenant_scoped(
+            select(AttendancePeriodLock).where(
+                AttendancePeriodLock.unlocked_at.is_(None),
+                AttendancePeriodLock.period_start <= end,
+                AttendancePeriodLock.period_end >= start,
+            ),
+            AttendancePeriodLock,
+            user,
+        )
+    )
 
 
 def _upsert_day(
@@ -439,6 +662,7 @@ def _upsert_day(
         "payable_fraction": computed.payable_fraction,
         "late_by_minutes": computed.late_by_minutes,
         "early_by_minutes": computed.early_by_minutes,
+        "overtime_minutes": computed.overtime_minutes,
         "is_regularised": computed.is_regularised,
         "computation_note": computed.note,
         "computed_at": datetime.now(UTC),
@@ -572,6 +796,13 @@ async def lock_period(
             detail=f"Attendance for {period_start} to {period_end} is already locked",
         )
 
+    # Every day that is over must have a computed row before it is frozen: a
+    # missing row counts as zero loss of pay, which silently overpays.
+    await recompute_range(
+        session, user, employee_ids=None, start=period_start, end=period_end,
+        skip_locked=True, missing_only=True, request=request, commit=False,
+    )
+
     if existing is not None:
         # Re-locking after an unlock reuses the row so the history of lock,
         # unlock and re-lock stays on one record.
@@ -679,6 +910,82 @@ async def _regularisation(
     return row
 
 
+#: On-duty and work-from-home can be planned; nothing else can be asked ahead.
+ADVANCE_KINDS = frozenset({RegularisationKind.ON_DUTY, RegularisationKind.WORK_FROM_HOME})
+#: How far ahead an on-duty or work-from-home day may be requested.
+MAX_ADVANCE_DAYS = 60
+#: The longest on-duty / work-from-home range raised in one go.
+MAX_RANGE_DAYS = 31
+
+KIND_LABELS = {
+    RegularisationKind.MISSED_PUNCH: "missed punch",
+    RegularisationKind.STATUS_CHANGE: "attendance correction",
+    RegularisationKind.ON_DUTY: "on-duty request",
+    RegularisationKind.WORK_FROM_HOME: "work-from-home request",
+}
+
+register_event(
+    "attendance.regularisation.requested",
+    "{employee_name} raised a {kind_label}",
+    "{employee_name} has raised a {kind_label} for {attendance_date}: {reason}",
+)
+register_event(
+    "attendance.regularisation.decided",
+    "Your {kind_label} was {decision}",
+    "Your {kind_label} for {attendance_date} was {decision}.{note_suffix}",
+    preferences={Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE},
+)
+
+
+async def _approver_user_ids(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Who is told a request is waiting: the line manager, else HR."""
+    manager_id = await session.scalar(
+        tenant_scoped(select(Employee.manager_id).where(Employee.id == employee_id), Employee, user)
+    )
+    if manager_id is not None:
+        found = (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == manager_id, User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+        if found:
+            return list(found)
+    return list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.role.in_([UserRole.HR_ADMIN, UserRole.HR_OPS]),
+                        User.is_active.is_(True),
+                        or_(User.employee_id.is_(None), User.employee_id != employee_id),
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+
+
+async def _employee_name(session: AsyncSession, user: User, employee_id: uuid.UUID) -> str:
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if employee is None:
+        return "An employee"
+    return employee.display_name or " ".join(
+        part for part in (employee.first_name, employee.last_name) if part
+    )
+
+
 async def raise_regularisation(
     session: AsyncSession,
     user: User,
@@ -687,19 +994,38 @@ async def raise_regularisation(
     attendance_date: date,
     requested_status: AttendanceStatus,
     reason: str,
+    kind: RegularisationKind = RegularisationKind.STATUS_CHANGE,
     requested_first_in: datetime | None = None,
     requested_last_out: datetime | None = None,
     request: Request | None = None,
+    commit: bool = True,
 ) -> AttendanceRegularisation:
-    """Raise a correction for one day.
+    """Raise a correction, missed punch, on-duty or work-from-home request for one day.
 
     Allowed for a locked period — people forget — but it cannot be approved
     until the period is unlocked, and the approver is told so.
     """
-    if attendance_date > datetime.now(UTC).date() + timedelta(days=1):
+    today = await local_today(session, user)
+    if kind in ADVANCE_KINDS:
+        if attendance_date > today + timedelta(days=MAX_ADVANCE_DAYS):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "On-duty and work-from-home can be requested up to "
+                    f"{MAX_ADVANCE_DAYS} days ahead."
+                ),
+            )
+    elif attendance_date > today:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="A regularisation corrects a day that has happened. This date is in the future.",
+        )
+    if kind is RegularisationKind.MISSED_PUNCH and (
+        requested_first_in is None and requested_last_out is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A missed punch needs the time you came in, the time you left, or both.",
         )
     if (
         requested_first_in is not None
@@ -725,7 +1051,7 @@ async def raise_regularisation(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"There is already a pending regularisation for {attendance_date}. "
+                f"There is already a pending request for {attendance_date}. "
                 "Withdraw it first to ask for something different."
             ),
         )
@@ -734,6 +1060,7 @@ async def raise_regularisation(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
         attendance_date=attendance_date,
+        kind=kind,
         requested_status=requested_status,
         requested_first_in=requested_first_in,
         requested_last_out=requested_last_out,
@@ -752,14 +1079,103 @@ async def raise_regularisation(
         changes={
             "employee_id": str(employee_id),
             "attendance_date": attendance_date.isoformat(),
+            "kind": kind.value,
             "requested_status": requested_status.value,
         },
-        summary=f"Regularisation raised for {attendance_date}",
+        summary=f"{KIND_LABELS[kind].capitalize()} raised for {attendance_date}",
         request=request,
     )
-    await session.commit()
-    await session.refresh(regularisation)
+    recipients = [
+        uid for uid in await _approver_user_ids(session, user, employee_id) if uid != user.id
+    ]
+    if recipients:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key="attendance.regularisation.requested",
+            recipient_user_ids=recipients,
+            payload={
+                "employee_name": await _employee_name(session, user, employee_id),
+                "kind_label": KIND_LABELS[kind],
+                "attendance_date": attendance_date.strftime("%d %b %Y"),
+                "reason": reason,
+            },
+            commit=False,
+        )
+    if commit:
+        await session.commit()
+        await session.refresh(regularisation)
     return regularisation
+
+
+async def raise_regularisation_range(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    start: date,
+    end: date,
+    kind: RegularisationKind,
+    reason: str,
+    request: Request | None = None,
+) -> list[AttendanceRegularisation]:
+    """On-duty or work-from-home over several days, one request per working day.
+
+    Week offs and holidays inside the range are left out: nobody needs
+    permission to work from home on a Sunday.
+    """
+    if kind not in ADVANCE_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only on-duty and work-from-home can be requested for a range of days.",
+        )
+    if end < start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The last day cannot be before the first.",
+        )
+    if (end - start).days + 1 > MAX_RANGE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Request at most {MAX_RANGE_DAYS} days at a time.",
+        )
+    resolver = await ShiftResolver.load(session, user, [employee_id], start, end)
+    holidays = (await holidays_for_employees(session, user, [employee_id], start, end)).get(
+        employee_id, {}
+    )
+    created: list[AttendanceRegularisation] = []
+    cursor = start
+    while cursor <= end:
+        day = cursor
+        cursor += timedelta(days=1)
+        plan = resolver.resolve(employee_id, day)
+        off = plan.roster_week_off or (
+            plan.shift is not None and day.isoweekday() in (plan.shift.weekly_off_days or [])
+        )
+        if off or day in holidays:
+            continue
+        created.append(
+            await raise_regularisation(
+                session,
+                user,
+                employee_id=employee_id,
+                attendance_date=day,
+                requested_status=AttendanceStatus.PRESENT,
+                reason=reason,
+                kind=kind,
+                request=request,
+                commit=False,
+            )
+        )
+    if not created:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Every day in that range is a week off or a holiday.",
+        )
+    await session.commit()
+    for row in created:
+        await session.refresh(row)
+    return created
 
 
 async def cancel_regularisation(
@@ -872,6 +1288,32 @@ async def decide_regularisation(
             start=regularisation.attendance_date,
             end=regularisation.attendance_date,
             request=request,
+            commit=False,
+        )
+
+    subject = await session.scalar(
+        tenant_scoped(
+            select(User.id).where(
+                User.employee_id == regularisation.employee_id, User.is_active.is_(True)
+            ),
+            User,
+            user,
+        )
+    )
+    if subject is not None:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key="attendance.regularisation.decided",
+            recipient_user_ids=[subject],
+            payload={
+                "kind_label": KIND_LABELS[regularisation.kind],
+                "attendance_date": regularisation.attendance_date.strftime("%d %b %Y"),
+                "decision": "approved" if approve else "rejected",
+                "note_suffix": (
+                    f" Note: {regularisation.decision_note}" if regularisation.decision_note else ""
+                ),
+            },
             commit=False,
         )
 
@@ -1043,36 +1485,67 @@ async def import_punch_rows(
 async def nightly_recompute(
     session: AsyncSession, user: User, *, as_of: date
 ) -> dict[str, Any]:
-    """The nightly job's body: recompute the previous day for every active employee.
+    """The nightly job's body for one tenant.
 
-    The scheduler (not part of this module) calls it once per tenant, with a
-    system user of that tenant and the tenant's local date as `as_of`. It is
-    idempotent, so a retried or doubled run changes nothing. A locked day is
-    skipped rather than raising — the job must not need an unlock to finish.
+    Recomputes the last three days — a night shift that started the day before
+    yesterday only closes its window yesterday morning — and backfills any day
+    since the start of last month that has no row yet (the server was down, the
+    job was added mid-month, someone joined with a back-dated joining date).
+    Locked days are skipped, never unlocked. Idempotent.
     """
-    day = as_of - timedelta(days=1)
-    lock = await active_lock_covering(session, user, day, day)
-    if lock is not None:
-        return {
-            "date": day.isoformat(),
-            "days_computed": 0,
-            "skipped": True,
-            "reason": f"{day} is inside the locked period {lock.period_start} to {lock.period_end}",
-        }
-    written = await recompute_range(session, user, employee_ids=None, start=day, end=day)
-    return {"date": day.isoformat(), "days_computed": written, "skipped": False, "reason": None}
+    recent_start = as_of - timedelta(days=3)
+    recent_end = as_of - timedelta(days=1)
+    written = await recompute_range(
+        session, user, employee_ids=None, start=recent_start, end=recent_end,
+        skip_locked=True, commit=False,
+    )
+    backfill_start = (as_of.replace(day=1) - timedelta(days=1)).replace(day=1)
+    backfilled = 0
+    if backfill_start < recent_start:
+        backfilled = await recompute_range(
+            session, user, employee_ids=None, start=backfill_start,
+            end=recent_start - timedelta(days=1), skip_locked=True, missing_only=True,
+            commit=False,
+        )
+    await session.commit()
+    return {
+        "from": recent_start.isoformat(),
+        "to": recent_end.isoformat(),
+        "days_computed": written,
+        "days_backfilled": backfilled,
+        "backfill_from": backfill_start.isoformat(),
+    }
 
 
 # ── Timezones ───────────────────────────────────────────────────────────────
 
+#: Where an employee with no work location is judged. The product is
+#: India-first; a tenant elsewhere sets `settings["timezone"]`.
+DEFAULT_TIMEZONE = "Asia/Kolkata"
 
-def _zone(name: str | None) -> tzinfo:
+
+def _zone(name: str | None, fallback: tzinfo = UTC) -> tzinfo:
     if not name:
-        return UTC
+        return fallback
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError):
-        return UTC
+        return fallback
+
+
+async def tenant_timezone(session: AsyncSession, user: User) -> tzinfo:
+    tenant = await session.get(Tenant, user.tenant_id)
+    name = ((tenant.settings or {}).get("timezone") if tenant else None) or DEFAULT_TIMEZONE
+    return _zone(name, ZoneInfo(DEFAULT_TIMEZONE))
+
+
+async def local_today(session: AsyncSession, user: User) -> date:
+    """Today where the workspace is — not the server's UTC date.
+
+    Between midnight and 05:30 IST the UTC date is still yesterday; using it
+    let people "regularise" tomorrow and hid today's punches.
+    """
+    return datetime.now(await tenant_timezone(session, user)).date()
 
 
 async def employee_timezones(
@@ -1082,12 +1555,14 @@ async def employee_timezones(
 
     Shift times are wall-clock times at the place of work. Comparing a 09:00
     shift start with a punch stored in UTC as if both were UTC marks everybody
-    in India five and a half hours early — so the location's timezone is applied.
-    An employee with no location is evaluated in UTC.
+    in India five and a half hours early — so the location's timezone is
+    applied, and someone with no location is judged in the workspace's zone
+    (India by default), never in UTC.
     """
     ids = list(employee_ids)
     if not ids:
         return {}
+    fallback = await tenant_timezone(session, user)
     stmt = tenant_scoped(
         select(Employee.id, Location.timezone)
         .outerjoin(Location, Location.id == Employee.location_id)
@@ -1095,4 +1570,5 @@ async def employee_timezones(
         Employee,
         user,
     )
-    return {eid: _zone(name) for eid, name in (await session.execute(stmt)).all()}
+    zones = {eid: _zone(name, fallback) for eid, name in (await session.execute(stmt)).all()}
+    return {eid: zones.get(eid, fallback) for eid in ids}

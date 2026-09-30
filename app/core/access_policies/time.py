@@ -37,14 +37,66 @@ ENDPOINTS: dict[str, str] = {
         "permissions: everybody sees who is out on approved leave; the leave type and "
         "pending requests only for self, the reporting line and HR."
     ),
+    "GET /leave/settings": (
+        "reference: the optional-holiday quota and comp-off expiry, about nobody in particular."
+    ),
+    "GET /leave/optional-holidays": (
+        "permissions: the caller's own optional holidays and choices; needs an employee record."
+    ),
+    "POST /leave/optional-holidays/{holiday_id}": (
+        "permissions: only for yourself - a floating holiday is the employee's own choice."
+    ),
+    "DELETE /leave/optional-holidays/{holiday_id}": (
+        "permissions: only for yourself - a floating holiday is the employee's own choice."
+    ),
+    "GET /leave/balances/history": (
+        "permissions: your own balance history, a manager's reporting line, or anybody's "
+        "for HR."
+    ),
+    "POST /leave/attachments": (
+        "permissions: a signed-in employee (or HR) stores a file under their own tenant; "
+        "the key it returns is refused on any other tenant's request."
+    ),
+    "GET /leave/requests/{request_id}/document": (
+        "permissions: the person, their reporting line, the approvers the chain names, "
+        "or HR. Every download is audited."
+    ),
+    "GET /leave/comp-off": (
+        "permissions: own claims, a manager's reporting line, or everybody for HR."
+    ),
+    "POST /leave/comp-off": (
+        "permissions: your own claim unless HR is raising one on somebody's behalf."
+    ),
+    "GET /leave/comp-off/approvals": (
+        "permissions: pending claims naming the caller as approver, or any for HR - never "
+        "the caller's own."
+    ),
+    "POST /leave/comp-off/{claim_id}/approve": (
+        "permissions: the named approver or HR, never the claimant."
+    ),
+    "POST /leave/comp-off/{claim_id}/reject": (
+        "permissions: the named approver or HR, never the claimant."
+    ),
+    "POST /leave/comp-off/{claim_id}/cancel": (
+        "permissions: the claimant while it is pending, or HR."
+    ),
     "POST /attendance/punch": (
         "permissions: your own punch unless HR; a punch you record for yourself is "
         "timestamped by the server and cannot claim a device source."
     ),
-    "GET /attendance/punches": "permissions: your own punches unless HR.",
-    "GET /attendance/day": "permissions: your own attendance unless HR.",
-    "GET /attendance/period": "permissions: your own attendance period unless HR.",
+    "GET /attendance/punches": (
+        "permissions: your own punches, your reporting line's as their manager, or HR."
+    ),
+    "GET /attendance/day": (
+        "permissions: your own attendance, your reporting line's as their manager, or HR."
+    ),
+    "GET /attendance/period": (
+        "permissions: your own period, your reporting line's as their manager, or HR."
+    ),
     "POST /attendance/regularisation": "permissions: your own regularisation unless HR.",
+    "POST /attendance/regularisations/range": (
+        "permissions: your own on-duty or work-from-home days unless HR."
+    ),
     "GET /attendance/regularisations": "permissions: your own regularisations unless HR.",
     "POST /attendance/regularisations/{regularisation_id}/cancel": (
         "permissions: only the person the regularisation is about may withdraw it."

@@ -1,36 +1,53 @@
 """Time-off endpoints (FRD 5.1, V1 build order step 3).
 
-Thin by design: parse, gate, delegate to `app.services.leave.service`,
-serialise. Who may see or decide whose leave is decided in the service, through
-`app.core.permissions`, so the rule has one implementation.
+Thin by design: parse, gate, delegate to the services under
+`app.services.leave`, serialise. Who may see or decide whose leave is decided in
+the services, through `app.core.permissions`, so the rule has one implementation.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 
 from app.core import permissions
+from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.leave import LeaveRequestStatus
 from app.schemas.common import Page
 from app.schemas.leave import (
     AccrualRunRead,
+    BalanceAdjustmentCreate,
+    BalanceAdjustmentRead,
+    BalanceHistoryRead,
+    CompOffCreate,
+    CompOffDecision,
+    CompOffRead,
     HolidayCreate,
     HolidayRead,
+    HolidayUpdate,
+    LeaveAttachmentRead,
     LeaveBalanceRead,
     LeaveDecision,
     LeavePolicyCreate,
     LeavePolicyRead,
+    LeavePolicyUpdate,
     LeavePreviewRead,
     LeaveRequestCreate,
     LeaveRequestRead,
+    LeaveSettingsRead,
+    LeaveSettingsUpdate,
     LeaveTypeCreate,
     LeaveTypeRead,
+    LeaveTypeUpdate,
+    OptionalHolidaysRead,
     WhoIsOutRead,
+    YearEndRead,
 )
+from app.services.leave import attachments, comp_off, holiday_calendar, ledger
 from app.services.leave import service as leave_service
 
 router = APIRouter(prefix="/leave", tags=["leave"])
@@ -38,12 +55,22 @@ router = APIRouter(prefix="/leave", tags=["leave"])
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
 
 
+def _this_year() -> int:
+    return leave_service.local_today().year
+
+
 # ── Catalogue ───────────────────────────────────────────────────────────────
 
 
 @router.get("/types", response_model=list[LeaveTypeRead])
-async def list_leave_types(user: CurrentUser, session: DbSession) -> list[LeaveTypeRead]:
-    rows = await leave_service.list_types(session, user)
+async def list_leave_types(
+    user: CurrentUser,
+    session: DbSession,
+    include_inactive: bool = False,
+) -> list[LeaveTypeRead]:
+    rows = await leave_service.list_types(
+        session, user, include_inactive=include_inactive and permissions.is_hr(user)
+    )
     return [LeaveTypeRead.model_validate(row) for row in rows]
 
 
@@ -57,6 +84,42 @@ async def create_leave_type(
     payload: LeaveTypeCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> LeaveTypeRead:
     row = await leave_service.create_type(session, user, payload, request=request)
+    return LeaveTypeRead.model_validate(row)
+
+
+@router.patch("/types/{leave_type_id}", response_model=LeaveTypeRead, dependencies=HR_ONLY)
+async def update_leave_type(
+    leave_type_id: uuid.UUID,
+    payload: LeaveTypeUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> LeaveTypeRead:
+    row = await leave_service.update_type(session, user, leave_type_id, payload, request=request)
+    return LeaveTypeRead.model_validate(row)
+
+
+@router.post(
+    "/types/{leave_type_id}/deactivate", response_model=LeaveTypeRead, dependencies=HR_ONLY
+)
+async def deactivate_leave_type(
+    leave_type_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> LeaveTypeRead:
+    row = await leave_service.set_type_active(
+        session, user, leave_type_id, active=False, request=request
+    )
+    return LeaveTypeRead.model_validate(row)
+
+
+@router.post(
+    "/types/{leave_type_id}/activate", response_model=LeaveTypeRead, dependencies=HR_ONLY
+)
+async def activate_leave_type(
+    leave_type_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> LeaveTypeRead:
+    row = await leave_service.set_type_active(
+        session, user, leave_type_id, active=True, request=request
+    )
     return LeaveTypeRead.model_validate(row)
 
 
@@ -79,16 +142,56 @@ async def create_leave_policy(
     return LeavePolicyRead.model_validate(row)
 
 
+@router.patch("/policies/{policy_id}", response_model=LeavePolicyRead, dependencies=HR_ONLY)
+async def update_leave_policy(
+    policy_id: uuid.UUID,
+    payload: LeavePolicyUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> LeavePolicyRead:
+    row = await leave_service.update_policy(session, user, policy_id, payload, request=request)
+    return LeavePolicyRead.model_validate(row)
+
+
+@router.post(
+    "/policies/{policy_id}/deactivate", response_model=LeavePolicyRead, dependencies=HR_ONLY
+)
+async def deactivate_leave_policy(
+    policy_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> LeavePolicyRead:
+    row = await leave_service.deactivate_policy(session, user, policy_id, request=request)
+    return LeavePolicyRead.model_validate(row)
+
+
+@router.get("/settings", response_model=LeaveSettingsRead)
+async def get_leave_settings(user: CurrentUser, session: DbSession) -> LeaveSettingsRead:
+    return await leave_service.get_settings(session, user)
+
+
+@router.put("/settings", response_model=LeaveSettingsRead, dependencies=HR_ONLY)
+async def update_leave_settings(
+    payload: LeaveSettingsUpdate, user: CurrentUser, session: DbSession, request: Request
+) -> LeaveSettingsRead:
+    return await leave_service.update_settings(session, user, payload, request=request)
+
+
+# ── Holidays ────────────────────────────────────────────────────────────────
+
+
 @router.get("/holidays", response_model=list[HolidayRead])
 async def list_holidays(
     user: CurrentUser,
     session: DbSession,
-    year: int = Query(default_factory=lambda: date.today().year),
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+    scope: Literal["mine", "all"] = "mine",
     state_code: str | None = Query(default=None, max_length=4),
 ) -> list[HolidayRead]:
-    """A year's holidays. A `state_code` returns that state's list plus the national ones."""
-    rows = await leave_service.list_holidays(session, user, year=year, state_code=state_code)
-    return [HolidayRead.model_validate(row) for row in rows]
+    """A year's holidays: yours by default, every one with `scope=all`, or a
+    state's (with the national ones) with `state_code`."""
+    return await holiday_calendar.list_holidays(
+        session, user, year=year, scope=scope, state_code=state_code
+    )
 
 
 @router.post(
@@ -100,8 +203,55 @@ async def list_holidays(
 async def create_holiday(
     payload: HolidayCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> HolidayRead:
-    row = await leave_service.create_holiday(session, user, payload, request=request)
-    return HolidayRead.model_validate(row)
+    return await holiday_calendar.create_holiday(session, user, payload, request=request)
+
+
+@router.patch("/holidays/{holiday_id}", response_model=HolidayRead, dependencies=HR_ONLY)
+async def update_holiday(
+    holiday_id: uuid.UUID,
+    payload: HolidayUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> HolidayRead:
+    return await holiday_calendar.update_holiday(
+        session, user, holiday_id, payload, request=request
+    )
+
+
+@router.delete(
+    "/holidays/{holiday_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=HR_ONLY,
+)
+async def delete_holiday(
+    holiday_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await holiday_calendar.delete_holiday(session, user, holiday_id, request=request)
+
+
+@router.get("/optional-holidays", response_model=OptionalHolidaysRead)
+async def my_optional_holidays(
+    user: CurrentUser,
+    session: DbSession,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+) -> OptionalHolidaysRead:
+    return await holiday_calendar.optional_holidays(session, user, year=year)
+
+
+@router.post("/optional-holidays/{holiday_id}", response_model=OptionalHolidaysRead)
+async def choose_optional_holiday(
+    holiday_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> OptionalHolidaysRead:
+    return await holiday_calendar.select_optional(session, user, holiday_id, request=request)
+
+
+@router.delete("/optional-holidays/{holiday_id}", response_model=OptionalHolidaysRead)
+async def withdraw_optional_holiday(
+    holiday_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> OptionalHolidaysRead:
+    return await holiday_calendar.withdraw_optional(session, user, holiday_id, request=request)
 
 
 # ── Balances ────────────────────────────────────────────────────────────────
@@ -112,9 +262,34 @@ async def list_balances(
     user: CurrentUser,
     session: DbSession,
     employee_id: uuid.UUID | None = None,
-    year: int = Query(default_factory=lambda: date.today().year, ge=2000, le=2100),
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
 ) -> list[LeaveBalanceRead]:
     return await leave_service.balances(session, user, employee_id=employee_id, year=year)
+
+
+@router.get("/balances/history", response_model=BalanceHistoryRead)
+async def balance_history(
+    user: CurrentUser,
+    session: DbSession,
+    leave_type_id: uuid.UUID,
+    employee_id: uuid.UUID | None = None,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+) -> BalanceHistoryRead:
+    return await ledger.history(
+        session, user, employee_id=employee_id, leave_type_id=leave_type_id, year=year
+    )
+
+
+@router.post(
+    "/balances/adjustments",
+    response_model=BalanceAdjustmentRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=HR_ONLY,
+)
+async def adjust_balance(
+    payload: BalanceAdjustmentCreate, user: CurrentUser, session: DbSession, request: Request
+) -> BalanceAdjustmentRead:
+    return await ledger.adjust(session, user, payload, request=request)
 
 
 @router.post("/accruals/run", response_model=AccrualRunRead, dependencies=HR_ONLY)
@@ -122,12 +297,38 @@ async def run_accruals(
     user: CurrentUser,
     session: DbSession,
     request: Request,
-    year: int = Query(default_factory=lambda: date.today().year, ge=2000, le=2100),
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
 ) -> AccrualRunRead:
     return await leave_service.run_accruals(session, user, year=year, request=request)
 
 
+@router.post("/year-end/{year}", response_model=YearEndRead, dependencies=HR_ONLY)
+async def close_leave_year(
+    year: int, user: CurrentUser, session: DbSession, request: Request
+) -> YearEndRead:
+    """Carry forward and lapse for a finished year. The daily job does this on
+    1 January; running it by hand again changes nothing already closed."""
+    return await ledger.close_year(session, user, year=year, request=request)
+
+
 # ── Requests ────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/attachments", response_model=LeaveAttachmentRead, status_code=status.HTTP_201_CREATED
+)
+async def upload_attachment(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+) -> LeaveAttachmentRead:
+    """A supporting document (PDF, PNG or JPEG) to attach to your request."""
+    if not permissions.is_hr(user):
+        # A login with no employee record has no request to attach it to.
+        permissions.own_employee_id(user)
+    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    return await attachments.upload(session, user, data, request=request)
 
 
 @router.post("/requests/preview", response_model=LeavePreviewRead)
@@ -164,6 +365,20 @@ async def list_requests(
         page_size=page_size,
     )
     return Page[LeaveRequestRead](items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/requests/{request_id}/document")
+async def download_request_document(
+    request_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    filename, mime, data = await leave_service.document(
+        session, user, request_id, request=request
+    )
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/approvals", response_model=list[LeaveRequestRead])
@@ -210,5 +425,67 @@ async def who_is_out(
     session: DbSession,
     start: date,
     end: date,
+    department_id: uuid.UUID | None = None,
+    team: bool = False,
 ) -> list[WhoIsOutRead]:
-    return await leave_service.who_is_out(session, user, start=start, end=end)
+    return await leave_service.who_is_out(
+        session, user, start=start, end=end, department_id=department_id, team_only=team
+    )
+
+
+# ── Comp-off ────────────────────────────────────────────────────────────────
+
+
+@router.get("/comp-off", response_model=list[CompOffRead])
+async def list_comp_off(
+    user: CurrentUser,
+    session: DbSession,
+    employee_id: uuid.UUID | None = None,
+    mine: bool = True,
+) -> list[CompOffRead]:
+    return await comp_off.list_claims(session, user, employee_id=employee_id, mine_only=mine)
+
+
+@router.post("/comp-off", response_model=CompOffRead, status_code=status.HTTP_201_CREATED)
+async def claim_comp_off(
+    payload: CompOffCreate, user: CurrentUser, session: DbSession, request: Request
+) -> CompOffRead:
+    return await comp_off.create(session, user, payload, request=request)
+
+
+@router.get("/comp-off/approvals", response_model=list[CompOffRead])
+async def comp_off_approvals(user: CurrentUser, session: DbSession) -> list[CompOffRead]:
+    return await comp_off.approvals(session, user)
+
+
+@router.post("/comp-off/{claim_id}/approve", response_model=CompOffRead)
+async def approve_comp_off(
+    claim_id: uuid.UUID,
+    payload: CompOffDecision,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> CompOffRead:
+    return await comp_off.decide(
+        session, user, claim_id, approve=True, note=payload.note, request=request
+    )
+
+
+@router.post("/comp-off/{claim_id}/reject", response_model=CompOffRead)
+async def reject_comp_off(
+    claim_id: uuid.UUID,
+    payload: CompOffDecision,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> CompOffRead:
+    return await comp_off.decide(
+        session, user, claim_id, approve=False, note=payload.note, request=request
+    )
+
+
+@router.post("/comp-off/{claim_id}/cancel", response_model=CompOffRead)
+async def cancel_comp_off(
+    claim_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> CompOffRead:
+    return await comp_off.cancel(session, user, claim_id, request=request)

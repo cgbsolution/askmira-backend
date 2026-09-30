@@ -38,6 +38,7 @@ from app.models.loans import (
 )
 from app.models.payroll import PayrollRuleSet
 from app.models.user import User
+from app.services.attendance.service import local_today
 from app.services.loans import amortisation, reimbursements
 
 ZERO = Decimal(0)
@@ -45,6 +46,13 @@ ZERO = Decimal(0)
 #: The rule type an SME-approved loan-perquisite configuration is stored under:
 #: `{"notional_rate": …, "exempt_threshold": …}`.
 LOAN_PERQUISITE_RULE_TYPE = "loan_perquisite"
+
+#: Income lines a payroll run pays itself, as input lines carrying their own
+#: taxable amount (`services/payroll/inputs.py`). The run's TDS counts them in
+#: the month they are paid, so it must not count them here as well — once as
+#: projected income and again as pay would tax the same rupee twice. The
+#: employee's own projection keeps them: it looks at the year, paid or not.
+PAID_THROUGH_PAYROLL = frozenset({"ARREARS", "LEAVE_ENCASHMENT_IN_SERVICE"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +108,7 @@ async def other_taxable_income(
     today: date | None = None,
 ) -> OtherIncome:
     """Everything outside the salary structure that is taxable this year."""
-    moment = today or date.today()
+    moment = today or await local_today(session, user)
     result = OtherIncome(taxable=[], pending=[], notes=[])
 
     await _gratuity(session, user, employee_id, start, end, result)
@@ -180,7 +188,11 @@ async def _encashment(
         kind = "at exit" if row.is_exit_encashment else "in service"
         result.taxable.append(
             IncomeLine(
-                code="LEAVE_ENCASHMENT_TAXABLE",
+                code=(
+                    "LEAVE_ENCASHMENT_TAXABLE"
+                    if row.is_exit_encashment
+                    else "LEAVE_ENCASHMENT_IN_SERVICE"
+                ),
                 label=f"Leave encashment {kind}",
                 amount=taxable,
                 source="exit_benefits",

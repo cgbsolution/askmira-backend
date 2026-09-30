@@ -368,12 +368,15 @@ async def test_csv_import_reports_rows_and_deduplicates(session, hr_user, team):
 
 async def test_nightly_recompute_skips_a_locked_day(session, hr_user, team):
     await attendance_service.lock_period(session, hr_user, date(2026, 4, 1), date(2026, 4, 30))
+    # Inside the locked month nothing is written, and the job still finishes.
+    # (Unlocked March before it is backfilled; that is the backfill's job.)
     result = await attendance_service.nightly_recompute(
         session, hr_user, as_of=MONDAY + timedelta(days=1)
     )
-    assert result["skipped"] is True
+    assert result["days_computed"] == 0
+    # 30 April to 2 May: the locked 30th is skipped, 1-2 May are computed.
     result = await attendance_service.nightly_recompute(session, hr_user, as_of=date(2026, 5, 3))
-    assert result["skipped"] is False and result["days_computed"] >= 3
+    assert result["days_computed"] >= 2
 
 
 # ── Through HTTP: the gates ─────────────────────────────────────────────────

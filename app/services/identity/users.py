@@ -43,6 +43,7 @@ from app.schemas.platform_admin import (
     TenantSettingsUpdate,
 )
 from app.services import audit
+from app.services.identity.roles import ensure_manager_role
 
 __all__ = [
     "create_user",
@@ -120,6 +121,25 @@ async def _active_tenant_admins(session: AsyncSession, user: User) -> int:
     )
 
 
+async def _promote_if_manager(
+    session: AsyncSession, user: User, emp: Employee | None, request: Request | None
+) -> None:
+    """A login linked to someone with direct reports gets the manager role now."""
+    if emp is None:
+        return
+    has_reports = await session.scalar(
+        tenant_scoped(
+            select(Employee.id).where(
+                Employee.manager_id == emp.id, Employee.deleted_at.is_(None)
+            ).limit(1),
+            Employee,
+            user,
+        )
+    )
+    if has_reports is not None:
+        await ensure_manager_role(session, user, emp.id, request=request)
+
+
 # ── Listing and creating ────────────────────────────────────────────────────
 
 
@@ -181,6 +201,7 @@ async def create_user(
         role=payload.role,
         is_active=True,
         password_hash=hash_password(temporary),
+        must_change_password=True,
         employee_id=emp.id if emp else None,
     )
     session.add(target)
@@ -201,11 +222,114 @@ async def create_user(
         summary=f"Created a {payload.role.value} login for {email}",
         request=request,
     )
+    await _promote_if_manager(session, user, emp, request)
     await session.commit()
     await session.refresh(target)
     return ManagedUserCreated(
         user=_read(target, user, tenant, emp), temporary_password=temporary
     )
+
+
+async def link_employee(
+    session: AsyncSession,
+    user: User,
+    *,
+    user_id: uuid.UUID,
+    employee_id: uuid.UUID | None,
+    reason: str,
+    request: Request | None = None,
+) -> ManagedUserRead:
+    """Link a login to an employee record, move it to another, or unlink it.
+
+    One login per employee, and one employee per login: self-service,
+    approvals and payslips all resolve "me" through this link.
+    """
+    tenant = await _tenant(session, user)
+    target = await _target(session, user, user_id)
+    emp = None
+    if employee_id is not None:
+        emp = await session.scalar(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+        if emp is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+        linked = await session.scalar(
+            tenant_scoped(
+                select(User.id).where(User.employee_id == emp.id, User.id != target.id),
+                User,
+                user,
+            )
+        )
+        if linked is not None:
+            raise _bad_request("This employee already has a login. Unlink that one first.")
+
+    before = str(target.employee_id) if target.employee_id else None
+    target.employee_id = emp.id if emp else None
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=target.id,
+        actor=user,
+        changes={
+            "employee_id": {"from": before, "to": str(emp.id) if emp else None},
+            "reason": reason,
+        },
+        summary=(
+            f"Linked {target.email} to employee {emp.employee_code}"
+            if emp
+            else f"Unlinked {target.email} from its employee record"
+        ),
+        request=request,
+    )
+    await session.flush()
+    await _promote_if_manager(session, user, emp, request)
+    await session.commit()
+    await session.refresh(target)
+    return _read(target, user, tenant, emp)
+
+
+async def issue_temporary_password(
+    session: AsyncSession,
+    user: User,
+    *,
+    user_id: uuid.UUID,
+    reason: str,
+    request: Request | None = None,
+) -> ManagedUserCreated:
+    """Replace somebody's password with a one-time one they must change at sign-in.
+
+    Every session they have ends. Not for your own login — use change password.
+    """
+    tenant = await _tenant(session, user)
+    target = await _target(session, user, user_id)
+    if target.id == user.id:
+        raise _forbidden("Change your own password from your profile instead.")
+    if target.role is UserRole.TENANT_ADMIN and not _is_tenant_admin(user):
+        raise _forbidden("Only a tenant admin can reset another tenant admin's password.")
+
+    temporary = secrets.token_urlsafe(12) + "-Aa1"
+    target.password_hash = hash_password(temporary)
+    target.must_change_password = True
+    target.tokens_valid_from = datetime.now(UTC)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=target.id,
+        actor=user,
+        changes={"password_reset": True, "reason": reason},
+        summary=f"Issued a temporary password for {target.email}; their sessions were ended",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(target)
+    emp = None
+    if target.employee_id is not None:
+        emp = await session.get(Employee, target.employee_id)
+    return ManagedUserCreated(user=_read(target, user, tenant, emp), temporary_password=temporary)
 
 
 def _check_grant(user: User, role: UserRole) -> None:
