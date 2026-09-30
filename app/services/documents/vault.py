@@ -85,6 +85,15 @@ def _label(employee: Employee) -> str:
     return employee.full_name
 
 
+def _check_dates(issued_on: date | None, valid_until: date | None) -> None:
+    """A document cannot expire before it was issued."""
+    if issued_on is not None and valid_until is not None and valid_until < issued_on:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The expiry date cannot be before the issue date.",
+        )
+
+
 def _read(document: EmployeeDocument, employee: Employee, *, today: date) -> DocumentRead:
     return DocumentRead(
         id=document.id,
@@ -95,6 +104,7 @@ def _read(document: EmployeeDocument, employee: Employee, *, today: date) -> Doc
         title=document.title,
         mime_type=document.mime_type,
         file_size_bytes=document.file_size_bytes,
+        issued_on=document.issued_on,
         valid_until=document.valid_until,
         is_expired=document.valid_until is not None and document.valid_until < today,
         is_employee_visible=document.is_employee_visible,
@@ -269,9 +279,11 @@ async def upload_document(
     data: bytes,
     valid_until: date | None = None,
     is_employee_visible: bool = True,
+    issued_on: date | None = None,
     request: Request | None = None,
 ) -> DocumentRead:
     permissions.require_hr(user, detail="Only HR can upload to an employee's vault.")
+    _check_dates(issued_on, valid_until)
     _refuse_own_record(user, employee_id)
     employee = await _employee(session, user, employee_id)
 
@@ -308,6 +320,7 @@ async def upload_document(
             file_url=key,
             file_size_bytes=len(data),
             mime_type=kind.mime_type,
+            issued_on=issued_on,
             valid_until=valid_until,
             is_employee_visible=is_employee_visible,
             uploaded_by_user_id=user.id,
@@ -359,6 +372,10 @@ async def update_document(
     changes = payload.model_dump(exclude_unset=True)
     if "category" in changes and changes["category"] is not None:
         changes["category"] = changes["category"].value
+    _check_dates(
+        changes.get("issued_on", document.issued_on),
+        changes.get("valid_until", document.valid_until),
+    )
     for key in ("title", "category", "is_employee_visible"):
         if key in changes and changes[key] is None:
             raise HTTPException(
@@ -470,6 +487,7 @@ async def upload_own_document(
     title: str,
     data: bytes,
     valid_until: date | None = None,
+    issued_on: date | None = None,
     request: Request | None = None,
 ) -> DocumentRead:
     """An employee adds a document to their own record, pending HR verification.
@@ -487,6 +505,7 @@ async def upload_own_document(
                 "by the employee."
             ),
         )
+    _check_dates(issued_on, valid_until)
     employee = await _employee(session, user, own)
     kind = _checked(data)
 
@@ -508,6 +527,7 @@ async def upload_own_document(
             file_url=key,
             file_size_bytes=len(data),
             mime_type=kind.mime_type,
+            issued_on=issued_on,
             valid_until=valid_until,
             is_employee_visible=True,
             uploaded_by_user_id=user.id,

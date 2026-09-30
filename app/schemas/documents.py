@@ -57,6 +57,7 @@ class DocumentRead(BaseModel):
     title: str
     mime_type: str | None
     file_size_bytes: int | None
+    issued_on: date | None = None
     valid_until: date | None
     is_expired: bool
     is_employee_visible: bool
@@ -78,6 +79,7 @@ class DocumentUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     category: DocumentCategory | None = None
+    issued_on: date | None = None
     valid_until: date | None = None
     is_employee_visible: bool | None = None
 

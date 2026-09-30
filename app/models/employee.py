@@ -195,6 +195,9 @@ class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # When the document was issued (a passport's date of issue, a degree's
+    # award date); `valid_until` is when it expires.
+    issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     is_employee_visible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -85,6 +85,7 @@ async def upload(
     file: Annotated[UploadFile, File()],
     valid_until: Annotated[date | None, Form()] = None,
     is_employee_visible: Annotated[bool, Form()] = True,
+    issued_on: Annotated[date | None, Form()] = None,
 ) -> DocumentRead:
     """Upload a PDF, PNG or JPEG. Type is read from the bytes; the name is ignored."""
     # One byte past the limit is enough to know it is over the limit.
@@ -98,6 +99,7 @@ async def upload(
         data=data,
         valid_until=valid_until,
         is_employee_visible=is_employee_visible,
+        issued_on=issued_on,
         request=request,
     )
 
@@ -111,6 +113,7 @@ async def upload_mine(
     title: Annotated[str, Form(min_length=1, max_length=255)],
     file: Annotated[UploadFile, File()],
     valid_until: Annotated[date | None, Form()] = None,
+    issued_on: Annotated[date | None, Form()] = None,
 ) -> DocumentRead:
     """Add a document to your own record. It waits for HR to verify it."""
     _ = user.employee_id  # always the caller's own record, never one named in the form
@@ -122,6 +125,7 @@ async def upload_mine(
         title=title,
         data=data,
         valid_until=valid_until,
+        issued_on=issued_on,
         request=request,
     )
 
