@@ -10,7 +10,7 @@ import hashlib
 import re
 import secrets
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import jwt
@@ -27,6 +27,7 @@ from app.core.security import (
     needs_rehash,
     verify_password,
 )
+from app.models.attendance import Shift
 from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee, EmploymentStatus
 from app.models.notifications import Channel, DigestMode
@@ -141,6 +142,25 @@ async def signup(
     session.add(employee)
     await session.flush()
     user.employee_id = employee.id
+
+    # A general shift as the default, so attendance can judge a day from the
+    # first punch. HR edits it, or adds others, under Shifts & rosters.
+    session.add(
+        Shift(
+            tenant_id=tenant.id,
+            code="GEN",
+            name="General shift",
+            start_time=time(9, 30),
+            end_time=time(18, 30),
+            break_minutes=60,
+            grace_in_minutes=15,
+            grace_out_minutes=15,
+            half_day_threshold_minutes=240,
+            full_day_threshold_minutes=420,
+            weekly_off_days=[6, 7],
+            is_default=True,
+        )
+    )
 
     await audit.record(
         session,

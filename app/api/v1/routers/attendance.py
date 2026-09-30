@@ -42,6 +42,7 @@ from app.schemas.attendance import (
     AssignmentRead,
     AttendanceDayRead,
     AttendanceExceptionReport,
+    AttendanceSettings,
     AttendanceSummaryResponse,
     LockRead,
     LockRequest,
@@ -103,6 +104,9 @@ async def punch(
         source=payload.source,
         device_id=payload.device_id,
         has_coordinates=payload.latitude is not None,
+    )
+    await attendance_service.require_location_if_configured(
+        session, user, source=source, has_coordinates=payload.latitude is not None
     )
     record = await attendance_service.record_punch(
         session,
@@ -481,6 +485,26 @@ async def unlock_period(
 @router.get("/locks", response_model=list[LockRead])
 async def list_locks(user: CurrentUser, session: DbSession) -> list[LockRead]:
     return [LockRead.model_validate(row) for row in await review.list_locks(session, user)]
+
+
+# ── Settings ────────────────────────────────────────────────────────────────
+
+
+@router.get("/settings", response_model=AttendanceSettings)
+async def get_settings(user: CurrentUser, session: DbSession) -> AttendanceSettings:
+    """How punches record location here. Everybody reads it: the punch screen needs it."""
+    return await setup.attendance_settings(session, user)
+
+
+@router.put(
+    "/settings",
+    response_model=AttendanceSettings,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def update_settings(
+    payload: AttendanceSettings, user: CurrentUser, session: DbSession, request: Request
+) -> AttendanceSettings:
+    return await setup.update_attendance_settings(session, user, payload, request)
 
 
 # ── Shifts ──────────────────────────────────────────────────────────────────

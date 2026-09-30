@@ -36,9 +36,11 @@ from app.models.attendance import (
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.org import Location
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.attendance import (
     AssignmentRead,
+    AttendanceSettings,
     RosterAssignmentCreate,
     RosterCreate,
     RosterUpdate,
@@ -679,3 +681,42 @@ async def create_work_location(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+# ── Workspace attendance settings ───────────────────────────────────────────
+
+
+async def attendance_settings(session: AsyncSession, user: User) -> AttendanceSettings:
+    """The workspace's attendance settings; "optional" location when never set."""
+    tenant = await session.get(Tenant, user.tenant_id)
+    raw = ((tenant.settings or {}).get("attendance") or {}) if tenant else {}
+    return AttendanceSettings.model_validate(raw)
+
+
+async def update_attendance_settings(
+    session: AsyncSession,
+    user: User,
+    data: AttendanceSettings,
+    request: Request | None = None,
+) -> AttendanceSettings:
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None:
+        raise _not_found("Workspace")
+    before = await attendance_settings(session, user)
+    settings = dict(tenant.settings or {})
+    settings["attendance"] = {**(settings.get("attendance") or {}), **data.model_dump()}
+    # Reassigned, not mutated: JSONB changes are only seen on assignment.
+    tenant.settings = settings
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="attendance_settings",
+        entity_id=tenant.id,
+        actor=user,
+        changes={"before": before.model_dump(), "after": data.model_dump()},
+        summary=f"Punch location is now {data.location_mode}",
+        request=request,
+    )
+    await session.commit()
+    return data

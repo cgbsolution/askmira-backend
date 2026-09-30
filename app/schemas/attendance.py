@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,6 +66,26 @@ class PunchRead(BaseModel):
     device_id: str | None
     outside_geofence: bool
     nearest_location_metres: int | None
+    #: Where the punch was made, when a location was shared: the coordinates,
+    #: and the nearest work location's name at that moment.
+    latitude: float | None = None
+    longitude: float | None = None
+    location_label: str | None = None
+
+
+LocationMode = Literal["off", "optional", "required"]
+
+
+class AttendanceSettings(BaseModel):
+    """How the workspace records where people punch.
+
+    - off: the punch screen does not ask for a location.
+    - optional: it asks, and a punch without one is still recorded.
+    - required: a punch from the web or the app must carry a location; HR,
+      devices and imports are unaffected.
+    """
+
+    location_mode: LocationMode = "optional"
 
 
 class PunchImportRow(BaseModel):
@@ -224,6 +245,9 @@ class TeamMemberToday(BaseModel):
     first_in: datetime | None = None
     last_punch_at: datetime | None = None
     last_direction: PunchDirection | None = None
+    #: Where the last punch was made, if a location was shared.
+    last_punch_location: str | None = None
+    last_punch_outside: bool = False
     shift_name: str | None = None
     shift_start: time | None = None
     late_by_minutes: int = 0

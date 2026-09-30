@@ -89,14 +89,17 @@ def haversine_metres(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 async def _evaluate_geofence(
     session: AsyncSession, user: User, latitude: float | None, longitude: float | None
-) -> tuple[bool, int | None]:
-    """Return `(outside_geofence, distance_to_nearest_metres)`.
+) -> tuple[bool, int | None, str | None]:
+    """Return `(outside_geofence, metres_beyond_nearest_edge, nearest_location_name)`.
+
+    The distance is measured to the nearest location's edge, so it is negative
+    inside a geofence.
 
     A punch with no coordinates is not "outside" — it simply was not geofenced,
     which is the normal case for a biometric device.
     """
     if latitude is None or longitude is None:
-        return False, None
+        return False, None, None
 
     stmt = tenant_scoped(
         select(WorkLocation).where(WorkLocation.active.is_(True)), WorkLocation, user
@@ -104,14 +107,20 @@ async def _evaluate_geofence(
     locations = (await session.scalars(stmt)).all()
     if not locations:
         # No geofences configured means nothing to be outside of.
-        return False, None
+        return False, None, None
 
     nearest = min(
-        haversine_metres(latitude, longitude, float(loc.latitude), float(loc.longitude))
-        - loc.radius_metres
-        for loc in locations
+        locations,
+        key=lambda loc: haversine_metres(
+            latitude, longitude, float(loc.latitude), float(loc.longitude)
+        )
+        - loc.radius_metres,
     )
-    return nearest > 0, int(round(nearest))
+    beyond = (
+        haversine_metres(latitude, longitude, float(nearest.latitude), float(nearest.longitude))
+        - nearest.radius_metres
+    )
+    return beyond > 0, int(round(beyond)), nearest.name
 
 
 # ── Punches ─────────────────────────────────────────────────────────────────
@@ -138,7 +147,7 @@ async def record_punch(
     employee who cannot punch stops trying, and then there is no data at all —
     which is a worse outcome than a flagged punch HR can judge.
     """
-    outside, distance = await _evaluate_geofence(session, user, latitude, longitude)
+    outside, distance, label = await _evaluate_geofence(session, user, latitude, longitude)
 
     punch = AttendancePunch(
         tenant_id=user.tenant_id,
@@ -151,6 +160,7 @@ async def record_punch(
         longitude=longitude,
         outside_geofence=outside,
         nearest_location_metres=distance,
+        location_label=label,
         raw_payload=raw_payload or {},
     )
     session.add(punch)
@@ -453,7 +463,8 @@ async def recompute_range(
 
     A locked period is refused unless `force` (which only an explicit unlock
     sets); with `skip_locked` its days are skipped instead, for the nightly job.
-    `missing_only` computes only days that have no row yet (backfill).
+    `missing_only` computes only days that have no row yet, or that were
+    judged without any shift (backfill) — once a shift applies they can be judged.
     `commit=False` leaves the transaction open for a caller that writes its own
     change (a regularisation decision, a leave approval) in the same commit.
     """
@@ -551,11 +562,16 @@ async def recompute_range(
         while cursor <= last:
             day = cursor
             cursor += timedelta(days=1)
-            if day in locked or (missing_only and day in existing):
+            if day in locked or (
+                missing_only and day in existing and not _unjudged(existing[day])
+            ):
                 continue
 
             plan = resolver.resolve(employee_id, day)
             shift = plan.shift
+            if missing_only and day in existing and shift is None and not plan.roster_week_off:
+                # Still no shift for it: judging it again would change nothing.
+                continue
             if shift is not None:
                 window_start, window_end = attendance_window(shift, day, zone)
             else:
@@ -607,18 +623,20 @@ async def recompute_range(
             _upsert_day(session, user, employee_id, shift, computed, existing.get(day))
             written += 1
 
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        action=AuditAction.UPDATE,
-        entity_type="attendance_day",
-        actor=user,
-        summary=(
-            f"Recomputed attendance for {len(ids)} employee(s), "
-            f"{start} to {end} ({written} days)"
-        ),
-        request=request,
-    )
+    if written or not missing_only:
+        # A backfill that found nothing to fill is not an event worth a row.
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="attendance_day",
+            actor=user,
+            summary=(
+                f"Recomputed attendance for {len(ids)} employee(s), "
+                f"{start} to {end} ({written} days)"
+            ),
+            request=request,
+        )
     if commit:
         await session.commit()
     return written
@@ -637,6 +655,15 @@ async def _any_lock_overlapping(
             AttendancePeriodLock,
             user,
         )
+    )
+
+
+def _unjudged(row: AttendanceDay) -> bool:
+    """A day computed while no shift applied, and never corrected by hand."""
+    return (
+        row.shift_id is None
+        and row.status is AttendanceStatus.NEEDS_REGULARISATION
+        and not row.is_regularised
     )
 
 
@@ -1356,6 +1383,30 @@ def punch_source_for(
             "A punch you record for yourself comes from the web or your phone."
         )
     return source or default
+
+
+async def require_location_if_configured(
+    session: AsyncSession, user: User, *, source: PunchSource, has_coordinates: bool
+) -> None:
+    """Refuse a self-service punch without a location when the workspace requires one.
+
+    Only punches people make for themselves from the web or the app: devices,
+    imports and HR's manual corrections carry no browser to ask.
+    """
+    if has_coordinates or source not in (PunchSource.WEB, PunchSource.MOBILE_GEO):
+        return
+    tenant = await session.get(Tenant, user.tenant_id)
+    mode = (((tenant.settings or {}).get("attendance") or {}) if tenant else {}).get(
+        "location_mode", "optional"
+    )
+    if mode == "required":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Your company records a location with every punch. Allow location access "
+                "for this site in your browser, then punch again."
+            ),
+        )
 
 
 # ── Bulk import ─────────────────────────────────────────────────────────────

@@ -294,6 +294,9 @@ class AttendancePunch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Stored, flagged, and left for HR to judge.
     outside_geofence: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     nearest_location_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The nearest work location's name as it was when the punch was made, so
+    # the record still reads "Bengaluru HQ" after that office is renamed.
+    location_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     # Whatever the device or client sent, kept verbatim for dispute resolution.
     raw_payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

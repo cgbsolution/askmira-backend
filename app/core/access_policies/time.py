@@ -102,4 +102,7 @@ ENDPOINTS: dict[str, str] = {
         "permissions: only the person the regularisation is about may withdraw it."
     ),
     "GET /attendance/locks": "reference: which payroll periods are locked.",
+    "GET /attendance/settings": (
+        "reference: the workspace's punch-location rule, about nobody in particular."
+    ),
 }

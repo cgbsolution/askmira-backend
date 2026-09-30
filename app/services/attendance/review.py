@@ -153,9 +153,18 @@ async def my_period(
 ) -> MyAttendancePeriod:
     check_range(start, end)
     employee = await _employee(session, user, employee_id)
+    today = await attendance_service.local_today(session, user)
+    # Days that are over but were never computed (the nightly job had not run
+    # yet, or the person joined back-dated) are computed now rather than shown
+    # as blanks. Derived data, idempotent; locked days are left alone.
+    last_past = min(end, today - timedelta(days=1))
+    if last_past >= start:
+        await attendance_service.recompute_range(
+            session, user, employee_ids=[employee_id], start=start, end=last_past,
+            skip_locked=True, missing_only=True, commit=True,
+        )
     days = await _days(session, user, start, end, {employee_id})
     lock = await attendance_service.active_lock_covering(session, user, start, end)
-    today = await attendance_service.local_today(session, user)
 
     resolver = await attendance_service.ShiftResolver.load(
         session, user, [employee_id], today, today
@@ -361,6 +370,8 @@ async def team_today(
                 first_in=first_in,
                 last_punch_at=last.punched_at if last else None,
                 last_direction=last.direction if last else None,
+                last_punch_location=last.location_label if last else None,
+                last_punch_outside=bool(last and last.outside_geofence),
                 shift_name=shift.name if shift else None,
                 shift_start=shift.start_time if shift else None,
                 late_by_minutes=late,
