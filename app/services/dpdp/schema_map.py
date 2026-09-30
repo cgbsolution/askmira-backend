@@ -367,7 +367,15 @@ TABLES: dict[str, TableClassification] = {
         },
     ),
     "employee_work_locations": _p(EMP, "attendance"),
-    "employee_documents": _p(EMP, "documents"),
+    "employee_documents": _p(
+        EMP,
+        "documents",
+        {"document_number": "statutory_identifier", "dependant_name": "dependent"},
+        secondary_principal=THIRD,
+    ),
+    "company_documents": _none(
+        "The company's own policies and handbooks - about nobody in particular."
+    ),
     # The extended profile. Emergency contacts, family members and nominees
     # are about people who are not our users, so an access request from one
     # of them has to reach this row too.

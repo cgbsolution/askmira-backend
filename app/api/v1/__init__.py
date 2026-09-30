@@ -15,6 +15,7 @@ from app.api.v1.routers import (
     bi,
     calibration,
     careers,
+    company_documents,
     competency,
     culture,
     culture_depth,
@@ -117,6 +118,7 @@ api_router.include_router(recruiting.router, dependencies=_module("hiring"))
 api_router.include_router(rewards.router, dependencies=_module("rewards"))
 api_router.include_router(exit_benefits.router, dependencies=_module("payroll"))
 api_router.include_router(letters.router)
+api_router.include_router(company_documents.router, dependencies=_module("core_hr"))
 api_router.include_router(documents.router, dependencies=_module("core_hr"))
 api_router.include_router(sso.router)
 api_router.include_router(devices.router)

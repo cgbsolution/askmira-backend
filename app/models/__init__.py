@@ -90,6 +90,7 @@ from app.models.calibration import (
     DistributionTarget,
     SessionStatus,
 )
+from app.models.company_documents import CompanyDocument
 from app.models.competency import (
     AppraisalTemplate,
     Competency,
@@ -633,6 +634,7 @@ __all__ = [
     "ClubMember",
     "CompOffRequest",
     "CompOffStatus",
+    "CompanyDocument",
     "CompanyEvent",
     "CompanyValue",
     "Competency",

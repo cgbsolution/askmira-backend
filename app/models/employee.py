@@ -195,6 +195,12 @@ class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # The number on the document (a passport or PAN number, a cheque number).
+    document_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when the document belongs to one of the employee's dependants (a
+    # child's birth certificate for insurance) rather than to the employee.
+    dependant_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # When the document was issued (a passport's date of issue, a degree's
     # award date); `valid_until` is when it expires.
     issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)

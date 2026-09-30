@@ -243,6 +243,152 @@ async def test_expiring_documents_are_listed_for_hr_only(
     assert (await client.get("/api/v1/documents/expiring", headers=_auth(me))).status_code == 403
 
 
+async def test_number_remark_and_dependant_are_kept_and_dates_are_checked(
+    client, hr_user, employee
+) -> None:
+    response = await client.post(
+        "/api/v1/documents",
+        headers=_auth(hr_user),
+        data={
+            "employee_id": str(employee.id),
+            "category": "medical",
+            "title": "Birth certificate",
+            "document_number": "  BC-2019-44  ",
+            "remark": "Daughter, for medical cover",
+            "dependant_name": "Riya",
+            "issued_on": "2019-05-01",
+        },
+        files={"file": ("b.pdf", PDF, "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["document_number"] == "BC-2019-44"
+    assert body["dependant_name"] == "Riya"
+    assert body["remark"] == "Daughter, for medical cover"
+
+    backwards = await client.patch(
+        f"/api/v1/documents/{body['id']}",
+        headers=_auth(hr_user),
+        json={"valid_until": "2018-01-01"},
+    )
+    assert backwards.status_code == 422
+
+    cleared = await client.patch(
+        f"/api/v1/documents/{body['id']}",
+        headers=_auth(hr_user),
+        json={"dependant_name": "   ", "remark": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["dependant_name"] is None
+    assert cleared.json()["remark"] is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Company documents: policies and handbooks
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _company_doc(client, hr, *, title="Leave policy 2026", published=True):
+    return await client.post(
+        "/api/v1/documents/company",
+        headers=_auth(hr),
+        data={
+            "document_type": "Leave policy",
+            "title": title,
+            "document_number": "HR-POL-004",
+            "issued_on": "2026-04-01",
+            "is_employee_visible": "true" if published else "false",
+        },
+        files={"file": ("policy.pdf", PDF, "application/pdf")},
+    )
+
+
+async def test_employees_read_published_company_documents_only(
+    client, session, tenant, hr_user, employee
+) -> None:
+    published = await _company_doc(client, hr_user)
+    assert published.status_code == 201, published.text
+    draft = (await _company_doc(client, hr_user, title="Draft PIP policy", published=False)).json()
+
+    hr_titles = [
+        d["title"]
+        for d in (await client.get("/api/v1/documents/company", headers=_auth(hr_user))).json()
+    ]
+    assert sorted(hr_titles) == ["Draft PIP policy", "Leave policy 2026"]
+
+    me = await _login_for(session, tenant, employee, UserRole.EMPLOYEE, "reader")
+    mine = (await client.get("/api/v1/documents/company", headers=_auth(me))).json()
+    assert [d["title"] for d in mine] == ["Leave policy 2026"]
+    assert "file_url" not in mine[0]
+
+    download = await client.get(
+        f"/api/v1/documents/company/{mine[0]['id']}/download", headers=_auth(me)
+    )
+    assert download.status_code == 200
+    assert download.headers["content-disposition"].startswith("attachment;")
+    hidden = await client.get(
+        f"/api/v1/documents/company/{draft['id']}/download", headers=_auth(me)
+    )
+    assert hidden.status_code == 404
+
+    # Reading is open to everyone; writing is HR's.
+    refused = await client.post(
+        "/api/v1/documents/company",
+        headers=_auth(me),
+        data={"document_type": "IT policy", "title": "Mine"},
+        files={"file": ("p.pdf", PDF, "application/pdf")},
+    )
+    assert refused.status_code == 403
+    assert (
+        await client.delete(f"/api/v1/documents/company/{mine[0]['id']}", headers=_auth(me))
+    ).status_code == 403
+
+
+async def test_company_documents_are_tenant_scoped_and_audited(
+    client, session, hr_user, other_hr_user, _storage_root
+) -> None:
+    doc = (await _company_doc(client, hr_user)).json()
+    assert (
+        await client.get("/api/v1/documents/company", headers=_auth(other_hr_user))
+    ).json() == []
+    for method, path in (
+        ("GET", f"/api/v1/documents/company/{doc['id']}/download"),
+        ("DELETE", f"/api/v1/documents/company/{doc['id']}"),
+    ):
+        response = await client.request(method, path, headers=_auth(other_hr_user))
+        assert response.status_code == 404
+
+    edited = await client.patch(
+        f"/api/v1/documents/company/{doc['id']}",
+        headers=_auth(hr_user),
+        json={"is_employee_visible": False, "valid_until": "2027-03-31"},
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["is_employee_visible"] is False
+    backwards = await client.patch(
+        f"/api/v1/documents/company/{doc['id']}",
+        headers=_auth(hr_user),
+        json={"valid_until": "2020-01-01"},
+    )
+    assert backwards.status_code == 422
+
+    assert (await client.get("/api/v1/documents/company", headers=_auth(hr_user))).json()[0][
+        "valid_until"
+    ] == "2027-03-31"
+    deleted = await client.delete(
+        f"/api/v1/documents/company/{doc['id']}", headers=_auth(hr_user)
+    )
+    assert deleted.status_code == 204
+    assert not any(path.is_file() for path in _storage_root.rglob("*"))
+
+    actions = (
+        await session.scalars(
+            select(AuditLog.action).where(AuditLog.entity_type == "company_document")
+        )
+    ).all()
+    assert {a.value for a in actions} >= {"create", "update", "delete"}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Letters: persisted PDFs, template edit and preview
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1,6 +1,12 @@
 """Letters and the document vault."""
 
 ENDPOINTS: dict[str, str] = {
+    "GET /documents/company": (
+        "reference: company policies and handbooks - published ones for everybody, all for HR."
+    ),
+    "GET /documents/company/{document_id}/download": (
+        "reference: a company policy file; unpublished ones exist only for HR."
+    ),
     "GET /letter-templates": (
         "reference: the template catalogue, not issued letters. Inactive versions "
         "only for HR."

@@ -23,6 +23,7 @@ class DocumentCategory(str, enum.Enum):
     PAYSLIP = "payslip"
     TAX = "tax"
     MEDICAL = "medical"
+    BANK = "bank"
     OTHER = "other"
 
 
@@ -30,6 +31,7 @@ CATEGORY_LABELS: dict[DocumentCategory, str] = {
     DocumentCategory.ID_PROOF: "Identity proof",
     DocumentCategory.ADDRESS_PROOF: "Address proof",
     DocumentCategory.EDUCATION: "Education",
+    DocumentCategory.BANK: "Bank proof",
     DocumentCategory.EXPERIENCE: "Previous employment",
     DocumentCategory.CONTRACT: "Contract",
     DocumentCategory.OFFER_LETTER: "Offer letter",
@@ -57,6 +59,9 @@ class DocumentRead(BaseModel):
     title: str
     mime_type: str | None
     file_size_bytes: int | None
+    document_number: str | None = None
+    remark: str | None = None
+    dependant_name: str | None = None
     issued_on: date | None = None
     valid_until: date | None
     is_expired: bool
@@ -79,6 +84,9 @@ class DocumentUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     category: DocumentCategory | None = None
+    document_number: str | None = Field(default=None, max_length=64)
+    remark: str | None = Field(default=None, max_length=1000)
+    dependant_name: str | None = Field(default=None, max_length=128)
     issued_on: date | None = None
     valid_until: date | None = None
     is_employee_visible: bool | None = None
@@ -94,6 +102,7 @@ SELF_UPLOAD_CATEGORIES: frozenset[DocumentCategory] = frozenset(
         DocumentCategory.EXPERIENCE,
         DocumentCategory.TAX,
         DocumentCategory.MEDICAL,
+        DocumentCategory.BANK,
         DocumentCategory.OTHER,
     }
 )
@@ -106,3 +115,37 @@ class DocumentVerify(BaseModel):
 
     decision: Literal["verified", "rejected"]
     note: str | None = Field(default=None, max_length=1000)
+
+
+# ── Company documents (policy library) ─────────────────────────────────────
+
+
+class CompanyDocumentRead(BaseModel):
+    """A company document. The storage key is never serialised."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    document_type: str
+    title: str
+    document_number: str | None
+    remark: str | None
+    mime_type: str | None
+    file_size_bytes: int | None
+    issued_on: date | None
+    valid_until: date | None
+    is_expired: bool = False
+    is_employee_visible: bool
+    created_at: datetime
+
+
+class CompanyDocumentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: str | None = Field(default=None, min_length=1, max_length=64)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    document_number: str | None = Field(default=None, max_length=64)
+    remark: str | None = Field(default=None, max_length=1000)
+    issued_on: date | None = None
+    valid_until: date | None = None
+    is_employee_visible: bool | None = None

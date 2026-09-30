@@ -86,6 +86,9 @@ async def upload(
     valid_until: Annotated[date | None, Form()] = None,
     is_employee_visible: Annotated[bool, Form()] = True,
     issued_on: Annotated[date | None, Form()] = None,
+    document_number: Annotated[str | None, Form(max_length=64)] = None,
+    remark: Annotated[str | None, Form(max_length=1000)] = None,
+    dependant_name: Annotated[str | None, Form(max_length=128)] = None,
 ) -> DocumentRead:
     """Upload a PDF, PNG or JPEG. Type is read from the bytes; the name is ignored."""
     # One byte past the limit is enough to know it is over the limit.
@@ -100,6 +103,9 @@ async def upload(
         valid_until=valid_until,
         is_employee_visible=is_employee_visible,
         issued_on=issued_on,
+        document_number=document_number,
+        remark=remark,
+        dependant_name=dependant_name,
         request=request,
     )
 
@@ -114,6 +120,9 @@ async def upload_mine(
     file: Annotated[UploadFile, File()],
     valid_until: Annotated[date | None, Form()] = None,
     issued_on: Annotated[date | None, Form()] = None,
+    document_number: Annotated[str | None, Form(max_length=64)] = None,
+    remark: Annotated[str | None, Form(max_length=1000)] = None,
+    dependant_name: Annotated[str | None, Form(max_length=128)] = None,
 ) -> DocumentRead:
     """Add a document to your own record. It waits for HR to verify it."""
     _ = user.employee_id  # always the caller's own record, never one named in the form
@@ -126,6 +135,9 @@ async def upload_mine(
         data=data,
         valid_until=valid_until,
         issued_on=issued_on,
+        document_number=document_number,
+        remark=remark,
+        dependant_name=dependant_name,
         request=request,
     )
 

@@ -85,6 +85,11 @@ def _label(employee: Employee) -> str:
     return employee.full_name
 
 
+def _clean(value: str | None) -> str | None:
+    """Trimmed, or None when blank."""
+    return (value or "").strip() or None
+
+
 def _check_dates(issued_on: date | None, valid_until: date | None) -> None:
     """A document cannot expire before it was issued."""
     if issued_on is not None and valid_until is not None and valid_until < issued_on:
@@ -104,6 +109,9 @@ def _read(document: EmployeeDocument, employee: Employee, *, today: date) -> Doc
         title=document.title,
         mime_type=document.mime_type,
         file_size_bytes=document.file_size_bytes,
+        document_number=document.document_number,
+        remark=document.remark,
+        dependant_name=document.dependant_name,
         issued_on=document.issued_on,
         valid_until=document.valid_until,
         is_expired=document.valid_until is not None and document.valid_until < today,
@@ -280,6 +288,9 @@ async def upload_document(
     valid_until: date | None = None,
     is_employee_visible: bool = True,
     issued_on: date | None = None,
+    document_number: str | None = None,
+    remark: str | None = None,
+    dependant_name: str | None = None,
     request: Request | None = None,
 ) -> DocumentRead:
     permissions.require_hr(user, detail="Only HR can upload to an employee's vault.")
@@ -320,6 +331,9 @@ async def upload_document(
             file_url=key,
             file_size_bytes=len(data),
             mime_type=kind.mime_type,
+            document_number=_clean(document_number),
+            remark=_clean(remark),
+            dependant_name=_clean(dependant_name),
             issued_on=issued_on,
             valid_until=valid_until,
             is_employee_visible=is_employee_visible,
@@ -382,6 +396,10 @@ async def update_document(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"'{key}' cannot be cleared.",
             )
+    # Blank is "not set", the same as on upload.
+    for key in ("document_number", "remark", "dependant_name"):
+        if key in changes:
+            changes[key] = _clean(changes[key])
 
     diff = {
         key: {"from": str(getattr(document, key)), "to": str(value)}
@@ -488,6 +506,9 @@ async def upload_own_document(
     data: bytes,
     valid_until: date | None = None,
     issued_on: date | None = None,
+    document_number: str | None = None,
+    remark: str | None = None,
+    dependant_name: str | None = None,
     request: Request | None = None,
 ) -> DocumentRead:
     """An employee adds a document to their own record, pending HR verification.
@@ -527,6 +548,9 @@ async def upload_own_document(
             file_url=key,
             file_size_bytes=len(data),
             mime_type=kind.mime_type,
+            document_number=_clean(document_number),
+            remark=_clean(remark),
+            dependant_name=_clean(dependant_name),
             issued_on=issued_on,
             valid_until=valid_until,
             is_employee_visible=True,
