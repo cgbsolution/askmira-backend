@@ -11,5 +11,12 @@
 # opsec IP allowlist, the public-form rate limiter and the audit log all read
 # request.client, and SAML builds its ACS URL from the forwarded scheme — see
 # app/services/opsec/enforcement.py. Never publish the container port directly.
+#
+# `alembic upgrade head` runs first, on every start: the schema is brought to
+# what the code expects before any request is served. Without it a deploy
+# whose code adds a column serves 500s on every query that touches that table
+# (2026-09-30: every sign-in failed on users.must_change_password). If the
+# migration fails the container does not start, and the Alembic error is the
+# first thing in the log.
 [start]
-cmd = "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+cmd = "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"

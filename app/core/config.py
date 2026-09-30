@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -119,6 +119,18 @@ class Settings(BaseSettings):
     def _normalise_backend(cls, v: object) -> object:
         """`Supabase` and ` supabase ` mean what they say; a typo still fails at boot."""
         return v.strip().lower() if isinstance(v, str) else v
+
+    @model_validator(mode="after")
+    def _derive_sync_url(self) -> "Settings":
+        """Alembic's URL from the app's, when only `DATABASE_URL` is configured.
+
+        Deploys run `alembic upgrade head` before the server starts. A host that
+        sets only `DATABASE_URL` would otherwise migrate against the localhost
+        default and never start.
+        """
+        if "DATABASE_URL_SYNC" not in self.model_fields_set and "+asyncpg" in self.DATABASE_URL:
+            self.DATABASE_URL_SYNC = self.DATABASE_URL.replace("+asyncpg", "+psycopg2", 1)
+        return self
 
     @property
     def is_production(self) -> bool:
