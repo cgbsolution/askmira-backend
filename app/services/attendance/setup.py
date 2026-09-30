@@ -41,6 +41,7 @@ from app.models.user import User
 from app.schemas.attendance import (
     AssignmentRead,
     AttendanceSettings,
+    AttendanceSettingsRead,
     RosterAssignmentCreate,
     RosterCreate,
     RosterUpdate,
@@ -48,6 +49,7 @@ from app.schemas.attendance import (
     ShiftCreate,
     ShiftUpdate,
     WorkLocationCreate,
+    WorkLocationPin,
 )
 from app.services import audit
 
@@ -691,6 +693,27 @@ async def attendance_settings(session: AsyncSession, user: User) -> AttendanceSe
     tenant = await session.get(Tenant, user.tenant_id)
     raw = ((tenant.settings or {}).get("attendance") or {}) if tenant else {}
     return AttendanceSettings.model_validate(raw)
+
+
+async def attendance_settings_with_locations(
+    session: AsyncSession, user: User
+) -> AttendanceSettingsRead:
+    """The settings, plus the active work locations the punch map draws."""
+    settings = await attendance_settings(session, user)
+    stmt = select(WorkLocation).where(WorkLocation.active.is_(True)).order_by(WorkLocation.name)
+    locations = (await session.scalars(tenant_scoped(stmt, WorkLocation, user))).all()
+    return AttendanceSettingsRead(
+        **settings.model_dump(),
+        work_locations=[
+            WorkLocationPin(
+                name=row.name,
+                latitude=float(row.latitude),
+                longitude=float(row.longitude),
+                radius_metres=row.radius_metres,
+            )
+            for row in locations
+        ],
+    )
 
 
 async def update_attendance_settings(

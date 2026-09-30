@@ -88,6 +88,20 @@ class AttendanceSettings(BaseModel):
     location_mode: LocationMode = "optional"
 
 
+class WorkLocationPin(BaseModel):
+    """A work location as a map shows it: where, and how far the geofence reaches."""
+
+    name: str
+    latitude: float
+    longitude: float
+    radius_metres: int
+
+
+class AttendanceSettingsRead(AttendanceSettings):
+    #: Active work locations, so the punch screen can draw them on its map.
+    work_locations: list[WorkLocationPin] = Field(default_factory=list)
+
+
 class PunchImportRow(BaseModel):
     """One normalised row from a device export."""
 
@@ -248,6 +262,8 @@ class TeamMemberToday(BaseModel):
     #: Where the last punch was made, if a location was shared.
     last_punch_location: str | None = None
     last_punch_outside: bool = False
+    last_punch_latitude: float | None = None
+    last_punch_longitude: float | None = None
     shift_name: str | None = None
     shift_start: time | None = None
     late_by_minutes: int = 0

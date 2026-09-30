@@ -43,6 +43,7 @@ from app.schemas.attendance import (
     AttendanceDayRead,
     AttendanceExceptionReport,
     AttendanceSettings,
+    AttendanceSettingsRead,
     AttendanceSummaryResponse,
     LockRead,
     LockRequest,
@@ -490,10 +491,10 @@ async def list_locks(user: CurrentUser, session: DbSession) -> list[LockRead]:
 # ── Settings ────────────────────────────────────────────────────────────────
 
 
-@router.get("/settings", response_model=AttendanceSettings)
-async def get_settings(user: CurrentUser, session: DbSession) -> AttendanceSettings:
-    """How punches record location here. Everybody reads it: the punch screen needs it."""
-    return await setup.attendance_settings(session, user)
+@router.get("/settings", response_model=AttendanceSettingsRead)
+async def get_settings(user: CurrentUser, session: DbSession) -> AttendanceSettingsRead:
+    """How punches record location here, and the work locations the punch map draws."""
+    return await setup.attendance_settings_with_locations(session, user)
 
 
 @router.put(

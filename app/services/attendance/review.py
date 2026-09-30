@@ -144,6 +144,10 @@ async def viewable_employee(
     raise permissions.forbidden(detail)
 
 
+def _coordinate(value: object) -> float | None:
+    return float(value) if value is not None else None
+
+
 def _brief(shift: Shift) -> ShiftBrief:
     return ShiftBrief.model_validate(shift)
 
@@ -372,6 +376,8 @@ async def team_today(
                 last_direction=last.direction if last else None,
                 last_punch_location=last.location_label if last else None,
                 last_punch_outside=bool(last and last.outside_geofence),
+                last_punch_latitude=_coordinate(last.latitude if last else None),
+                last_punch_longitude=_coordinate(last.longitude if last else None),
                 shift_name=shift.name if shift else None,
                 shift_start=shift.start_time if shift else None,
                 late_by_minutes=late,
