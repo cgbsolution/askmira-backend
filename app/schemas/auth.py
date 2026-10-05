@@ -92,6 +92,9 @@ class UserRead(BaseModel):
     is_email_verified: bool
     #: The portal asks for a new password before anything else when set.
     must_change_password: bool = False
+    #: Somebody reports to them, so the portal shows their team's pages and
+    #: approvals. Not a role: it follows the org chart (`User.has_reports`).
+    is_manager: bool = Field(default=False, validation_alias="has_reports")
     employee_id: uuid.UUID | None
     last_login_at: datetime | None
     created_at: datetime

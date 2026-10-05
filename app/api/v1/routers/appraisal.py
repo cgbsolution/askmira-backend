@@ -35,7 +35,7 @@ from app.services.appraisal import service as appraisal_service
 router = APIRouter(tags=["appraisal"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-MANAGERS = [Depends(require_roles(*permissions.MANAGER_ROLES))]
+MANAGERS = [Depends(require_roles(*permissions.HR_ROLES, line_managers=True))]
 
 
 # ── Cycles ──────────────────────────────────────────────────────────────────
@@ -295,7 +295,7 @@ async def acknowledge(
 @router.post(
     "/appraisal/appraisals/{appraisal_id}/reopen",
     response_model=AppraisalRead,
-    dependencies=[Depends(require_roles(*permissions.HR_ROLES - {permissions.UserRole.HR_OPS}))],
+    dependencies=[Depends(require_roles(*permissions.ADMIN_ROLES))],
 )
 async def reopen(
     appraisal_id: uuid.UUID,

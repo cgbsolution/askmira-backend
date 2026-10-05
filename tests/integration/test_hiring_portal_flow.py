@@ -45,7 +45,7 @@ from app.services.interviews import service as interview_service
 from app.services.recruiting import analytics, referral_views
 from app.services.recruiting import service as recruiting
 from tests.hiring.db_fixture import engine  # noqa: F401 - shadows the shared fixture
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import as_caller, requires_db
 from tests.integration.test_offer_flow import _chain, _offer_template, _structure
 
 pytestmark = requires_db
@@ -91,18 +91,34 @@ async def people(session, tenant, legal_entity, location) -> dict[str, User]:
     tenant.enabled_modules = {**(tenant.enabled_modules or {}), "hiring": True}
     await session.commit()
     roster = {
-        "hr": ("HROPS", UserRole.HR_ADMIN),
-        "admin": ("ADMIN", UserRole.TENANT_ADMIN),
-        "manager": ("MGR", UserRole.MANAGER),
+        "hr": ("HROPS", UserRole.SUB_ADMIN),
+        "admin": ("ADMIN", UserRole.ADMIN),
+        "manager": ("MGR", UserRole.EMPLOYEE),
         "alice": ("ALICE", UserRole.EMPLOYEE),
         "bob": ("BOB", UserRole.EMPLOYEE),
-        "outsider": ("OUT", UserRole.MANAGER),
+        "outsider": ("OUT", UserRole.EMPLOYEE),
         "employee": ("EMP", UserRole.EMPLOYEE),
     }
-    return {
+    people = {
         key: await _person(session, tenant, legal_entity, location, code=code, role=role)
         for key, (code, role) in roster.items()
     }
+    # Managing people is a place in the org chart: the manager and the outsider
+    # (a manager on another team) each have somebody reporting to them.
+    for key in ("manager", "outsider"):
+        session.add(
+            Employee(
+                tenant_id=tenant.id, employee_code=f"{roster[key][0]}R", first_name="Report",
+                work_email=f"{roster[key][0].lower()}r@acme-demo.com",
+                legal_entity_id=legal_entity.id, location_id=location.id,
+                status=EmploymentStatus.ACTIVE, date_of_joining=date(2024, 1, 1),
+                manager_id=people[key].employee_id,
+            )
+        )
+    await session.commit()
+    for user in people.values():
+        await as_caller(session, user)
+    return people
 
 
 async def _open_requisition(session, tenant, people) -> uuid.UUID:

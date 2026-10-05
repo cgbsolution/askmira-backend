@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.deps import has_direct_reports
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -74,7 +75,8 @@ async def _unique_slug(session: AsyncSession, base: str) -> str:
     return candidate
 
 
-def _build_response(user: User, tenant: Tenant) -> AuthResponse:
+async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> AuthResponse:
+    user.has_reports = await has_direct_reports(session, user)
     return AuthResponse(
         access_token=create_access_token(
             user_id=str(user.id), tenant_id=str(user.tenant_id), role=user.role.value
@@ -89,7 +91,7 @@ def _build_response(user: User, tenant: Tenant) -> AuthResponse:
 async def signup(
     session: AsyncSession, payload: SignupRequest, request: Request | None = None
 ) -> AuthResponse:
-    """Create a tenant and its first TENANT_ADMIN."""
+    """Create a tenant and its first ADMIN."""
     existing = await session.scalar(
         select(User.id).where(func.lower(User.email) == payload.email.lower())
     )
@@ -116,7 +118,7 @@ async def signup(
         password_hash=hash_password(payload.password),
         full_name=payload.full_name,
         phone=payload.phone,
-        role=UserRole.TENANT_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
         # Pilot-phase convenience. Wire real email verification before GA.
         is_email_verified=False,
@@ -174,7 +176,7 @@ async def signup(
     )
     await session.commit()
     await session.refresh(user)
-    return _build_response(user, tenant)
+    return await _build_response(session, user, tenant)
 
 
 async def login(
@@ -228,7 +230,7 @@ async def login(
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account has been deactivated. Contact your HR admin.",
+            detail="This account has been deactivated. Contact your admin.",
         )
 
     tenant = await session.get(Tenant, user.tenant_id)
@@ -256,7 +258,7 @@ async def login(
     )
     await session.commit()
     await session.refresh(user)
-    return _build_response(user, tenant)
+    return await _build_response(session, user, tenant)
 
 
 async def refresh(session: AsyncSession, refresh_token: str) -> AuthResponse:
@@ -292,7 +294,7 @@ async def refresh(session: AsyncSession, refresh_token: str) -> AuthResponse:
     if tenant is None or not tenant.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active")
 
-    return _build_response(user, tenant)
+    return await _build_response(session, user, tenant)
 
 
 async def change_password(

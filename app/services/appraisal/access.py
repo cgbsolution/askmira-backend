@@ -45,7 +45,7 @@ from app.models.appraisal import (
     StageDelegation,
     StageRole,
 )
-from app.models.user import User, UserRole
+from app.models.user import User
 
 __all__ = [
     "Actor",
@@ -111,7 +111,7 @@ async def _line_owner(session: AsyncSession, owner: User, subject_id: uuid.UUID)
         return False
     if permissions.is_hr(owner):
         return True
-    return owner.role is UserRole.MANAGER and await permissions.manages(session, owner, subject_id)
+    return await permissions.manages(session, owner, subject_id)
 
 
 async def can_view(session: AsyncSession, user: User, appraisal: Appraisal) -> bool:
@@ -119,9 +119,7 @@ async def can_view(session: AsyncSession, user: User, appraisal: Appraisal) -> b
         return True
     if appraisal.escalated_to_user_id is not None and appraisal.escalated_to_user_id == user.id:
         return True
-    if user.role is UserRole.MANAGER and await permissions.manages(
-        session, user, appraisal.employee_id
-    ):
+    if await permissions.manages(session, user, appraisal.employee_id):
         return True
     for delegator in await _delegators(session, user, appraisal.cycle_id):
         if await _line_owner(session, delegator, appraisal.employee_id):
@@ -193,7 +191,7 @@ async def stage_actor(
                 "cannot also sign it off."
             )
 
-    if user.role is UserRole.MANAGER and await permissions.manages(session, user, subject):
+    if await permissions.manages(session, user, subject):
         return Actor(None, False, "In the employee's reporting line.")
 
     if appraisal.escalated_to_user_id is not None and appraisal.escalated_to_user_id == user.id:

@@ -33,7 +33,7 @@ def system_actor(tenant_id) -> User:
         tenant_id=tenant_id,
         email="scheduler@system.askmira.invalid",
         full_name="AskMira scheduler",
-        role=UserRole.TENANT_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
         password_hash="!",
         employee_id=None,
@@ -66,14 +66,6 @@ async def _attendance_recompute(session: AsyncSession, ctx: JobContext) -> dict[
     from app.services.attendance import service as attendance
 
     return await attendance.nightly_recompute(session, ctx.actor, as_of=ctx.today)
-
-
-async def _sync_manager_roles(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
-    from app.services.identity.roles import promote_all_line_managers
-
-    promoted = await promote_all_line_managers(session, ctx.actor)
-    await session.commit()
-    return {"logins_promoted": promoted}
 
 
 async def _leave_accruals(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
@@ -287,17 +279,6 @@ JOBS: tuple[Job, ...] = (
         handler=_attendance_recompute,
         source="app.services.attendance.service.nightly_recompute",
         module="leave",
-    ),
-    Job(
-        key="identity.sync_manager_roles",
-        name="Manager access",
-        description=(
-            "Gives the manager role to anyone who has direct reports but still signs in as "
-            "an employee, so their team's requests have someone to decide them."
-        ),
-        cadence=Cadence.daily(hour=0),
-        handler=_sync_manager_roles,
-        source="app.services.identity.roles.promote_all_line_managers",
     ),
     Job(
         key="leave.monthly_accruals",

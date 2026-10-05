@@ -7,7 +7,7 @@ confirmed either. Managers get no special view: a reportee's ID proof or medical
 certificate is not a manager's business.
 
 **Nobody manages their own record through HR's path.** An HR admin cannot upload
-to, edit or delete from their own vault; another HR admin has to. A warning
+to, edit or delete from their own vault; somebody else in HR has to. A warning
 letter quietly removed from one's own file is exactly the case this stops.
 
 **The file never trusts the client.** Size and type are checked server-side from
@@ -128,7 +128,7 @@ def _read(document: EmployeeDocument, employee: Employee, *, today: date) -> Doc
 def _refuse_own_record(user: User, employee_id: uuid.UUID) -> None:
     if user.employee_id is not None and employee_id == user.employee_id:
         raise permissions.forbidden(
-            "Documents on your own record are managed by another HR admin, not by you."
+            "Documents on your own record are managed by somebody else in HR, not by you."
         )
 
 

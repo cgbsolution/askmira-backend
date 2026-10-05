@@ -28,8 +28,8 @@ from app.services.notifications import dispatch as notification_service
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+HR_ROLES = (UserRole.ADMIN,)
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 
 class PolicyUpdate(BaseModel):

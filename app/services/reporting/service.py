@@ -31,7 +31,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import tenant_scoped
+from app.core import permissions
+from app.core.deps import has_direct_reports, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.reporting import (
@@ -147,8 +148,7 @@ async def build_scope(session: AsyncSession, user: User) -> Scope:
 
 
 def _role_of(user: User) -> str:
-    role = getattr(user, "role", None)
-    return role.value if hasattr(role, "value") else str(role)
+    return permissions.scope_role(user)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -712,6 +712,8 @@ async def run_schedule(
         if recipient is None or not recipient.is_active:
             skipped.append(f"{raw_id} (no longer an active user)")
             continue
+        # Loaded here rather than signed in, so their reach is worked out here.
+        recipient.has_reports = await has_direct_reports(session, recipient)
         if recipient.tenant_id != user.tenant_id:
             # Should be impossible; checked because a scheduled send to another
             # tenant is the single worst outcome available here.

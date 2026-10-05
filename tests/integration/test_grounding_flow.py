@@ -28,7 +28,7 @@ from app.models.grounding import (
 from app.models.user import User, UserRole
 from app.services.grounding import service as grounding
 from app.services.grounding.retrieval import FORBIDDEN_SOURCES, RetrievalError, ScopeKind
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import as_caller, requires_db
 
 pytestmark = [pytest.mark.asyncio, requires_db]
 
@@ -106,7 +106,9 @@ async def test_a_manager_reaches_their_reports_and_not_another_team(
         session, tenant, legal_entity, location, code="REP2", manager=report
     )
     other = await _employee(session, tenant, legal_entity, location, code="OTHER")
-    manager_user = await _user_for(session, tenant, boss, UserRole.MANAGER)
+    manager_user = await as_caller(
+        session, await _user_for(session, tenant, boss, UserRole.EMPLOYEE)
+    )
 
     scope = await grounding.resolve_scope(session, manager_user)
     assert scope.kind is ScopeKind.TEAM
@@ -156,7 +158,7 @@ async def test_a_manager_with_no_reports_still_reaches_themselves(
     session, tenant, legal_entity, location
 ):
     solo = await _employee(session, tenant, legal_entity, location, code="SOLO")
-    solo_user = await _user_for(session, tenant, solo, UserRole.MANAGER)
+    solo_user = await _user_for(session, tenant, solo, UserRole.EMPLOYEE)
 
     result = await grounding.retrieve(session, solo_user, sources=("employees",))
     assert {r.record_id for r in result.records} == {str(solo.id)}

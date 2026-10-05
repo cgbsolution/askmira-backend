@@ -538,10 +538,9 @@ def field_for(entity_key: str, field_key: str) -> Field:
 
 #: What each role may see. Roles above their own level see everything below it.
 _ROLE_CEILING: dict[str, Sensitivity] = {
-    "platform_admin": Sensitivity.PAYROLL_ONLY,
-    "tenant_admin": Sensitivity.PAYROLL_ONLY,
-    "hr_admin": Sensitivity.PAYROLL_ONLY,
-    "hr_ops": Sensitivity.HR_ONLY,
+    "super_admin": Sensitivity.PAYROLL_ONLY,
+    "admin": Sensitivity.PAYROLL_ONLY,
+    "sub_admin": Sensitivity.HR_ONLY,
     "manager": Sensitivity.PUBLIC,
     "employee": Sensitivity.PUBLIC,
 }

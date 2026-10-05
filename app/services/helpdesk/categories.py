@@ -1,7 +1,7 @@
 """Helpdesk categories: what employees can ask about, who owns it, and its SLA.
 
 Everyone reads the active list — it is the menu on the "Raise a ticket" form.
-Tenant and HR admins manage it. A category that has tickets is deactivated
+Admins manage it. A category that has tickets is deactivated
 rather than deleted, so an old ticket never loses the label it was raised under.
 """
 
@@ -125,7 +125,7 @@ async def _check_owner(session: AsyncSession, user: User, owner_user_id: uuid.UU
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{owner.full_name}'s login is deactivated. Pick someone who can sign in.",
         )
-    if owner.role is UserRole.PLATFORM_ADMIN:
+    if owner.role is UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Pick somebody in your organisation to own this category.",
@@ -173,7 +173,7 @@ async def list_categories(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Mutations (tenant and HR admins; the router gates the role)
+# Mutations (admins; the router gates the role)
 # ═══════════════════════════════════════════════════════════════════════════
 
 

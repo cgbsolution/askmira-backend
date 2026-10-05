@@ -33,8 +33,8 @@ from app.services.payroll import payslips as payslip_service
 from app.services.payroll import rule_sets as rule_set_service
 from app.services.payroll import run as run_service
 
-PAYROLL_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+PAYROLL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 router = APIRouter(
     prefix="/payroll",

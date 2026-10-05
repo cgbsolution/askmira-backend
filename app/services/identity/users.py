@@ -3,17 +3,16 @@
 The escalation rules, all enforced here and all audited as PERMISSION_CHANGE:
 
 - **Nobody changes their own role**, and nobody deactivates themselves.
-- **Nobody grants `platform_admin`.** It is ours, not a customer's, and no path
+- **Nobody grants `super_admin`.** It is ours, not a customer's, and no path
   in the product creates one.
-- **Only a tenant admin may grant `tenant_admin`**, and only a tenant admin may
-  change or deactivate somebody who already is one — an HR admin cannot demote
-  the people above them.
-- A platform admin's login is never managed from inside a workspace.
+- **Only an admin manages logins.** The routes are admin-only, so a sub-admin
+  can neither grant a role nor demote the people above them.
+- A super admin's login is never managed from inside a workspace.
 - A role change or deactivation bumps `tokens_valid_from`, so the person's
   existing sessions end at once instead of carrying the old role until expiry.
 - The designated break-glass account cannot be demoted or deactivated while it
   is designated; a workspace whose SSO fails must still have a way in.
-- The last active tenant admin cannot be demoted or deactivated.
+- The last active admin cannot be demoted or deactivated.
 """
 
 from __future__ import annotations
@@ -43,7 +42,6 @@ from app.schemas.platform_admin import (
     TenantSettingsUpdate,
 )
 from app.services import audit
-from app.services.identity.roles import ensure_manager_role
 
 __all__ = [
     "create_user",
@@ -62,10 +60,6 @@ def _forbidden(detail: str) -> HTTPException:
 
 def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-
-
-def _is_tenant_admin(user: User) -> bool:
-    return user.role in (UserRole.TENANT_ADMIN, UserRole.PLATFORM_ADMIN)
 
 
 async def _tenant(session: AsyncSession, user: User) -> Tenant:
@@ -101,17 +95,17 @@ async def _target(session: AsyncSession, user: User, user_id: uuid.UUID) -> User
     if target is None:
         # Another tenant's login is not found, not forbidden.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if target.role is UserRole.PLATFORM_ADMIN:
-        raise _forbidden("A platform administrator's login is not managed from a workspace.")
+    if target.role is UserRole.SUPER_ADMIN:
+        raise _forbidden("A super admin's login is not managed from a workspace.")
     return target
 
 
-async def _active_tenant_admins(session: AsyncSession, user: User) -> int:
+async def _active_admins(session: AsyncSession, user: User) -> int:
     return int(
         await session.scalar(
             tenant_scoped(
                 select(func.count(User.id)).where(
-                    User.role == UserRole.TENANT_ADMIN, User.is_active.is_(True)
+                    User.role == UserRole.ADMIN, User.is_active.is_(True)
                 ),
                 User,
                 user,
@@ -119,25 +113,6 @@ async def _active_tenant_admins(session: AsyncSession, user: User) -> int:
         )
         or 0
     )
-
-
-async def _promote_if_manager(
-    session: AsyncSession, user: User, emp: Employee | None, request: Request | None
-) -> None:
-    """A login linked to someone with direct reports gets the manager role now."""
-    if emp is None:
-        return
-    has_reports = await session.scalar(
-        tenant_scoped(
-            select(Employee.id).where(
-                Employee.manager_id == emp.id, Employee.deleted_at.is_(None)
-            ).limit(1),
-            Employee,
-            user,
-        )
-    )
-    if has_reports is not None:
-        await ensure_manager_role(session, user, emp.id, request=request)
 
 
 # ── Listing and creating ────────────────────────────────────────────────────
@@ -150,7 +125,7 @@ async def list_users(session: AsyncSession, user: User) -> list[ManagedUserRead]
             tenant_scoped(
                 select(User, Employee)
                 .outerjoin(Employee, Employee.id == User.employee_id)
-                .where(User.role != UserRole.PLATFORM_ADMIN)
+                .where(User.role != UserRole.SUPER_ADMIN)
                 .order_by(User.full_name),
                 User,
                 user,
@@ -169,7 +144,7 @@ async def create_user(
 ) -> ManagedUserCreated:
     """Create a login, optionally linked to an employee, with a one-time password."""
     tenant = await _tenant(session, user)
-    _check_grant(user, payload.role)
+    _check_grant(payload.role)
 
     email = payload.email.lower()
     clash = await session.scalar(
@@ -222,7 +197,6 @@ async def create_user(
         summary=f"Created a {payload.role.value} login for {email}",
         request=request,
     )
-    await _promote_if_manager(session, user, emp, request)
     await session.commit()
     await session.refresh(target)
     return ManagedUserCreated(
@@ -284,7 +258,6 @@ async def link_employee(
         request=request,
     )
     await session.flush()
-    await _promote_if_manager(session, user, emp, request)
     await session.commit()
     await session.refresh(target)
     return _read(target, user, tenant, emp)
@@ -306,9 +279,6 @@ async def issue_temporary_password(
     target = await _target(session, user, user_id)
     if target.id == user.id:
         raise _forbidden("Change your own password from your profile instead.")
-    if target.role is UserRole.TENANT_ADMIN and not _is_tenant_admin(user):
-        raise _forbidden("Only a tenant admin can reset another tenant admin's password.")
-
     temporary = secrets.token_urlsafe(12) + "-Aa1"
     target.password_hash = hash_password(temporary)
     target.must_change_password = True
@@ -332,11 +302,9 @@ async def issue_temporary_password(
     return ManagedUserCreated(user=_read(target, user, tenant, emp), temporary_password=temporary)
 
 
-def _check_grant(user: User, role: UserRole) -> None:
-    if role is UserRole.PLATFORM_ADMIN:
-        raise _forbidden("The platform administrator role cannot be granted from a workspace.")
-    if role is UserRole.TENANT_ADMIN and not _is_tenant_admin(user):
-        raise _forbidden("Only a workspace owner (tenant admin) can grant that role.")
+def _check_grant(role: UserRole) -> None:
+    if role is UserRole.SUPER_ADMIN:
+        raise _forbidden("The super admin role cannot be granted from a workspace.")
 
 
 # ── Changing roles and access ───────────────────────────────────────────────
@@ -354,19 +322,14 @@ async def set_role(
     if user_id == user.id:
         raise _forbidden("You cannot change your own role. Ask another administrator.")
     target = await _target(session, user, user_id)
-    _check_grant(user, role)
-    if target.role is UserRole.TENANT_ADMIN and not _is_tenant_admin(user):
-        raise _forbidden("Only a tenant admin can change another tenant admin's role.")
+    _check_grant(role)
     if target.role is role:
         raise _bad_request(f"This person is already {role.value}.")
 
     tenant = await _tenant(session, user)
-    if target.role is UserRole.TENANT_ADMIN and await _active_tenant_admins(session, user) <= 1:
-        raise _bad_request("This is the last tenant admin; the workspace needs one.")
-    if target.email.lower() == _break_glass_email(tenant) and role not in (
-        UserRole.TENANT_ADMIN,
-        UserRole.HR_ADMIN,
-    ):
+    if target.role is UserRole.ADMIN and await _active_admins(session, user) <= 1:
+        raise _bad_request("This is the last admin; the workspace needs one.")
+    if target.email.lower() == _break_glass_email(tenant) and role is not UserRole.ADMIN:
         raise _bad_request(
             "This is the break-glass account and must stay an administrator. Designate "
             "another break-glass account first."
@@ -404,8 +367,6 @@ async def set_active(
     if user_id == user.id:
         raise _forbidden("You cannot deactivate or reactivate your own login.")
     target = await _target(session, user, user_id)
-    if target.role is UserRole.TENANT_ADMIN and not _is_tenant_admin(user):
-        raise _forbidden("Only a tenant admin can change another tenant admin's access.")
     if target.is_active is active:
         raise _bad_request(f"This login is already {'active' if active else 'deactivated'}.")
 
@@ -415,8 +376,8 @@ async def set_active(
             raise _bad_request(
                 "This is the break-glass account. Designate another one before deactivating it."
             )
-        if target.role is UserRole.TENANT_ADMIN and await _active_tenant_admins(session, user) <= 1:
-            raise _bad_request("This is the last active tenant admin; the workspace needs one.")
+        if target.role is UserRole.ADMIN and await _active_admins(session, user) <= 1:
+            raise _bad_request("This is the last active admin; the workspace needs one.")
 
     target.is_active = active
     target.tokens_valid_from = datetime.now(UTC)

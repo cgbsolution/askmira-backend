@@ -27,60 +27,64 @@ async def _change(client, actor, target, role):
 
 
 async def test_nobody_changes_their_own_role(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
-    response = await _change(client, owner, owner, "hr_ops")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
+    response = await _change(client, owner, owner, "sub_admin")
     assert response.status_code == 403
     assert "your own role" in response.json()["detail"]
 
 
-async def test_nobody_grants_platform_admin(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+async def test_nobody_grants_super_admin(client, session, tenant):
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     target = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
-    response = await _change(client, owner, target, "platform_admin")
+    response = await _change(client, owner, target, "super_admin")
     assert response.status_code == 403
 
     created = await client.post(
         f"{API}/users",
         json={"email": "new.person@acme-demo.com", "full_name": "New Person",
-              "role": "platform_admin"},
+              "role": "super_admin"},
         headers=bearer(owner),
     )
     assert created.status_code == 403
 
 
-async def test_only_a_tenant_admin_grants_or_changes_tenant_admin(client, session, tenant):
-    hr_admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Hr Admin")
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+async def test_a_sub_admin_cannot_grant_or_change_roles(client, session, tenant):
+    sub_admin = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Sub Admin")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     target = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
 
-    assert (await _change(client, hr_admin, target, "tenant_admin")).status_code == 403
-    assert (await _change(client, hr_admin, owner, "employee")).status_code == 403
+    assert (await client.get(f"{API}/users", headers=bearer(sub_admin))).status_code == 403
+    assert (await _change(client, sub_admin, target, "admin")).status_code == 403
+    assert (await _change(client, sub_admin, owner, "employee")).status_code == 403
     deactivate = await client.patch(
         f"{API}/users/{owner.id}/active",
         json={"active": False, "reason": "Testing"},
-        headers=bearer(hr_admin),
+        headers=bearer(sub_admin),
     )
     assert deactivate.status_code == 403
 
-    # An HR admin may still manage ordinary roles.
-    assert (await _change(client, hr_admin, target, "manager")).status_code == 200
+    # An admin may make somebody else an admin.
+    assert (await _change(client, owner, target, "admin")).status_code == 200
 
 
 async def test_an_employee_cannot_reach_user_administration(client, session, tenant):
     employee = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
     other = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp Two")
     assert (await client.get(f"{API}/users", headers=bearer(employee))).status_code == 403
-    assert (await _change(client, employee, other, "hr_admin")).status_code == 403
+    assert (await _change(client, employee, other, "admin")).status_code == 403
 
 
 async def test_a_role_change_ends_sessions_and_is_audited(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     target = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
     old_token = bearer(target)
+    # The cutoff is in whole seconds; a change in the same second as the token
+    # would not end it.
+    await asyncio.sleep(1.1)
 
-    response = await _change(client, owner, target, "hr_ops")
+    response = await _change(client, owner, target, "sub_admin")
     assert response.status_code == 200
-    assert response.json()["role"] == "hr_ops"
+    assert response.json()["role"] == "sub_admin"
 
     await session.refresh(target)
     assert target.tokens_valid_from is not None
@@ -93,24 +97,24 @@ async def test_a_role_change_ends_sessions_and_is_audited(client, session, tenan
         )
     )
     assert entry is not None
-    assert entry.changes["role"] == {"from": "employee", "to": "hr_ops"}
+    assert entry.changes["role"] == {"from": "employee", "to": "sub_admin"}
 
 
 async def test_another_tenants_user_is_not_found(client, session, tenant, other_tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     foreign = await make_person(session, other_tenant, role=UserRole.EMPLOYEE, name="Far Away")
-    assert (await _change(client, owner, foreign, "manager")).status_code == 404
+    assert (await _change(client, owner, foreign, "sub_admin")).status_code == 404
 
 
-async def test_the_last_tenant_admin_cannot_be_removed(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
-    other = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner Two")
-    assert (await _change(client, owner, other, "hr_admin")).status_code == 200
+async def test_the_last_admin_cannot_be_removed(client, session, tenant):
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
+    other = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner Two")
+    assert (await _change(client, owner, other, "sub_admin")).status_code == 200
     # A token minted in the same second as the demotion is refused; wait it out.
     await asyncio.sleep(1.1)
-    assert (await _change(client, other, owner, "hr_admin")).status_code == 403
-    # Now the only tenant admin, the owner cannot step down either.
-    assert (await _change(client, owner, owner, "hr_admin")).status_code == 403
+    assert (await _change(client, other, owner, "sub_admin")).status_code == 403
+    # Now the only admin, the owner cannot step down either.
+    assert (await _change(client, owner, owner, "sub_admin")).status_code == 403
     deactivate = await client.patch(
         f"{API}/users/{owner.id}/active",
         json={"active": False, "reason": "Testing"},
@@ -120,7 +124,7 @@ async def test_the_last_tenant_admin_cannot_be_removed(client, session, tenant):
 
 
 async def test_creating_a_login_returns_a_one_time_password_only(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     employee = await make_person(
         session, tenant, role=UserRole.EMPLOYEE, name="No Login", with_employee=True
     )
@@ -151,7 +155,7 @@ async def test_creating_a_login_returns_a_one_time_password_only(client, session
 
 
 async def test_module_toggle_is_enforced_and_audited(client, session, tenant: Tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     employee = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
 
     assert (await client.get("/api/v1/leave/types", headers=bearer(employee))).status_code == 200

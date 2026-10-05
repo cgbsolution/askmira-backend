@@ -30,7 +30,7 @@ it for every future reporter, not just the one whose case leaked.
 
 So `FORBIDDEN_SOURCES` is checked in `assert_retrievable`, which raises. There is
 no permission level that unlocks it and no parameter that overrides it: a
-platform admin debugging a support ticket must not be able to ask an agent about
+super admin debugging a support ticket must not be able to ask an agent about
 a Your Voice case either.
 
 **The Your Voice module is not built yet** (it is a later slice). The exclusion
@@ -157,11 +157,11 @@ class RetrievalScope:
 
 #: Which coarse role gets which scope. One table, so "what can a manager reach"
 #: is answerable by reading four lines rather than by tracing a query builder.
+#: `manager` is an employee with a direct report (`permissions.scope_role`).
 _ROLE_SCOPE: dict[str, ScopeKind] = {
-    "platform_admin": ScopeKind.TENANT,
-    "tenant_admin": ScopeKind.TENANT,
-    "hr_admin": ScopeKind.TENANT,
-    "hr_ops": ScopeKind.TENANT,
+    "super_admin": ScopeKind.TENANT,
+    "admin": ScopeKind.TENANT,
+    "sub_admin": ScopeKind.TENANT,
     "manager": ScopeKind.TEAM,
     "employee": ScopeKind.SELF,
 }

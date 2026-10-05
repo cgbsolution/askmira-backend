@@ -22,6 +22,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.grounding import (
@@ -112,7 +113,7 @@ async def resolve_scope(session: AsyncSession, user: User) -> RetrievalScope:
             frontier = {uuid.UUID(r) for r in new}
 
     return scope_for(
-        role=user.role.value,
+        role=permissions.scope_role(user),
         tenant_id=str(user.tenant_id),
         requester_employee_id=str(user.employee_id) if user.employee_id else None,
         reachable_employee_ids=frozenset(reachable),

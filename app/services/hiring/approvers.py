@@ -1,7 +1,8 @@
 """Who may sign a step in a requisition or offer approval chain.
 
-A chain step names a role — `hiring_manager`, `tenant_admin`, sometimes a label
-like `finance_head` that this product has no user role for. Until now the route
+A chain step names a role — `admin`, `sub_admin` — or a relationship —
+`manager`, `hiring_manager` — and sometimes a label like `finance_head` that
+this product has no user role for. Until now the route
 let any manager or HR user decide any step, which made the chain a list of
 names rather than a list of signatures.
 
@@ -10,10 +11,10 @@ Two rules, stated once:
 - **Nobody decides their own.** The person who raised a requisition or drafted
   an offer never approves it, whatever their role. That is the entire value of
   a second signature.
-- **The step's role decides who may sign it.** An admin role can sign for the
-  roles beneath it; a label with no matching user role is signed by a tenant or
-  HR admin on its behalf, and the response says so rather than pretending the
-  named person signed.
+- **The step's role decides who may sign it.** An admin can sign for the roles
+  beneath it; a label with no matching user role is signed by an admin on its
+  behalf, and the response says so rather than pretending the named person
+  signed.
 
 Pure.
 """
@@ -24,9 +25,8 @@ from dataclasses import dataclass
 
 __all__ = ["StepAuthority", "can_decide_step"]
 
-_HR = frozenset({"tenant_admin", "hr_admin", "hr_ops"})
-_ADMIN = frozenset({"tenant_admin", "hr_admin"})
-_KNOWN = frozenset({"hiring_manager", "manager", "hr_ops", "hr_admin", "tenant_admin"})
+_HR = frozenset({"admin", "sub_admin"})
+_KNOWN = frozenset({"hiring_manager", "manager", "sub_admin", "admin"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,7 @@ def can_decide_step(
     *,
     approver_role: str,
     user_role: str,
+    has_reports: bool,
     is_hiring_manager: bool,
     is_originator: bool,
 ) -> StepAuthority:
@@ -57,27 +58,24 @@ def can_decide_step(
 
     step = (approver_role or "").strip().lower()
     role = (user_role or "").strip().lower()
-    if role == "platform_admin":
+    if role == "super_admin":
         return StepAuthority(True, None, "")
 
     if step == "hiring_manager":
-        allowed = role in _HR or (is_hiring_manager and role == "manager")
+        allowed = role in _HR or is_hiring_manager
         needed = "the requisition's hiring manager or HR"
     elif step == "manager":
-        allowed = role in _HR or role == "manager"
+        allowed = role in _HR or has_reports
         needed = "a manager or HR"
-    elif step == "hr_ops":
+    elif step == "sub_admin":
         allowed = role in _HR
         needed = "HR"
-    elif step == "hr_admin":
-        allowed = role in _ADMIN
-        needed = "an HR admin or the tenant admin"
-    elif step == "tenant_admin":
-        allowed = role == "tenant_admin"
-        needed = "the tenant admin"
+    elif step == "admin":
+        allowed = role == "admin"
+        needed = "an admin"
     else:
-        allowed = role in _ADMIN
-        needed = "a tenant or HR admin, signing on behalf of this role"
+        allowed = role == "admin"
+        needed = "an admin, signing on behalf of this role"
         if allowed:
             return StepAuthority(
                 allowed=True,

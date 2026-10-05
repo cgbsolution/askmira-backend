@@ -29,7 +29,7 @@ from app.services.exit_benefits import service as exit_service
 
 router = APIRouter(tags=["exit-benefits"])
 
-PAYROLL_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
+PAYROLL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ async def get_config(user: CurrentUser, session: DbSession) -> GratuityConfigRea
 @router.put(
     "/gratuity/config",
     response_model=GratuityConfigRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def upsert_config(
     payload: GratuityConfigUpsert, user: CurrentUser, session: DbSession, request: Request
@@ -276,7 +276,7 @@ async def upsert_config(
 @router.post(
     "/gratuity/config/approve",
     response_model=GratuityConfigRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def approve_config(
     user: CurrentUser, session: DbSession, request: Request
@@ -447,7 +447,7 @@ async def list_policies(user: CurrentUser, session: DbSession) -> list[Encashmen
 @router.put(
     "/encashment/policies",
     response_model=EncashmentPolicyRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def upsert_policy(
     payload: EncashmentPolicyUpsert, user: CurrentUser, session: DbSession, request: Request
@@ -532,7 +532,7 @@ async def list_encashments(
 @router.patch(
     "/encashment/requests/{encashment_id}",
     response_model=EncashmentRead,
-    dependencies=[Depends(require_roles(*PAYROLL_ROLES, UserRole.MANAGER))],
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES, line_managers=True))],
 )
 async def decide_encashment(
     encashment_id: uuid.UUID,

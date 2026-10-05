@@ -45,6 +45,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.bi import (
@@ -95,7 +96,7 @@ def schema_for_role(user: User) -> dict[str, Any]:
     is documented the surface they actually have instead of one that
     half-fails at export time.
     """
-    return exposed_schema.schema_document(role=user.role.value)
+    return exposed_schema.schema_document(role=permissions.scope_role(user))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

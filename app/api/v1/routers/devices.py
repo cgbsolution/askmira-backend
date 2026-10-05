@@ -1,7 +1,7 @@
 """Biometric device endpoints (slice 04, part C).
 
-Administration is HR-gated; registering, editing and rotating a token need a
-tenant or HR admin. The push endpoint has no user session: the device's token
+Administration is HR-gated; registering, editing and rotating a token need an
+admin. The push endpoint has no user session: the device's token
 establishes the tenant, and only a hash of it is stored.
 
 Pull ingestion (polling devices or an on-prem agent on a schedule) is not built
@@ -32,8 +32,8 @@ from app.services.identity import devices as device_service
 
 router = APIRouter(tags=["devices"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 def _with_token(device, token: str) -> DeviceWithToken:

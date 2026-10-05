@@ -33,11 +33,10 @@ from app.services.filings import support
 
 router = APIRouter(tags=["exit-workflow"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 # Exits and clearance are reached by managers too; which exit is theirs is
 # decided per record in the service.
-MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -422,7 +421,7 @@ async def notice_recovery(payload: NoticeRecoveryRequest) -> dict[str, str]:
     "/exits",
     response_model=ExitRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def create_exit(
     payload: ExitCreate, user: CurrentUser, session: DbSession, request: Request
@@ -489,7 +488,7 @@ async def withdraw(
 @router.post(
     "/exits/{exit_id}/accept",
     response_model=ExitRead,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def accept(
     exit_id: uuid.UUID, payload: ResignationAccept, user: CurrentUser, session: DbSession,
@@ -511,7 +510,7 @@ async def accept(
 @router.get(
     "/exits",
     response_model=list[ExitRead],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_exits(
     user: CurrentUser, session: DbSession, exit_status: ExitStatus | None = None
@@ -526,7 +525,7 @@ async def list_exits(
 @router.get(
     "/exits/{exit_id}",
     response_model=ExitRead,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def get_exit(exit_id: uuid.UUID, user: CurrentUser, session: DbSession) -> ExitRead:
     record = await operations.visible_exit(session, user, exit_id)

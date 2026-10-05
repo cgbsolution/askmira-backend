@@ -33,7 +33,7 @@ from app.services.employee_profile import PHOTO_MAX_BYTES
 
 router = APIRouter(prefix="/employees", tags=["core-hr"])
 
-HR_WRITE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
+HR_WRITE_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 HR_ONLY = [Depends(require_roles(*HR_WRITE_ROLES))]
 
 
@@ -318,7 +318,7 @@ async def update_employee(
     "/{employee_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def deactivate_employee(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request

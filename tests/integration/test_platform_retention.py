@@ -33,7 +33,7 @@ OLD = datetime(2020, 1, 15, tzinfo=UTC)
 
 
 async def _setup(session: AsyncSession, tenant: Tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     kept = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Held Person")
     gone = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Free Person")
     session.add(

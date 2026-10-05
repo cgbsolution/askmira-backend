@@ -60,7 +60,7 @@ async def _setup(session, tenant, legal_entity, location):
         session, tenant, legal_entity, location, code="EMP2", role=UserRole.EMPLOYEE
     )
     payroll, payroll_user = await person(
-        session, tenant, legal_entity, location, code="PAY1", role=UserRole.HR_OPS
+        session, tenant, legal_entity, location, code="PAY1", role=UserRole.SUB_ADMIN
     )
     return owner, owner_user, colleague_user, payroll, payroll_user
 

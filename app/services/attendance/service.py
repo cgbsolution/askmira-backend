@@ -990,7 +990,7 @@ async def _approver_user_ids(
             await session.scalars(
                 tenant_scoped(
                     select(User.id).where(
-                        User.role.in_([UserRole.HR_ADMIN, UserRole.HR_OPS]),
+                        User.role.in_([UserRole.ADMIN, UserRole.SUB_ADMIN]),
                         User.is_active.is_(True),
                         or_(User.employee_id.is_(None), User.employee_id != employee_id),
                     ),

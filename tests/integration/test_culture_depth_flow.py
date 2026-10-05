@@ -76,7 +76,7 @@ async def make_juror(session, tenant, label: str) -> User:
         email=f"{label}@acme.test",
         password_hash="not-a-real-hash",
         full_name=label.title(),
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
     )
     session.add(user)
@@ -92,7 +92,7 @@ async def make_programme(session, tenant) -> AwardProgramme:
         cadence=AwardCadenceEnum.QUARTERLY,
         categories=[{"key": "impact", "name": "Impact"}],
         criteria=[{"key": "impact", "name": "Impact", "weight": 1}],
-        jury_roles=["hr_admin"],
+        jury_roles=["admin"],
     )
     session.add(programme)
     await session.commit()

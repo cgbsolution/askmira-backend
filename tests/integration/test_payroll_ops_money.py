@@ -80,7 +80,7 @@ async def _released_batch(session, tenant, legal_entity, employee, hr_user):
         value_date=date(2026, 6, 30),
     )
     await session.commit()
-    checker = await plain_user(session, tenant, email="checker@acme.test", role=UserRole.HR_ADMIN)
+    checker = await plain_user(session, tenant, email="checker@acme.test", role=UserRole.ADMIN)
     await disbursement_service.approve_batch(
         session, checker, batch_id=batch.id, file_hash=batch.file_hash
     )
@@ -92,7 +92,7 @@ async def _released_batch(session, tenant, legal_entity, employee, hr_user):
 async def test_a_failed_credit_notifies_hr_ops_in_the_same_transaction(
     session: AsyncSession, tenant, legal_entity, employee, hr_user
 ) -> None:
-    ops = await plain_user(session, tenant, email="ops@acme.test", role=UserRole.HR_OPS)
+    ops = await plain_user(session, tenant, email="ops@acme.test", role=UserRole.SUB_ADMIN)
     batch = await _released_batch(session, tenant, legal_entity, employee, hr_user)
 
     outcome = await disbursement_service.import_bank_response(
@@ -118,7 +118,7 @@ async def test_a_failed_credit_notifies_hr_ops_in_the_same_transaction(
 async def test_a_clean_reconciliation_notifies_nobody(
     session: AsyncSession, tenant, legal_entity, employee, hr_user
 ) -> None:
-    await plain_user(session, tenant, email="ops@acme.test", role=UserRole.HR_OPS)
+    await plain_user(session, tenant, email="ops@acme.test", role=UserRole.SUB_ADMIN)
     batch = await _released_batch(session, tenant, legal_entity, employee, hr_user)
     outcome = await disbursement_service.reconcile(
         session, hr_user, batch_id=batch.id,
@@ -229,7 +229,7 @@ async def test_the_person_who_computed_arrears_cannot_approve_them(
         await arrears_service.approve_batch(session, hr_user, batch_id=batch.id)
     assert exc.value.status_code == 403
 
-    checker = await plain_user(session, tenant, email="c@acme.test", role=UserRole.HR_ADMIN)
+    checker = await plain_user(session, tenant, email="c@acme.test", role=UserRole.ADMIN)
     approved = await arrears_service.approve_batch(session, checker, batch_id=batch.id)
     assert approved.status is ArrearStatus.APPROVED
 
@@ -238,7 +238,7 @@ async def test_nobody_approves_arrears_that_pay_themselves(
     session: AsyncSession, tenant, legal_entity, location, hr_user
 ) -> None:
     approver_employee, approver = await person(
-        session, tenant, legal_entity, location, code="ADM1", role=UserRole.HR_ADMIN
+        session, tenant, legal_entity, location, code="ADM1", role=UserRole.ADMIN
     )
     batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
                          employee_id=approver_employee.id)
@@ -252,8 +252,8 @@ async def test_above_the_threshold_two_different_approvers_are_needed(
 ) -> None:
     batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
                          employee_id=employee.id, requires_additional_approval=True)
-    first = await plain_user(session, tenant, email="a1@acme.test", role=UserRole.HR_ADMIN)
-    second = await plain_user(session, tenant, email="a2@acme.test", role=UserRole.TENANT_ADMIN)
+    first = await plain_user(session, tenant, email="a1@acme.test", role=UserRole.ADMIN)
+    second = await plain_user(session, tenant, email="a2@acme.test", role=UserRole.ADMIN)
 
     after_first = await arrears_service.approve_batch(session, first, batch_id=batch.id)
     await session.commit()
@@ -275,7 +275,7 @@ async def test_the_payroll_run_reads_approved_arrears_per_component_and_marks_th
 ) -> None:
     batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
                          employee_id=employee.id)
-    checker = await plain_user(session, tenant, email="c@acme.test", role=UserRole.HR_ADMIN)
+    checker = await plain_user(session, tenant, email="c@acme.test", role=UserRole.ADMIN)
     await arrears_service.approve_batch(session, checker, batch_id=batch.id)
     await session.commit()
 

@@ -485,7 +485,7 @@ async def _checker(session: AsyncSession, tenant: Tenant) -> User:
     """
     user = User(
         tenant_id=tenant.id, email="checker@acme.test", password_hash="not-a-real-hash",
-        full_name="Ravi Checker", role=UserRole.HR_ADMIN, is_active=True,
+        full_name="Ravi Checker", role=UserRole.ADMIN, is_active=True,
     )
     session.add(user)
     await session.commit()

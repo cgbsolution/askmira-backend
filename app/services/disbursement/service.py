@@ -832,7 +832,7 @@ NOTICE_TEMPLATES = {
 }
 
 #: Who hears about a failed credit. HR Ops own the fix; HR admins own the money.
-ALERT_ROLES = {UserRole.HR_OPS, UserRole.HR_ADMIN}
+ALERT_ROLES = {UserRole.SUB_ADMIN, UserRole.ADMIN}
 
 
 async def _notify_failed_credits(
@@ -843,7 +843,7 @@ async def _notify_failed_credits(
     recipients = await support.active_user_ids(session, user.tenant_id, roles=ALERT_ROLES)
     if not recipients:
         recipients = await support.active_user_ids(
-            session, user.tenant_id, roles={UserRole.TENANT_ADMIN}
+            session, user.tenant_id, roles={UserRole.ADMIN}
         )
     if not recipients:
         return 0

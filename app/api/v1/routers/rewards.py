@@ -47,8 +47,8 @@ from app.services.rewards import tax as tax_engine
 
 router = APIRouter(tags=["rewards"])
 
-FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+FINANCE_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Posture ─────────────────────────────────────────────────────────────────
@@ -216,7 +216,10 @@ async def award_points(
     in the response so it appears at the point of award.
     """
     permissions.require_role(
-        user, permissions.MANAGER_ROLES, detail="Points are awarded by managers and HR."
+        user,
+        permissions.HR_ROLES,
+        line_managers=True,
+        detail="Points are awarded by managers and HR.",
     )
     if body.employee_id == user.employee_id:
         raise permissions.forbidden("You cannot award points to yourself.")

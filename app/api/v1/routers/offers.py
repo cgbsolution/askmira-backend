@@ -24,16 +24,11 @@ from app.services.hiring import requisitions as requisition_service
 
 router = APIRouter(tags=["offers"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-# Anyone who might be a step in a chain. Which of them may decide *this* one is
-# settled by the chain and `approvers.can_decide_step`, not by the route.
-APPROVER_ROLES = (
-    UserRole.TENANT_ADMIN,
-    UserRole.HR_ADMIN,
-    UserRole.HR_OPS,
-    UserRole.MANAGER,
-)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
+# Anyone who might be a step in a chain: HR, and anybody who manages people.
+# Which of them may decide *this* one is settled by the chain and
+# `approvers.can_decide_step`, not by the route.
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -220,7 +215,7 @@ async def validate_chain_rules(
 
 @router.post(
     "/hiring/requisitions/{requisition_id}/submit",
-    dependencies=[Depends(require_roles(*APPROVER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def submit_requisition(
     requisition_id: uuid.UUID,
@@ -243,7 +238,7 @@ async def submit_requisition(
 
 @router.post(
     "/hiring/requisitions/{requisition_id}/decide",
-    dependencies=[Depends(require_roles(*APPROVER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def decide_requisition(
     requisition_id: uuid.UUID,
@@ -331,7 +326,7 @@ async def get_offer(offer_id: uuid.UUID, user: CurrentUser, session: DbSession) 
 
 @router.get(
     "/offers/{offer_id}/approval",
-    dependencies=[Depends(require_roles(*APPROVER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def offer_approval_view(
     offer_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -379,7 +374,8 @@ async def submit_offer(
 
 
 @router.post(
-    "/offers/{offer_id}/decide", dependencies=[Depends(require_roles(*APPROVER_ROLES))]
+    "/offers/{offer_id}/decide",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def decide_offer(
     offer_id: uuid.UUID,

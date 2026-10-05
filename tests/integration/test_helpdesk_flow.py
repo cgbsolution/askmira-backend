@@ -48,10 +48,10 @@ async def people(session: AsyncSession, tenant: Tenant) -> dict[str, User]:
     return {
         "anita": await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Anita Rao"),
         "bala": await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Bala Iyer"),
-        "ops": await make_person(session, tenant, role=UserRole.HR_OPS, name="Hari Ops"),
-        "admin": await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin"),
+        "ops": await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops"),
+        "admin": await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin"),
         "officer": await make_person(
-            session, tenant, role=UserRole.MANAGER, name="Gita Officer"
+            session, tenant, role=UserRole.EMPLOYEE, name="Gita Officer"
         ),
     }
 

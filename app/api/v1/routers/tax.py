@@ -59,8 +59,8 @@ from app.services.tax.service import TaxWorkflowError
 
 router = APIRouter(prefix="/tax", tags=["tax"])
 
-PAYROLL_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+PAYROLL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 def _workflow_error(exc: TaxWorkflowError) -> HTTPException:

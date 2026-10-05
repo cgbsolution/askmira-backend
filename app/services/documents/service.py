@@ -40,7 +40,7 @@ from app.models.hiring import Candidate
 from app.models.letter_acknowledgement import LetterAcknowledgement
 from app.models.notifications import Channel, DigestMode
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.letters import (
     DraftPreviewRequest,
     LetterContentRead,
@@ -1143,7 +1143,7 @@ async def approve_letter(
         raise permissions.forbidden("A letter addressed to you needs somebody else's approval.")
     template = await get_template(session, user, letter.template_id)
     if template.approver_roles and user.role.value not in template.approver_roles and (
-        user.role.value != "platform_admin"
+        user.role is not UserRole.SUPER_ADMIN
     ):
         raise permissions.forbidden(
             "This template names who may approve it: "

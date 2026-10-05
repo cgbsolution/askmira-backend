@@ -57,7 +57,7 @@ async def make_connection(session, user, **kw):
         "entity_name": "fact_payslip",
         "destination": BiDestinationKind.OBJECT_STORAGE,
         "destination_ref": "s3://acme-bi/payslips/",
-        "export_role": "hr_admin",
+        "export_role": "admin",
     }
     body.update(kw)
     result = await bi.create_connection(session, user, **body)
@@ -103,7 +103,7 @@ async def make_contributor(session, *, code: str) -> tuple[Tenant, User]:
         email=f"hr@{code.lower()}.test",
         password_hash="not-a-real-hash",
         full_name=f"Admin {code}",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
     )
     session.add(person)
@@ -226,7 +226,7 @@ async def test_an_export_writes_its_audit_row_with_the_field_list(session, hr_us
     assert "net_pay" in run.field_names
     assert run.carries_payroll_data is True
     assert run.destination_ref == "s3://acme-bi/payslips/"
-    assert run.export_role == "hr_admin"
+    assert run.export_role == "admin"
     assert run.initiated_by_user_id == hr_user.id
     assert run.row_count == 3
 

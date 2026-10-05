@@ -143,7 +143,7 @@ async def _chain(session: AsyncSession, tenant: Tenant) -> None:
             for scope in (ApprovalScope.REQUISITION, ApprovalScope.OFFER)
             for sequence, role, lo, hi, over_band in (
                 (1, "hiring_manager", Decimal(0), Decimal("2000000"), False),
-                (2, "tenant_admin", Decimal("2000000"), None, False),
+                (2, "admin", Decimal("2000000"), None, False),
                 (3, "finance_head", Decimal(0), None, True),
             )
         ]
@@ -220,7 +220,7 @@ async def _approver(session: AsyncSession, tenant: Tenant) -> User:
         return existing
     person = User(
         tenant_id=tenant.id, email="admin@acme.test", password_hash="not-a-real-hash",
-        full_name="Kavya Iyer", role=UserRole.TENANT_ADMIN, is_active=True,
+        full_name="Kavya Iyer", role=UserRole.ADMIN, is_active=True,
     )
     session.add(person)
     await session.commit()
@@ -511,7 +511,7 @@ async def test_going_over_the_band_adds_the_finance_step(
     await session.commit()
 
     assert result["over_band"] is True
-    assert [step["role"] for step in result["chain"]] == ["tenant_admin", "finance_head"]
+    assert [step["role"] for step in result["chain"]] == ["admin", "finance_head"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

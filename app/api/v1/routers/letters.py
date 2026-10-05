@@ -41,7 +41,7 @@ from app.services.documents import service as letter_service
 router = APIRouter(tags=["documents"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 
 # ── Templates ───────────────────────────────────────────────────────────────

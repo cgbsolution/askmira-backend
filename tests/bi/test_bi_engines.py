@@ -71,7 +71,7 @@ def test_sensitivity_is_not_restated_in_the_exposed_schema():
 
 def test_a_role_sees_the_same_fields_it_would_see_in_a_report():
     for entity_name, entity in exposed_schema.EXPOSED_SCHEMA.items():
-        for role in ("employee", "manager", "hr_ops", "hr_admin"):
+        for role in ("employee", "manager", "sub_admin", "admin"):
             visible = exposed_schema.visible_columns(entity_name, role)
             for field in visible:
                 assert may_see(role, field.sensitivity)
@@ -137,7 +137,7 @@ def test_leave_reason_is_not_exposed_at_all():
 def plan(**kw):
     body = {
         "entity_name": "fact_payslip",
-        "role": "hr_admin",
+        "role": "admin",
         "kind": export.ExportKind.INCREMENTAL,
         "destination": export.Destination.OBJECT_STORAGE,
         "destination_ref": "s3://acme-bi/",
@@ -190,7 +190,7 @@ def test_an_export_of_no_visible_fields_is_refused():
 def test_the_plan_flags_whether_payroll_data_leaves():
     """"Did salary leave the building" is answered by a boolean at the top of
     the audit row, not by reading forty field names."""
-    assert plan(role="hr_admin").carries_payroll_data is True
+    assert plan(role="admin").carries_payroll_data is True
     assert plan(role="manager").carries_payroll_data is False
 
 
@@ -285,7 +285,7 @@ def test_the_audit_row_names_the_destination_and_the_role():
     result = export.extract_rows(plan(), source_rows=ROWS)
     audit = export.audit_payload(result, at=datetime(2026, 9, 10, tzinfo=UTC))
     assert audit["destination_ref"] == "s3://acme-bi/"
-    assert audit["role"] == "hr_admin"
+    assert audit["role"] == "admin"
     assert audit["kind"] == "incremental"
 
 

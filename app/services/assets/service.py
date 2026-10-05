@@ -2,7 +2,7 @@
 
 Who may do what, enforced here rather than trusted from the router:
 
-- **HR** (tenant admin, HR admin, HR ops) keeps the register: categories,
+- **HR** (admin, sub-admin) keeps the register: categories,
   assets, hand-overs, returns and status changes. Nobody records a custody
   change on an asset they hold themselves — somebody else receives it back.
 - **Everybody** sees what they hold, acknowledges receipt (only they can — an
@@ -47,7 +47,7 @@ from app.models.employee import Employee, EmploymentStatus
 from app.models.exit_workflow import ClearanceItem, ClearanceStatus
 from app.models.notifications import Channel, DigestMode
 from app.models.org import Location
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import audit
 from app.services.assets import exit_hooks
 from app.services.assets.depreciation import book_value
@@ -121,11 +121,6 @@ register_event(
     "{asset_name} ({asset_tag}) is due to be returned on {due_date}. Hand it to the IT or "
     "admin team, or ask HR to extend the date.",
     preferences=_NOW,
-)
-
-#: Logins that may own an asset clearance item: the exit workflow's own set.
-CUSTODIAN_ROLES = frozenset(
-    {UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS, UserRole.MANAGER}
 )
 
 #: Manual status changes, from → allowed targets. `assigned` changes only by
@@ -359,14 +354,19 @@ async def _check_custodian(
 ) -> None:
     if custodian_user_id is None:
         return
+    # The exit workflow's own rule for who may own a clearance item.
     custodian = await session.scalar(
         tenant_scoped(
-            select(User).where(User.id == custodian_user_id, User.is_active.is_(True)),
+            select(User).where(
+                User.id == custodian_user_id,
+                User.is_active.is_(True),
+                permissions.manager_or_hr_login(user),
+            ),
             User,
             user,
         )
     )
-    if custodian is None or custodian.role not in CUSTODIAN_ROLES:
+    if custodian is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
@@ -382,7 +382,7 @@ async def custodian_candidates(session: AsyncSession, user: User) -> list[dict[s
         await session.scalars(
             tenant_scoped(
                 select(User)
-                .where(User.is_active.is_(True), User.role.in_(CUSTODIAN_ROLES))
+                .where(User.is_active.is_(True), permissions.manager_or_hr_login(user))
                 .order_by(User.full_name),
                 User,
                 user,
@@ -1662,7 +1662,7 @@ async def request_reads(
     names = await _user_names(session, user, {row.decided_by_user_id for row in rows})
     is_hr = permissions.is_hr(user)
     line: set[uuid.UUID] = set()
-    if not is_hr and user.role is UserRole.MANAGER:
+    if not is_hr and user.has_reports:
         line = await permissions.reporting_line(session, user)
     out = []
     for row in rows:
@@ -1715,7 +1715,8 @@ async def list_requests(
     else:
         permissions.require_role(
             user,
-            permissions.MANAGER_ROLES,
+            permissions.HR_ROLES,
+            line_managers=True,
             detail="Only line managers and HR review asset requests.",
         )
         visible = await permissions.visible_employee_ids(session, user)

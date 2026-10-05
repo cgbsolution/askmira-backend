@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.reporting import (
     Cadence,
@@ -43,14 +44,8 @@ router = APIRouter(tags=["reports"])
 #: Reporting is open to everybody who can log in. What they can *see* is decided
 #: by the catalogue and the row scope, not by the route — a role gate here would
 #: be a second, weaker copy of a check that already exists.
-ALL_ROLES = (
-    UserRole.TENANT_ADMIN,
-    UserRole.HR_ADMIN,
-    UserRole.HR_OPS,
-    UserRole.MANAGER,
-    UserRole.EMPLOYEE,
-)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+ALL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN, UserRole.EMPLOYEE)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -142,7 +137,7 @@ async def catalogue(user: CurrentUser) -> dict[str, Any]:
     Filtered here so a field picker cannot offer something the compiler will
     refuse. The compiler checks again — this is a courtesy, that is the gate.
     """
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    role = permissions.scope_role(user)
     return {
         "entities": catalogue_for(role),
         "relative_ranges": [
@@ -156,7 +151,7 @@ async def catalogue(user: CurrentUser) -> dict[str, Any]:
 @router.get("/reports/starters", dependencies=[Depends(require_roles(*ALL_ROLES))])
 async def starters(user: CurrentUser) -> list[dict[str, Any]]:
     """The starter library, filtered to what this role can actually run."""
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    role = permissions.scope_role(user)
     return library.starters_for(role)
 
 
@@ -197,7 +192,7 @@ async def create_report(
     put the error somewhere nobody sees it until a schedule fires at 7am.
     """
     definition = payload.definition.to_definition()
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    role = permissions.scope_role(user)
     scope = await report_service.build_scope(session, user)
     try:
         report_service.compiler.compile_report(definition, role=role, scope=scope)
@@ -390,7 +385,7 @@ async def create_schedule(
 async def list_schedules(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     """Your schedules; every schedule in the workspace for an admin."""
     return await report_service.list_schedules(
-        session, user, include_all=user.role in ADMIN_ROLES or user.role is UserRole.PLATFORM_ADMIN
+        session, user, include_all=user.role in ADMIN_ROLES or user.role is UserRole.SUPER_ADMIN
     )
 
 
@@ -415,7 +410,7 @@ async def set_schedule_active(
         user,
         schedule_id=schedule_id,
         active=payload.active,
-        is_admin=user.role in ADMIN_ROLES or user.role is UserRole.PLATFORM_ADMIN,
+        is_admin=user.role in ADMIN_ROLES or user.role is UserRole.SUPER_ADMIN,
         request=request,
     )
 

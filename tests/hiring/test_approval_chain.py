@@ -31,8 +31,8 @@ def _complete() -> list[RuleSpec]:
     """A rule set that covers every CTC, with a band step on top."""
     return [
         _band("r1", 1, "hiring_manager", 0, 1500000),
-        _band("r2", 2, "hr_admin", 1500000, 3000000),
-        _band("r3", 3, "tenant_admin", 3000000),
+        _band("r2", 2, "admin", 1500000, 3000000),
+        _band("r3", 3, "admin", 3000000),
         _band("r4", 4, "finance_head", 0, only_when_over_band=True, label="Finance"),
     ]
 
@@ -51,7 +51,7 @@ def test_a_gap_between_bands_is_refused() -> None:
     """An offer at exactly ₹15,00,001 would resolve to no chain at all."""
     rules = [
         _band("r1", 1, "hiring_manager", 0, 1500000),
-        _band("r2", 2, "hr_admin", 2000000),
+        _band("r2", 2, "admin", 2000000),
     ]
     with pytest.raises(ApprovalChainError, match="Nothing covers CTC between"):
         validate_rules(rules)
@@ -61,14 +61,14 @@ def test_a_capped_top_band_is_refused() -> None:
     """The offers above the top band are exactly the ones that need a chain."""
     rules = [
         _band("r1", 1, "hiring_manager", 0, 1500000),
-        _band("r2", 2, "hr_admin", 1500000, 3000000),
+        _band("r2", 2, "admin", 1500000, 3000000),
     ]
     with pytest.raises(ApprovalChainError, match="resolves to no approver"):
         validate_rules(rules)
 
 
 def test_bands_that_do_not_start_at_zero_are_refused() -> None:
-    rules = [_band("r1", 1, "hr_admin", 500000)]
+    rules = [_band("r1", 1, "admin", 500000)]
     with pytest.raises(ApprovalChainError, match="An offer below that has no approver"):
         validate_rules(rules)
 
@@ -77,7 +77,7 @@ def test_a_rule_set_where_every_rule_is_conditional_is_refused() -> None:
     """Grade-scoped and over-band rules cannot be the whole chain: an offer
     matching neither would resolve to nothing and release unapproved."""
     rules = [
-        _band("r1", 1, "hr_admin", 0, grades=("L5",)),
+        _band("r1", 1, "admin", 0, grades=("L5",)),
         _band("r2", 2, "finance_head", 0, only_when_over_band=True),
     ]
     with pytest.raises(ApprovalChainError, match="Every rule is conditional"):
@@ -100,11 +100,11 @@ def test_overlapping_bands_are_allowed() -> None:
     the point — a senior offer can need two signatures."""
     rules = [
         _band("r1", 1, "hiring_manager", 0),
-        _band("r2", 2, "hr_admin", 1500000),
+        _band("r2", 2, "admin", 1500000),
     ]
     validate_rules(rules)
     chain = resolve_chain(rules, ctc_annual=L("2000000"))
-    assert [s.approver_role for s in chain] == ["hiring_manager", "hr_admin"]
+    assert [s.approver_role for s in chain] == ["hiring_manager", "admin"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -119,7 +119,7 @@ def test_a_junior_offer_needs_one_signature() -> None:
 
 def test_a_senior_offer_reaches_a_different_approver() -> None:
     chain = resolve_chain(_complete(), ctc_annual=L("4000000"), grade="L7")
-    assert [s.approver_role for s in chain] == ["tenant_admin"]
+    assert [s.approver_role for s in chain] == ["admin"]
 
 
 def test_breaking_the_band_adds_a_person_rather_than_a_colour() -> None:
@@ -127,8 +127,8 @@ def test_breaking_the_band_adds_a_person_rather_than_a_colour() -> None:
     closed."""
     inside = resolve_chain(_complete(), ctc_annual=L("2000000"), over_band=False)
     outside = resolve_chain(_complete(), ctc_annual=L("2000000"), over_band=True)
-    assert [s.approver_role for s in inside] == ["hr_admin"]
-    assert [s.approver_role for s in outside] == ["hr_admin", "finance_head"]
+    assert [s.approver_role for s in inside] == ["admin"]
+    assert [s.approver_role for s in outside] == ["admin", "finance_head"]
     assert "exceeds the band" in outside[-1].reason
 
 
@@ -142,7 +142,7 @@ def test_the_band_is_half_open_at_its_ceiling() -> None:
         "hiring_manager"
     ]
     assert [s.approver_role for s in resolve_chain(_complete(), ctc_annual=L("1500000"))] == [
-        "hr_admin"
+        "admin"
     ]
 
 
@@ -164,20 +164,20 @@ def test_the_same_role_reached_twice_signs_once() -> None:
     rules = [
         _band("r1", 1, "cfo", 0),
         _band("r2", 2, "cfo", 0, grades=("L5",)),
-        _band("r3", 3, "hr_admin", 0),
+        _band("r3", 3, "admin", 0),
     ]
     chain = resolve_chain(rules, ctc_annual=L("1000000"), grade="L5")
-    assert [s.approver_role for s in chain] == ["cfo", "hr_admin"]
+    assert [s.approver_role for s in chain] == ["cfo", "admin"]
 
 
 def test_the_chain_is_ordered_by_sequence_not_by_rule_order() -> None:
     rules = [
-        _band("r3", 30, "tenant_admin", 0),
+        _band("r3", 30, "admin", 0),
         _band("r1", 10, "hiring_manager", 0),
-        _band("r2", 20, "hr_admin", 0),
+        _band("r2", 20, "sub_admin", 0),
     ]
     chain = resolve_chain(rules, ctc_annual=L("1000000"))
-    assert [s.approver_role for s in chain] == ["hiring_manager", "hr_admin", "tenant_admin"]
+    assert [s.approver_role for s in chain] == ["hiring_manager", "sub_admin", "admin"]
 
 
 def test_the_same_inputs_resolve_the_same_chain_every_time() -> None:
@@ -193,7 +193,7 @@ def test_the_same_inputs_resolve_the_same_chain_every_time() -> None:
 
 def test_a_ctc_matching_no_rule_raises_rather_than_returning_nothing() -> None:
     """Releasing on no signature is not a fallback."""
-    rules = [_band("r1", 1, "hr_admin", 0, grades=("L5",))]
+    rules = [_band("r1", 1, "admin", 0, grades=("L5",))]
     with pytest.raises(ApprovalChainError, match="Releasing on no signature"):
         resolve_chain(rules, ctc_annual=L("900000"), grade="L2")
 

@@ -51,11 +51,10 @@ from app.services.assets import service as assets
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 
 _hr = [Depends(require_roles(*HR_ROLES))]
-_managers = [Depends(require_roles(*MANAGER_ROLES))]
+_managers = [Depends(require_roles(*HR_ROLES, line_managers=True))]
 
 
 async def _asset_read(session, user, asset_id: uuid.UUID) -> AssetRead:

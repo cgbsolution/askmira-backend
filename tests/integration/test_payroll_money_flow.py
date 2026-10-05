@@ -100,11 +100,11 @@ async def _structure(session: AsyncSession, tenant, effective: date) -> SalarySt
 
 async def _org(session: AsyncSession, tenant, entity, location, *, rules_from=date(2026, 4, 1)):
     maker_emp, maker = await person(session, tenant, entity, location, code="MAKER",
-                                    role=UserRole.HR_ADMIN)
+                                    role=UserRole.ADMIN)
     checker_emp, checker = await person(session, tenant, entity, location, code="CHECKER",
-                                        role=UserRole.HR_OPS)
+                                        role=UserRole.SUB_ADMIN)
     boss_emp, boss = await person(session, tenant, entity, location, code="BOSS",
-                                  role=UserRole.MANAGER)
+                                  role=UserRole.EMPLOYEE)
     staff_emp, staff = await person(session, tenant, entity, location, code="STAFF",
                                     role=UserRole.EMPLOYEE, manager=boss_emp)
     loner_emp, loner = await person(session, tenant, entity, location, code="LONER",
@@ -421,7 +421,7 @@ async def test_an_approved_settlement_is_recorded_as_paid_once(
     session: AsyncSession, tenant, legal_entity, location
 ) -> None:
     hr_emp, hr = await person(session, tenant, legal_entity, location, code="HRA",
-                              role=UserRole.HR_ADMIN)
+                              role=UserRole.ADMIN)
     leaver, leaver_user = await person(session, tenant, legal_entity, location, code="LEFT",
                                        role=UserRole.EMPLOYEE)
     record = await exit_service.initiate_exit(

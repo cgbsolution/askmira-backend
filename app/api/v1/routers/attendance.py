@@ -12,7 +12,7 @@ Who may call what:
 - Managers and HR: the regularisation queue (a manager's reporting line, all of
   it for HR, never their own) and team exceptions.
 - HR: shifts, rosters, assignments, work locations, imports, recompute and the
-  summary. Locking and unlocking a payroll period: tenant and HR admins.
+  summary. Locking and unlocking a payroll period: admins.
 """
 
 from __future__ import annotations
@@ -77,9 +77,8 @@ from app.services.attendance import service as attendance_service
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Punching ────────────────────────────────────────────────────────────────
@@ -273,7 +272,7 @@ async def my_period(
 @router.get(
     "/team/today",
     response_model=TeamToday,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def team_today(
     user: CurrentUser, session: DbSession, department_id: uuid.UUID | None = None
@@ -317,7 +316,7 @@ async def summary(
 @router.get(
     "/exceptions",
     response_model=AttendanceExceptionReport,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def exceptions(
     user: CurrentUser,
@@ -402,7 +401,7 @@ async def list_regularisations(
 @router.get(
     "/regularisations/pending",
     response_model=list[RegularisationQueueItem],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def pending_regularisations(
     user: CurrentUser, session: DbSession
@@ -426,7 +425,7 @@ async def cancel_regularisation(
 @router.patch(
     "/regularisation/{regularisation_id}",
     response_model=RegularisationRead,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def decide_regularisation(
     regularisation_id: uuid.UUID,

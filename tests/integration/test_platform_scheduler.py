@@ -80,7 +80,7 @@ async def test_a_tick_runs_each_tenant_once_and_records_failures(
 
 
 async def test_the_jobs_screen_is_admin_only(client, session, tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     employee = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
     listing = await client.get("/api/v1/admin/scheduler/jobs", headers=bearer(admin))
     assert listing.status_code == 200
@@ -94,10 +94,10 @@ async def test_the_jobs_screen_is_admin_only(client, session, tenant):
 
 
 async def test_a_manual_run_is_recorded_for_the_callers_workspace_only(client, session, tenant):
-    owner = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Owner One")
-    hr_admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
+    sub_admin = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops")
     path = "/api/v1/admin/scheduler/jobs/autonomy.expire_proposals/run"
-    assert (await client.post(path, headers=bearer(hr_admin))).status_code == 403
+    assert (await client.post(path, headers=bearer(sub_admin))).status_code == 403
     response = await client.post(path, headers=bearer(owner))
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "succeeded"

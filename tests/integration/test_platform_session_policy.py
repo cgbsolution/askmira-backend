@@ -124,7 +124,7 @@ async def test_revoking_one_session_ends_it_immediately(client, session, tenant)
 
 async def test_the_ip_allowlist_blocks_privileged_roles_only(client, session, tenant):
     await _policy(session, tenant, enforce=True, allowlist=["10.20.0.0/16"])
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     employee = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Emp One")
 
     blocked = await client.get("/api/v1/auth/me", headers=bearer(admin))
@@ -135,7 +135,7 @@ async def test_the_ip_allowlist_blocks_privileged_roles_only(client, session, te
 
 async def test_the_break_glass_account_passes_the_allowlist(client, session, tenant):
     await _policy(session, tenant, enforce=True, allowlist=["10.20.0.0/16"])
-    admin = await make_person(session, tenant, role=UserRole.TENANT_ADMIN, name="Glass Owner")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Glass Owner")
     tenant.settings = {**(tenant.settings or {}), "break_glass_email": admin.email}
     await session.commit()
     assert (await client.get("/api/v1/auth/me", headers=bearer(admin))).status_code == 200
@@ -143,5 +143,5 @@ async def test_the_break_glass_account_passes_the_allowlist(client, session, ten
 
 async def test_an_allowlisted_address_passes(client, session, tenant):
     await _policy(session, tenant, enforce=True, allowlist=["127.0.0.0/8"])
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     assert (await client.get("/api/v1/auth/me", headers=bearer(admin))).status_code == 200

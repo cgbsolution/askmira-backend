@@ -133,7 +133,7 @@ async def test_self_service_changes_contact_details_only(
 async def test_hr_cannot_edit_or_deactivate_their_own_record(
     client, session, tenant, employee
 ) -> None:
-    own = await _login(session, tenant, employee, UserRole.HR_ADMIN, "selfhr")
+    own = await _login(session, tenant, employee, UserRole.ADMIN, "selfhr")
     edit = await client.patch(
         f"/api/v1/employees/{employee.id}", headers=_auth(own), json={"grade": "L9"}
     )
@@ -270,7 +270,7 @@ async def test_admin_creates_and_edits_organisation_structure(
 async def test_organisation_writes_are_admin_only(
     client, session, tenant, legal_entity, other_hr_user
 ) -> None:
-    ops = await _login(session, tenant, None, UserRole.HR_OPS, "ops")
+    ops = await _login(session, tenant, None, UserRole.SUB_ADMIN, "ops")
     response = await client.post(
         "/api/v1/org/departments", headers=_auth(ops), json={"name": "X", "code": "X"}
     )
@@ -520,7 +520,7 @@ async def test_no_template_means_effected_with_a_plain_note(
 
 
 async def test_nobody_raises_an_event_about_themselves(session, tenant, employee) -> None:
-    own = await _login(session, tenant, employee, UserRole.HR_ADMIN, "selfevent")
+    own = await _login(session, tenant, employee, UserRole.ADMIN, "selfevent")
     with pytest.raises(HTTPException) as exc:
         await lifecycle_service.raise_event(
             session, own, employee_id=employee.id,
@@ -535,7 +535,7 @@ async def test_a_manager_sees_only_their_reporting_lines_history(
 ) -> None:
     boss = await _person(session, tenant, "BOSS")
     report = await _person(session, tenant, "REPT", manager_id=boss.id)
-    manager = await _login(session, tenant, boss, UserRole.MANAGER, "boss")
+    manager = await _login(session, tenant, boss, UserRole.EMPLOYEE, "boss")
     ok = await client.get(
         f"/api/v1/lifecycle/employees/{report.id}/history", headers=_auth(manager)
     )

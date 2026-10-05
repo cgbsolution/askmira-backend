@@ -45,7 +45,7 @@ async def _propose(session, hr, row, change):
 
 
 async def test_revert_restores_the_record(session, tenant):
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     person = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     row = await _regularisation(session, tenant, person)
 
@@ -67,7 +67,7 @@ async def test_revert_restores_the_record(session, tenant):
 
 
 async def test_a_proposal_cannot_touch_an_unlisted_column(session, tenant):
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     person = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     row = await _regularisation(session, tenant, person)
     with pytest.raises(HTTPException) as exc:

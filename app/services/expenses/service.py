@@ -189,9 +189,8 @@ async def line_manager_login(
     """The employee, and the login of the line manager who decides their claims.
 
     `None` for the login when there is nobody who could: no manager on the
-    record, a manager with no active login, or one whose login cannot take a
-    manager's decision. Such a request goes straight to finance rather than
-    waiting on someone who will never see it.
+    record, or a manager with no active login. Such a request goes straight to
+    finance rather than waiting on someone who will never see it.
     """
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
@@ -200,10 +199,10 @@ async def line_manager_login(
         return employee, None
     manager_login = await session.scalar(
         tenant_scoped(
+            # They manage this employee, so they can take a manager's decision
+            # whatever their login role.
             select(User).where(
-                User.employee_id == employee.manager_id,
-                User.is_active.is_(True),
-                User.role.in_(list(permissions.MANAGER_ROLES)),
+                User.employee_id == employee.manager_id, User.is_active.is_(True)
             ),
             User,
             user,

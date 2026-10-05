@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.position import AssignmentType, PositionStatus
 from app.models.user import UserRole
@@ -43,9 +44,8 @@ from app.services.reporting.semantic import Sensitivity, may_see
 
 router = APIRouter(tags=["positions"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-VIEW_ROLES = (*HR_ROLES, UserRole.MANAGER)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -72,7 +72,7 @@ async def create_position(
 @router.get(
     "/positions",
     response_model=list[PositionRead],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_positions(
     user: CurrentUser,
@@ -189,7 +189,7 @@ async def vacate_position(
 @router.get(
     "/positions/{position_id}/assignments",
     response_model=list[AssignmentRead],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def assignments(
     position_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -217,7 +217,7 @@ async def end_assignment(
 
 
 @router.get(
-    "/positions/occupancy", dependencies=[Depends(require_roles(*VIEW_ROLES))]
+    "/positions/occupancy", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))]
 )
 async def occupancy(
     user: CurrentUser, session: DbSession, on: date | None = None
@@ -236,7 +236,10 @@ async def occupancy(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@router.get("/positions/budget", dependencies=[Depends(require_roles(*VIEW_ROLES))])
+@router.get(
+    "/positions/budget",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
 async def budget(
     user: CurrentUser,
     session: DbSession,
@@ -245,7 +248,7 @@ async def budget(
     include_cost: bool = False,
 ) -> dict[str, Any]:
     """Approved against filled against vacant, optionally with cost."""
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    role = permissions.scope_role(user)
     if include_cost and not may_see(role, Sensitivity.PAYROLL_ONLY):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -259,7 +262,10 @@ async def budget(
     )
 
 
-@router.get("/positions/vacancies", dependencies=[Depends(require_roles(*VIEW_ROLES))])
+@router.get(
+    "/positions/vacancies",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
 async def vacancies(
     user: CurrentUser, session: DbSession, on: date | None = None
 ) -> dict[str, Any]:
@@ -267,7 +273,10 @@ async def vacancies(
     return await position_service.vacancy_report(session, user, on=on)
 
 
-@router.get("/positions/org-chart", dependencies=[Depends(require_roles(*VIEW_ROLES))])
+@router.get(
+    "/positions/org-chart",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
 async def org_chart(
     user: CurrentUser,
     session: DbSession,
@@ -289,7 +298,7 @@ async def org_chart(
 @router.get(
     "/positions/cost-centres",
     response_model=list[CostCentreRead],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_cost_centres(user: CurrentUser, session: DbSession) -> list[CostCentreRead]:
     rows = await position_service.list_cost_centres(session, user)
@@ -314,7 +323,7 @@ async def create_cost_centre(
 @router.get(
     "/positions/budgets",
     response_model=list[BudgetRead],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_budgets(
     user: CurrentUser, session: DbSession, financial_year: str | None = None
@@ -359,7 +368,7 @@ async def create_scenario(
 @router.get(
     "/positions/scenarios",
     response_model=list[ScenarioSummary],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_scenarios(user: CurrentUser, session: DbSession) -> list[ScenarioSummary]:
     return await position_service.list_scenarios(session, user)
@@ -385,7 +394,7 @@ async def add_change(
 
 @router.get(
     "/positions/scenarios/{scenario_id}",
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def project(
     scenario_id: uuid.UUID, user: CurrentUser, session: DbSession

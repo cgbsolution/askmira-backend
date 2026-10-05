@@ -164,7 +164,7 @@ async def provision_user(
 
     if user is not None:
         if not user.is_active:
-            raise SsoError("This account has been deactivated. Contact your HR admin.")
+            raise SsoError("This account has been deactivated. Contact your admin.")
         # The existing role is left exactly as it is. An IdP cannot promote or
         # demote anyone.
         user.last_login_at = datetime.now(UTC)
@@ -176,7 +176,7 @@ async def provision_user(
     if not provider.jit_provisioning:
         raise SsoError(
             "No account exists for this address and just-in-time provisioning is off "
-            "for this workspace. Ask your HR admin to create the account."
+            "for this workspace. Ask your admin to create the account."
         )
 
     full_name = " ".join(part for part in (first_name, last_name) if part) or email

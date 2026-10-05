@@ -433,7 +433,7 @@ async def test_a_resignation_is_submitted_withdrawn_and_accepted(
     client, session, tenant, hr_user
 ) -> None:
     boss = await _person(session, tenant, "BOSS1")
-    boss_login = await _login(session, tenant, boss, UserRole.MANAGER, "boss")
+    boss_login = await _login(session, tenant, boss, UserRole.EMPLOYEE, "boss")
     # The IT admin who collects laptops signs in as a plain employee.
     it_admin = await _login(
         session, tenant, await _person(session, tenant, "ITADM"), UserRole.EMPLOYEE, "itadmin"

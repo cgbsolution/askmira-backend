@@ -2,12 +2,12 @@
 
 _VISIBLE = (
     "scoped:_visible_ticket: the requester, the category owner, the assignee or HR; "
-    "a confidential ticket only to its requester, owner, assignee and tenant/HR admins. "
+    "a confidential ticket only to its requester, owner, assignee and admins. "
     "Anyone else gets a 404, and the requester never receives an internal note."
 )
 _REQUESTER = "scoped:_requester_ticket: only the employee the ticket is about."
 _AGENT = (
-    "scoped:_agent_ticket: HR or the category owner (tenant/HR admins for a "
+    "scoped:_agent_ticket: HR or the category owner (admins for a "
     "confidential ticket), never the ticket's own requester."
 )
 _QUEUE = (

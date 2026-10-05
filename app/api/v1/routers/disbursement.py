@@ -44,8 +44,8 @@ router = APIRouter(tags=["disbursement"])
 # Preparing a batch is an HR Ops task. Approving and releasing move money, so
 # they are held tighter — and the service enforces that they are different
 # people regardless of role.
-PREPARER_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-APPROVER_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+PREPARER_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+APPROVER_ROLES = (UserRole.ADMIN,)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────

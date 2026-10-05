@@ -38,7 +38,7 @@ from app.services.assets import service as assets
 from app.services.exit_workflow import service as exit_service
 from app.services.exit_workflow import settlement as settlement_engine
 from tests.integration import platform_support
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import as_caller, requires_db
 from tests.integration.platform_support import bearer, make_person
 
 pytestmark = requires_db
@@ -81,7 +81,7 @@ async def _notified(session: AsyncSession, user_id, event_key: str) -> bool:
 async def test_register_hand_over_acknowledge_and_return(
     session: AsyncSession, tenant: Tenant, client
 ) -> None:
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     worker = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Ravi Worker")
 
     category = await assets.create_category(
@@ -199,13 +199,13 @@ async def test_register_hand_over_acknowledge_and_return(
 async def test_request_is_decided_by_the_line_and_fulfilled_by_hr(
     session: AsyncSession, tenant: Tenant
 ) -> None:
-    boss = await make_person(session, tenant, role=UserRole.MANAGER, name="Kavya Boss")
+    boss = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Kavya Boss")
     boss_emp = await session.get(Employee, boss.employee_id)
     report = await make_person(
         session, tenant, role=UserRole.EMPLOYEE, name="Ravi Report", manager=boss_emp
     )
-    outsider = await make_person(session, tenant, role=UserRole.MANAGER, name="Omar Mgr")
-    hr = await make_person(session, tenant, role=UserRole.HR_OPS, name="Hari Ops")
+    outsider = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Omar Mgr")
+    hr = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops")
 
     laptops = await assets.create_category(
         session, hr, code="LAPTOP", name="Laptops", description=None,
@@ -236,7 +236,7 @@ async def test_request_is_decided_by_the_line_and_fulfilled_by_hr(
     assert twice.value.status_code == 409
 
     # The inbox shows it to the line manager, and to nobody outside the line.
-    boss_inbox = await approvals.inbox(session, boss)
+    boss_inbox = await approvals.inbox(session, await as_caller(session, boss))
     assert [i.id for i in boss_inbox.items if i.source == "asset_request"] == [asked.id]
     outsider_inbox = await approvals.inbox(session, outsider)
     assert not [i for i in outsider_inbox.items if i.source == "asset_request"]
@@ -297,8 +297,8 @@ async def test_request_is_decided_by_the_line_and_fulfilled_by_hr(
 async def test_exit_clearance_closes_assignments_and_recovers_book_value(
     session: AsyncSession, tenant: Tenant
 ) -> None:
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
-    custodian = await make_person(session, tenant, role=UserRole.HR_OPS, name="Ishaan IT")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
+    custodian = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Ishaan IT")
     leaver = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Leela Leaver")
 
     laptops = await assets.create_category(

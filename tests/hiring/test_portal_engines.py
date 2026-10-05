@@ -73,37 +73,47 @@ def test_candidate_facing_status_is_coarse() -> None:
 # ── Approvers ───────────────────────────────────────────────────────────────
 
 
-def _can(step, role, *, hm=False, originator=False):
+def _can(step, role, *, reports=False, hm=False, originator=False):
     return approvers.can_decide_step(
-        approver_role=step, user_role=role, is_hiring_manager=hm, is_originator=originator
+        approver_role=step,
+        user_role=role,
+        has_reports=reports,
+        is_hiring_manager=hm,
+        is_originator=originator,
     )
 
 
-@pytest.mark.parametrize("role", ["tenant_admin", "hr_admin", "manager", "platform_admin"])
+@pytest.mark.parametrize("role", ["admin", "sub_admin", "employee", "super_admin"])
 def test_nobody_approves_what_they_raised(role) -> None:
-    result = _can("hiring_manager", role, hm=True, originator=True)
+    result = _can("hiring_manager", role, reports=True, hm=True, originator=True)
     assert result.allowed is False
     assert "You raised this" in result.message
 
 
 def test_the_hiring_manager_step_is_the_hiring_manager_or_hr() -> None:
-    assert _can("hiring_manager", "manager", hm=True).allowed
-    assert not _can("hiring_manager", "manager", hm=False).allowed
-    assert _can("hiring_manager", "hr_ops").allowed
-    assert not _can("hiring_manager", "employee", hm=True).allowed
+    assert _can("hiring_manager", "employee", reports=True, hm=True).allowed
+    assert not _can("hiring_manager", "employee", reports=True, hm=False).allowed
+    assert _can("hiring_manager", "sub_admin").allowed
 
 
-def test_a_tenant_admin_step_needs_the_tenant_admin() -> None:
-    assert _can("tenant_admin", "tenant_admin").allowed
-    assert not _can("tenant_admin", "hr_admin").allowed
-    assert not _can("tenant_admin", "manager").allowed
+def test_a_manager_step_is_anybody_with_reports_or_hr() -> None:
+    """Managing people is a place in the org chart, not a role."""
+    assert _can("manager", "employee", reports=True).allowed
+    assert not _can("manager", "employee").allowed
+    assert _can("manager", "sub_admin").allowed
+
+
+def test_an_admin_step_needs_an_admin() -> None:
+    assert _can("admin", "admin").allowed
+    assert not _can("admin", "sub_admin").allowed
+    assert not _can("admin", "employee", reports=True).allowed
 
 
 def test_a_role_nobody_holds_is_signed_by_an_admin_on_its_behalf() -> None:
-    result = _can("finance_head", "hr_admin")
+    result = _can("finance_head", "admin")
     assert result.allowed and result.on_behalf_of == "finance_head"
-    assert not _can("finance_head", "hr_ops").allowed
-    assert not _can("finance_head", "manager").allowed
+    assert not _can("finance_head", "sub_admin").allowed
+    assert not _can("finance_head", "employee", reports=True).allowed
 
 
 # ── Throttle and honeypot ───────────────────────────────────────────────────

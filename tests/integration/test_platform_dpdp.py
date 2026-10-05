@@ -47,7 +47,7 @@ async def _note(session, tenant, user, body):
 
 
 async def test_my_export_contains_my_rows_only(client, session, tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     await _configure(session, admin)
     me = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     colleague = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Ravi Kumar")
@@ -98,8 +98,8 @@ async def _request(session, tenant, principal, kind):
 
 
 async def test_a_request_export_is_for_admins_only(client, session, tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
-    ops = await make_person(session, tenant, role=UserRole.HR_OPS, name="Hari Ops")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
+    ops = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops")
     subject = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     req = await _request(session, tenant, subject, DprRequestType.ACCESS)
     path = f"/api/v1/dpdp/requests/{req.id}/export/download"
@@ -112,7 +112,7 @@ async def test_a_request_export_is_for_admins_only(client, session, tenant):
 async def test_another_tenants_request_is_not_found(client, session, tenant, other_tenant):
     subject = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     foreign_admin = await make_person(
-        session, other_tenant, role=UserRole.HR_ADMIN, name="Far Admin"
+        session, other_tenant, role=UserRole.ADMIN, name="Far Admin"
     )
     req = await _request(session, tenant, subject, DprRequestType.ERASURE)
     response = await client.post(
@@ -122,7 +122,7 @@ async def test_another_tenants_request_is_not_found(client, session, tenant, oth
 
 
 async def test_erasure_purges_what_may_go_and_keeps_the_record(client, session, tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     await _configure(session, admin)
     subject = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     await _note(session, tenant, subject, "Hello Meera")
@@ -155,7 +155,7 @@ async def test_erasure_purges_what_may_go_and_keeps_the_record(client, session, 
 
 
 async def test_a_legal_hold_blocks_erasure(client, session, tenant):
-    admin = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin")
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     subject = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     await retention.place_hold(
         session, admin, reason="Tribunal case", employee_ids=[subject.employee_id]

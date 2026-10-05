@@ -139,7 +139,7 @@ async def _panelist_user(
 ) -> User:
     person = User(
         tenant_id=tenant.id, email=email, password_hash="not-a-real-hash",
-        full_name=email.split("@")[0], role=UserRole.MANAGER, is_active=True,
+        full_name=email.split("@")[0], role=UserRole.EMPLOYEE, is_active=True,
     )
     session.add(person)
     await session.commit()

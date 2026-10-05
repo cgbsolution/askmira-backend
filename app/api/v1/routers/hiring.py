@@ -39,8 +39,7 @@ from app.services.hiring import requisitions as requisition_service
 
 router = APIRouter(prefix="/hiring", tags=["hiring"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 
 
 def _attachment(data: bytes, filename: str, media_type: str) -> Response:
@@ -87,7 +86,7 @@ async def list_requisitions(
     "/requisitions",
     response_model=RequisitionDetail,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def create_requisition(
     payload: RequisitionCreate, user: CurrentUser, session: DbSession, request: Request
@@ -106,7 +105,7 @@ async def create_requisition(
 @router.get(
     "/requisitions/{requisition_id}",
     response_model=RequisitionDetail,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def get_requisition(
     requisition_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -121,7 +120,7 @@ async def get_requisition(
 @router.patch(
     "/requisitions/{requisition_id}",
     response_model=RequisitionDetail,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def update_requisition(
     requisition_id: uuid.UUID,
@@ -172,7 +171,7 @@ async def change_requisition_status(
 @router.get(
     "/approvals",
     response_model=list[PendingDecision],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def pending_decisions(user: CurrentUser, session: DbSession) -> list[PendingDecision]:
     """Requisitions and offers waiting on a step this caller may sign."""
@@ -186,7 +185,7 @@ async def pending_decisions(user: CurrentUser, session: DbSession) -> list[Pendi
 @router.get(
     "/candidates",
     response_model=Page[CandidateSummary],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_candidates(
     user: CurrentUser,
@@ -230,7 +229,7 @@ async def create_candidate(
 
 @router.get(
     "/candidates/{candidate_id}",
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def get_candidate(
     candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -241,7 +240,7 @@ async def get_candidate(
 @router.post(
     "/candidates/{candidate_id}/stage",
     response_model=StageMoveResult,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def move_candidate_stage(
     candidate_id: uuid.UUID,
@@ -265,7 +264,7 @@ async def move_candidate_stage(
 @router.get(
     "/candidates/{candidate_id}/resume",
     response_model=None,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def download_resume(
     candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -277,7 +276,7 @@ async def download_resume(
 @router.get(
     "/candidates/{candidate_id}/documents/{document_id}",
     response_model=None,
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def download_candidate_document(
     candidate_id: uuid.UUID, document_id: uuid.UUID, user: CurrentUser, session: DbSession

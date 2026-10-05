@@ -31,9 +31,8 @@ from app.services.interviews import service as interview_service
 
 router = APIRouter(tags=["interviews"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-MANAGER_ROLES = (*HR_ROLES, UserRole.MANAGER)
-PANEL_ROLES = (*MANAGER_ROLES, UserRole.EMPLOYEE)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+PANEL_ROLES = (*HR_ROLES, UserRole.EMPLOYEE)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -225,7 +224,7 @@ async def update_stage(
 @router.get(
     "/interviews/stages",
     response_model=list[StageRead],
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_stages(
     user: CurrentUser, session: DbSession, requisition_id: uuid.UUID | None = None
@@ -343,7 +342,7 @@ async def schedule(
     return InterviewRead.model_validate(interview)
 
 
-@router.get("/interviews", dependencies=[Depends(require_roles(*MANAGER_ROLES))])
+@router.get("/interviews", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))])
 async def list_interviews(
     user: CurrentUser,
     session: DbSession,
@@ -580,7 +579,7 @@ async def read_feedback(
 
 @router.get(
     "/interviews/{interview_id}/consolidated",
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def consolidated(
     interview_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -591,7 +590,7 @@ async def consolidated(
 
 @router.get(
     "/interviews/{interview_id}/advance-check",
-    dependencies=[Depends(require_roles(*MANAGER_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def advance_check(
     interview_id: uuid.UUID, user: CurrentUser, session: DbSession

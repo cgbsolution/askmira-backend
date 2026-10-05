@@ -548,6 +548,7 @@ def _authority_for(
     return approvers.can_decide_step(
         approver_role=step.approver_role,
         user_role=user.role.value,
+        has_reports=user.has_reports,
         is_hiring_manager=(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
@@ -990,6 +991,7 @@ async def pending_decisions(session: AsyncSession, user: User) -> list[dict[str,
         authority = approvers.can_decide_step(
             approver_role=pending_offer.approver_role,
             user_role=user.role.value,
+            has_reports=user.has_reports,
             is_hiring_manager=(
                 user.employee_id is not None
                 and user.employee_id == requisition.hiring_manager_id

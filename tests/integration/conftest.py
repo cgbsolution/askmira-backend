@@ -28,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.core.deps import has_direct_reports
 from app.models import (
     Base,
     Employee,
@@ -142,7 +143,7 @@ async def hr_user(session: AsyncSession, tenant: Tenant) -> User:
         email="hr@acme.test",
         password_hash="not-a-real-hash",
         full_name="Priya Ramesh",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
     )
     session.add(user)
@@ -158,7 +159,7 @@ async def other_hr_user(session: AsyncSession, other_tenant: Tenant) -> User:
         email="hr@globex.test",
         password_hash="not-a-real-hash",
         full_name="Sam Okafor",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
     )
     session.add(user)
@@ -211,3 +212,14 @@ async def employee(
     await session.commit()
     await session.refresh(person)
     return person
+
+
+async def as_caller(session: AsyncSession, user: User) -> User:
+    """Ready a test-built login the way `get_current_user` readies a caller.
+
+    A test that hands a User straight to a service skips the request pipeline,
+    so whether anybody reports to them — what makes them a manager — has to be
+    worked out here.
+    """
+    user.has_reports = await has_direct_reports(session, user)
+    return user

@@ -92,14 +92,14 @@ class HelpdeskCategory(Base, UUIDMixin, TenantMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The person who works this category's tickets. None means HR's shared
-    # queue: every HR role (tenant admin, HR admin, HR ops) sees them.
+    # queue: every HR role (admin, sub-admin) sees them.
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     # Calendar hours from raising to the resolution being due.
     sla_hours: Mapped[int] = mapped_column(Integer, default=48, nullable=False)
     # Grievance / POSH-adjacent: visible only to the requester, the category
-    # owner and tenant/HR admins. HR ops does not see these.
+    # owner and admins. A sub-admin does not see these.
     is_confidential: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     request_kind: Mapped[HelpdeskRequestKind] = mapped_column(
         Enum(HelpdeskRequestKind, name="helpdesk_request_kind"),

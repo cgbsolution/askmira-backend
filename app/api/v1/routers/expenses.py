@@ -12,10 +12,10 @@ Who may call what:
   through `app.core.permissions`; only finance may name somebody else.
 - Line managers: the team queue, and the first decision on a claim or trip from
   their reporting line. HR can stand in for a manager who is away.
-- Finance (tenant admin, HR admin, HR ops): the review queue, the final
+- Finance (admin, sub-admin): the review queue, the final
   decisions, advances, settlement, ageing, violation rates and configuration
   reads. Nobody decides their own claim, trip, advance or settlement.
-- Tenant and HR admins: policy, tier, mileage, per-diem and settings writes.
+- Admins: policy, tier, mileage, per-diem and settings writes.
 """
 
 from __future__ import annotations
@@ -81,9 +81,8 @@ from app.services.expenses import service as expenses
 
 router = APIRouter(tags=["expenses"])
 
-FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-MANAGER_ROLES = (*FINANCE_ROLES, UserRole.MANAGER)
+FINANCE_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 Scope = Literal["mine", "all"]
 
@@ -471,7 +470,7 @@ async def manager_decide_claim(
     session: DbSession,
     user: CurrentUser,
     request: Request,
-    _manager=Depends(require_roles(*MANAGER_ROLES)),
+    _manager=Depends(require_roles(*FINANCE_ROLES, line_managers=True)),
 ) -> ClaimRead:
     """The line manager's decision. An approval sends the claim on to finance."""
     await expenses.decide_claim_as_manager(
@@ -556,7 +555,9 @@ async def review_queue(
 
 @router.get("/expenses/team-queue", response_model=TeamQueue)
 async def team_queue(
-    session: DbSession, user: CurrentUser, _manager=Depends(require_roles(*MANAGER_ROLES))
+    session: DbSession,
+    user: CurrentUser,
+    _manager=Depends(require_roles(*FINANCE_ROLES, line_managers=True)),
 ) -> TeamQueue:
     """Claims and trips waiting for a line manager: the caller's reporting line."""
     return await reads.team_queue(session, user)
@@ -651,7 +652,7 @@ async def manager_decide_travel_request(
     session: DbSession,
     user: CurrentUser,
     request: Request,
-    _manager=Depends(require_roles(*MANAGER_ROLES)),
+    _manager=Depends(require_roles(*FINANCE_ROLES, line_managers=True)),
 ) -> TravelRequestRead:
     """The line manager's decision on a trip. An approval sends it on to finance."""
     row = await expenses.decide_travel_request_as_manager(

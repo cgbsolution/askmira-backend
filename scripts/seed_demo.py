@@ -1,4 +1,4 @@
-"""Create a demo company with one login for every role.
+"""Create a demo company with a login for every role, and a line manager.
 
     cd backend
     .venv/Scripts/python.exe scripts/seed_demo.py                    # create, print logins
@@ -14,9 +14,13 @@ anywhere except as Argon2id hashes, so a lost password means re-running with
 Idempotent: re-running reuses the demo company, its org structure, its employees
 and its users rather than creating duplicates.
 
-Why a script and not signup: signup only ever creates a `tenant_admin`, and SCIM
-and SSO only ever create an `employee`. Nothing in the product creates the other
-four roles yet, so without this there is no way to sign in as them.
+Why a script and not signup: signup only ever creates an `admin`, and SCIM and
+SSO only ever create an `employee`. Nothing in the product creates a
+`super_admin` or a `sub_admin` yet, so without this there is no way to sign in
+as them.
+
+`manager@` signs in as a plain `employee`. Meera reports to Vikram, and that is
+all it takes to get a manager's view: managing people is not a role.
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ class Person:
     role: UserRole
     email: str
     full_name: str
-    #: None for platform_admin, which is AskMira staff and has no employee record.
+    #: None for super_admin, which is AskMira staff and has no employee record.
     employee_code: str | None
     department: str | None
     designation: str | None
@@ -82,15 +86,15 @@ class Person:
 
 
 PEOPLE = (
-    Person(UserRole.PLATFORM_ADMIN, f"platform@{DOMAIN}", "Platform Admin",
+    Person(UserRole.SUPER_ADMIN, f"platform@{DOMAIN}", "Super Admin",
            None, None, None, None, None),
-    Person(UserRole.TENANT_ADMIN, f"admin@{DOMAIN}", "Ananya Rao",
+    Person(UserRole.ADMIN, f"admin@{DOMAIN}", "Ananya Rao",
            "DEMO001", "ENG", "Chief Executive Officer", "E1", None),
-    Person(UserRole.HR_ADMIN, f"hr.admin@{DOMAIN}", "Priya Ramesh",
+    Person(UserRole.ADMIN, f"hr.admin@{DOMAIN}", "Priya Ramesh",
            "DEMO002", "HR", "Head of People", "M4", "DEMO001"),
-    Person(UserRole.HR_OPS, f"hr.ops@{DOMAIN}", "Karthik Iyer",
+    Person(UserRole.SUB_ADMIN, f"hr.ops@{DOMAIN}", "Karthik Iyer",
            "DEMO003", "HR", "HR Operations Executive", "P2", "DEMO002"),
-    Person(UserRole.MANAGER, f"manager@{DOMAIN}", "Vikram Shah",
+    Person(UserRole.EMPLOYEE, f"manager@{DOMAIN}", "Vikram Shah",
            "DEMO004", "ENG", "Engineering Manager", "M3", "DEMO001"),
     Person(UserRole.EMPLOYEE, f"employee@{DOMAIN}", "Meera Nair",
            "DEMO005", "ENG", "Software Engineer", "P3", "DEMO004"),

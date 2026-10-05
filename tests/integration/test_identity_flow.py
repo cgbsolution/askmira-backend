@@ -220,7 +220,7 @@ async def test_a_scim_payload_claiming_admin_does_not_grant_it(
             "schemas": [scim_service.SCIM_USER_SCHEMA],
             "userName": "wannabe@acme.test",
             "displayName": "Wannabe Admin",
-            "roles": [{"value": "tenant_admin", "primary": True}],
+            "roles": [{"value": "admin", "primary": True}],
             "groups": [{"value": "Administrators"}],
         },
     )
@@ -242,7 +242,7 @@ async def test_a_scim_patch_cannot_change_a_role(
         {
             "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
             "Operations": [
-                {"op": "replace", "path": "roles", "value": [{"value": "tenant_admin"}]},
+                {"op": "replace", "path": "roles", "value": [{"value": "admin"}]},
                 {"op": "add", "path": "groups", "value": [{"value": "Administrators"}]},
             ],
         },
@@ -496,7 +496,7 @@ async def test_sso_login_does_not_change_an_existing_users_role(
     await session.commit()
 
     assert returned.id == hr_user.id
-    assert returned.role is UserRole.HR_ADMIN
+    assert returned.role is UserRole.ADMIN
 
 
 async def test_an_unmatched_employee_code_leaves_the_user_unlinked(

@@ -40,8 +40,8 @@ from app.services.performance import views
 router = APIRouter(tags=["performance-flow"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
-MANAGERS = [Depends(require_roles(*permissions.MANAGER_ROLES))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
+MANAGERS = [Depends(require_roles(*permissions.HR_ROLES, line_managers=True))]
 
 
 @router.get("/performance/posture")
@@ -242,7 +242,8 @@ async def budget_view(
     """What is left, for a manager who is still allocating."""
     permissions.require_role(
         user,
-        permissions.MANAGER_ROLES,
+        permissions.HR_ROLES,
+        line_managers=True,
         detail="Increment budgets are visible to managers and HR.",
     )
     return await performance.budget_view(

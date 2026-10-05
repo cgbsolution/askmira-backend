@@ -58,7 +58,7 @@ from app.models.culture import Shoutout, ShoutoutVisibility
 from app.models.culture_depth import CompanyValue
 from app.models.employee import Employee
 from app.models.org import Department
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.performance import ReviewRatings
 from app.services.appraisal import access, scoring
 from app.services.appraisal import evidence as evidence_engine
@@ -752,7 +752,7 @@ async def review_detail(
             and appraisal.status is AppraisalStatus.COMPLETED,
             "can_acknowledge": is_subject and appraisal.status is AppraisalStatus.RELEASED,
             "can_reopen": (
-                user.role.value in ("tenant_admin", "hr_admin", "platform_admin")
+                user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
                 and not is_subject
                 and appraisal.status in DONE_STATUSES
             ),

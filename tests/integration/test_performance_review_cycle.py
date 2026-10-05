@@ -68,7 +68,7 @@ from app.services.appraisal import service as appraisal_service
 from app.services.goals import service as goals_service
 from app.services.performance import service as performance
 from app.services.performance import views
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import as_caller, requires_db
 
 pytestmark = requires_db
 
@@ -136,7 +136,7 @@ async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, 
         location,
         code="HR1",
         name="Priya Ramesh",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
     )
     head_emp, head = await _person(
         session,
@@ -145,7 +145,7 @@ async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, 
         location,
         code="HEAD",
         name="Kavya Iyer",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
         department=dept,
         grade="L7",
     )
@@ -156,7 +156,7 @@ async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, 
         location,
         code="MGR1",
         name="Vikram Shah",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
         manager=head_emp,
         department=dept,
         grade="L5",
@@ -898,7 +898,7 @@ async def test_team_view_dashboard_reminders_and_escalation(session: AsyncSessio
         await session.get(Location, org["meera_emp"].location_id),
         code="MGR2",
         name="Anil Cover",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
     )
     with pytest.raises(HTTPException):
         await appraisal_service.create_delegation(
@@ -1177,7 +1177,9 @@ async def test_increment_candidates_resolve_rating_and_hide_individual_pay(
     )
     assert result["proposal"]["rating_label"] == "Meets"
 
-    boss_view = await views.increment_candidates(session, org["boss"], cycle.id)
+    boss_view = await views.increment_candidates(
+        session, await as_caller(session, org["boss"]), cycle.id
+    )
     assert [r["name"] for r in boss_view["rows"]] == ["Meera Nair"]
     row = boss_view["rows"][0]
     assert row["rating_label"] == "Meets" and row["band"]["recommended"] == "6.00"

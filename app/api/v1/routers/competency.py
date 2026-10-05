@@ -26,7 +26,7 @@ from app.services.appraisal import competency_service
 router = APIRouter(tags=["competency"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-RATERS = [Depends(require_roles(*permissions.MANAGER_ROLES))]
+RATERS = [Depends(require_roles(*permissions.HR_ROLES, line_managers=True))]
 
 
 @router.post(

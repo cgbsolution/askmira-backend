@@ -23,8 +23,11 @@ THE THREE RELATIONSHIPS
   directly or indirectly. Walked breadth-first and depth-capped, because two
   people set as each other's manager mid-reorg is a real state and must not
   loop forever.
-- **HR.** Tenant admin, HR admin and HR ops act on anybody's record in their
-  tenant. Platform admin passes as it does everywhere else.
+- **HR.** Admin and sub-admin act on anybody's record in their tenant. Super
+  admin passes as it does everywhere else.
+
+Being a manager is the second relationship, not a role: anybody with a direct
+report has a reporting line, whatever their login role.
 
 Some things only the person can do for themselves — answering a survey,
 acknowledging a policy. HR cannot do those on anybody's behalf, and
@@ -36,7 +39,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -44,11 +47,13 @@ from app.models.employee import Employee
 from app.models.user import User, UserRole
 
 __all__ = [
+    "ADMIN_ROLES",
     "HR_ROLES",
-    "MANAGER_ROLES",
     "forbidden",
     "is_hr",
     "is_line_manager_of",
+    "is_manager_or_hr",
+    "manager_or_hr_login",
     "manages",
     "own_employee_id",
     "reporting_line",
@@ -58,17 +63,15 @@ __all__ = [
     "require_self",
     "require_self_or_hr",
     "resolve_employee",
+    "scope_role",
     "visible_employee_ids",
 ]
 
-#: Roles that act on anybody's record in their own tenant.
-HR_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS}
-)
+#: Roles that run the workspace: settings, users, approvals and money.
+ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.ADMIN})
 
-#: Roles that may take a people-manager action at all. Whether they may take it
-#: for a *particular* person is the reporting-line check, not this set.
-MANAGER_ROLES: frozenset[UserRole] = HR_ROLES | {UserRole.MANAGER}
+#: Roles that act on anybody's record in their own tenant.
+HR_ROLES: frozenset[UserRole] = frozenset({UserRole.ADMIN, UserRole.SUB_ADMIN})
 
 #: A reporting line deeper than this is a cycle or a data error, not an org.
 MAX_REPORTING_DEPTH = 10
@@ -79,13 +82,50 @@ def forbidden(detail: str) -> HTTPException:
 
 
 def is_hr(user: User) -> bool:
-    return user.role in HR_ROLES or user.role is UserRole.PLATFORM_ADMIN
+    return user.role in HR_ROLES or user.role is UserRole.SUPER_ADMIN
+
+
+def is_manager_or_hr(user: User) -> bool:
+    """May take a people-manager action at all.
+
+    Whether they may take it for a *particular* person is the reporting-line
+    check, not this one.
+    """
+    return is_hr(user) or user.has_reports
+
+
+def scope_role(user: User) -> str:
+    """The key for the role-keyed reach tables in reporting and grounding.
+
+    The login role, except that an employee with a direct report reads as
+    `manager`: those tables give a manager their reporting tree, and managing
+    people is a place in the org chart rather than a role anybody is given.
+    """
+    if user.role is UserRole.EMPLOYEE and user.has_reports:
+        return "manager"
+    return user.role.value
+
+
+def manager_or_hr_login(user: User) -> ColumnElement[bool]:
+    """A `User` filter: in HR, or somebody in the caller's tenant reports to them.
+
+    For picking *another* login — a clearance owner, an asset custodian — where
+    `User.has_reports` was never worked out because they are not the caller.
+    """
+    reported_to = tenant_scoped(
+        select(Employee.manager_id).where(
+            Employee.manager_id.is_not(None), Employee.deleted_at.is_(None)
+        ),
+        Employee,
+        user,
+    )
+    return or_(User.role.in_(HR_ROLES), User.employee_id.in_(reported_to))
 
 
 def own_employee_id(user: User) -> uuid.UUID:
     """The caller's employee record, or a clear refusal.
 
-    A login with no employee record — a consultant, a platform admin — has no
+    A login with no employee record — a consultant, a super admin — has no
     "own" record to act on, and pretending otherwise would act on nothing.
     """
     if user.employee_id is None:
@@ -96,8 +136,17 @@ def own_employee_id(user: User) -> uuid.UUID:
     return user.employee_id
 
 
-def require_role(user: User, roles: frozenset[UserRole], *, detail: str) -> None:
-    if user.role not in roles and user.role is not UserRole.PLATFORM_ADMIN:
+def require_role(
+    user: User,
+    roles: frozenset[UserRole],
+    *,
+    detail: str,
+    line_managers: bool = False,
+) -> None:
+    """The service-layer twin of `require_roles`, line managers included on request."""
+    if line_managers and user.has_reports:
+        return
+    if user.role not in roles and user.role is not UserRole.SUPER_ADMIN:
         raise forbidden(detail)
 
 
@@ -182,8 +231,8 @@ async def manages(session: AsyncSession, user: User, employee_id: uuid.UUID) -> 
 async def is_line_manager_of(
     session: AsyncSession, user: User, employee_id: uuid.UUID
 ) -> bool:
-    """A manager-role user with this person somewhere in their reporting line."""
-    return user.role is UserRole.MANAGER and await manages(session, user, employee_id)
+    """This person is somewhere in the caller's reporting line."""
+    return await manages(session, user, employee_id)
 
 
 async def require_manager_or_hr(
@@ -209,7 +258,7 @@ async def require_manager_or_hr(
         )
     if is_hr(user):
         return
-    if user.role is UserRole.MANAGER and await manages(session, user, employee_id):
+    if await manages(session, user, employee_id):
         return
     raise forbidden(detail)
 
@@ -220,13 +269,12 @@ async def visible_employee_ids(
     """Whose records a list may return to this caller.
 
     `None` means everybody in the tenant (HR). Otherwise the caller's own record
-    plus, for a manager, their reporting line.
+    plus their reporting line, which is empty for somebody with no reports.
     """
     if is_hr(user):
         return None
     ids: set[uuid.UUID] = set()
     if user.employee_id is not None:
         ids.add(user.employee_id)
-    if user.role is UserRole.MANAGER:
-        ids |= await reporting_line(session, user)
+    ids |= await reporting_line(session, user)
     return ids

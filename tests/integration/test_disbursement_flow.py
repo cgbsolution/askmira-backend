@@ -128,7 +128,7 @@ async def _second_user(session: AsyncSession, tenant: Tenant) -> User:
         email="checker@acme.test",
         password_hash=hash_password("Str0ng!Passw0rd"),
         full_name="Priya Checker",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
         is_active=True,
     )
     session.add(user)

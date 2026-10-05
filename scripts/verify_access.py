@@ -10,7 +10,7 @@ ONE database transaction that is rolled back at the end, whatever happens. The
 integration suite cannot be pointed at a shared database because it drops the
 schema between tests; this can, because it never commits.
 
-Each check signs in as one of the six demo roles, calls the real app, and
+Each check signs in as one of the six demo logins, calls the real app, and
 compares the outcome with what the rule says should happen. A 422 is reported as
 inconclusive rather than as a pass: it means the request was refused for its
 shape before the permission check was ever reached.
@@ -216,10 +216,10 @@ async def main() -> int:
                 staff["DEMO005"],
             )
             role_user = {
-                "platform_admin": users["platform"],
-                "tenant_admin": users["admin"],
-                "hr_admin": users["hr.admin"],
-                "hr_ops": users["hr.ops"],
+                "super_admin": users["platform"],
+                "admin": users["admin"],
+                "hr_head": users["hr.admin"],
+                "sub_admin": users["hr.ops"],
                 "manager": users["manager"],
                 "employee": users["employee"],
             }
@@ -319,7 +319,7 @@ async def main() -> int:
                 reason="VERIFY",
                 expectations="VERIFY",
                 support_provided="VERIFY",
-                initiated_by_user_id=role_user["hr_admin"].id,
+                initiated_by_user_id=role_user["hr_head"].id,
             )
             session.add(pip)
 
@@ -390,7 +390,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR sees a colleague's personal fields",
-                    "hr_ops",
+                    "sub_admin",
                     "GET",
                     "/employees/{id}",
                     {"id": ceo.id},
@@ -433,7 +433,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR sees everybody's leave",
-                    "hr_ops",
+                    "sub_admin",
                     "GET",
                     "/leave/requests",
                     expect="ok",
@@ -448,7 +448,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR inbox has pending requests, never HR's own",
-                    "hr_ops",
+                    "sub_admin",
                     "GET",
                     "/leave/approvals",
                     expect="ok",
@@ -516,7 +516,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR sees why the CEO is out",
-                    "hr_admin",
+                    "hr_head",
                     "GET",
                     "/leave/who-is-out",
                     params={
@@ -570,7 +570,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR can open the CEO's offer letter",
-                    "hr_admin",
+                    "hr_head",
                     "GET",
                     "/letters/{id}/verify",
                     {"id": ceo_letter.id},
@@ -591,7 +591,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR sees every candidate",
-                    "hr_ops",
+                    "sub_admin",
                     "GET",
                     "/hiring/candidates",
                     expect="ok",
@@ -610,7 +610,7 @@ async def main() -> int:
                 ),
                 Check(
                     "Recipient sees their private shoutout",
-                    "hr_admin",
+                    "hr_head",
                     "GET",
                     "/culture/shoutouts",
                     expect="ok",
@@ -618,7 +618,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR ops sees department shoutouts, not others' private",
-                    "hr_ops",
+                    "sub_admin",
                     "GET",
                     "/culture/shoutouts",
                     expect="ok",
@@ -761,7 +761,7 @@ async def main() -> int:
                 ),
                 Check(
                     "HR refused for their own increment",
-                    "hr_admin",
+                    "hr_head",
                     "POST",
                     "/performance/recommendations",
                     body={"employee_id": str(priya.id)},

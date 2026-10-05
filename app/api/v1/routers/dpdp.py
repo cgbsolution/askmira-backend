@@ -46,8 +46,8 @@ from app.services.dpdp.inventory import (
 
 router = APIRouter(tags=["dpdp"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ def test_salary_and_identifiers_are_payroll_only_wherever_they_appear() -> None:
 
 def test_a_manager_sees_a_smaller_catalogue_than_hr() -> None:
     manager = catalogue_for("manager")
-    admin = catalogue_for("tenant_admin")
+    admin = catalogue_for("admin")
     manager_fields = sum(len(e["fields"]) for e in manager)
     admin_fields = sum(len(e["fields"]) for e in admin)
     assert manager_fields < admin_fields
@@ -96,7 +96,7 @@ def test_an_entity_a_manager_can_see_nothing_of_is_left_out_entirely() -> None:
 def test_the_catalogue_marks_which_entities_support_a_row_scope() -> None:
     """So a builder can explain why a manager cannot open the candidate reports,
     rather than only refusing them."""
-    for card in catalogue_for("tenant_admin"):
+    for card in catalogue_for("admin"):
         expected = ENTITIES[card["key"]].employee_column is not None
         assert card["supports_row_scope"] is expected
 
@@ -106,7 +106,7 @@ def test_visible_fields_and_the_compiler_agree() -> None:
     disagree — an offered field that fails on click is worse than a hidden one.
     """
     for key in ENTITIES:
-        for role in ("manager", "hr_ops", "hr_admin"):
+        for role in ("manager", "sub_admin", "admin"):
             for spec in visible_fields(key, role):
                 from app.services.reporting.compiler import Definition, Selection
 
@@ -142,7 +142,7 @@ def test_every_starter_compiles_and_runs_as_an_admin() -> None:
     """
     for starter in STARTERS:
         compiled = compile_report(
-            starter.definition, role="tenant_admin", scope=_hr(), today=TODAY
+            starter.definition, role="admin", scope=_hr(), today=TODAY
         )
         assert compiled.columns, starter.key
         sql = rendered_sql(compiled.statement)
@@ -187,21 +187,21 @@ def test_a_manager_is_offered_only_starters_they_can_run() -> None:
 
 
 def test_an_hr_ops_user_is_offered_hr_starters_but_not_payroll_ones() -> None:
-    keys = {s["key"] for s in starters_for("hr_ops")}
+    keys = {s["key"] for s in starters_for("sub_admin")}
     assert "attrition_by_department" in keys
     assert "salary_register" not in keys
     assert "statutory_contribution_summary" not in keys
 
 
 def test_an_admin_is_offered_every_starter() -> None:
-    assert len(starters_for("tenant_admin")) == len(STARTERS)
+    assert len(starters_for("admin")) == len(STARTERS)
 
 
 def test_the_financial_year_starters_resolve_to_april(monkeypatch) -> None:
     """The FY starters are where the range engine actually gets used."""
     starter = next(s for s in STARTERS if s.key == "attrition_by_department")
     compiled = compile_report(
-        starter.definition, role="tenant_admin", scope=_hr(), today=date(2027, 1, 15)
+        starter.definition, role="admin", scope=_hr(), today=date(2027, 1, 15)
     )
     params = compiled.statement.compile().params
     assert date(2026, 4, 1) in params.values()

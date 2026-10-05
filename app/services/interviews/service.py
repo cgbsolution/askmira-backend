@@ -946,7 +946,7 @@ async def list_interviews_for(
         Interview,
         user,
     )
-    if scope == "mine" or (not permissions.is_hr(user) and user.role.value != "manager"):
+    if scope == "mine" or (not permissions.is_hr(user) and not user.has_reports):
         stmt = stmt.where(Interview.id.in_(on_my_panel))
     elif not permissions.is_hr(user):
         stmt = stmt.where(

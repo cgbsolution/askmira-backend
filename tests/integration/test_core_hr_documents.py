@@ -163,7 +163,7 @@ async def test_a_colleague_cannot_list_or_download_somebody_elses_documents(
 ) -> None:
     doc = (await _upload(client, hr_user, employee.id)).json()
     other = await _colleague(session, tenant, "COL1")
-    colleague = await _login_for(session, tenant, other, UserRole.MANAGER, "col")
+    colleague = await _login_for(session, tenant, other, UserRole.EMPLOYEE, "col")
 
     listed = await client.get(
         f"/api/v1/documents?employee_id={employee.id}", headers=_auth(colleague)
@@ -191,7 +191,7 @@ async def test_another_tenant_sees_nothing(client, hr_user, other_hr_user, emplo
 
 
 async def test_hr_cannot_manage_their_own_vault(client, session, tenant, employee) -> None:
-    own_hr = await _login_for(session, tenant, employee, UserRole.HR_ADMIN, "selfhr")
+    own_hr = await _login_for(session, tenant, employee, UserRole.ADMIN, "selfhr")
     response = await _upload(client, own_hr, employee.id)
     assert response.status_code == 403
 
@@ -547,7 +547,7 @@ async def test_letter_approval_needs_somebody_other_than_the_issuer(
     own = await client.post(f"/api/v1/letters/{letter_id}/approve", headers=_auth(hr_user))
     assert own.status_code == 403
 
-    second = await _login_for(session, tenant, None, UserRole.TENANT_ADMIN, "admin2")
+    second = await _login_for(session, tenant, None, UserRole.ADMIN, "admin2")
     approved = await client.post(f"/api/v1/letters/{letter_id}/approve", headers=_auth(second))
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"

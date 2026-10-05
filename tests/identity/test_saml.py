@@ -289,7 +289,7 @@ def test_the_parser_does_not_surface_role_claims_as_anything_privileged() -> Non
         build_response(
             extra_attributes=(
                 '<saml:Attribute Name="role">'
-                "<saml:AttributeValue>tenant_admin</saml:AttributeValue></saml:Attribute>"
+                "<saml:AttributeValue>admin</saml:AttributeValue></saml:Attribute>"
                 '<saml:Attribute Name="groups">'
                 "<saml:AttributeValue>Administrators</saml:AttributeValue></saml:Attribute>"
             )
@@ -301,7 +301,7 @@ def test_the_parser_does_not_surface_role_claims_as_anything_privileged() -> Non
     assert not hasattr(assertion, "roles")
     assert not hasattr(assertion, "groups")
     # It is readable as raw data, and nothing acts on it.
-    assert assertion.first("role") == "tenant_admin"
+    assert assertion.first("role") == "admin"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

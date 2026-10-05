@@ -454,7 +454,7 @@ async def test_a_delegated_entry_names_both_the_delegate_and_the_original(
         email="cover@acme.test",
         password_hash="not-a-real-hash",
         full_name="Priya Cover",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
         is_active=True,
     )
     session.add(cover)
@@ -506,7 +506,7 @@ async def test_a_manager_without_a_delegation_cannot_act(
         email="stranger@acme.test",
         password_hash="not-a-real-hash",
         full_name="Not The Manager",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
         is_active=True,
     )
     session.add(stranger)

@@ -47,7 +47,7 @@ def test_a_manager_reaches_their_team_and_themselves():
 
 def test_hr_reaches_the_tenant():
     scope = retrieval.scope_for(
-        role="hr_admin", tenant_id="t1", requester_employee_id="h1"
+        role="admin", tenant_id="t1", requester_employee_id="h1"
     )
     assert scope.kind is retrieval.ScopeKind.TENANT
     assert scope.covers("anybody")

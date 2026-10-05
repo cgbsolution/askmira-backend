@@ -99,7 +99,7 @@ async def _person(
 @pytest.fixture
 async def team(session, tenant, legal_entity, location):
     manager, manager_user = await _person(
-        session, tenant, legal_entity, location, code="MGR1", role=UserRole.MANAGER
+        session, tenant, legal_entity, location, code="MGR1", role=UserRole.EMPLOYEE
     )
     report, report_user = await _person(
         session, tenant, legal_entity, location, code="EMP1", role=UserRole.EMPLOYEE,

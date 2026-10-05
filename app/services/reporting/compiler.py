@@ -109,12 +109,12 @@ class ScopeKind(str, enum.Enum):
 
 
 #: Which roles see how much. Anything not listed gets SELF — a role added
-#: elsewhere should narrow what a report returns, never widen it.
+#: elsewhere should narrow what a report returns, never widen it. `manager` is
+#: an employee with a direct report (`permissions.scope_role`).
 _ROLE_SCOPE: dict[str, ScopeKind] = {
-    "platform_admin": ScopeKind.TENANT,
-    "tenant_admin": ScopeKind.TENANT,
-    "hr_admin": ScopeKind.TENANT,
-    "hr_ops": ScopeKind.TENANT,
+    "super_admin": ScopeKind.TENANT,
+    "admin": ScopeKind.TENANT,
+    "sub_admin": ScopeKind.TENANT,
     "manager": ScopeKind.REPORTING_TREE,
     "employee": ScopeKind.SELF,
 }

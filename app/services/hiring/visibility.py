@@ -65,7 +65,7 @@ def visible_requisitions(user: User) -> Select:
     stmt = tenant_scoped(select(Requisition), Requisition, user)
     if permissions.is_hr(user):
         return stmt
-    if user.role.value == "manager":
+    if user.has_reports:
         return stmt.where(
             or_(
                 Requisition.status == RequisitionStatus.OPEN,

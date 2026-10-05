@@ -57,7 +57,7 @@ logger = logging.getLogger("askmira.opsec")
 #: The roles an IP allowlist restricts: anybody who can reach other people's
 #: records or payroll.
 PRIVILEGED_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.PLATFORM_ADMIN, UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS}
+    {UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SUB_ADMIN}
 )
 
 #: `last_seen_at` is written at most this often per device. Writing it on

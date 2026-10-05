@@ -75,8 +75,8 @@ __all__ = ["SOURCES", "inbox"]
 
 logger = logging.getLogger(__name__)
 
-ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.TENANT_ADMIN, UserRole.HR_ADMIN})
-EVERYONE: frozenset[UserRole] = frozenset(UserRole) - {UserRole.PLATFORM_ADMIN}
+ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.ADMIN})
+EVERYONE: frozenset[UserRole] = frozenset(UserRole) - {UserRole.SUPER_ADMIN}
 
 _OPEN_DPR = (
     DprRequestStatus.RECEIVED,
@@ -454,24 +454,27 @@ class Source:
     roles: frozenset[UserRole]
     fetch: Callable[[AsyncSession, User], Awaitable[list[dict[str, Any]]]]
     module: str | None = None
+    #: Anybody with a direct report also decides here, for their reporting line.
+    line_managers: bool = False
 
 
 #: Each role set is the gate on that module's decide endpoint.
 SOURCES: tuple[Source, ...] = (
     Source("leave", "Time off", "/time", EVERYONE, _leave, module="leave"),
-    # Comp-off approvers are line managers (promoted to the manager role when
-    # they gain reports) or HR; the Time page lists them for anyone named.
+    # Comp-off approvers are line managers or HR; the Time page lists them for
+    # anyone named.
     Source(
-        "leave_comp_off", "Comp-off claims", "/time", permissions.MANAGER_ROLES,
-        comp_off_service.approval_items, module="leave",
+        "leave_comp_off", "Comp-off claims", "/time", permissions.HR_ROLES,
+        comp_off_service.approval_items, module="leave", line_managers=True,
     ),
     Source(
         "attendance_regularisation",
         "Attendance corrections",
         "/time/attendance-review?tab=regularisations",
-        permissions.MANAGER_ROLES,
+        permissions.HR_ROLES,
         _regularisations,
         module="leave",
+        line_managers=True,
     ),
     Source(
         "expense_claim", "Expense claims", "/expenses/review", permissions.HR_ROLES,
@@ -481,11 +484,11 @@ SOURCES: tuple[Source, ...] = (
     # The line manager's stage, before finance: the caller's own reporting line.
     Source(
         "expense_claim_manager", "Team expense claims", "/expenses/team",
-        permissions.MANAGER_ROLES, expense_inbox.manager_claim_items,
+        permissions.HR_ROLES, expense_inbox.manager_claim_items, line_managers=True,
     ),
     Source(
         "travel_request_manager", "Team travel requests", "/expenses/team",
-        permissions.MANAGER_ROLES, expense_inbox.manager_travel_items,
+        permissions.HR_ROLES, expense_inbox.manager_travel_items, line_managers=True,
     ),
     Source(
         "requisition", "Requisitions", "/hiring", permissions.HR_ROLES, _requisitions,
@@ -520,8 +523,8 @@ SOURCES: tuple[Source, ...] = (
     Source("agent_proposal", "AI proposals", "/compliance/ai", permissions.HR_ROLES,
            _agent_proposals),
     Source(
-        "asset_request", "Asset requests", "/assets/requests", permissions.MANAGER_ROLES,
-        assets_service.approvals_inbox,
+        "asset_request", "Asset requests", "/assets/requests", permissions.HR_ROLES,
+        assets_service.approvals_inbox, line_managers=True,
     ),
     Source(
         "profile_change", "Profile changes", "/people/change-requests", permissions.HR_ROLES,
@@ -532,8 +535,8 @@ SOURCES: tuple[Source, ...] = (
         documents_vault.pending_verification_items,
     ),
     Source(
-        "resignation", "Resignations", "/people/exits", permissions.MANAGER_ROLES,
-        resignation_service.inbox_items,
+        "resignation", "Resignations", "/people/exits", permissions.HR_ROLES,
+        resignation_service.inbox_items, line_managers=True,
     ),
     Source(
         "clearance_task", "Clearance tasks", "/people/clearance", EVERYONE,
@@ -558,7 +561,9 @@ async def inbox(session: AsyncSession, user: User) -> ApprovalInboxRead:
             continue
         try:
             # The role gate on the module's own decide endpoint.
-            permissions.require_role(user, source.roles, detail=source.label)
+            permissions.require_role(
+                user, source.roles, detail=source.label, line_managers=source.line_managers
+            )
         except HTTPException:
             continue
         try:

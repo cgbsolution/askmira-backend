@@ -42,7 +42,7 @@ async def _people(session, tenant, legal_entity, location):
     colleague = await person(session, tenant, legal_entity, location, code="EMP2",
                              role=UserRole.EMPLOYEE)
     admin = await person(session, tenant, legal_entity, location, code="ADM1",
-                         role=UserRole.HR_ADMIN)
+                         role=UserRole.ADMIN)
     return borrower, colleague, admin
 
 

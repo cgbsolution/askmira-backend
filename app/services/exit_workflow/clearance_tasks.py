@@ -28,7 +28,7 @@ from app.models.exit_workflow import (
     ExitRecord,
     ExitStatus,
 )
-from app.models.user import User, UserRole
+from app.models.user import User
 
 __all__ = ["inbox_items", "my_tasks"]
 
@@ -43,7 +43,7 @@ async def _rows(
         ClearanceItem.owner_user_id == user.id,
     )
     conditions = [mine]
-    if user.role is UserRole.MANAGER:
+    if user.has_reports:
         team = await permissions.reporting_line(session, user)
         if team:
             conditions.append(

@@ -33,12 +33,12 @@ def test_verify_rejects_a_malformed_hash() -> None:
 
 
 def test_access_token_carries_tenant_and_role() -> None:
-    token = create_access_token(user_id="u-1", tenant_id="t-1", role="hr_admin")
+    token = create_access_token(user_id="u-1", tenant_id="t-1", role="admin")
     payload = decode_token(token, expected_type="access")
 
     assert payload["sub"] == "u-1"
     assert payload["tid"] == "t-1"
-    assert payload["role"] == "hr_admin"
+    assert payload["role"] == "admin"
 
 
 def test_a_refresh_token_is_not_accepted_as_an_access_token() -> None:

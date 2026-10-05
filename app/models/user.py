@@ -21,15 +21,20 @@ if TYPE_CHECKING:
 class UserRole(str, enum.Enum):
     """Coarse role. Fine-grained per-module access lives in RoleModulePermission.
 
-    PLATFORM_ADMIN is ours, not a customer's — it is the only role that is not
-    scoped to a single tenant.
+    - SUPER_ADMIN is ours, not a customer's — it manages the tenants on the
+      platform and is the only role that is not scoped to a single tenant.
+    - ADMIN runs one company's workspace: settings, users, approvals, money.
+    - SUB_ADMIN does the HR work in that workspace but cannot change its
+      settings, its users or sign off money.
+    - EMPLOYEE is everybody else.
+
+    Managing people is not a role. Anybody with a direct report acts for their
+    reporting line whatever their role — see `User.has_reports`.
     """
 
-    PLATFORM_ADMIN = "platform_admin"
-    TENANT_ADMIN = "tenant_admin"
-    HR_ADMIN = "hr_admin"
-    HR_OPS = "hr_ops"
-    MANAGER = "manager"
+    SUPER_ADMIN = "super_admin"
+    ADMIN = "admin"
+    SUB_ADMIN = "sub_admin"
     EMPLOYEE = "employee"
 
 
@@ -75,6 +80,12 @@ class User(Base, UUIDMixin, TenantMixin, TimestampMixin):
     employee: Mapped[Employee | None] = relationship(
         back_populates="user", foreign_keys=[employee_id]
     )
+
+    # Not a column. Whether somebody reports to this login's employee record,
+    # worked out from the org chart by `get_current_user` on every request so
+    # it can never lag a reorg. False until then, so a User loaded any other
+    # way fails closed on manager-only actions.
+    has_reports = False
 
     def __repr__(self) -> str:
         return f"<User {self.email} ({self.role.value})>"

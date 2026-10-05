@@ -109,8 +109,8 @@ def _checklist(it_user: User) -> dict:
 
 
 async def test_a_checklist_becomes_a_plan_that_the_people_on_it_complete(client, session, tenant):
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Priya Hr")
-    manager = await make_person(session, tenant, role=UserRole.MANAGER, name="Meera Manager")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Priya Hr")
+    manager = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Manager")
     buddy = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Bala Buddy")
     it_user = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Ishan It")
     joiner = await make_person(
@@ -268,7 +268,7 @@ async def test_a_checklist_becomes_a_plan_that_the_people_on_it_complete(client,
 
 
 async def test_joining_day_activates_pre_joiners_and_a_hire_starts_on_the_default(session, tenant):
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Priya Hr")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Priya Hr")
     today = rules.india_today()
     arrived = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Arun Arrived")
     waiting = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Wasim Waiting")
@@ -316,9 +316,9 @@ async def test_joining_day_activates_pre_joiners_and_a_hire_starts_on_the_defaul
 async def test_guard_rails_reassignment_skips_overdue_and_isolation(
     client, session, tenant, other_tenant
 ):
-    hr = await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Priya Hr")
-    ops = await make_person(session, tenant, role=UserRole.HR_OPS, name="Omar Ops")
-    manager = await make_person(session, tenant, role=UserRole.MANAGER, name="Meera Manager")
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Priya Hr")
+    ops = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Omar Ops")
+    manager = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Manager")
     joiner = await make_person(
         session,
         tenant,
@@ -326,7 +326,7 @@ async def test_guard_rails_reassignment_skips_overdue_and_isolation(
         name="Neha Joiner",
         manager=await _employee(session, manager),
     )
-    outsider = await make_person(session, other_tenant, role=UserRole.HR_ADMIN, name="Sam Other")
+    outsider = await make_person(session, other_tenant, role=UserRole.ADMIN, name="Sam Other")
     # Joined five days ago, so pre-boarding tasks are already overdue.
     joiner_emp = await _employee(session, joiner)
     joiner_emp.date_of_joining = rules.india_today() - timedelta(days=5)

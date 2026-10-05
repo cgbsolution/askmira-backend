@@ -153,9 +153,9 @@ def _lock(tenant: Tenant, user: User, year: int, month: int) -> AttendancePeriod
 @pytest.fixture
 async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, location: Location):
     _, maker = await _person(session, tenant, legal_entity, location, code="MAKER",
-                             role=UserRole.HR_ADMIN)
+                             role=UserRole.ADMIN)
     _, checker = await _person(session, tenant, legal_entity, location, code="CHECKER",
-                               role=UserRole.HR_OPS)
+                               role=UserRole.SUB_ADMIN)
     meera_emp, meera = await _person(session, tenant, legal_entity, location, code="MEERA",
                                      role=UserRole.EMPLOYEE)
     ravi_emp, ravi = await _person(session, tenant, legal_entity, location, code="RAVI",

@@ -49,14 +49,14 @@ def _storage_root(tmp_path, monkeypatch):
 @pytest.fixture
 async def team(session: AsyncSession, tenant: Tenant) -> dict[str, User]:
     """A manager with one report, four of the report's peers, and HR."""
-    maya = await make_person(session, tenant, role=UserRole.MANAGER, name="Maya Menon")
+    maya = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Maya Menon")
     manager_employee = await session.get(Employee, maya.employee_id)
     people = {
         "maya": maya,
         "ravi": await make_person(
             session, tenant, role=UserRole.EMPLOYEE, name="Ravi Kumar", manager=manager_employee
         ),
-        "hr": await make_person(session, tenant, role=UserRole.HR_ADMIN, name="Asha Admin"),
+        "hr": await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin"),
     }
     for index, name in enumerate(["Deepa Nair", "Farhan Ali", "Gita Rao", "Hari Shah"]):
         people[f"p{index + 1}"] = await make_person(

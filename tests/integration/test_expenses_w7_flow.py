@@ -86,7 +86,7 @@ async def people(session, tenant, legal_entity, location):
         session, tenant, legal_entity, location, code="STAFF2", role=UserRole.EMPLOYEE
     )
     finance, finance_user = await _person(
-        session, tenant, legal_entity, location, code="FIN1", role=UserRole.HR_OPS
+        session, tenant, legal_entity, location, code="FIN1", role=UserRole.SUB_ADMIN
     )
     return {
         "staff": staff, "staff_user": staff_user,

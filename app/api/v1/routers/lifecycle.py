@@ -32,9 +32,8 @@ from app.services.lifecycle import service as lifecycle_service
 
 router = APIRouter(tags=["lifecycle"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-VIEW_ROLES = (*HR_ROLES, UserRole.MANAGER)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -161,7 +160,7 @@ async def effect_due(
 @router.get(
     "/lifecycle/events",
     response_model=list[EventRead],
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def list_events(
     user: CurrentUser,
@@ -183,7 +182,7 @@ async def list_events(
 
 @router.get(
     "/lifecycle/employees/{employee_id}/history",
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def history(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession
@@ -196,7 +195,7 @@ async def history(
 
 @router.get(
     "/lifecycle/employees/{employee_id}/state",
-    dependencies=[Depends(require_roles(*VIEW_ROLES))],
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def state_on(
     employee_id: uuid.UUID, on: date, user: CurrentUser, session: DbSession
@@ -232,7 +231,10 @@ async def bulk(
     return result
 
 
-@router.get("/lifecycle/batches", dependencies=[Depends(require_roles(*VIEW_ROLES))])
+@router.get(
+    "/lifecycle/batches",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
 async def list_batches(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     return await lifecycle_service.list_batches(session, user)
 

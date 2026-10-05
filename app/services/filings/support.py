@@ -222,7 +222,7 @@ def system_actor(tenant_id: uuid.UUID) -> User:
         email="scheduler@askmira.invalid",
         password_hash="!",
         full_name="Scheduled job",
-        role=UserRole.HR_OPS,
+        role=UserRole.SUB_ADMIN,
         is_active=True,
     )
 

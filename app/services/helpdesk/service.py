@@ -6,10 +6,10 @@ WHO SEES A TICKET
 
 - **The requester** — the employee the ticket is about — sees it with its public
   thread. Never an internal note, never a file attached to one.
-- **Agents** work it: HR (tenant admin, HR admin, HR ops), the owner of its
+- **Agents** work it: HR (admin, sub-admin), the owner of its
   category, and whoever it is assigned to.
 - **A confidential ticket** (a grievance) narrows the agents to the category
-  owner, the assignee and tenant/HR admins. HR ops does not see it.
+  owner, the assignee and admins. A sub-admin does not see it.
 
 Anyone else gets a 404, not a 403, so a ticket's existence is not confirmed to a
 colleague guessing ids. And nobody works their own ticket: an HR admin who
@@ -94,7 +94,7 @@ __all__ = [
 INDIA = ZoneInfo("Asia/Kolkata")
 
 #: Who reads a confidential ticket besides its requester, owner and assignee.
-ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.TENANT_ADMIN, UserRole.HR_ADMIN})
+ADMIN_ROLES: frozenset[UserRole] = frozenset({UserRole.ADMIN})
 
 _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
 
@@ -154,7 +154,7 @@ Viewer = Literal["requester", "agent"]
 
 
 def _is_admin(user: User) -> bool:
-    return user.role in ADMIN_ROLES or user.role is UserRole.PLATFORM_ADMIN
+    return user.role in ADMIN_ROLES or user.role is UserRole.SUPER_ADMIN
 
 
 def viewer_role(
@@ -570,7 +570,7 @@ async def _routing_user_ids(
     session: AsyncSession, user: User, ticket: HelpdeskTicket, category: HelpdeskCategory
 ) -> list[uuid.UUID]:
     """Who hears about a ticket nobody holds yet: its category owner, else HR —
-    only tenant and HR admins for a confidential one."""
+    only admins for a confidential one."""
     if category.owner_user_id is not None:
         owner = await session.scalar(
             tenant_scoped(
@@ -1301,8 +1301,8 @@ async def assign_ticket(
                 detail=(
                     f"{assignee.full_name} cannot work this ticket. "
                     + (
-                        "A confidential ticket goes only to its category owner or a "
-                        "tenant or HR admin."
+                        "A confidential ticket goes only to its category owner or an "
+                        "admin."
                         if ticket.is_confidential
                         else "Pick someone in HR or the category owner."
                     )

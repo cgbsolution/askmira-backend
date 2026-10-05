@@ -95,7 +95,8 @@ async def list_candidates(
     """Candidates this caller may see, with the moves open to each and the real total."""
     permissions.require_role(
         user,
-        permissions.MANAGER_ROLES,
+        permissions.HR_ROLES,
+        line_managers=True,
         detail="Candidates are visible to HR and to the hiring manager on the requisition.",
     )
     stmt = tenant_scoped(

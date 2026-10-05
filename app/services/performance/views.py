@@ -539,7 +539,10 @@ async def _increment_cycle(
 
 async def list_increment_cycles(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     permissions.require_role(
-        user, permissions.MANAGER_ROLES, detail="Increment cycles are for managers and HR."
+        user,
+        permissions.HR_ROLES,
+        line_managers=True,
+        detail="Increment cycles are for managers and HR.",
     )
     cycles = (
         await session.scalars(
@@ -571,7 +574,10 @@ async def increment_cycle_detail(
     session: AsyncSession, user: User, cycle_id: uuid.UUID
 ) -> dict[str, Any]:
     permissions.require_role(
-        user, permissions.MANAGER_ROLES, detail="Increment cycles are for managers and HR."
+        user,
+        permissions.HR_ROLES,
+        line_managers=True,
+        detail="Increment cycles are for managers and HR.",
     )
     cycle = await _increment_cycle(session, user, cycle_id)
     bands = (
@@ -655,7 +661,10 @@ async def increment_candidates(
     what is left while they allocate.
     """
     permissions.require_role(
-        user, permissions.MANAGER_ROLES, detail="Increment recommendations are for managers and HR."
+        user,
+        permissions.HR_ROLES,
+        line_managers=True,
+        detail="Increment recommendations are for managers and HR.",
     )
     cycle = await _increment_cycle(session, user, cycle_id)
     is_hr = permissions.is_hr(user)

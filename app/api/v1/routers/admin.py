@@ -37,7 +37,7 @@ from app.services.scheduler import service as scheduler_service
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 
 
@@ -136,7 +136,7 @@ async def change_role(
     session: DbSession,
     request: Request,
 ) -> ManagedUserRead:
-    """Change somebody else's role. Never your own; never to platform admin."""
+    """Change somebody else's role. Never your own; never to super admin."""
     return await user_admin.set_role(
         session, user, user_id=user_id, role=payload.role, reason=payload.reason,
         request=request,
@@ -285,10 +285,10 @@ async def scheduler_runs(
 
 @router.post(
     "/scheduler/jobs/{job_key}/run",
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def run_job_now(
     job_key: str, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Run one job now, for this workspace only. Tenant admins only."""
+    """Run one job now, for this workspace only. Admins only."""
     return await scheduler_service.run_job_now(session, user, job_key=job_key, request=request)

@@ -29,8 +29,8 @@ from app.services.agenteval.suites import SUITES
 
 router = APIRouter(tags=["agent-eval"])
 
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
-HR_ROLES = (*ADMIN_ROLES, UserRole.HR_OPS)
+ADMIN_ROLES = (UserRole.ADMIN,)
+HR_ROLES = (*ADMIN_ROLES, UserRole.SUB_ADMIN)
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────

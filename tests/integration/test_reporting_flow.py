@@ -42,7 +42,7 @@ from app.services.reporting.compiler import (
     Selection,
 )
 from app.services.reporting.library import STARTERS
-from tests.integration.conftest import requires_db
+from tests.integration.conftest import as_caller, requires_db
 
 pytestmark = requires_db
 
@@ -166,8 +166,9 @@ async def test_a_manager_only_sees_their_own_tree_in_a_real_query(
     await _employee(session, tenant, legal_entity, "REP1", manager_id=boss.id)
     await _employee(session, tenant, legal_entity, "NOTM")
 
-    manager_user = await _user(
-        session, tenant, "mgr@acme.test", UserRole.MANAGER, employee_id=boss.id
+    manager_user = await as_caller(
+        session,
+        await _user(session, tenant, "mgr@acme.test", UserRole.EMPLOYEE, employee_id=boss.id),
     )
 
     result = await report_service.run_definition(
@@ -458,7 +459,7 @@ async def test_a_run_returning_restricted_data_is_audited(
 
     run = await session.scalar(select(ReportRun).where(ReportRun.tenant_id == tenant.id))
     assert run.max_sensitivity == "payroll_only"
-    assert run.run_as_role == "hr_admin"
+    assert run.run_as_role == "admin"
 
 
 async def test_a_run_returning_only_public_data_is_not_audited(
@@ -541,7 +542,7 @@ async def test_a_shared_report_runs_as_the_caller_not_its_author(
     turn every shared salary report into a privilege-escalation route."""
     boss = await _employee(session, tenant, legal_entity, "SHRM")
     manager_user = await _user(
-        session, tenant, "shared-mgr@acme.test", UserRole.MANAGER, employee_id=boss.id
+        session, tenant, "shared-mgr@acme.test", UserRole.EMPLOYEE, employee_id=boss.id
     )
 
     report = Report(
@@ -581,7 +582,7 @@ async def test_a_shared_report_runs_as_the_caller_not_its_author(
 async def test_a_private_report_is_invisible_to_everybody_else(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
-    other = await _user(session, tenant, "other-hr@acme.test", UserRole.HR_ADMIN)
+    other = await _user(session, tenant, "other-hr@acme.test", UserRole.ADMIN)
     report = Report(
         tenant_id=tenant.id, name="Mine", entity_key="employee",
         definition=report_service.definition_to_json(
@@ -624,7 +625,7 @@ async def test_a_manager_cannot_clone_a_starter_they_could_not_run(
     """Cloning it would produce a report they own and cannot open."""
     boss = await _employee(session, tenant, legal_entity, "CLNM")
     manager_user = await _user(
-        session, tenant, "clone-mgr@acme.test", UserRole.MANAGER, employee_id=boss.id
+        session, tenant, "clone-mgr@acme.test", UserRole.EMPLOYEE, employee_id=boss.id
     )
     with pytest.raises(HTTPException) as exc:
         await report_service.clone_starter(
@@ -646,7 +647,7 @@ async def test_a_scheduled_send_records_every_recipient(
     Somebody scheduling the salary register weekly to a personal address is
     invisible unless the sends are recorded with their recipients.
     """
-    recipient = await _user(session, tenant, "recip@acme.test", UserRole.HR_ADMIN)
+    recipient = await _user(session, tenant, "recip@acme.test", UserRole.ADMIN)
     report = Report(
         tenant_id=tenant.id, name="PANs", entity_key="employee",
         definition=report_service.definition_to_json(
@@ -703,8 +704,11 @@ async def test_each_recipients_copy_is_compiled_as_that_recipient(
     everybody would send a manager the whole tenant's PANs because an HR admin
     set it up."""
     boss = await _employee(session, tenant, legal_entity, "SCHM")
+    # A manager because somebody reports to them; the schedule works that out
+    # for each recipient.
+    await _employee(session, tenant, legal_entity, "SCHR", manager_id=boss.id)
     manager_user = await _user(
-        session, tenant, "sched-mgr@acme.test", UserRole.MANAGER, employee_id=boss.id
+        session, tenant, "sched-mgr@acme.test", UserRole.EMPLOYEE, employee_id=boss.id
     )
 
     report = Report(

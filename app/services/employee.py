@@ -38,7 +38,6 @@ from app.schemas.employee import (
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit
 from app.services.employee_profile import HIRING_KEYS
-from app.services.identity.roles import ensure_manager_role
 
 #: A reporting chain longer than this is a loop or a data error.
 MAX_CHAIN = 25
@@ -304,9 +303,6 @@ async def create_employee(
     employee = Employee(tenant_id=user.tenant_id, **payload.model_dump())
     session.add(employee)
     await session.flush()
-    # Whoever this person reports to is now a line manager, and their login
-    # has to be able to approve for them.
-    await ensure_manager_role(session, user, employee.manager_id, request=request)
 
     await audit.record(
         session,
@@ -344,7 +340,7 @@ async def update_employee(
     if user.employee_id is not None and employee_id == user.employee_id:
         raise permissions.forbidden(
             "You cannot edit your own record through HR. Change your contact details on "
-            "your profile; anything else on your record is changed by another HR admin."
+            "your profile; anything else on your record is changed by somebody else in HR."
         )
     employee = await get_employee(session, user, employee_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -374,7 +370,6 @@ async def update_employee(
         raise _unprocessable("The date of exit cannot be before the date of joining")
 
     diff = _diff(employee, changes)
-    manager_changed = "manager_id" in changes and changes["manager_id"] != employee.manager_id
     for key, value in changes.items():
         setattr(employee, key, value)
 
@@ -389,8 +384,6 @@ async def update_employee(
         summary=f"Updated employee {employee.employee_code}",
         request=request,
     )
-    if manager_changed:
-        await ensure_manager_role(session, user, employee.manager_id, request=request)
     await session.commit()
     await session.refresh(employee)
     return employee

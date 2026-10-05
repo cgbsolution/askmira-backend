@@ -37,8 +37,8 @@ from app.services.jobboards import distribution, overview
 
 router = APIRouter(tags=["careers"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 #: Room for the form fields around the largest file each route accepts.
 _FORM_OVERHEAD = 64 * 1024

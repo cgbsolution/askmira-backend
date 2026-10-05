@@ -65,8 +65,8 @@ from app.services.culture import surveys as survey_engine
 
 router = APIRouter(tags=["culture-depth"])
 
-HR_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Posture and instruments ─────────────────────────────────────────────────
@@ -126,7 +126,8 @@ async def tag_value(
 ) -> dict[str, Any]:
     permissions.require_role(
         user,
-        permissions.MANAGER_ROLES,
+        permissions.HR_ROLES,
+        line_managers=True,
         detail=(
             "Values are tagged by managers and HR; colleagues recognise each "
             "other through shoutouts."

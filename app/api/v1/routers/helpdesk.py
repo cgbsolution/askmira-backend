@@ -11,8 +11,8 @@ Who may call what:
   queue, the SLA figures, assign, change status and priority, reply publicly or
   add an internal note. Nobody works a ticket they raised themselves.
 - Confidential tickets (grievances): only the requester, the category owner,
-  the assignee and tenant/HR admins.
-- Tenant and HR admins: categories.
+  the assignee and admins.
+- Admins: categories.
 
 Which ticket a caller may touch is decided in the service, not here; every
 ungated route is declared with its rule in `app/core/access_policies/helpdesk.py`.
@@ -50,7 +50,7 @@ from app.services.helpdesk import categories, service
 
 router = APIRouter(prefix="/helpdesk", tags=["helpdesk"])
 
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 
 async def _read_upload(file: UploadFile | None) -> tuple[bytes | None, str | None]:

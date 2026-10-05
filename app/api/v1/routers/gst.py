@@ -52,8 +52,8 @@ from app.services.gst import service as gst
 
 router = APIRouter(tags=["gst"])
 
-FINANCE_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS)
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+FINANCE_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 # ── Posture and reference data ──────────────────────────────────────────────

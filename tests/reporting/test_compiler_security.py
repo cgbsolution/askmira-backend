@@ -74,7 +74,7 @@ def test_every_starter_report_carries_the_tenant_predicate() -> None:
     """
     for starter in STARTERS:
         compiled = compile_report(
-            starter.definition, role="tenant_admin", scope=_hr(), today=TODAY
+            starter.definition, role="admin", scope=_hr(), today=TODAY
         )
         for statement in (compiled.statement, compiled.count_statement):
             sql = rendered_sql(statement)
@@ -88,7 +88,7 @@ def test_every_entity_can_be_queried_and_every_one_is_tenant_scoped() -> None:
         first = ent.fields[0]
         compiled = compile_report(
             Definition(entity_key=key, selections=(Selection(first.key),)),
-            role="tenant_admin",
+            role="admin",
             scope=_hr(),
             today=TODAY,
         )
@@ -100,7 +100,7 @@ def test_the_tenant_predicate_uses_the_requesters_tenant_not_the_definitions() -
     """There is no field on a definition that could carry a tenant id. This test
     exists to keep it that way: the value is bound from the scope."""
     compiled = compile_report(
-        _headcount(), role="tenant_admin",
+        _headcount(), role="admin",
         scope=Scope(kind=ScopeKind.TENANT, tenant_id=OTHER_TENANT), today=TODAY,
     )
     params = compiled.statement.compile().params
@@ -111,7 +111,7 @@ def test_the_tenant_predicate_uses_the_requesters_tenant_not_the_definitions() -
 def test_joined_tables_are_tenant_scoped_in_the_join_predicate() -> None:
     """Not because ids collide, but because "ids never collide" is not a security
     guarantee — it is an assumption about a UUID generator."""
-    compiled = compile_report(_headcount(), role="tenant_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(_headcount(), role="admin", scope=_hr(), today=TODAY)
     sql = rendered_sql(compiled.statement)
     assert "departments.tenant_id = employees.tenant_id" in sql
 
@@ -231,12 +231,12 @@ def test_hr_ops_sees_hr_fields_but_not_payroll_fields() -> None:
         entity_key="employee",
         selections=(Selection("employee_name"), Selection("date_of_exit")),
     )
-    compiled = compile_report(hr_only, role="hr_ops", scope=_hr(), today=TODAY)
+    compiled = compile_report(hr_only, role="sub_admin", scope=_hr(), today=TODAY)
     assert compiled.denied_fields == ()
 
     payroll = Definition(entity_key="employee", selections=(Selection("pan"),))
     with pytest.raises(CompileError):
-        compile_report(payroll, role="hr_ops", scope=_hr(), today=TODAY)
+        compile_report(payroll, role="sub_admin", scope=_hr(), today=TODAY)
 
 
 def test_an_unknown_role_gets_the_least_access_not_the_most() -> None:
@@ -288,7 +288,7 @@ def test_an_employee_sees_only_themselves() -> None:
 def test_hr_gets_no_row_restriction_but_still_gets_the_tenant_one() -> None:
     compiled = compile_report(
         Definition(entity_key="employee", selections=(Selection("employee_name"),)),
-        role="hr_admin", scope=_hr(), today=TODAY,
+        role="admin", scope=_hr(), today=TODAY,
     )
     sql = rendered_sql(compiled.statement)
     assert "employees.id IN" not in sql
@@ -324,7 +324,7 @@ def test_an_entity_with_no_employee_column_refuses_scoped_roles() -> None:
         entity_key="candidate", selections=(Selection("candidate_stage"),)
     )
     with pytest.raises(CompileError) as exc:
-        compile_report(definition, role="hr_ops", scope=_manager(), today=TODAY)
+        compile_report(definition, role="sub_admin", scope=_manager(), today=TODAY)
     assert "not the safe fallback" in str(exc.value)
 
 
@@ -359,7 +359,7 @@ def test_an_adversarial_filter_value_becomes_a_bound_parameter(payload) -> None:
         selections=(Selection("employee_name"),),
         filters=(Filter("grade", Operator.EQUALS, payload),),
     )
-    compiled = compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(definition, role="admin", scope=_hr(), today=TODAY)
     sql = rendered_sql(compiled.statement)
 
     # Word boundaries, because "deleted_at IS NULL" legitimately contains
@@ -383,14 +383,14 @@ def test_an_adversarial_field_key_is_refused_by_the_catalogue(payload) -> None:
     column is to match a key that already exists."""
     definition = Definition(entity_key="employee", selections=(Selection(payload),))
     with pytest.raises(CompileError, match="not a field"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
 def test_an_adversarial_entity_key_is_refused(payload) -> None:
     definition = Definition(entity_key=payload, selections=(Selection("x"),))
     with pytest.raises(CompileError, match="not a reportable entity"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
@@ -401,7 +401,7 @@ def test_an_adversarial_group_by_is_refused(payload) -> None:
         group_by=(payload,),
     )
     with pytest.raises(CompileError):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 @pytest.mark.parametrize("payload", ADVERSARIAL)
@@ -412,7 +412,7 @@ def test_an_adversarial_sort_key_is_refused(payload) -> None:
         sort_by=((payload, "asc"),),
     )
     with pytest.raises(CompileError):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_an_adversarial_sort_direction_cannot_inject() -> None:
@@ -423,7 +423,7 @@ def test_an_adversarial_sort_direction_cannot_inject() -> None:
         selections=(Selection("employee_name"),),
         sort_by=(("employee_name", "asc; DROP TABLE employees; --"),),
     )
-    compiled = compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(definition, role="admin", scope=_hr(), today=TODAY)
     sql = rendered_sql(compiled.statement)
     assert not re.search(r"\bDROP\b", sql.upper())
     assert ";" not in sql
@@ -436,7 +436,7 @@ def test_an_adversarial_aggregation_is_refused(payload) -> None:
         entity_key="employee", selections=(Selection("headcount", payload),)
     )
     with pytest.raises(CompileError, match="not available"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_a_wildcard_in_a_contains_filter_is_escaped() -> None:
@@ -447,7 +447,7 @@ def test_a_wildcard_in_a_contains_filter_is_escaped() -> None:
         selections=(Selection("employee_name"),),
         filters=(Filter("designation", Operator.CONTAINS, "100%"),),
     )
-    compiled = compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(definition, role="admin", scope=_hr(), today=TODAY)
     assert "ESCAPE" in rendered_sql(compiled.statement).upper()
 
 
@@ -462,7 +462,7 @@ def test_the_page_size_is_capped_whatever_the_definition_asks_for() -> None:
         selections=(Selection("employee_name"),),
         limit=10_000_000,
     )
-    compiled = compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(definition, role="admin", scope=_hr(), today=TODAY)
     params = compiled.statement.compile().params
     assert MAX_PAGE_SIZE in params.values()
 
@@ -471,14 +471,14 @@ def test_a_negative_offset_becomes_zero_rather_than_an_error() -> None:
     definition = Definition(
         entity_key="employee", selections=(Selection("employee_name"),), offset=-500
     )
-    compiled = compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(definition, role="admin", scope=_hr(), today=TODAY)
     assert 0 in compiled.statement.compile().params.values()
 
 
 def test_soft_deleted_rows_are_excluded() -> None:
     """A headcount that counts deleted employees is a wrong number nobody would
     think to query."""
-    compiled = compile_report(_headcount(), role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(_headcount(), role="admin", scope=_hr(), today=TODAY)
     assert "deleted_at IS NULL" in rendered_sql(compiled.statement)
 
 
@@ -491,14 +491,14 @@ def test_a_column_that_is_neither_grouped_nor_aggregated_is_refused() -> None:
         group_by=("department",),
     )
     with pytest.raises(CompileError, match="neither grouped nor aggregated"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_a_report_with_no_columns_is_refused() -> None:
     with pytest.raises(CompileError, match="at least one column"):
         compile_report(
             Definition(entity_key="employee", selections=()),
-            role="hr_admin", scope=_hr(), today=TODAY,
+            role="admin", scope=_hr(), today=TODAY,
         )
 
 
@@ -510,7 +510,7 @@ def test_an_empty_in_filter_is_refused_rather_than_guessed_at() -> None:
         filters=(Filter("grade", Operator.IN, None, ()),),
     )
     with pytest.raises(CompileError, match="no values"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_an_operator_that_makes_no_sense_for_the_type_is_refused() -> None:
@@ -520,7 +520,7 @@ def test_an_operator_that_makes_no_sense_for_the_type_is_refused() -> None:
         filters=(Filter("date_of_joining", Operator.CONTAINS, "April"),),
     )
     with pytest.raises(CompileError, match="cannot be used on"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_aggregating_a_dimension_is_refused() -> None:
@@ -528,7 +528,7 @@ def test_aggregating_a_dimension_is_refused() -> None:
         entity_key="employee", selections=(Selection("grade", "sum"),)
     )
     with pytest.raises(CompileError, match="not available"):
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY)
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY)
 
 
 def test_only_the_joins_a_report_needs_are_built() -> None:
@@ -536,7 +536,7 @@ def test_only_the_joins_a_report_needs_are_built() -> None:
     a route to salary through a report about attendance."""
     plain = compile_report(
         Definition(entity_key="employee", selections=(Selection("employee_name"),)),
-        role="hr_admin", scope=_hr(), today=TODAY,
+        role="admin", scope=_hr(), today=TODAY,
     )
     sql = rendered_sql(plain.statement)
     assert "departments" not in sql
@@ -545,7 +545,7 @@ def test_only_the_joins_a_report_needs_are_built() -> None:
 
 
 def test_joins_are_left_so_a_row_without_a_department_still_counts() -> None:
-    compiled = compile_report(_headcount(), role="hr_admin", scope=_hr(), today=TODAY)
+    compiled = compile_report(_headcount(), role="admin", scope=_hr(), today=TODAY)
     assert "LEFT OUTER JOIN" in rendered_sql(compiled.statement)
 
 
@@ -556,6 +556,6 @@ def test_the_manager_join_is_aliased_so_it_does_not_collide() -> None:
         selections=(Selection("employee_name"), Selection("manager_name")),
     )
     sql = rendered_sql(
-        compile_report(definition, role="hr_admin", scope=_hr(), today=TODAY).statement
+        compile_report(definition, role="admin", scope=_hr(), today=TODAY).statement
     )
     assert "AS manager" in sql or "manager." in sql

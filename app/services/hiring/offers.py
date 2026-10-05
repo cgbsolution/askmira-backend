@@ -53,7 +53,7 @@ from app.models.offer import (
 )
 from app.models.payroll import EmployeeSalary, SalaryStructure
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services import audit
 from app.services.documents import letter_merge, pdf
@@ -734,6 +734,7 @@ async def approve_offer(
     authority = approvers.can_decide_step(
         approver_role=pending.approver_role,
         user_role=user.role.value,
+        has_reports=user.has_reports,
         is_hiring_manager=(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
@@ -1506,6 +1507,7 @@ def _my_authority(
     authority = approvers.can_decide_step(
         approver_role=pending.approver_role,
         user_role=user.role.value,
+        has_reports=user.has_reports,
         is_hiring_manager=(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
@@ -1643,7 +1645,7 @@ async def offer_detail(
         {s.decided_by_user_id for s in steps if s.decided_by_user_id}
         | ({offer.created_by_user_id} if offer.created_by_user_id else set()),
     )
-    is_admin = user.role.value in ("tenant_admin", "hr_admin", "platform_admin")
+    is_admin = user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
     return {
         "offer": {

@@ -39,7 +39,7 @@ class TemplateContent(BaseModel):
     @field_validator("approver_roles")
     @classmethod
     def _known_roles(cls, roles: list[str]) -> list[str]:
-        known = {role.value for role in UserRole} - {UserRole.PLATFORM_ADMIN.value}
+        known = {role.value for role in UserRole} - {UserRole.SUPER_ADMIN.value}
         unknown = sorted(set(roles) - known)
         if unknown:
             raise ValueError(f"Unknown approver role(s): {', '.join(unknown)}")

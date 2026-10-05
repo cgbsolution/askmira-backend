@@ -31,7 +31,7 @@ from app.services.payroll import service as salary_service
 router = APIRouter(
     tags=["payroll"],
     dependencies=[
-        Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS))
+        Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN))
     ],
 )
 

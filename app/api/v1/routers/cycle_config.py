@@ -28,7 +28,7 @@ from app.services.appraisal import cycle_config as cycle_service
 router = APIRouter(tags=["cycle-config"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 
 # ── Assignment rules ────────────────────────────────────────────────────────

@@ -87,11 +87,11 @@ async def _person(
 async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, location: Location):
     hr_emp, hr = await _person(
         session, tenant, legal_entity, location, code="HR1", name="Priya Ramesh",
-        role=UserRole.HR_ADMIN,
+        role=UserRole.ADMIN,
     )
     boss_emp, boss = await _person(
         session, tenant, legal_entity, location, code="MGR1", name="Vikram Shah",
-        role=UserRole.MANAGER,
+        role=UserRole.EMPLOYEE,
     )
     meera_emp, meera = await _person(
         session, tenant, legal_entity, location, code="EMP1", name="Meera Nair",

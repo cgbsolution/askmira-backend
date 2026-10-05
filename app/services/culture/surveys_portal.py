@@ -473,7 +473,10 @@ async def create_plan(
     session: AsyncSession, user: User, payload: ActionPlanCreate, *, request: Request | None = None
 ) -> ActionPlanRead:
     permissions.require_role(
-        user, permissions.MANAGER_ROLES, detail="Action plans are created by managers and HR."
+        user,
+        permissions.HR_ROLES,
+        line_managers=True,
+        detail="Action plans are created by managers and HR.",
     )
     survey = await session.scalar(
         tenant_scoped(select(Survey).where(Survey.id == payload.survey_id), Survey, user)

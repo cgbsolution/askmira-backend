@@ -29,8 +29,8 @@ from app.services.appraisal import calibration_service
 router = APIRouter(tags=["calibration"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
-ROOM = [Depends(require_roles(*permissions.MANAGER_ROLES))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
+ROOM = [Depends(require_roles(*permissions.HR_ROLES, line_managers=True))]
 
 
 @router.post(

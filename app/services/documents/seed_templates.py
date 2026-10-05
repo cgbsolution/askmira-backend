@@ -46,9 +46,9 @@ SEED_TEMPLATES: list[dict[str, Any]] = [
         "name": "Offer letter (standard)",
         "category": LetterCategory.OFFER,
         "requires_approval": True,
-        "approver_roles": ["hr_admin", "tenant_admin"],
+        "approver_roles": ["admin"],
         "requires_signature": True,
-        "signatory_role": "hr_admin",
+        "signatory_role": "admin",
         "body_html": """
 <p style="text-align:right">{{computed.letter_date}}</p>
 <p>Dear {{employee.first_name}},</p>
@@ -92,9 +92,9 @@ For {{tenant.name}}</p>
         "name": "Appointment letter (standard)",
         "category": LetterCategory.APPOINTMENT,
         "requires_approval": True,
-        "approver_roles": ["hr_admin"],
+        "approver_roles": ["admin"],
         "requires_signature": True,
-        "signatory_role": "hr_admin",
+        "signatory_role": "admin",
         "body_html": """
 <p style="text-align:right">{{computed.letter_date}}</p>
 <p>Dear {{computed.full_name}},</p>
@@ -133,7 +133,7 @@ to time.</p>
         "name": "Confirmation letter (standard)",
         "category": LetterCategory.CONFIRMATION,
         "requires_approval": True,
-        "approver_roles": ["hr_admin"],
+        "approver_roles": ["admin"],
         "body_html": """
 <p style="text-align:right">{{computed.letter_date}}</p>
 <p>Dear {{employee.first_name}},</p>
@@ -160,7 +160,7 @@ to your continued association.</p>
         "name": "Relieving letter (standard)",
         "category": LetterCategory.RELIEVING,
         "requires_approval": True,
-        "approver_roles": ["hr_admin"],
+        "approver_roles": ["admin"],
         "body_html": """
 <p style="text-align:right">{{computed.letter_date}}</p>
 <p>Dear {{computed.full_name}},</p>

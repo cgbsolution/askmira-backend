@@ -27,7 +27,7 @@ from app.services import org as org_service
 
 router = APIRouter(prefix="/org", tags=["core-hr"])
 
-ADMIN_ONLY = [Depends(require_roles(UserRole.TENANT_ADMIN, UserRole.HR_ADMIN))]
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 
 # ── Legal entities ──────────────────────────────────────────────────────────

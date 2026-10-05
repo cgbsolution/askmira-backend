@@ -17,7 +17,13 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.crypto import encrypt_secret
-from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
+from app.core.deps import (
+    CurrentUser,
+    DbSession,
+    has_direct_reports,
+    require_roles,
+    tenant_scoped,
+)
 from app.core.security import create_access_token, create_refresh_token
 from app.models.audit import AuditAction
 from app.models.identity import IdentityProvider, IdpType, SsoLoginAttempt
@@ -32,7 +38,7 @@ from app.services.identity import sso_admin
 
 router = APIRouter(prefix="/sso", tags=["sso"])
 
-ADMIN_ROLES = (UserRole.TENANT_ADMIN, UserRole.HR_ADMIN)
+ADMIN_ROLES = (UserRole.ADMIN,)
 
 # How long a started login may sit before its state is refused.
 LOGIN_ATTEMPT_TTL = timedelta(minutes=10)
@@ -138,7 +144,7 @@ async def list_providers(user: CurrentUser, session: DbSession) -> list[Provider
     "/providers",
     response_model=ProviderRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def create_provider(
     payload: ProviderCreate, user: CurrentUser, session: DbSession, request: Request
@@ -479,6 +485,7 @@ async def _complete_login(
     )
     await session.commit()
     await session.refresh(user)
+    user.has_reports = await has_direct_reports(session, user)
 
     return AuthResponse(
         # The role in this token is the one AskMira holds, never one the IdP
@@ -504,7 +511,7 @@ class BreakGlassRequest(BaseModel):
 
 @router.post(
     "/break-glass",
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def set_break_glass(
     payload: BreakGlassRequest, user: CurrentUser, session: DbSession, request: Request
@@ -529,7 +536,7 @@ async def set_break_glass(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="The break-glass account must be an existing user in this workspace",
         )
-    if target.role not in {UserRole.TENANT_ADMIN, UserRole.HR_ADMIN}:
+    if target.role is not UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="The break-glass account must be an administrator",
@@ -589,7 +596,7 @@ class ScimTokenCreate(BaseModel):
 @router.patch(
     "/providers/{provider_id}",
     response_model=ProviderRead,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def update_provider(
     provider_id: uuid.UUID,
@@ -641,7 +648,7 @@ async def list_scim_tokens(user: CurrentUser, session: DbSession) -> list[dict]:
 @router.post(
     "/scim-tokens",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def create_scim_token(
     payload: ScimTokenCreate, user: CurrentUser, session: DbSession, request: Request
@@ -652,7 +659,7 @@ async def create_scim_token(
 
 @router.post(
     "/scim-tokens/{token_id}/revoke",
-    dependencies=[Depends(require_roles(UserRole.TENANT_ADMIN))],
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
 )
 async def revoke_scim_token(
     token_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request

@@ -41,7 +41,7 @@ from app.models.exit_workflow import (
 )
 from app.models.loans import ClaimStatus, LoanAccount, LoanStatus, ReimbursementClaim
 from app.models.tenant import Tenant
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.services import audit
 from app.services.arrears import service as arrears_service
 from app.services.documents import service as documents_service
@@ -58,7 +58,6 @@ SETTLED_STATUSES = {
     SettlementStatus.PAID,
     SettlementStatus.DEMAND_RAISED,
 }
-OWNER_ROLES = {UserRole.TENANT_ADMIN, UserRole.HR_ADMIN, UserRole.HR_OPS, UserRole.MANAGER}
 
 
 def _amount(value: object) -> Decimal:
@@ -498,10 +497,16 @@ async def create_template(
             )
         owner = await session.scalar(
             tenant_scoped(
-                select(User).where(User.id == owner_user_id, User.is_active.is_(True)), User, user
+                select(User).where(
+                    User.id == owner_user_id,
+                    User.is_active.is_(True),
+                    permissions.manager_or_hr_login(user),
+                ),
+                User,
+                user,
             )
         )
-        if owner is None or owner.role not in OWNER_ROLES:
+        if owner is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="The owner must be an active HR or manager login in this workspace.",
@@ -554,7 +559,7 @@ async def owner_candidates(session: AsyncSession, user: User) -> list[dict[str, 
         await session.scalars(
             tenant_scoped(
                 select(User)
-                .where(User.is_active.is_(True), User.role.in_(OWNER_ROLES))
+                .where(User.is_active.is_(True), permissions.manager_or_hr_login(user))
                 .order_by(User.full_name),
                 User,
                 user,

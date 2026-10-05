@@ -44,15 +44,15 @@ pytestmark = requires_db
 
 async def _org(session, tenant, legal_entity, location):
     boss, boss_user = await person(session, tenant, legal_entity, location, code="MGR1",
-                                   role=UserRole.MANAGER)
+                                   role=UserRole.EMPLOYEE)
     other, other_user = await person(session, tenant, legal_entity, location, code="MGR2",
-                                     role=UserRole.MANAGER)
+                                     role=UserRole.EMPLOYEE)
     leaver, leaver_user = await person(session, tenant, legal_entity, location, code="EMP1",
                                        role=UserRole.EMPLOYEE, manager=boss)
     hr, hr_user = await person(session, tenant, legal_entity, location, code="HR1",
-                               role=UserRole.HR_ADMIN)
+                               role=UserRole.ADMIN)
     it_admin, it_user = await person(session, tenant, legal_entity, location, code="IT1",
-                                     role=UserRole.MANAGER)
+                                     role=UserRole.EMPLOYEE)
     session.add_all(
         [
             ClearanceTemplate(
@@ -257,7 +257,7 @@ async def test_a_hold_blocks_letters_and_nobody_approves_their_own_settlement(
     await session.commit()
 
     leaver_hr = org["leaver_user"]
-    leaver_hr.role = UserRole.HR_ADMIN
+    leaver_hr.role = UserRole.ADMIN
     await session.commit()
     with pytest.raises(HTTPException) as exc:
         await operations.approve_settlement(session, leaver_hr, settlement.id)

@@ -109,7 +109,7 @@ async def org(session, tenant, legal_entity, location):
     session.add_all([eng, ops])
     await session.commit()
     await seed_default_templates(session, tenant.id)
-    emp, hr_role = UserRole.EMPLOYEE, UserRole.HR_ADMIN
+    emp, hr_role = UserRole.EMPLOYEE, UserRole.ADMIN
     spec = [
         ("hr", hr_role, ops),
         ("asha", emp, eng),
