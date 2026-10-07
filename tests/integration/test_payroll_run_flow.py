@@ -58,7 +58,10 @@ from tests.integration.conftest import requires_db
 pytestmark = requires_db
 
 # Test fixtures, deliberately synthetic — not an authority on Indian rates.
-PF_RULES = {"wage_ceiling": 15000, "employee_rate": 12, "employer_rate": 12}
+PF_RULES = {
+    "wage_ceiling": 15000, "employee_rate": 12, "employer_rate": 12,
+    "eps_wage_ceiling": 15000, "edli_wage_ceiling": 15000, "eps_rate": 8.33,
+}
 TDS_RULES = {
     "regimes": {
         "new": {
@@ -355,6 +358,40 @@ async def test_a_run_end_to_end(session: AsyncSession, org, other_hr_user: User)
         ).all()
     ]
     assert [s for s in steps if s] == ["compute", "approve", "publish", "paid"]
+
+
+async def test_a_leaver_whose_exit_was_processed_is_still_paid_to_their_last_day(
+    session: AsyncSession, org
+) -> None:
+    """Exit processed on the last day, payroll computed after: the days are owed.
+
+    Status alone would leave them out of their final month's pay entirely.
+    """
+    await _approved_rules(session, org, tds=False)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    ravi = org["ravi_emp"]
+    ravi.status = EmploymentStatus.EXITED
+    ravi.date_of_exit = date(2026, 4, 15)
+    await session.commit()
+
+    run = await _open_run(session, org, 4)
+    computed = await run_service.compute_run(session, org["maker"], run.id)
+    assert computed.employee_count == 4
+
+    slip = await session.scalar(
+        select(Payslip).where(Payslip.run_id == run.id, Payslip.employee_id == ravi.id)
+    )
+    assert slip is not None
+    assert Decimal(str(slip.not_employed_days)) == Decimal(15)
+    # 1,200,000 a year is 100,000 a month; 15 of April's 30 days.
+    assert Decimal(str(slip.gross_earnings)) == Decimal("50000.00")
+
+    # Someone who left before the period is not in it at all.
+    may = await _open_run(session, org, 5)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 5))
+    await session.commit()
+    computed = await run_service.compute_run(session, org["maker"], may.id)
+    assert computed.employee_count == 3
 
 
 async def test_variances_must_each_be_acknowledged_and_inputs_paid_once(

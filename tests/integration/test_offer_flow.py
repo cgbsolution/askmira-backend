@@ -48,6 +48,7 @@ from app.models.payroll import (
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
+from app.services.documents import service as document_service
 from app.services.hiring import offers as offer_service
 from app.services.hiring import requisitions as requisition_service
 from app.services.payroll import service as payroll_service
@@ -554,6 +555,38 @@ async def test_release_produces_a_letter_through_the_letter_engine(
     await session.refresh(requisition)
     assert requisition.filled_count == 1
     assert requisition.status is RequisitionStatus.FULFILLED
+
+
+async def test_the_standard_offer_template_releases_from_the_offers_own_terms(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    location: Location,
+) -> None:
+    """The seeded template asks for a joining date, location and deadline.
+
+    An offer is released, not issued, so nobody types those in: they come from
+    the offer, and the deadline is the validity set at release.
+    """
+    offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
+    offer.joining_location_id = location.id
+    await session.commit()
+    await _through_approval(session, tenant, hr_user, offer)
+    await document_service.seed_templates(session, hr_user)
+    template = await session.scalar(
+        select(LetterTemplate).where(
+            LetterTemplate.tenant_id == tenant.id, LetterTemplate.code == "OFFER_STD"
+        )
+    )
+
+    result = await offer_service.release_offer(
+        session, hr_user, offer_id=offer.id, template_id=template.id,
+        valid_until=date(2026, 10, 20),
+    )
+    await session.commit()
+
+    letter = await session.get(IssuedLetter, result["letter_id"])
+    assert "03 November 2026" in letter.merged_html
+    assert "Bengaluru" in letter.merged_html and "Bengaluru, Bengaluru" not in letter.merged_html
+    assert "20 October 2026" in letter.merged_html, "the deadline set at release"
 
 
 async def test_an_unapproved_offer_cannot_be_released(

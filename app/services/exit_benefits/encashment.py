@@ -118,8 +118,11 @@ def compute_encashment(
                 "encashment."
             )
 
-    # ── Annual cap ──────────────────────────────────────────────────────────
-    if policy.max_days_per_year is not None:
+    # ── Annual cap, in-service only ─────────────────────────────────────────
+    # It rations encashment while someone stays. At exit the accumulated
+    # balance is paid out, up to the per-event cap: holding a leaver to this
+    # year's allowance would forfeit leave they earned.
+    if not is_exit and policy.max_days_per_year is not None:
         annual = Decimal(str(policy.max_days_per_year))
         remaining = max(ZERO, annual - days_already_encashed_this_year)
         if approved > remaining:

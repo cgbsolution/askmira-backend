@@ -269,7 +269,9 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "gender": None,
         "custom_fields": {},
     }
-    if not await permissions.is_line_manager_of(session, user, employee.id):
+    if await permissions.is_line_manager_of(session, user, employee.id):
+        hidden["in_your_line"] = True
+    else:
         hidden |= {
             "grade": None,
             "probation_end_date": None,

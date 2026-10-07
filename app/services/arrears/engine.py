@@ -75,6 +75,8 @@ class PeriodArrear:
 
     period: str
     diffs: list[ComponentDiff] = field(default_factory=list)
+    # The closed run whose payslip was read as "paid", set by the caller.
+    source_run_id: str | None = None
     # The rule versions actually used, so "which rules did this use" is
     # answerable without re-deriving it.
     rule_set_ids: dict[str, str] = field(default_factory=dict)

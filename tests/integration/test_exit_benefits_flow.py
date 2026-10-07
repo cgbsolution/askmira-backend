@@ -25,6 +25,7 @@ from app.models.exit_benefits import (
     GratuityConfig,
     ServiceRounding,
 )
+from app.models.exit_workflow import ExitRecord, ExitStatus, ExitType
 from app.models.leave import LeaveBalance, LeaveType
 from app.models.payroll import (
     CalculationType,
@@ -37,6 +38,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services.exit_benefits import service as exit_service
+from app.services.exit_workflow import operations as exit_operations
 from app.services.payroll import service as salary_service
 from tests.integration.conftest import requires_db
 
@@ -573,6 +575,46 @@ async def test_an_exit_encashment_is_approved_without_a_separate_step(
     )
     assert record.status is EncashmentStatus.APPROVED
     assert record.is_exit_encashment is True
+
+
+async def test_the_whole_balance_is_encashed_at_exit_and_offered_to_the_settlement(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    """At exit the accumulated balance is paid, up to the per-event cap.
+
+    The in-service annual limit does not apply, and the figure reaches the full
+    and final settlement as a prefill instead of being worked out by hand.
+    """
+    await _config(session, tenant)
+    await _salary_for(session, tenant, hr_user, employee)
+    await _leave_balance(session, tenant, employee, available="25")
+    await _encashment_policy(session, tenant, max_days_per_year=Decimal(10),
+                             cap_days=Decimal(45))
+    record = ExitRecord(
+        tenant_id=tenant.id, employee_id=employee.id, exit_type=ExitType.RESIGNATION,
+        status=ExitStatus.SETTLEMENT_PENDING, resignation_date=date(2026, 7, 31),
+        approved_last_working_day=date(2026, 8, 31), notice_period_days=30,
+    )
+    session.add(record)
+    await session.commit()
+
+    sources = await exit_operations.settlement_sources(session, hr_user, record.id)
+    assert [(r["leave_type_code"], Decimal(r["days"])) for r in sources["encashable_leave"]] == [
+        ("EL", Decimal(25))
+    ]
+
+    created = await exit_service.compute_exit_encashments(session, hr_user, exit_id=record.id)
+    assert [Decimal(str(row.days_approved)) for row in created] == [Decimal(25)]
+    assert created[0].is_exit_encashment and created[0].status is EncashmentStatus.APPROVED
+    assert created[0].financial_year == "2026-27"
+
+    sources = await exit_operations.settlement_sources(session, hr_user, record.id)
+    assert sources["encashable_leave"] == []
+    assert "leave_encashment" in {s["field"] for s in sources["suggestions"]}
+
+    with pytest.raises(HTTPException) as again:
+        await exit_service.compute_exit_encashments(session, hr_user, exit_id=record.id)
+    assert again.value.status_code == 409
 
 
 async def test_an_encashment_decision_is_audited(

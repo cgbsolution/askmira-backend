@@ -323,6 +323,10 @@ def _accrual_as_of(year: int, today: date, until: date | None = None) -> date:
 def _accrual(policy: LeavePolicy | None, employee: Employee, year: int, as_of: date) -> Decimal:
     if policy is None:
         return engine.ZERO
+    # Nothing is earned after the last day of employment. Without this a
+    # leaver's balance, and the encashment paid from it, keeps growing.
+    if employee.date_of_exit is not None and employee.date_of_exit < as_of:
+        as_of = employee.date_of_exit
     return engine.accrued_to_date(
         annual_quota=engine.days(policy.annual_quota_days),
         frequency=policy.accrual_frequency,

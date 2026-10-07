@@ -16,6 +16,7 @@ conditions, not input validation:
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -264,20 +265,19 @@ async def preview_arrears(
             start = date(run.period_year, run.period_month, 1)
             last = calendar.monthrange(run.period_year, run.period_month)[1]
             try:
-                arrears.append(
-                    engine.recompute_period(
-                        period=_period(run.period_year, run.period_month),
-                        paid_line_items=payslip.line_items or [],
-                        new_salary=salary,
-                        working_days=Decimal(str(payslip.working_days)),
-                        lop_days=Decimal(str(payslip.lop_days)),
-                        not_employed_days=Decimal(str(payslip.not_employed_days or 0)),
-                        period_start=start,
-                        period_end=date(run.period_year, run.period_month, last),
-                        historical_rule_sets=rule_sets,
-                        designation=employee.designation,
-                    )
+                period_arrear = engine.recompute_period(
+                    period=_period(run.period_year, run.period_month),
+                    paid_line_items=payslip.line_items or [],
+                    new_salary=salary,
+                    working_days=Decimal(str(payslip.working_days)),
+                    lop_days=Decimal(str(payslip.lop_days)),
+                    not_employed_days=Decimal(str(payslip.not_employed_days or 0)),
+                    period_start=start,
+                    period_end=date(run.period_year, run.period_month, last),
+                    historical_rule_sets=rule_sets,
+                    designation=employee.designation,
                 )
+                arrears.append(dataclasses.replace(period_arrear, source_run_id=str(run.id)))
             except (engine.ArrearError, ValueError) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -398,6 +398,9 @@ async def revise_salary(
                         batch_id=batch.id,
                         employee_id=employee_id,
                         period=arrear.period,
+                        source_run_id=(
+                            uuid.UUID(arrear.source_run_id) if arrear.source_run_id else None
+                        ),
                         component_code=diff.code,
                         component_name=diff.name,
                         component_type=diff.component_type,

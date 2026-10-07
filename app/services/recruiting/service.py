@@ -182,14 +182,25 @@ async def create_programme(
     reads before referring - including the duplicate rule, which is the whole
     point of stating it up front.
     """
-    specs = milestones or [
+    # Stored as JSON, so every figure is a string: a Decimal from the request
+    # cannot be serialised into the column.
+    specs = [
         {
-            "key": m.key,
-            "label": m.label,
-            "share_percent": str(m.share_percent),
-            "days_after_joining": m.days_after_joining,
+            "key": str(m["key"]),
+            "label": str(m["label"]),
+            "share_percent": str(_d(m["share_percent"])),
+            "days_after_joining": int(m["days_after_joining"]),
         }
-        for m in referral_engine.DEFAULT_MILESTONES
+        for m in milestones
+        or [
+            {
+                "key": d.key,
+                "label": d.label,
+                "share_percent": d.share_percent,
+                "days_after_joining": d.days_after_joining,
+            }
+            for d in referral_engine.DEFAULT_MILESTONES
+        ]
     ]
     engine_milestones = tuple(
         referral_engine.BonusMilestone(

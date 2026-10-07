@@ -761,6 +761,12 @@ async def settlement_sources(
             )
         )
 
+    # Leave still encashable on exit, not yet computed: the dialog offers to
+    # compute it from the balance rather than leaving HR to work it out by hand.
+    from app.services.exit_benefits.service import exit_encashable
+
+    encashable = await exit_encashable(session, user, employee_id)
+
     claims = (
         await session.scalars(
             tenant_scoped(
@@ -897,6 +903,10 @@ async def settlement_sources(
         )
         or "Nothing to recover from clearance.",
         "notes": notes,
+        "encashable_leave": [
+            {"leave_type_code": row["leave_type_code"], "days": _amount(row["days"])}
+            for row in encashable
+        ],
     }
 
 

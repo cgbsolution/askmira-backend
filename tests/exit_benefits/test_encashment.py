@@ -109,6 +109,20 @@ def test_an_exit_encashment_ignores_the_minimum_balance() -> None:
     assert result.days_approved == D(25)
 
 
+def test_an_exit_encashment_is_not_held_to_the_in_service_annual_limit() -> None:
+    """Leave already encashed in service this year does not forfeit the rest at exit."""
+    result = compute_encashment(
+        policy=policy(max_days_per_year=Decimal(10), cap_days=Decimal(45)),
+        days_requested=D(25),
+        available_balance=D(25),
+        monthly_wages=D(52_000),
+        is_exit=True,
+        days_already_encashed_this_year=D(10),
+    )
+    assert result.days_approved == D(25)
+    assert result.limiting_factor is None
+
+
 def test_nothing_encashable_returns_zero_with_an_explanation() -> None:
     result = compute_encashment(
         policy=policy(max_days_per_year=Decimal(15)),

@@ -51,6 +51,7 @@ from app.models.offer import (
     OfferSalaryComponent,
     OfferStatus,
 )
+from app.models.org import Location
 from app.models.payroll import EmployeeSalary, SalaryStructure
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -808,6 +809,15 @@ async def approve_offer(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _place(location: Location | None) -> str | None:
+    """"Bengaluru HQ, Bengaluru"; just "Bengaluru" when the name already says it."""
+    if location is None:
+        return None
+    if location.city and location.city.lower() not in location.name.lower():
+        return f"{location.name}, {location.city}"
+    return location.name
+
+
 async def _offer_letter(
     session: AsyncSession,
     user: User,
@@ -851,6 +861,15 @@ async def _offer_letter(
         )
 
     tenant = await session.get(Tenant, user.tenant_id)
+    location = (
+        await session.scalar(
+            tenant_scoped(
+                select(Location).where(Location.id == offer.joining_location_id), Location, user
+            )
+        )
+        if offer.joining_location_id
+        else None
+    )
 
     context = letter_merge.MergeContext(
         as_of=date.today(),
@@ -875,7 +894,15 @@ async def _offer_letter(
             "effective_from": offer.joining_date,
         },
         tenant={"name": tenant.name if tenant else "", "slug": tenant.slug if tenant else ""},
-        manual={"valid_until": offer.valid_until, "offer_code": offer.code},
+        # An offer is released, not issued, so nobody types a template's manual
+        # fields in: the ones an offer letter asks for come from the offer.
+        manual={
+            "valid_until": offer.valid_until,
+            "offer_code": offer.code,
+            "joining_date": offer.joining_date,
+            "work_location": _place(location),
+            "acceptance_deadline": offer.valid_until,
+        },
         salary_components=components,
     )
 
@@ -942,10 +969,11 @@ async def release_offer(
     requisition = await _requisition(session, user, offer.requisition_id)
     await requisitions.reserve_vacancy(session, user, requisition=requisition)
 
-    letter = await _offer_letter(session, user, offer, candidate, template_id=template_id)
-
+    # Before the letter is rendered: its acceptance deadline is this date.
     if valid_until is not None:
         offer.valid_until = valid_until
+    letter = await _offer_letter(session, user, offer, candidate, template_id=template_id)
+
     if offer.valid_until is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

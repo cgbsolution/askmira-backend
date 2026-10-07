@@ -121,6 +121,10 @@ class EmployeeRead(EmployeeBase):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    #: Whether this person is in the caller's reporting line, at any depth: what
+    #: decides the attendance and lifecycle views a manager is allowed. Set on a
+    #: single-record read; lists leave it False.
+    in_your_line: bool = False
 
 
 class EmployeeSummary(BaseModel):

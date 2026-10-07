@@ -514,6 +514,26 @@ async def request_encashment(
     return (await _named(session, user, [EncashmentRead.model_validate(record)]))[0]
 
 
+@router.post(
+    "/encashment/exits/{exit_id}",
+    response_model=list[EncashmentRead],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def compute_exit_encashment(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> list[EncashmentRead]:
+    """Encash a leaver's balance of each leave type encashable on exit.
+
+    Approved as it is computed — Full and Final is the approval — and taken off
+    the leave balance; the settlement then prefills it.
+    """
+    records = await exit_service.compute_exit_encashments(
+        session, user, exit_id=exit_id, request=request
+    )
+    return await _named(session, user, [EncashmentRead.model_validate(row) for row in records])
+
+
 @router.get("/encashment/requests", response_model=list[EncashmentRead])
 async def list_encashments(
     user: CurrentUser,

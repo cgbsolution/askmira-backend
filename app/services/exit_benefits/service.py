@@ -604,6 +604,116 @@ async def request_encashment(
     return record
 
 
+async def exit_encashable(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """Leave a leaver can still encash: each type encashable on exit, with a
+    balance, and no exit encashment computed for it yet."""
+    policies = (
+        await session.scalars(
+            tenant_scoped(
+                select(EncashmentPolicy)
+                .where(
+                    EncashmentPolicy.active.is_(True),
+                    EncashmentPolicy.encashable_on_exit.is_(True),
+                )
+                .order_by(EncashmentPolicy.leave_type_code),
+                EncashmentPolicy,
+                user,
+            )
+        )
+    ).all()
+    done = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(EncashmentRequest.leave_type_code).where(
+                        EncashmentRequest.employee_id == employee_id,
+                        EncashmentRequest.is_exit_encashment.is_(True),
+                        EncashmentRequest.status != EncashmentStatus.CANCELLED,
+                    ),
+                    EncashmentRequest,
+                    user,
+                )
+            )
+        ).all()
+    )
+    year = leave_ledger.leave_year_today()
+    out: list[dict[str, Any]] = []
+    for policy in policies:
+        if policy.leave_type_code in done:
+            continue
+        balance = await available_leave_balance(
+            session, user, employee_id, policy.leave_type_code, year
+        )
+        if balance > ZERO:
+            out.append({"leave_type_code": policy.leave_type_code, "days": balance})
+    return out
+
+
+async def compute_exit_encashments(
+    session: AsyncSession,
+    user: User,
+    *,
+    exit_id: uuid.UUID,
+    request: Request | None = None,
+) -> list[EncashmentRequest]:
+    """Encash a leaver's balance of every leave type encashable on exit.
+
+    Computed against the encashment policy and the live leave balance, approved
+    as it is computed (Full and Final is the approval), and debited from the
+    leave ledger — so the settlement takes the figure instead of HR working it
+    out by hand.
+    """
+    from app.models.exit_workflow import ExitRecord, ExitStatus
+
+    record = await session.scalar(
+        tenant_scoped(select(ExitRecord).where(ExitRecord.id == exit_id), ExitRecord, user)
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Exit not found")
+    if record.status is ExitStatus.CANCELLED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This exit was cancelled; there is nothing to encash.",
+        )
+    if user.employee_id is not None and record.employee_id == user.employee_id:
+        raise permissions.forbidden(
+            "This is your own exit. Somebody else computes your leave encashment."
+        )
+    available = await exit_encashable(session, user, record.employee_id)
+    if not available:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Nothing to encash: no leave type is encashable on exit with a balance "
+                "left, or its encashment has already been computed."
+            ),
+        )
+    from app.services.payroll.tds import financial_year_for
+
+    on = (
+        record.approved_last_working_day
+        or record.requested_last_working_day
+        or await local_today(session, user)
+    )
+    financial_year, _, _ = financial_year_for(on, 4)
+    return [
+        await request_encashment(
+            session,
+            user,
+            employee_id=record.employee_id,
+            leave_type_code=item["leave_type_code"],
+            days=item["days"],
+            financial_year=financial_year,
+            is_exit=True,
+            is_retirement=record.exit_type.value == "retirement",
+            request=request,
+        )
+        for item in available
+    ]
+
+
 async def decide_encashment(
     session: AsyncSession,
     user: User,

@@ -36,7 +36,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -359,6 +359,9 @@ async def compute_run(
             ),
         )
 
+    # Everyone employed for any part of the period. Someone whose exit was
+    # processed before this run is computed is still owed the days they worked
+    # in it; `employment_window` below pays exactly those days.
     employees = (
         await session.scalars(
             tenant_scoped(
@@ -366,12 +369,18 @@ async def compute_run(
                 .where(
                     Employee.legal_entity_id == run.legal_entity_id,
                     Employee.deleted_at.is_(None),
-                    Employee.status.in_(
-                        [
-                            EmploymentStatus.ACTIVE,
-                            EmploymentStatus.ON_NOTICE,
-                            EmploymentStatus.ON_LEAVE,
-                        ]
+                    or_(
+                        Employee.status.in_(
+                            [
+                                EmploymentStatus.ACTIVE,
+                                EmploymentStatus.ON_NOTICE,
+                                EmploymentStatus.ON_LEAVE,
+                            ]
+                        ),
+                        and_(
+                            Employee.status == EmploymentStatus.EXITED,
+                            Employee.date_of_exit >= start,
+                        ),
                     ),
                 )
                 .order_by(Employee.employee_code),

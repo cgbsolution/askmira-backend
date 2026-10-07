@@ -26,6 +26,7 @@ from app.models.recruiting import (
     PayoutStatusEnum,
     Referral,
     ReferralPayout,
+    ReferralProgramme,
     ReferralStatusEnum,
     ShareChannelEnum,
 )
@@ -86,6 +87,22 @@ async def test_the_programme_terms_carry_the_duplicate_rule(session, hr_user):
     out = await make_programme(session, hr_user)
     assert "first submission" in out["terms"]["duplicate_rule"].lower()
     assert "tax deducted" in out["terms"]["tax_note"]
+
+
+async def test_a_programme_with_its_own_milestones_is_stored(session, hr_user):
+    """Milestones from the request carry Decimal shares; the JSON column takes strings."""
+    out = await make_programme(
+        session,
+        hr_user,
+        milestones=[
+            {"key": "joined", "label": "On joining", "share_percent": D("50"),
+             "days_after_joining": 0},
+            {"key": "retained", "label": "After 90 days", "share_percent": D("50"),
+             "days_after_joining": 90},
+        ],
+    )
+    programme = await session.get(ReferralProgramme, uuid.UUID(out["programme_id"]))
+    assert [m["share_percent"] for m in programme.payout_milestones] == ["50", "50"]
 
 
 async def test_a_share_link_comes_with_the_terms(session, hr_user, employee):

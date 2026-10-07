@@ -362,3 +362,18 @@ def test_a_gender_limited_policy_is_more_specific_than_the_catch_all() -> None:
         policies, location_id=None, grade=None, on=date(2026, 6, 1), gender="female"
     )
     assert chosen is not None and chosen.name == "women"
+
+
+def test_a_leaver_earns_nothing_after_their_last_day() -> None:
+    """Accrual stops at the exit date, so the balance encashed at exit does not grow."""
+    from types import SimpleNamespace
+
+    from app.services.leave.service import _accrual
+
+    policy = SimpleNamespace(annual_quota_days=Decimal(18), accrual_frequency="monthly")
+    stayer = SimpleNamespace(date_of_joining=date(2023, 6, 1), date_of_exit=None)
+    leaver = SimpleNamespace(date_of_joining=date(2023, 6, 1), date_of_exit=date(2026, 8, 31))
+
+    october = date(2026, 10, 7)
+    assert _accrual(policy, stayer, 2026, october) == Decimal(15)
+    assert _accrual(policy, leaver, 2026, october) == Decimal(12), "January to August only"
