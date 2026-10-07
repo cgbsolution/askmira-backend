@@ -17,6 +17,8 @@ on yesterday, and a leave that "has not started yet" by UTC has started here.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -53,6 +55,7 @@ from app.schemas.leave import (
     LeaveSettingsUpdate,
     LeaveTypeCreate,
     LeaveTypeUpdate,
+    RequestBalanceRead,
     SkippedHoliday,
     WhoIsOutRead,
 )
@@ -109,6 +112,14 @@ def local_today() -> date:
     return datetime.now(LOCAL_ZONE).date()
 
 
+def _today_in(zone_name: str | None) -> date:
+    try:
+        zone = ZoneInfo(zone_name) if zone_name else LOCAL_ZONE
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = LOCAL_ZONE
+    return datetime.now(zone).date()
+
+
 async def today_for(session: AsyncSession, user: User, employee: Employee) -> date:
     """Today where this person works."""
     zone_name = None
@@ -120,11 +131,34 @@ async def today_for(session: AsyncSession, user: User, employee: Employee) -> da
                 user,
             )
         )
-    try:
-        zone = ZoneInfo(zone_name) if zone_name else LOCAL_ZONE
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = LOCAL_ZONE
-    return datetime.now(zone).date()
+    return _today_in(zone_name)
+
+
+async def todays_for(
+    session: AsyncSession, user: User, employees: Sequence[Employee]
+) -> dict[uuid.UUID, date]:
+    """`today_for` for many people, in one query."""
+    location_ids = {e.location_id for e in employees if e.location_id is not None}
+    zones: dict[uuid.UUID, str | None] = {}
+    if location_ids:
+        zones = {
+            location_id: zone
+            for location_id, zone in (
+                await session.execute(
+                    tenant_scoped(
+                        select(Location.id, Location.timezone).where(
+                            Location.id.in_(location_ids)
+                        ),
+                        Location,
+                        user,
+                    )
+                )
+            ).all()
+        }
+    return {
+        e.id: _today_in(zones.get(e.location_id) if e.location_id is not None else None)
+        for e in employees
+    }
 
 
 # ── Tenant settings ─────────────────────────────────────────────────────────
@@ -594,7 +628,13 @@ async def _recipients(
 
 
 def _read(
-    leave: LeaveRequest, employee: Employee, leave_type: LeaveType, user: User, today: date
+    leave: LeaveRequest,
+    employee: Employee,
+    leave_type: LeaveType,
+    user: User,
+    today: date,
+    *,
+    balance: RequestBalanceRead | None = None,
 ) -> LeaveRequestRead:
     return LeaveRequestRead(
         id=leave.id,
@@ -620,6 +660,7 @@ def _read(
         created_at=leave.created_at,
         can_decide=_may_decide(user, leave),
         can_cancel=_may_cancel(user, leave, today),
+        balance=balance,
     )
 
 
@@ -1173,11 +1214,59 @@ async def approvals_inbox(session: AsyncSession, user: User) -> list[LeaveReques
         if not line:
             return []
         stmt = stmt.where(LeaveRequest.employee_id.in_(line))
-    rows = (await session.execute(stmt.order_by(LeaveRequest.created_at))).all()
-    today = local_today()
-    return [
-        _read(leave, emp, lt, user, today) for leave, emp, lt in rows if _may_decide(user, leave)
+    rows = [
+        (leave, emp, lt)
+        for leave, emp, lt in (
+            await session.execute(stmt.order_by(LeaveRequest.created_at))
+        ).all()
+        if _may_decide(user, leave)
     ]
+    today = local_today()
+    todays = await todays_for(session, user, [emp for _, emp, _ in rows])
+    # Somebody deciding a request wants to know whether the person has the
+    # days, without leaving the inbox to look it up.
+    return [
+        _read(
+            leave,
+            emp,
+            lt,
+            user,
+            today,
+            balance=await _request_balance(session, user, leave, emp, lt, todays[emp.id]),
+        )
+        for leave, emp, lt in rows
+    ]
+
+
+async def _request_balance(
+    session: AsyncSession,
+    user: User,
+    leave: LeaveRequest,
+    employee: Employee,
+    leave_type: LeaveType,
+    today: date,
+) -> RequestBalanceRead | None:
+    """The requester's balance of the type asked for, read the way `_assess`
+    read it when the request was raised. None where `_assess` checked no
+    balance: unpaid leave, or a type no policy covers."""
+    if not leave_type.is_paid:
+        return None
+    if not leave_type.is_comp_off and (
+        await _policy(session, user, employee, leave_type.id, leave.start_date) is None
+    ):
+        return None
+    balance, projected = await live_balance(
+        session, user, employee, leave_type, leave.start_date.year, today, until=leave.start_date
+    )
+    requested = engine.days(leave.total_days)
+    # `pending` includes this request, which is still pending until decided.
+    return RequestBalanceRead(
+        year=leave.start_date.year,
+        available=balance.available,
+        other_pending=max(engine.ZERO, balance.pending - requested),
+        after_approval=balance.available - requested,
+        projected_carry_forward=projected if projected > engine.ZERO else None,
+    )
 
 
 async def pending_for(session: AsyncSession, user: User) -> int:
@@ -1269,6 +1358,135 @@ async def who_is_out(
     return result
 
 
+@dataclass(frozen=True)
+class BalanceLine:
+    """One person's balance of one leave type, and the policy behind it."""
+
+    leave_type: LeaveType
+    policy: LeavePolicy | None
+    balance: engine.Balance
+
+
+async def balance_lines(
+    session: AsyncSession, user: User, employees: Sequence[Employee], year: int
+) -> dict[uuid.UUID, list[BalanceLine]]:
+    """Every listed person's balances for a year, in a fixed handful of queries.
+
+    A leave type appears for somebody when a policy covers them or a ledger
+    row exists. The Time page cards, the team table and its CSV all read this,
+    so a person's own card and their row in HR's report cannot disagree.
+    Callers check who may see whom; this only computes.
+    """
+    if not employees:
+        return {}
+    ids = [e.id for e in employees]
+    leave_types = (
+        await session.scalars(
+            tenant_scoped(
+                select(LeaveType).where(LeaveType.is_active.is_(True)).order_by(LeaveType.name),
+                LeaveType,
+                user,
+            )
+        )
+    ).all()
+    # Creation order is kept within each type, so the engine's tie-break still
+    # picks the latest correction.
+    policies_by_type: dict[uuid.UUID, list[LeavePolicy]] = {}
+    for policy in await _policies(session, user):
+        policies_by_type.setdefault(policy.leave_type_id, []).append(policy)
+    ledger = {
+        (row.employee_id, row.leave_type_id): row
+        for row in (
+            await session.scalars(
+                tenant_scoped(
+                    select(LeaveBalance).where(
+                        LeaveBalance.employee_id.in_(ids), LeaveBalance.year == year
+                    ),
+                    LeaveBalance,
+                    user,
+                )
+            )
+        ).all()
+    }
+    pending = {
+        (employee_id, leave_type_id): engine.days(total)
+        for employee_id, leave_type_id, total in (
+            await session.execute(
+                tenant_scoped(
+                    select(
+                        LeaveRequest.employee_id,
+                        LeaveRequest.leave_type_id,
+                        func.sum(LeaveRequest.total_days),
+                    )
+                    .where(
+                        LeaveRequest.employee_id.in_(ids),
+                        LeaveRequest.status == LeaveRequestStatus.PENDING,
+                        func.extract("year", LeaveRequest.start_date) == year,
+                    )
+                    .group_by(LeaveRequest.employee_id, LeaveRequest.leave_type_id),
+                    LeaveRequest,
+                    user,
+                )
+            )
+        ).all()
+    }
+    todays = await todays_for(session, user, employees)
+
+    result: dict[uuid.UUID, list[BalanceLine]] = {}
+    for employee in employees:
+        as_of = _accrual_as_of(year, todays[employee.id])
+        lines: list[BalanceLine] = []
+        for leave_type in leave_types:
+            policy = engine.select_policy(
+                policies_by_type.get(leave_type.id, []),
+                location_id=employee.location_id,
+                grade=employee.grade,
+                gender=gender_of(employee),
+                on=as_of,
+            )
+            row = ledger.get((employee.id, leave_type.id))
+            if policy is None and row is None:
+                continue
+            lines.append(
+                BalanceLine(
+                    leave_type=leave_type,
+                    policy=policy,
+                    balance=_balance_from(
+                        row,
+                        _accrual(policy, employee, year, as_of),
+                        pending.get((employee.id, leave_type.id), engine.ZERO),
+                    ),
+                )
+            )
+        result[employee.id] = lines
+    return result
+
+
+def _balance_read(line: BalanceLine, year: int) -> LeaveBalanceRead:
+    leave_type, policy, balance = line.leave_type, line.policy, line.balance
+    return LeaveBalanceRead(
+        leave_type_id=leave_type.id,
+        leave_type_name=leave_type.name,
+        leave_type_code=leave_type.code,
+        is_paid=leave_type.is_paid,
+        is_statutory=leave_type.is_statutory,
+        is_comp_off=leave_type.is_comp_off,
+        year=year,
+        policy_name=policy.name if policy else None,
+        annual_quota_days=engine.days(policy.annual_quota_days) if policy else None,
+        accrual_frequency=policy.accrual_frequency if policy else None,
+        opening=balance.opening,
+        accrued=balance.accrued,
+        carried_forward=balance.carried_forward,
+        adjusted=balance.adjusted,
+        used=balance.used,
+        encashed=balance.encashed,
+        pending=balance.pending,
+        available=balance.available,
+        available_after_pending=balance.available_after_pending,
+    )
+
+
 async def balances(
     session: AsyncSession, user: User, *, employee_id: uuid.UUID | None, year: int
 ) -> list[LeaveBalanceRead]:
@@ -1280,96 +1498,8 @@ async def balances(
             "You can only see balances for yourself or for people who report to you."
         )
     employee = await _employee(session, user, target)
-    today = await today_for(session, user, employee)
-    as_of = _accrual_as_of(year, today)
-
-    # A handful of queries for every leave type at once, not a handful per
-    # type: this is the first thing on the Time screen and the database is a
-    # network hop away.
-    leave_types = (
-        await session.scalars(
-            tenant_scoped(
-                select(LeaveType).where(LeaveType.is_active.is_(True)).order_by(LeaveType.name),
-                LeaveType,
-                user,
-            )
-        )
-    ).all()
-    policies = await _policies(session, user)
-    ledger = {
-        row.leave_type_id: row
-        for row in (
-            await session.scalars(
-                tenant_scoped(
-                    select(LeaveBalance).where(
-                        LeaveBalance.employee_id == employee.id, LeaveBalance.year == year
-                    ),
-                    LeaveBalance,
-                    user,
-                )
-            )
-        ).all()
-    }
-    pending_by_type = {
-        leave_type_id: engine.days(total)
-        for leave_type_id, total in (
-            await session.execute(
-                tenant_scoped(
-                    select(LeaveRequest.leave_type_id, func.sum(LeaveRequest.total_days))
-                    .where(
-                        LeaveRequest.employee_id == employee.id,
-                        LeaveRequest.status == LeaveRequestStatus.PENDING,
-                        func.extract("year", LeaveRequest.start_date) == year,
-                    )
-                    .group_by(LeaveRequest.leave_type_id),
-                    LeaveRequest,
-                    user,
-                )
-            )
-        ).all()
-    }
-
-    result: list[LeaveBalanceRead] = []
-    for leave_type in leave_types:
-        policy = engine.select_policy(
-            [p for p in policies if p.leave_type_id == leave_type.id],
-            location_id=employee.location_id,
-            grade=employee.grade,
-            gender=gender_of(employee),
-            on=as_of,
-        )
-        row = ledger.get(leave_type.id)
-        if policy is None and row is None:
-            continue
-        balance = _balance_from(
-            row,
-            _accrual(policy, employee, year, as_of),
-            pending_by_type.get(leave_type.id, engine.ZERO),
-        )
-        result.append(
-            LeaveBalanceRead(
-                leave_type_id=leave_type.id,
-                leave_type_name=leave_type.name,
-                leave_type_code=leave_type.code,
-                is_paid=leave_type.is_paid,
-                is_statutory=leave_type.is_statutory,
-                is_comp_off=leave_type.is_comp_off,
-                year=year,
-                policy_name=policy.name if policy else None,
-                annual_quota_days=engine.days(policy.annual_quota_days) if policy else None,
-                accrual_frequency=policy.accrual_frequency if policy else None,
-                opening=balance.opening,
-                accrued=balance.accrued,
-                carried_forward=balance.carried_forward,
-                adjusted=balance.adjusted,
-                used=balance.used,
-                encashed=balance.encashed,
-                pending=balance.pending,
-                available=balance.available,
-                available_after_pending=balance.available_after_pending,
-            )
-        )
-    return result
+    lines = await balance_lines(session, user, [employee], year)
+    return [_balance_read(line, year) for line in lines[employee.id]]
 
 
 async def run_accruals(

@@ -370,3 +370,82 @@ async def test_accrual_run_is_idempotent(session: AsyncSession, org) -> None:
     rows = (await session.scalars(select(LeaveBalance))).all()
     assert len(rows) == 4
     assert {Decimal(str(r.accrued)) for r in rows} == {Decimal(24)}
+
+
+# ── Balances for whoever decides, manages or runs HR ────────────────────────
+
+
+async def test_the_approver_sees_the_requesters_balance(session: AsyncSession, org) -> None:
+    first = await leave_service.apply(session, org["meera"], _payload(org))  # 5 days
+    later = START + timedelta(days=14)
+    await leave_service.apply(
+        session, org["meera"], _payload(org, start=later, end=later + timedelta(days=2))
+    )
+
+    inbox = {r.id: r for r in await leave_service.approvals_inbox(session, org["boss"])}
+    balance = inbox[first.id].balance
+    assert balance is not None
+    assert balance.available == Decimal(24)
+    # The other request is pending too; this one is not counted twice.
+    assert balance.other_pending == Decimal(3)
+    assert balance.after_approval == Decimal(19)
+
+
+async def test_unpaid_leave_reaches_the_approver_without_a_balance(
+    session: AsyncSession, org
+) -> None:
+    unpaid = LeaveType(
+        tenant_id=org["tenant"].id, name="Leave Without Pay", code="LWP", is_paid=False
+    )
+    session.add(unpaid)
+    await session.commit()
+    created = await leave_service.apply(
+        session,
+        org["meera"],
+        LeaveRequestCreate(
+            leave_type_id=unpaid.id, start_date=START, end_date=START, reason="Personal"
+        ),
+    )
+    inbox = await leave_service.approvals_inbox(session, org["boss"])
+    assert [(r.id, r.balance) for r in inbox] == [(created.id, None)]
+
+
+async def test_team_balances_follow_the_reporting_line(session: AsyncSession, org) -> None:
+    from app.services.leave import balance_report
+
+    created = await leave_service.apply(session, org["meera"], _payload(org))
+    await leave_service.decide(session, org["boss"], created.id, approve=True, note=None)
+
+    team = await balance_report.team_balances(session, org["boss"], year=START.year)
+    assert [row.employee_code for row in team.items] == ["EMP1"]
+    assert [c.code for c in team.leave_types] == ["EL"]
+    cell = team.items[0].balances[0]
+    own = await leave_service.balances(session, org["meera"], employee_id=None, year=START.year)
+    # The manager's table and Meera's own card are one computation.
+    assert (cell.entitled, cell.used, cell.available) == (Decimal(24), Decimal(5), own[0].available)
+
+    everybody = await balance_report.team_balances(session, org["hr"], year=START.year)
+    assert everybody.total == 4
+    found = await balance_report.team_balances(session, org["hr"], year=START.year, q="ravi")
+    assert [row.employee_code for row in found.items] == ["EMP2"]
+
+    with pytest.raises(HTTPException) as refused:
+        await balance_report.team_balances(session, org["meera"], year=START.year)
+    assert refused.value.status_code == 403
+
+
+async def test_the_balance_export_is_formula_safe_and_audited(session: AsyncSession, org) -> None:
+    from app.services.leave import balance_report
+
+    org["meera_emp"].display_name = "=HYPERLINK(1)"
+    await session.commit()
+    content = await balance_report.export_csv(session, org["boss"], year=START.year)
+    await session.commit()
+
+    lines = content.strip().splitlines()
+    assert lines[0].startswith("employee_code,employee_name,department")
+    assert len(lines) == 2 and lines[1].startswith("EMP1,'=HYPERLINK(1)")
+    entry = await session.scalar(
+        select(AuditLog).where(AuditLog.entity_type == "leave_balance")
+    )
+    assert entry is not None and entry.changes["people"] == 1

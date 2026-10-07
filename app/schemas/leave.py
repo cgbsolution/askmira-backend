@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.leave import CompOffStatus, LeaveRequestStatus
+from app.schemas.common import Page
 
 AccrualFrequency = Literal["monthly", "quarterly", "annual", "on_joining"]
 HalfDaySession = Literal["first_half", "second_half"]
@@ -223,6 +224,24 @@ class ApprovalStepRead(BaseModel):
     note: str | None = None
 
 
+class RequestBalanceRead(BaseModel):
+    """The requester's balance of the type asked for, as whoever decides sees it.
+
+    The same figures the request check weighed it against when it was raised,
+    read again now: something may have been credited or taken since.
+    """
+
+    year: int
+    #: What the ledger says today, before this request.
+    available: Decimal
+    #: Their other undecided requests of this type in the same year.
+    other_pending: Decimal
+    #: `available` less this request: what approving it leaves.
+    after_approval: Decimal
+    #: Days expected to carry in from the year before, for a request in next year.
+    projected_carry_forward: Decimal | None = None
+
+
 class LeaveRequestRead(BaseModel):
     id: uuid.UUID
     employee_id: uuid.UUID
@@ -248,6 +267,8 @@ class LeaveRequestRead(BaseModel):
     can_decide: bool = False
     #: True when the caller may cancel it.
     can_cancel: bool = False
+    #: In the approvals inbox only, for a paid type with a balance to draw on.
+    balance: RequestBalanceRead | None = None
 
 
 class SkippedHoliday(BaseModel):
@@ -346,6 +367,45 @@ class BalanceHistoryRead(BaseModel):
     year: int
     entries: list[BalanceHistoryEntry]
     available: Decimal
+
+
+class TeamBalanceColumn(BaseModel):
+    """A leave type, as a column of the team table."""
+
+    leave_type_id: uuid.UUID
+    name: str
+    code: str
+    is_paid: bool
+    is_statutory: bool
+    is_comp_off: bool
+
+
+class TeamBalanceCell(BaseModel):
+    leave_type_id: uuid.UUID
+    #: Opening + accrued + carried forward + adjustments: everything credited.
+    entitled: Decimal
+    used: Decimal
+    encashed: Decimal
+    pending: Decimal
+    available: Decimal
+
+
+class TeamBalanceRow(BaseModel):
+    employee_id: uuid.UUID
+    employee_code: str
+    employee_name: str
+    photo_url: str | None
+    designation: str | None
+    department_name: str | None
+    #: Only the types a policy or a ledger row gives this person.
+    balances: list[TeamBalanceCell]
+
+
+class TeamBalancesRead(Page[TeamBalanceRow]):
+    year: int
+    #: Every active leave type, in name order, whether or not this page uses it,
+    #: so the columns do not move between pages.
+    leave_types: list[TeamBalanceColumn]
 
 
 class WhoIsOutRead(BaseModel):

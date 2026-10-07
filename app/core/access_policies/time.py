@@ -49,6 +49,13 @@ ENDPOINTS: dict[str, str] = {
     "DELETE /leave/optional-holidays/{holiday_id}": (
         "permissions: only for yourself - a floating holiday is the employee's own choice."
     ),
+    "GET /leave/balances/team": (
+        "permissions: a manager's reporting line, or everybody for HR; refused to "
+        "somebody with no reports."
+    ),
+    "GET /leave/balances/team.csv": (
+        "permissions: a manager's reporting line, or everybody for HR; recorded as an export."
+    ),
     "GET /leave/balances/history": (
         "permissions: your own balance history, a manager's reporting line, or anybody's "
         "for HR."

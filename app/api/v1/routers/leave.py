@@ -44,10 +44,11 @@ from app.schemas.leave import (
     LeaveTypeRead,
     LeaveTypeUpdate,
     OptionalHolidaysRead,
+    TeamBalancesRead,
     WhoIsOutRead,
     YearEndRead,
 )
-from app.services.leave import attachments, comp_off, holiday_calendar, ledger
+from app.services.leave import attachments, balance_report, comp_off, holiday_calendar, ledger
 from app.services.leave import service as leave_service
 
 router = APIRouter(prefix="/leave", tags=["leave"])
@@ -265,6 +266,52 @@ async def list_balances(
     year: int = Query(default_factory=_this_year, ge=2000, le=2100),
 ) -> list[LeaveBalanceRead]:
     return await leave_service.balances(session, user, employee_id=employee_id, year=year)
+
+
+@router.get("/balances/team", response_model=TeamBalancesRead)
+async def team_balances(
+    user: CurrentUser,
+    session: DbSession,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+    q: str | None = Query(default=None, max_length=128),
+    department_id: uuid.UUID | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=200),
+) -> TeamBalancesRead:
+    """Everybody's balances for HR; a manager's reporting line otherwise."""
+    return await balance_report.team_balances(
+        session,
+        user,
+        year=year,
+        q=q,
+        department_id=department_id,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/balances/team.csv", response_model=None)
+async def export_team_balances(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+    q: str | None = Query(default=None, max_length=128),
+    department_id: uuid.UUID | None = None,
+) -> Response:
+    """The team table as CSV, one row per person and leave type. Cells cannot run as formulas."""
+    content = await balance_report.export_csv(
+        session, user, year=year, q=q, department_id=department_id, request=request
+    )
+    await session.commit()
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="leave-balances-{year}.csv"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/balances/history", response_model=BalanceHistoryRead)
