@@ -35,7 +35,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.documents import IssuedLetter, LetterStatus
 from app.models.employee import Employee, EmployeeProfile, EmploymentStatus
@@ -59,7 +59,14 @@ from app.schemas.payroll import EmployeeSalaryCreate
 from app.services import audit
 from app.services.documents import letter_merge, pdf
 from app.services.documents import service as document_service
-from app.services.hiring import approval_chain, approvers, offer_terms, requisitions
+from app.services.hiring import (
+    approval_chain,
+    approvers,
+    candidate_comms,
+    careers,
+    offer_terms,
+    requisitions,
+)
 from app.services.notifications import dispatch
 from app.services.payroll import service as payroll_service
 from app.services.payroll.salary_structure import (
@@ -997,6 +1004,14 @@ async def release_offer(
         event_key="offer.released",
         payload={"offer_code": offer.code, "candidate": candidate.full_name},
     )
+    _portal, portal_token = await careers.issue_portal_token(
+        session, user, candidate_id=candidate.id
+    )
+    await candidate_comms.on_portal_link(
+        session, user, candidate=candidate, token=portal_token,
+        event_key=candidate_comms.OFFER_RELEASED,
+        payload={"valid_until": f"{offer.valid_until:%d %B %Y}"},
+    )
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1042,7 +1057,7 @@ async def _notify(
         (
             await session.scalars(
                 select(User.id).where(
-                    User.tenant_id == offer.tenant_id,
+                    tenant_filter(User, offer.tenant_id),
                     User.employee_id.in_(employee_ids),
                 )
             )
@@ -1463,12 +1478,17 @@ async def convert_to_employee(
     # blocks the conversion: a refusal there is dropped in its own savepoint.
     from app.services.onboarding import service as onboarding_service
 
-    await onboarding_service.auto_start_on_conversion(session, user, employee, request=request)
+    plan = await onboarding_service.auto_start_on_conversion(
+        session, user, employee, request=request
+    )
     return {
         "offer_id": str(offer.id),
         "employee_id": str(employee.id),
         "employee_code": employee.employee_code,
         "status": offer.status.value,
+        # Said, not implied: HR knows whether onboarding is under way or theirs to start.
+        "onboarding_plan_id": str(plan.id) if plan else None,
+        "onboarding_checklist": plan.template_name if plan else None,
     }
 
 

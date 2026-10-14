@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.documents import IssuedLetter, LetterTemplate
 from app.models.notifications import Channel, NotificationTemplate
 from app.models.user import User, UserRole
@@ -174,7 +174,7 @@ async def ensure_event_templates(
         for channel in (Channel.EMAIL, Channel.IN_APP):
             existing = await session.scalar(
                 select(NotificationTemplate.id).where(
-                    NotificationTemplate.tenant_id == tenant_id,
+                    tenant_filter(NotificationTemplate, tenant_id),
                     NotificationTemplate.event_key == event_key,
                     NotificationTemplate.channel == channel,
                 )
@@ -200,7 +200,7 @@ async def active_user_ids(
     employee_ids: set[uuid.UUID] | None = None,
 ) -> list[uuid.UUID]:
     """Active logins in a tenant, by role or by employee record."""
-    stmt = select(User.id).where(User.tenant_id == tenant_id, User.is_active.is_(True))
+    stmt = select(User.id).where(tenant_filter(User, tenant_id), User.is_active.is_(True))
     if roles is not None:
         stmt = stmt.where(User.role.in_(roles))
     if employee_ids is not None:

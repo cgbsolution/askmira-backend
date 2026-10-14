@@ -26,6 +26,15 @@ The lifecycle, and who may move it:
   consumed, so nothing is paid by two runs.
 - **An approved run is immutable.** It is never recomputed; a correction is an
   arrears revision paid in a later run.
+
+**Off-cycle, bonus and arrear runs** are supplementary. They open only once the
+period's regular run is approved, pay the people they name from the input
+sources they were opened for, and never pay the structure twice: somebody the
+regular run already paid gets a supplementary payslip — input lines only, PF
+untouched, Professional Tax and ESI topped up, TDS on the one-off pay alone
+(see `engine.SupplementaryContext`). Somebody the regular run missed — a joiner
+keyed in late — gets a full payslip, exactly as the regular run would have
+computed it.
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
+from app.core.step_up import Confirm
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmployeeWorkLocation, EmploymentStatus
 from app.models.exit_workflow import ExitRecord, ExitStatus
@@ -58,8 +68,14 @@ from app.services.attendance import service as attendance_service
 from app.services.attendance.service import AttendanceLockError
 from app.services.notifications.dispatch import notify
 from app.services.payroll import statutory_service
-from app.services.payroll.engine import PayrollInput, PayrollRuleError, compute_payroll
+from app.services.payroll.engine import (
+    PayrollInput,
+    PayrollRuleError,
+    SupplementaryContext,
+    compute_payroll,
+)
 from app.services.payroll.inputs import (
+    PROVIDER_KEYS,
     InputConsumedElsewhereError,
     RunScope,
     collect_inputs,
@@ -95,6 +111,19 @@ COMPUTABLE_STATUSES = (
 
 _ZERO = Decimal(0)
 _INPUT_CASH_KINDS = ("earning", "reimbursement")
+
+#: Run types that pay on top of the month's regular run.
+SUPPLEMENTARY_RUN_TYPES = (
+    PayrollRunType.OFF_CYCLE,
+    PayrollRunType.BONUS,
+    PayrollRunType.ARREAR,
+)
+#: What each supplementary run draws on unless the person opening it says otherwise.
+DEFAULT_SOURCES: dict[PayrollRunType, tuple[str, ...]] = {
+    PayrollRunType.OFF_CYCLE: ("payroll_adjustments", "overtime"),
+    PayrollRunType.BONUS: ("statutory_bonus", "payroll_adjustments"),
+    PayrollRunType.ARREAR: ("arrears",),
+}
 
 
 def period_bounds(year: int, month: int) -> tuple[date, date]:
@@ -193,21 +222,26 @@ async def create_run(
     period_month: int,
     run_type: PayrollRunType = PayrollRunType.REGULAR,
     payment_date: date | None = None,
+    employee_ids: list[uuid.UUID] | None = None,
+    included_sources: list[str] | None = None,
+    reason: str | None = None,
     request: Request | None = None,
 ) -> PayrollRun:
     """Open a draft run for a period.
 
     `effective_date` is fixed here, at the period end, and never re-derived —
     that is what makes a re-run months later produce the identical result.
+
+    A supplementary run (off-cycle, bonus, arrear) needs the people it pays, a
+    reason, and an approved regular run for the period to sit on top of.
     """
-    if run_type is not PayrollRunType.REGULAR:
+    if run_type is PayrollRunType.FULL_AND_FINAL:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"{run_type.value.replace('_', ' ').title()} runs are not available yet. "
-                "Approved arrears, encashment, reimbursements and scheduled statutory bonus "
-                "are paid inside the next regular run; full and final is settled from "
-                "the exit."
+                "Full and final is settled from the exit (People → Exits → settlement), "
+                "which pays salary to the last day, encashment, gratuity and recoveries "
+                "together. It is not a payroll run."
             ),
         )
 
@@ -226,26 +260,98 @@ async def create_run(
             detail=f"The payment date {payment_date} is before the period it pays for.",
         )
 
-    existing = await session.scalar(
-        tenant_scoped(
-            select(PayrollRun).where(
-                PayrollRun.legal_entity_id == legal_entity_id,
-                PayrollRun.period_year == period_year,
-                PayrollRun.period_month == period_month,
-                PayrollRun.run_type == run_type,
-            ),
-            PayrollRun,
-            user,
+    scope: list[str] = []
+    sources: list[str] | None = None
+    clean_reason = (reason or "").strip() or None
+    if run_type in SUPPLEMENTARY_RUN_TYPES:
+        label = run_type.value.replace("_", "-")
+        if not employee_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Choose the employees this {label} run pays.",
+            )
+        if clean_reason is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Say why this {label} run is needed. It goes on the run and the audit.",
+            )
+        sources = list(dict.fromkeys(included_sources or DEFAULT_SOURCES[run_type]))
+        unknown = [key for key in sources if key not in PROVIDER_KEYS]
+        if unknown or not sources:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Unknown input source(s): {', '.join(unknown) or 'none chosen'}. "
+                    f"Choose from: {', '.join(PROVIDER_KEYS)}."
+                ),
+            )
+        regular = await session.scalar(
+            tenant_scoped(
+                select(PayrollRun).where(
+                    PayrollRun.legal_entity_id == legal_entity_id,
+                    PayrollRun.period_year == period_year,
+                    PayrollRun.period_month == period_month,
+                    PayrollRun.run_type == PayrollRunType.REGULAR,
+                ),
+                PayrollRun,
+                user,
+            )
         )
-    )
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"A {run_type.value} run already exists for {period_month}/{period_year}. "
-                "A correction is a new off-cycle or arrears run, not a re-run."
-            ),
+        if regular is None or regular.status not in CLOSED_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"The regular run for {period_month}/{period_year} is not approved yet. "
+                    f"A {label} run pays on top of an approved regular run; anything due "
+                    "before then is paid by the regular run itself."
+                ),
+            )
+        found = set(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(Employee.id).where(
+                            Employee.id.in_(employee_ids),
+                            Employee.legal_entity_id == legal_entity_id,
+                            Employee.deleted_at.is_(None),
+                        ),
+                        Employee,
+                        user,
+                    )
+                )
+            ).all()
         )
+        missing = [str(e) for e in employee_ids if e not in found]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{len(missing)} of the chosen employees are not on {entity.name}'s "
+                    "payroll. A run pays one legal entity's employees."
+                ),
+            )
+        scope = [str(e) for e in dict.fromkeys(employee_ids)]
+    else:
+        existing = await session.scalar(
+            tenant_scoped(
+                select(PayrollRun).where(
+                    PayrollRun.legal_entity_id == legal_entity_id,
+                    PayrollRun.period_year == period_year,
+                    PayrollRun.period_month == period_month,
+                    PayrollRun.run_type == run_type,
+                ),
+                PayrollRun,
+                user,
+            )
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"A {run_type.value} run already exists for {period_month}/{period_year}. "
+                    "A correction is a new off-cycle or arrears run, not a re-run."
+                ),
+            )
 
     run = PayrollRun(
         tenant_id=user.tenant_id,
@@ -256,6 +362,9 @@ async def create_run(
         payment_date=payment_date,
         run_type=run_type,
         status=PayrollRunStatus.DRAFT,
+        employee_scope=scope,
+        included_sources=sources,
+        reason=clean_reason,
     )
     session.add(run)
     await session.flush()
@@ -272,6 +381,9 @@ async def create_run(
             "type": run_type.value,
             "legal_entity": entity.name,
             "payment_date": payment_date.isoformat() if payment_date else None,
+            "employees": len(scope) or "all",
+            "sources": sources or "all",
+            "reason": clean_reason,
         },
         summary=f"Opened {run_type.value} payroll run for {period_month}/{period_year}",
         request=request,
@@ -382,6 +494,11 @@ async def compute_run(
                             Employee.date_of_exit >= start,
                         ),
                     ),
+                    *(
+                        (Employee.id.in_([uuid.UUID(e) for e in run.employee_scope]),)
+                        if run.employee_scope
+                        else ()
+                    ),
                 )
                 .order_by(Employee.employee_code),
                 Employee,
@@ -403,8 +520,10 @@ async def compute_run(
     run.status = PayrollRunStatus.PROCESSING
     await session.flush()
 
-    # Prior cycle payslips, for variance flagging.
-    previous = await _previous_net_by_employee(session, user, run)
+    is_regular = run.run_type is PayrollRunType.REGULAR
+    # Prior cycle payslips, for variance flagging. A supplementary run pays a
+    # top-up, which no previous month's net pay is a fair comparison for.
+    previous = await _previous_net_by_employee(session, user, run) if is_regular else {}
 
     # ── Income tax: the rule set, the financial year, what was paid already ─
     run_flags: list[str] = []
@@ -436,6 +555,12 @@ async def compute_run(
         session, user, run, employee_ids=employee_ids, fy_start=fy_start, fy_end=fy_end
     )
 
+    month_paid = (
+        {}
+        if is_regular
+        else await _month_paid_so_far(session, user, run, frozenset(e.id for e in employees))
+    )
+
     collected = await collect_inputs(
         session,
         user,
@@ -448,6 +573,9 @@ async def compute_run(
             fy_start=fy_start,
             fy_end=fy_end,
             prior_input_lines=prior_lines,
+        ),
+        sources=(
+            frozenset(run.included_sources) if run.included_sources is not None else None
         ),
     )
 
@@ -509,6 +637,22 @@ async def compute_run(
                     f"{employee.employee_code}'s last working day is {left_on:%d %b %Y}: paid "
                     f"for {paid_window} of {working_days} day(s) in this run. Their full and "
                     "final settlement must not pay these days again."
+                )
+
+        supplementary: SupplementaryContext | None = None
+        if not is_regular:
+            paid = month_paid.get(employee.id)
+            if paid is not None and paid["has_full"]:
+                if not collected.lines.get(employee.id):
+                    employment_notices.append(
+                        f"{employee.employee_code}: nothing is due from this run's sources, "
+                        "so no payslip."
+                    )
+                    continue
+                supplementary = SupplementaryContext(
+                    regular_gross=paid["gross"],
+                    pt_already_deducted=paid["pt"],
+                    esi_covered=paid["esi_covered"],
                 )
 
         salary = await active_salary_on(session, user, employee.id, run.effective_date)
@@ -607,8 +751,12 @@ async def compute_run(
                     designation=employee.designation,
                     state_review=state_review,
                     inputs=tuple(collected.lines.get(employee.id, [])),
-                    loan_recoveries=tuple(collected.loans.get(employee.id, [])),
+                    loan_recoveries=(
+                        () if supplementary is not None
+                        else tuple(collected.loans.get(employee.id, []))
+                    ),
                     tds=tds_context,
+                    supplementary=supplementary,
                 )
             )
         except PayrollRuleError as exc:
@@ -654,6 +802,7 @@ async def compute_run(
                 ],
                 input_lines=[line.as_dict() for line in computation.input_lines],
                 tds_working=computation.tds_working,
+                is_supplementary=computation.supplementary,
                 is_published=False,
             )
         )
@@ -664,13 +813,14 @@ async def compute_run(
         # months of the period can apply the ceiling-crossing rule. Idempotent:
         # a recompute reads back the row it already wrote rather than
         # rewriting it against changed wages.
-        if esi_rules is not None:
+        # Decided on the structure's wages: overtime never decides coverage.
+        if esi_rules is not None and not computation.supplementary:
             await statutory_service.open_esi_coverage_period(
                 session,
                 user,
                 employee_id=employee.id,
                 on_date=start,
-                esi_wage_base=computation.esi_wage_base,
+                esi_wage_base=computation.esi_eligibility_base,
                 esi_rules=esi_rules,
             )
 
@@ -698,6 +848,17 @@ async def compute_run(
                 )
 
     run.computed_by_user_id = user.id
+
+    if not is_regular and not payslips and not errors:
+        run.status = PayrollRunStatus.DRAFT
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Nothing is due for the chosen employees from this run's sources. Approve the "
+                "adjustments or overtime it should pay, then compute again."
+            ),
+        )
 
     if errors:
         run.status = PayrollRunStatus.FAILED
@@ -875,6 +1036,7 @@ async def approve_run(
     run_id: uuid.UUID,
     *,
     acknowledge_variances: bool = False,
+    confirm: Confirm | None = None,
     request: Request | None = None,
 ) -> PayrollRun:
     """Sign off a computed run.
@@ -925,6 +1087,8 @@ async def approve_run(
                 "maker-checker: the person who prepares the numbers does not sign them off."
             ),
         )
+    if confirm is not None:
+        await confirm()
 
     payslips = (
         await session.scalars(
@@ -1324,6 +1488,59 @@ async def _location_state(
             select(Location.state_code).where(Location.id == location_id), Location, user
         )
     )
+
+
+async def _month_paid_so_far(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    employee_ids: frozenset[uuid.UUID],
+) -> dict[uuid.UUID, dict]:
+    """What approved runs already paid each employee for this run's month.
+
+    A supplementary payslip tops the month up: it needs the month's gross so
+    far (for the Professional Tax slab), the PT already taken, and whether ESI
+    was charged — and whether anybody paid the structure at all.
+    """
+    if not employee_ids:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(Payslip)
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .where(
+                    PayrollRun.legal_entity_id == run.legal_entity_id,
+                    PayrollRun.period_year == run.period_year,
+                    PayrollRun.period_month == run.period_month,
+                    PayrollRun.status.in_(CLOSED_STATUSES),
+                    PayrollRun.id != run.id,
+                    Payslip.employee_id.in_(employee_ids),
+                ),
+                Payslip,
+                user,
+            )
+        )
+    ).scalars().all()
+    paid: dict[uuid.UUID, dict] = {}
+    for payslip in rows:
+        bucket = paid.setdefault(
+            payslip.employee_id,
+            {"gross": _ZERO, "pt": _ZERO, "esi_covered": False, "has_full": False},
+        )
+        wage_lines = sum(
+            (
+                Decimal(str(line.get("amount", "0")))
+                for line in (payslip.input_lines or [])
+                if line.get("counts_as_wages") and not line.get("skipped")
+            ),
+            start=_ZERO,
+        )
+        bucket["gross"] += Decimal(str(payslip.gross_earnings)) + wage_lines
+        bucket["pt"] += Decimal(str(payslip.professional_tax))
+        bucket["esi_covered"] = bucket["esi_covered"] or Decimal(str(payslip.esi_employee)) > 0
+        bucket["has_full"] = bucket["has_full"] or not payslip.is_supplementary
+    return paid
 
 
 async def _previous_net_by_employee(

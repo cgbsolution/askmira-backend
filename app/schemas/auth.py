@@ -55,6 +55,29 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class MfaChallengeRead(BaseModel):
+    """The password was right; a code from the authenticator app is needed next."""
+
+    mfa_required: bool = True
+    mfa_token: str
+    expires_in: int
+    message: str = "Enter the code from your authenticator app, or a recovery code."
+
+
+class MfaLoginRequest(BaseModel):
+    mfa_token: str
+    code: str
+
+
+class MfaCodeRequest(BaseModel):
+    code: str
+
+
+class MfaDisableRequest(BaseModel):
+    password: str
+    code: str
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

@@ -138,6 +138,7 @@ async def record_punch(
     latitude: float | None = None,
     longitude: float | None = None,
     raw_payload: dict | None = None,
+    photo_key: str | None = None,
     request: Request | None = None,
     commit: bool = True,
 ) -> AttendancePunch:
@@ -162,6 +163,7 @@ async def record_punch(
         nearest_location_metres=distance,
         location_label=label,
         raw_payload=raw_payload or {},
+        photo_key=photo_key,
     )
     session.add(punch)
     await session.flush()

@@ -8,8 +8,10 @@ members - is decided in the service, in the query.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BaseModel, Field
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -26,7 +28,8 @@ from app.schemas.culture import (
     ShoutoutPin,
     ShoutoutRead,
 )
-from app.services.culture import feed
+from app.schemas.engagement import EventCreate, PollCreate, PollVoteIn, RsvpIn
+from app.services.culture import engagement, feed, milestones
 
 router = APIRouter(prefix="/culture", tags=["culture"])
 
@@ -155,3 +158,96 @@ async def club_members(
 # Your Voice needs a schema review with the compliance SME first - FS-CUL-02
 # requires that a submitter's identity is never stored anywhere a case handler
 # can retrieve it, which is a data-model decision, not an access-control one.
+
+
+# ── Work anniversaries ──────────────────────────────────────────────────────
+
+
+class MilestoneRuleIn(BaseModel):
+    years: int = Field(ge=1, le=60)
+    points: int | None = Field(default=None, ge=0, le=1_000_000)
+    message: str | None = Field(default=None, max_length=1000)
+    active: bool = True
+
+
+class MilestoneRulesIn(BaseModel):
+    rules: list[MilestoneRuleIn] = Field(default_factory=list, max_length=30)
+
+
+@router.get("/culture/milestones", dependencies=HR_ONLY)
+async def list_milestone_rules(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Which work anniversaries the company marks, with what message and points."""
+    return await milestones.list_rules(session, user)
+
+
+@router.put("/culture/milestones", dependencies=HR_ONLY)
+async def save_milestone_rules(
+    payload: MilestoneRulesIn, user: CurrentUser, session: DbSession, request: Request
+) -> list[dict[str, Any]]:
+    result = await milestones.save_rules(
+        session, user, [r.model_dump() for r in payload.rules], request=request
+    )
+    await session.commit()
+    return result
+
+
+
+# ── Polls and events ────────────────────────────────────────────────────────
+
+
+@router.get("/polls")
+async def list_polls(user: CurrentUser, session: DbSession) -> list[dict]:
+    """Polls for the caller's audience, newest first, with results where they may be seen."""
+    return await engagement.list_polls(session, user)
+
+
+@router.post("/polls", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY)
+async def create_poll(
+    payload: PollCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await engagement.create_poll(session, user, payload, request=request)
+
+
+@router.post("/polls/{poll_id}/vote")
+async def vote_in_poll(
+    poll_id: uuid.UUID, payload: PollVoteIn, user: CurrentUser, session: DbSession
+) -> dict:
+    """Vote, or change your vote while the poll is open."""
+    return await engagement.vote(session, user, poll_id, payload.option_index)
+
+
+@router.post("/polls/{poll_id}/close", dependencies=HR_ONLY)
+async def close_poll(
+    poll_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await engagement.close_poll(session, user, poll_id, request=request)
+
+
+@router.get("/events")
+async def list_company_events(
+    user: CurrentUser, session: DbSession, include_past: bool = False
+) -> list[dict]:
+    """Upcoming company events for the caller's audience."""
+    return await engagement.list_events(session, user, include_past=include_past)
+
+
+@router.post("/events", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY)
+async def create_company_event(
+    payload: EventCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await engagement.create_event(session, user, payload, request=request)
+
+
+@router.post("/events/{event_id}/rsvp")
+async def rsvp_to_event(
+    event_id: uuid.UUID, payload: RsvpIn, user: CurrentUser, session: DbSession
+) -> dict:
+    """Going, maybe or not going. A full event refuses another going."""
+    return await engagement.rsvp(session, user, event_id, payload.response)
+
+
+@router.post("/events/{event_id}/cancel", dependencies=HR_ONLY)
+async def cancel_company_event(
+    event_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await engagement.cancel_event(session, user, event_id, request=request)

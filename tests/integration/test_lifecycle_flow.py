@@ -660,6 +660,56 @@ async def test_a_point_in_time_query_returns_the_historical_state(
     assert may["events_undone"] == 1
 
 
+async def test_a_direct_edit_of_job_fields_is_kept_in_the_history(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
+) -> None:
+    """HR changing the grade or location on the record itself still files
+    effected events, so the history shows it and the as-of view still answers
+    with the old values for the days before."""
+    from app.schemas.employee import EmployeeUpdate
+    from app.services import employee as employee_service
+
+    pune = await _location(session, tenant, legal_entity, "Pune", "MH")
+    person = await _employee(session, tenant, legal_entity, "DIR", grade="L3")
+
+    await employee_service.update_employee(
+        session, hr_user, person.id,
+        EmployeeUpdate(grade="L4", location_id=pune.id, phone="9800000000"),
+    )
+
+    events = (
+        await session.scalars(
+            select(LifecycleEvent)
+            .where(LifecycleEvent.employee_id == person.id)
+            .order_by(LifecycleEvent.event_type)
+        )
+    ).all()
+    assert {e.event_type for e in events} == {
+        LifecycleEventType.GRADE_CHANGE, LifecycleEventType.LOCATION_CHANGE,
+    }
+    assert all(e.status is LifecycleStatus.EFFECTED for e in events)
+    assert all(e.approved_by_user_id == hr_user.id for e in events)
+    grade = next(e for e in events if e.event_type is LifecycleEventType.GRADE_CHANGE)
+    assert grade.previous_values == {"grade": "L3"}
+    assert grade.new_values == {"grade": "L4"}
+
+    before = await lifecycle_service.state_on(
+        session, hr_user, employee_id=person.id, on=date.today() - timedelta(days=1)
+    )
+    assert before["state"]["grade"] == "L3"
+    assert before["state"]["location_id"] is None
+
+    # Saving the same values again is not another change.
+    await employee_service.update_employee(
+        session, hr_user, person.id, EmployeeUpdate(grade="L4")
+    )
+    count = await session.scalar(
+        select(func.count()).select_from(LifecycleEvent)
+        .where(LifecycleEvent.employee_id == person.id)
+    )
+    assert count == 2
+
+
 async def test_an_effected_event_cannot_be_cancelled(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
 ) -> None:

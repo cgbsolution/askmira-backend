@@ -55,9 +55,12 @@ async def test_the_canonical_suites_register_for_every_named_agent(
             "no suite."
         )
 
+    # Every reference agent is covered. The production agents that call the
+    # live model have no suite yet, and the coverage view lists them as such
+    # rather than presenting them as nothing to do.
     coverage = await evals.coverage(session, hr_user)
-    assert coverage["agents_without_suites"] == []
-    assert "No production AI agent exists" in coverage["not_built"]
+    assert coverage["agents_without_suites"] == sorted(evals.PRODUCTION_AGENTS)
+    assert "none of them has an eval suite" in coverage["not_built"]
 
 
 async def test_seeding_is_idempotent(session, hr_user):

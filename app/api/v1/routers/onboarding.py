@@ -214,6 +214,15 @@ async def complete_task(
     return await _task_read(session, user, task_id)
 
 
+@router.post("/tasks/{task_id}/form", response_model=TaskRead)
+async def generate_form(
+    task_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> TaskRead:
+    """Generate a form task's statutory form from the joiner's profile, to sign."""
+    await onboarding.issue_form(session, user, task_id, request=request)
+    return await _task_read(session, user, task_id)
+
+
 @router.post("/tasks/{task_id}/document", response_model=TaskRead)
 async def upload_document(
     task_id: uuid.UUID,

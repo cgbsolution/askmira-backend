@@ -137,6 +137,31 @@ class CompanyDocumentRead(BaseModel):
     is_expired: bool = False
     is_employee_visible: bool
     created_at: datetime
+    #: Every employee must read and acknowledge it.
+    requires_acknowledgement: bool = False
+    #: The caller's own state, where acknowledgement is required; else null.
+    acknowledged_by_me: bool | None = None
+
+
+class CompanyDocumentAcknowledge(BaseModel):
+    typed_name: str = Field(min_length=2, max_length=255)
+
+
+class AcknowledgementRegisterRow(BaseModel):
+    employee_id: uuid.UUID
+    employee_code: str
+    employee_name: str
+    acknowledged_at: datetime | None
+    typed_name: str | None
+
+
+class AcknowledgementRegisterRead(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    content_sha256: str | None
+    acknowledged: int
+    pending: int
+    rows: list[AcknowledgementRegisterRow]
 
 
 class CompanyDocumentUpdate(BaseModel):
@@ -146,6 +171,7 @@ class CompanyDocumentUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     document_number: str | None = Field(default=None, max_length=64)
     remark: str | None = Field(default=None, max_length=1000)
+    requires_acknowledgement: bool | None = None
     issued_on: date | None = None
     valid_until: date | None = None
     is_employee_visible: bool | None = None

@@ -58,6 +58,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -673,6 +674,12 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     justification: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: A flagged claim shows the flag to the approver. Hiding it would make the
     #: flag a metric nobody acts on.
+    #: The approvers before finance, resolved at submission from the tenant's
+    #: approval rules (the line manager when none applies). Empty for a claim
+    #: submitted before chains existed, which keeps the line-manager stage.
+    approval_chain: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
     flagged_for_approver: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )

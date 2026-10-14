@@ -93,6 +93,29 @@ def aggregate(answers: Sequence[Answer], questions: Sequence[dict[str, Any]]) ->
     )
 
 
+RELATIONSHIPS = ("manager", "skip_level", "direct_report", "peer", "other")
+
+
+def relationship_of(
+    *,
+    subject_id: object,
+    subject_manager_id: object | None,
+    skip_level_id: object | None,
+    reviewer_id: object,
+    reviewer_manager_id: object | None,
+) -> str:
+    """How a reviewer relates to the person they review, read off the org chart. Pure."""
+    if subject_manager_id is not None and reviewer_id == subject_manager_id:
+        return "manager"
+    if skip_level_id is not None and reviewer_id == skip_level_id:
+        return "skip_level"
+    if reviewer_manager_id is not None and reviewer_manager_id == subject_id:
+        return "direct_report"
+    if subject_manager_id is not None and reviewer_manager_id == subject_manager_id:
+        return "peer"
+    return "other"
+
+
 def subject_view(visibility: str, submitted: int, threshold: int = ANONYMITY_FLOOR) -> str:
     """What the person the feedback is about may see.
 

@@ -60,10 +60,19 @@ from app.models.jobboard import (
 )
 from app.models.offer import Offer
 from app.models.recruiting import Referral
+from app.models.talent_pools import TalentPoolMember
 from app.models.user import User
 from app.schemas.hiring import CandidateCreate
 from app.services import audit
-from app.services.hiring import ingestion, pipeline, resume_files, signals, visibility
+from app.services.exit_workflow import interviews as exit_interviews
+from app.services.hiring import (
+    candidate_comms,
+    ingestion,
+    pipeline,
+    resume_files,
+    signals,
+    visibility,
+)
 from app.services.interviews import service as interview_service
 from app.services.jobboards.base import RawApplication, normalise_email, normalise_phone
 
@@ -89,10 +98,17 @@ async def list_candidates(
     requisition_id: uuid.UUID | None = None,
     stage: CandidateStage | None = None,
     search: str | None = None,
+    tag: str | None = None,
+    pool_id: uuid.UUID | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Candidates this caller may see, with the moves open to each and the real total."""
+    """Candidates this caller may see, with the moves open to each and the real total.
+
+    `search` matches a name, email or current employer as typed, and the
+    resume's text by word — "python postgres" finds resumes that mention both,
+    in any order. `tag` and `pool_id` narrow to a recruiter's own labels and lists.
+    """
     permissions.require_role(
         user,
         permissions.HR_ROLES,
@@ -112,8 +128,33 @@ async def list_candidates(
     if stage is not None:
         stmt = stmt.where(Candidate.stage == stage)
     if search and search.strip():
-        term = f"%{search.strip()[:80]}%"
-        stmt = stmt.where(or_(Candidate.full_name.ilike(term), Candidate.email.ilike(term)))
+        typed = search.strip()[:80]
+        term = f"%{typed}%"
+        resume_text = func.coalesce(Candidate.parsed_resume["text"].astext, "")
+        stmt = stmt.where(
+            or_(
+                Candidate.full_name.ilike(term),
+                Candidate.email.ilike(term),
+                Candidate.current_company.ilike(term),
+                func.to_tsvector("simple", resume_text).op("@@")(
+                    func.plainto_tsquery("simple", typed)
+                ),
+            )
+        )
+    if tag and tag.strip():
+        stmt = stmt.where(Candidate.tags.contains([tag.strip().lower()]))
+    if pool_id is not None:
+        stmt = stmt.where(
+            Candidate.id.in_(
+                tenant_scoped(
+                    select(TalentPoolMember.candidate_id).where(
+                        TalentPoolMember.pool_id == pool_id
+                    ),
+                    TalentPoolMember,
+                    user,
+                )
+            )
+        )
 
     total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (
@@ -158,6 +199,7 @@ async def list_candidates(
             "created_at": candidate.created_at,
             "allowed_moves": pipeline.allowed_targets(candidate.stage.value),
             "possible_duplicate": candidate.id in ambiguous,
+            "tags": list(candidate.tags or []),
         }
         for candidate, code in rows
     ]
@@ -534,6 +576,7 @@ async def candidate_profile(
             "salary_hidden": not is_hr,
             "stage": candidate.stage.value,
             "source": candidate.source,
+            "tags": list(candidate.tags or []),
             "converted_employee_id": (
                 str(candidate.converted_employee_id) if candidate.converted_employee_id else None
             ),
@@ -545,6 +588,9 @@ async def candidate_profile(
                 else None
             ),
             "resume_note": (candidate.parsed_resume or {}).get("note"),
+            "former_employee": await exit_interviews.former_employee(
+                session, user, email=candidate.email, phone=candidate.phone
+            ),
         },
         "requisition": {
             "id": str(requisition.id),
@@ -696,9 +742,14 @@ async def move_stage(
     candidate_id: uuid.UUID,
     to_stage: CandidateStage,
     reason: str | None,
+    notify_candidate: bool = True,
     request: Request | None = None,
 ) -> dict[str, Any]:
-    """Move a candidate, recording who, why and when."""
+    """Move a candidate, recording who, why and when.
+
+    A move to rejected queues the candidate's email, held for a day so a
+    mistaken move can be undone; moving them back out withdraws it.
+    """
     candidate, requisition = await visibility.load_candidate(session, user, candidate_id)
     try:
         transition = pipeline.check_transition(
@@ -756,6 +807,10 @@ async def move_stage(
         changes={"from": previous.value, "to": to_stage.value},
         request=request,
     )
+    if to_stage is CandidateStage.REJECTED and notify_candidate:
+        await candidate_comms.on_rejected(session, user, candidate)
+    elif previous is CandidateStage.REJECTED:
+        await candidate_comms.cancel_pending_rejections(session, user, candidate.id)
     return {
         "candidate_id": candidate.id,
         "from_stage": previous,

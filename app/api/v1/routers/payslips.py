@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
-from app.core.deps import CurrentUser, DbSession
+from app.core import permissions
+from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.user import UserRole
 from app.schemas.payroll_run import PayslipRead, PayslipSummaryRead, SalaryRecordRead
 from app.services.payroll import payslips as payslip_service
+from app.services.payroll import total_rewards
 
 router = APIRouter(prefix="/payroll", tags=["payslips"])
 
@@ -51,3 +54,22 @@ async def my_payslip_pdf(payslip_id: uuid.UUID, user: CurrentUser, session: DbSe
 async def my_salary(user: CurrentUser, session: DbSession) -> list[SalaryRecordRead]:
     """Your salary history: every revision, newest first."""
     return await payslip_service.my_salary_history(session, user)
+
+
+
+@router.get("/my-total-rewards")
+async def my_total_rewards(user: CurrentUser, session: DbSession) -> dict:
+    """Everything the company spends on you this year: CTC, contributions, recognition."""
+    permissions.own_employee_id(user)
+    return await total_rewards.statement(session, user, user.employee_id)
+
+
+@router.get(
+    "/employees/{employee_id}/total-rewards",
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN))],
+)
+async def employee_total_rewards(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict:
+    """One person's total-rewards statement, for HR."""
+    return await total_rewards.statement(session, user, employee_id)

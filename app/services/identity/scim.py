@@ -45,6 +45,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import tenant_filter
 from app.models.audit import AuditAction
 from app.models.identity import ScimToken
 from app.models.user import User, UserRole
@@ -202,7 +203,7 @@ async def list_users(
     count: int = 100,
 ) -> dict[str, Any]:
     """Paginated list. SCIM indexes from 1, not 0."""
-    stmt = select(User).where(User.tenant_id == tenant_id)
+    stmt = select(User).where(tenant_filter(User, tenant_id))
 
     # Directories overwhelmingly send exactly one filter shape:
     # `userName eq "someone@example.com"`. Supporting that precisely is worth
@@ -254,7 +255,7 @@ async def provision_user(
         raise ScimError(400, "userName is required", scim_type="invalidValue")
 
     existing = await session.scalar(
-        select(User).where(User.tenant_id == tenant_id, func.lower(User.email) == email)
+        select(User).where(tenant_filter(User, tenant_id), func.lower(User.email) == email)
     )
     if existing is not None:
         raise ScimError(409, f"A user with userName {email} already exists", scim_type="uniqueness")
@@ -309,7 +310,7 @@ async def deactivate_user(
     about, and the answer is that employment records survive.
     """
     user = await session.scalar(
-        select(User).where(User.tenant_id == tenant_id, User.id == user_id)
+        select(User).where(tenant_filter(User, tenant_id), User.id == user_id)
     )
     if user is None:
         raise ScimError(404, f"No user with id {user_id}")
@@ -361,7 +362,7 @@ async def apply_patch(
         )
 
     user = await session.scalar(
-        select(User).where(User.tenant_id == tenant_id, User.id == user_id)
+        select(User).where(tenant_filter(User, tenant_id), User.id == user_id)
     )
     if user is None:
         raise ScimError(404, f"No user with id {user_id}")

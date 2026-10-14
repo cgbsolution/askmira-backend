@@ -613,7 +613,9 @@ async def test_the_transparency_surface_answers_the_security_review_question(
         "The transparency surface no longer lists what is not built. A page of "
         "green ticks is not an answer to a security review."
     )
-    assert any("agent layer is not built" in gap for gap in surface["not_built"])
+    # Which agent creates proposals, and that the rest of the catalogue has none.
+    assert any("probation agent" in gap for gap in surface["not_built"])
+    assert any("no agent yet" in gap for gap in surface["not_built"])
 
 
 async def test_the_transparency_surface_is_scoped_to_its_tenant(

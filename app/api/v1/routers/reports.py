@@ -504,3 +504,100 @@ async def activity(
             for d in deliveries.all()
         ],
     }
+
+
+# ── People analytics and the dashboard ──────────────────────────────────────
+
+ANALYTICS = [Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN, line_managers=True))]
+
+
+class PinIn(BaseModel):
+    report_id: uuid.UUID
+
+
+@router.get("/reports/analytics/headcount", dependencies=ANALYTICS)
+async def headcount_trend(
+    user: CurrentUser, session: DbSession, months: int = 12
+) -> list[dict[str, Any]]:
+    """Headcount at each month end, with joiners and leavers. Scoped to whom you may see."""
+    from app.services.attendance.service import local_today
+    from app.services.reporting import analytics
+
+    return await analytics.headcount_trend(
+        session, user, today=await local_today(session, user), months=max(1, min(months, 36))
+    )
+
+
+@router.get("/reports/analytics/attrition", dependencies=ANALYTICS)
+async def attrition(
+    user: CurrentUser, session: DbSession, months: int = 12, by_department: bool = False
+) -> dict[str, Any]:
+    """Attrition as a rate over average headcount, total and voluntary, by month."""
+    from app.services.attendance.service import local_today
+    from app.services.reporting import analytics
+
+    return await analytics.attrition(
+        session,
+        user,
+        today=await local_today(session, user),
+        months=max(1, min(months, 36)),
+        by_department=by_department,
+    )
+
+
+@router.get("/reports/analytics/leave-trend", dependencies=ANALYTICS)
+async def leave_trend(user: CurrentUser, session: DbSession, months: int = 12) -> dict[str, Any]:
+    """Approved leave days by month and leave type."""
+    from app.services.attendance.service import local_today
+    from app.services.reporting import analytics
+
+    return await analytics.leave_trend(
+        session, user, today=await local_today(session, user), months=max(1, min(months, 36))
+    )
+
+
+@router.get("/reports/analytics/signals", dependencies=ANALYTICS)
+async def absence_signals(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Rule-based absence and burnout signals, each with its rule and evidence."""
+    from app.services.attendance.service import local_today
+    from app.services.reporting import analytics
+
+    return await analytics.absence_signals(session, user, today=await local_today(session, user))
+
+
+@router.get("/reports/analytics/performance", dependencies=ANALYTICS)
+async def performance(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Ratings over recent cycles, goal attainment, and rater spread (HR only)."""
+    from app.services.reporting import performance_analytics
+
+    return await performance_analytics.performance_overview(session, user)
+
+
+@router.get("/reports/analytics/absence-scores", dependencies=ANALYTICS)
+async def absence_scores(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Bradford factor per person over 52 weeks, with its spells, days and formula."""
+    from app.services.attendance.service import local_today
+    from app.services.reporting import analytics
+
+    return await analytics.absence_scores(session, user, today=await local_today(session, user))
+
+
+@router.get("/reports/dashboard", dependencies=ANALYTICS)
+async def my_dashboard(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    from app.services.reporting import analytics
+
+    return await analytics.dashboard(session, user)
+
+
+@router.post("/reports/dashboard", dependencies=ANALYTICS)
+async def pin_report(payload: PinIn, user: CurrentUser, session: DbSession) -> list[dict]:
+    from app.services.reporting import analytics
+
+    return await analytics.pin_report(session, user, payload.report_id)
+
+
+@router.delete("/reports/dashboard/{widget_id}", dependencies=ANALYTICS)
+async def unpin_report(widget_id: uuid.UUID, user: CurrentUser, session: DbSession) -> list[dict]:
+    from app.services.reporting import analytics
+
+    return await analytics.unpin_report(session, user, widget_id)

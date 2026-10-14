@@ -237,6 +237,7 @@ async def _rule_sets(demo: Demo) -> None:
         # The person who entered it cannot attest it.
         await priya.refused("POST", f"/payroll/rule-sets/{created['id']}/approve",
                             {"attest": True}, status=403)
+        await demo["ananya"].step_up("payroll.rule_change")
         await demo["ananya"].post(f"/payroll/rule-sets/{created['id']}/approve",
                                   {"attest": True})
     demo.note(FLOW, f"{len(RULE_SETS)} statutory rule sets entered by Priya, attested by Ananya")
@@ -462,6 +463,7 @@ async def runs(demo: Demo) -> None:
                 {"note": variance_note(variance)},
             )
         await priya.refused("POST", f"/payroll/runs/{run['id']}/approve", status=403)
+        await karthik.step_up("payroll.run_approve")
         await karthik.post(f"/payroll/runs/{run['id']}/approve")
         await priya.post(f"/payroll/runs/{run['id']}/publish")
 
@@ -477,6 +479,7 @@ async def runs(demo: Demo) -> None:
         await priya.post(f"/disbursement/batches/{batch['id']}/approve",
                          {"file_hash": batch["file_hash"]})
         await priya.get(f"/disbursement/batches/{batch['id']}/file")
+        await priya.step_up("disbursement.release")
         await priya.post(f"/disbursement/batches/{batch['id']}/release")
         # The bank's response file names accounts, which the batch lines mask;
         # Finance matches them from the bank's own statement.

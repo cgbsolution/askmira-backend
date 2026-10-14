@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 
@@ -27,6 +27,7 @@ from app.schemas.employee_profile import (
     EmployeeProfileRead,
     ProfileUpdate,
 )
+from app.services import custom_tables, employee_timeline
 from app.services import employee as employee_service
 from app.services import employee_profile as profile_service
 from app.services.employee_profile import PHOTO_MAX_BYTES
@@ -69,6 +70,41 @@ async def list_employees(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/export", dependencies=HR_ONLY)
+async def export_directory(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    search: str | None = Query(default=None, max_length=128),
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    manager_id: uuid.UUID | None = None,
+    employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
+    current: bool = False,
+) -> Response:
+    """The directory as CSV, filtered like the screen, with each manager named."""
+    content = await employee_service.directory_csv(
+        session,
+        user,
+        search=search,
+        department_id=department_id,
+        location_id=location_id,
+        manager_id=manager_id,
+        status_filter=employment_status.value if employment_status else None,
+        current_only=current,
+        request=request,
+    )
+    await session.commit()
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="directory.csv"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -240,6 +276,61 @@ async def get_employee(
 ) -> EmployeeRead:
     employee = await employee_service.get_employee(session, user, employee_id)
     return await employee_service.employee_view(session, user, employee)
+
+
+@router.get("/{employee_id}/custom-tables")
+async def get_custom_tables(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[dict]:
+    """Each custom table with this person's rows: HR, or the person for non-sensitive ones."""
+    return await custom_tables.tables_for(session, user, employee_id)
+
+
+@router.post("/{employee_id}/custom-tables/{table_id}/rows", status_code=status.HTTP_201_CREATED)
+async def add_custom_table_row(
+    employee_id: uuid.UUID,
+    table_id: uuid.UUID,
+    values: dict[str, Any],
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    return await custom_tables.add_row(
+        session, user, employee_id, table_id, values, request=request
+    )
+
+
+@router.patch("/custom-table-rows/{row_id}")
+async def update_custom_table_row(
+    row_id: uuid.UUID,
+    values: dict[str, Any],
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    return await custom_tables.update_row(session, user, row_id, values, request=request)
+
+
+@router.delete(
+    "/custom-table-rows/{row_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
+)
+async def delete_custom_table_row(
+    row_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await custom_tables.delete_row(session, user, row_id, request=request)
+
+
+@router.get("/{employee_id}/timeline")
+async def get_timeline(
+    employee_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    module: Annotated[list[str] | None, Query(max_length=20)] = None,
+) -> dict:
+    """Everything that has happened to this person, across modules, newest first."""
+    return await employee_timeline.timeline(
+        session, user, employee_id, modules=set(module) if module else None
+    )
 
 
 @router.get("/{employee_id}/profile", response_model=EmployeeProfileRead)

@@ -148,6 +148,18 @@ def test_a_partial_form_is_refused() -> None:
         )
 
 
+@pytest.mark.parametrize("value", [Decimal(0), Decimal(11), Decimal("7.5"), Decimal(-3)])
+def test_a_rating_off_the_scale_is_refused(value: Decimal) -> None:
+    """A 99 from an API client would outweigh four honest panelists."""
+    with pytest.raises(FeedbackError, match="off the scale"):
+        validate_feedback(
+            recommendation=Recommendation.YES,
+            ratings={"comm": value},
+            required_competencies=["comm"],
+            concerns="",
+        )
+
+
 def test_a_negative_recommendation_needs_a_stated_concern() -> None:
     """"No" with nothing behind it cannot be explained to the candidate, cannot
     be examined for bias, and cannot be defended if questioned."""

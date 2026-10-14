@@ -32,6 +32,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -384,13 +385,16 @@ class PayrollRuleSet(Base, UUIDMixin, TenantMixin, TimestampMixin):
 class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "payroll_runs"
     __table_args__ = (
-        UniqueConstraint(
+        # One regular run per entity and month. Off-cycle, bonus and arrear runs
+        # are supplementary and may be as many as the month needs.
+        Index(
+            "uq_payroll_run_regular_period",
             "tenant_id",
             "legal_entity_id",
             "period_year",
             "period_month",
-            "run_type",
-            name="uq_payroll_run_period",
+            unique=True,
+            postgresql_where=text("run_type = 'REGULAR'"),
         ),
     )
 
@@ -467,6 +471,18 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     input_notices: Mapped[list] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
+
+    # ── Off-cycle runs ──────────────────────────────────────────────────────
+    #: Who an off-cycle, bonus or arrear run pays. Empty on a regular run, which
+    #: pays everyone employed in the period.
+    employee_scope: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
+    #: Which input sources a supplementary run draws on (provider keys). Null
+    #: means every source, which is what a regular run always uses.
+    included_sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: Why a supplementary run was opened — shown on the run and in the audit.
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     payslips: Mapped[list[Payslip]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -555,6 +571,12 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # The income tax projection behind `tds`: regime, projected income, slabs,
     # deductions, months remaining, what was already deducted.
     tds_working: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: An off-cycle payslip for somebody the month's regular run already paid:
+    #: input lines only, no structure, no days. Registers and returns merge it
+    #: into the month rather than counting the person twice.
+    is_supplementary: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     pdf_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

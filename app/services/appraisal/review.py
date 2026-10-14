@@ -647,6 +647,11 @@ async def review_detail(
     goal = await goals_service.goal_score_for(
         session, user, employee_id=appraisal.employee_id, cycle=cycle
     )
+    from app.services.performance import feedback as feedback_service
+
+    feedback_360 = await feedback_service.feedback_for_review(
+        session, user, employee_id=appraisal.employee_id, cycle_id=cycle.id
+    )
 
     # ── The outcome, where the caller may see it ───────────────────────────
     outcome = None
@@ -698,6 +703,7 @@ async def review_detail(
         manager_name = manager.full_name if manager else None
 
     return {
+        "feedback_360": feedback_360,
         "appraisal": {
             "id": str(appraisal.id),
             "cycle_id": str(cycle.id),

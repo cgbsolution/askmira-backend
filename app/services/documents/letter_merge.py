@@ -58,6 +58,22 @@ AVAILABLE_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "salary": ("ctc_annual", "currency", "effective_from"),
     "tenant": ("name", "slug"),
+    # What the statutory declarations (EPF Form 11, Form 2, gratuity Form F, the
+    # ESI declaration) ask for, from the employee record and their profile.
+    "statutory": (
+        "date_of_birth",
+        "gender",
+        "father_or_spouse_name",
+        "marital_status",
+        "mobile",
+        "email",
+        "uan",
+        "pf_number",
+        "esi_number",
+        "previous_pf_member",
+        "current_address",
+        "permanent_address",
+    ),
 }
 
 # {{ employee.first_name }} — whitespace tolerated, token chars restricted.
@@ -89,6 +105,10 @@ class MergeContext:
     manual: dict[str, Any] = field(default_factory=dict)
     # Resolved component rows for the CTC table, newest structure first.
     salary_components: list[dict[str, Any]] = field(default_factory=list)
+    statutory: dict[str, Any] = field(default_factory=dict)
+    # Profile nominees, each with its `purpose` (pf, eps, gratuity, insurance).
+    nominees: list[dict[str, Any]] = field(default_factory=list)
+    family: list[dict[str, Any]] = field(default_factory=list)
 
 
 def extract_tokens(*html_fragments: str | None) -> set[str]:
@@ -180,12 +200,77 @@ def _today_long(context: MergeContext) -> str:
     return html.escape(context.as_of.strftime("%d %B %Y"))
 
 
+def _cell(value: Any) -> str:
+    return f"<td>{_format_scalar(value)}</td>"
+
+
+def _nominee_table(purpose: str, label: str):
+    def handler(context: MergeContext) -> str:
+        rows = [n for n in context.nominees if n.get("purpose") == purpose]
+        if not rows:
+            raise LetterMergeError(
+                f"computed.{purpose}_nominees_table needs at least one {label} nominee. Add "
+                "them under Profile → Family & nominees first."
+            )
+        total = sum((Decimal(str(n.get("share_percent", 0))) for n in rows), start=Decimal(0))
+        if total != Decimal(100):
+            raise LetterMergeError(
+                f"The {label} nominees' shares add up to {total}%, not 100%. Correct them "
+                "under Profile → Family & nominees."
+            )
+        body = "".join(
+            "<tr>"
+            + _cell(n.get("name"))
+            + _cell(str(n.get("relationship", "")).replace("_", " ").capitalize())
+            + _cell(n.get("date_of_birth"))
+            + _cell(n.get("address"))
+            + _cell(f"{n.get('share_percent')}%")
+            + _cell(n.get("guardian_name"))
+            + "</tr>"
+            for n in rows
+        )
+        return (
+            '<table class="ctc-table" cellspacing="0" cellpadding="6"><thead><tr>'
+            "<th>Nominee</th><th>Relationship</th><th>Date of birth</th><th>Address</th>"
+            "<th>Share</th><th>Guardian (if a minor)</th></tr></thead>"
+            f"<tbody>{body}</tbody></table>"
+        )
+
+    return handler
+
+
+def _family_table(context: MergeContext) -> str:
+    if not context.family:
+        raise LetterMergeError(
+            "computed.family_table needs the family members on record. Add them under "
+            "Profile → Family & nominees first."
+        )
+    body = "".join(
+        "<tr>"
+        + _cell(member.get("name"))
+        + _cell(str(member.get("relationship", "")).replace("_", " ").capitalize())
+        + _cell(member.get("date_of_birth"))
+        + _cell("Yes" if member.get("is_dependent") else "No")
+        + "</tr>"
+        for member in context.family
+    )
+    return (
+        '<table class="ctc-table" cellspacing="0" cellpadding="6"><thead><tr>'
+        "<th>Name</th><th>Relationship</th><th>Date of birth</th><th>Dependant</th>"
+        f"</tr></thead><tbody>{body}</tbody></table>"
+    )
+
+
 COMPUTED_HANDLERS = {
     "ctc_table": _ctc_table,
     "ctc_in_words": _ctc_in_words,
     "tenure": _tenure,
     "full_name": _employee_full_name,
     "letter_date": _today_long,
+    "pf_nominees_table": _nominee_table("pf", "Provident Fund"),
+    "eps_nominees_table": _nominee_table("eps", "pension (EPS)"),
+    "gratuity_nominees_table": _nominee_table("gratuity", "gratuity"),
+    "family_table": _family_table,
 }
 
 
@@ -229,6 +314,7 @@ def _resolve(token: str, context: MergeContext) -> str:
         "salary": context.salary,
         "tenant": context.tenant,
         "manual": context.manual,
+        "statutory": context.statutory,
     }
     if namespace not in sources:
         raise LetterMergeError(

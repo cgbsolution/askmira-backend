@@ -30,6 +30,19 @@ class PayrollRunCreate(BaseModel):
     period_month: int = Field(ge=1, le=12)
     payment_date: date | None = None
     run_type: PayrollRunType = PayrollRunType.REGULAR
+    #: Off-cycle, bonus and arrear runs only: who the run pays.
+    employee_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
+    #: Off-cycle, bonus and arrear runs only: which input sources it draws on.
+    #: Empty uses the run type's default.
+    included_sources: list[str] = Field(default_factory=list, max_length=20)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class InputSourceOptionRead(BaseModel):
+    """An input source a supplementary run can draw on."""
+
+    key: str
+    label: str
 
 
 class VarianceAcknowledge(BaseModel):
@@ -118,6 +131,10 @@ class PayrollRunRead(BaseModel):
     paid_at: datetime | None
     paid_by_name: str | None
     created_at: datetime
+    #: Off-cycle, bonus and arrear runs: who and what they pay, and why.
+    employee_scope: list[uuid.UUID] = Field(default_factory=list)
+    included_sources: list[str] | None = None
+    reason: str | None = None
 
     # False when the caller computed this run: maker-checker.
     caller_may_approve: bool
@@ -185,6 +202,8 @@ class PayslipRead(BaseModel):
     payment_date: date | None
     is_published: bool
     published_at: datetime | None
+    #: An off-cycle top-up for a month the regular run already paid.
+    is_supplementary: bool = False
 
     working_days: Money
     paid_days: Money
@@ -273,7 +292,8 @@ class RegisterRead(BaseModel):
 # ── Rule sets ───────────────────────────────────────────────────────────────
 
 RuleType = Literal[
-    "pf", "esi", "professional_tax", "tds", "gratuity", "bonus", "labour_welfare_fund"
+    "pf", "esi", "professional_tax", "tds", "gratuity", "bonus", "labour_welfare_fund",
+    "tds_non_salary",
 ]
 
 
@@ -377,6 +397,7 @@ class SalaryStructureDetailRead(BaseModel):
 __all__ = [
     "Decimal",
     "InputNoticeRead",
+    "InputSourceOptionRead",
     "InputSourceRead",
     "PayrollRunCreate",
     "PayrollRunRead",

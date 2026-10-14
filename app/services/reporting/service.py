@@ -77,6 +77,7 @@ __all__ = [
     "run_saved_report",
     "run_schedule",
     "set_schedule_active",
+    "visible_report",
 ]
 
 _ORDER = {
@@ -126,6 +127,19 @@ async def build_scope(session: AsyncSession, user: User) -> Scope:
     kind = compiler.resolve_scope(_role_of(user))
 
     if kind is ScopeKind.TENANT:
+        # A sub-admin scoped to some departments or locations sees their people
+        # only. The report compiler builds Core queries the ORM scope does not
+        # reach, so the narrowing is passed in explicitly.
+        from app.core.hr_scope import current_scope
+
+        scoped = current_scope()
+        if scoped is not None:
+            return Scope(
+                kind=ScopeKind.REPORTING_TREE,
+                tenant_id=user.tenant_id,
+                employee_id=getattr(user, "employee_id", None),
+                visible_employee_ids=scoped.employee_ids,
+            )
         return Scope(kind=kind, tenant_id=user.tenant_id)
 
     employee_id = getattr(user, "employee_id", None)
@@ -397,6 +411,11 @@ async def _load_report(session: AsyncSession, user: User, report_id: uuid.UUID) 
             status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
         )
     return report
+
+
+async def visible_report(session: AsyncSession, user: User, report_id: uuid.UUID) -> Report:
+    """A saved report the caller may open, or 404 — the same rule a run applies."""
+    return await _load_report(session, user, report_id)
 
 
 async def run_saved_report(

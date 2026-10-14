@@ -217,7 +217,13 @@ def validate_event(facts: EventFacts, *, today: date) -> None:
         for key, value in facts.new_values.items()
         if key in facts.previous_values and facts.previous_values[key] == value
     ]
-    if unchanged and len(unchanged) == len(facts.new_values):
+    # A confirmation on the planned date is the normal case, not a no-op: the
+    # decision itself is the change, and it is what the letter records.
+    if (
+        unchanged
+        and len(unchanged) == len(facts.new_values)
+        and facts.event_type is not EventType.CONFIRMATION
+    ):
         raise LifecycleError(
             f"Every value on this {facts.event_type.value} is the same as the current "
             f"one ({sorted(unchanged)}). Nothing would change."

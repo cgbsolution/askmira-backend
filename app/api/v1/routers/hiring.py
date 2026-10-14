@@ -24,7 +24,9 @@ from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.hiring import (
     CandidateCreate,
+    CandidateMessageCreate,
     CandidateSummary,
+    CandidateTags,
     PendingDecision,
     RequisitionCreate,
     RequisitionDetail,
@@ -33,7 +35,11 @@ from app.schemas.hiring import (
     RequisitionUpdate,
     StageMove,
     StageMoveResult,
+    TalentPoolAdd,
+    TalentPoolCreate,
+    TalentPoolUpdate,
 )
+from app.services.hiring import candidate_comms, talent
 from app.services.hiring import candidates as candidate_service
 from app.services.hiring import requisitions as requisition_service
 
@@ -193,16 +199,24 @@ async def list_candidates(
     requisition_id: uuid.UUID | None = None,
     stage: CandidateStage | None = None,
     search: str | None = Query(default=None, max_length=80),
+    tag: str | None = Query(default=None, max_length=48),
+    pool_id: uuid.UUID | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> Page[CandidateSummary]:
-    """Candidates visible to HR, or to the requisition's hiring manager or recruiter."""
+    """Candidates visible to HR, or to the requisition's hiring manager or recruiter.
+
+    `search` also reads resume text, word by word; `tag` and `pool_id` narrow
+    to a label or a talent pool.
+    """
     items, total = await candidate_service.list_candidates(
         session,
         user,
         requisition_id=requisition_id,
         stage=stage,
         search=search,
+        tag=tag,
+        pool_id=pool_id,
         page=page,
         page_size=page_size,
     )
@@ -255,10 +269,175 @@ async def move_candidate_stage(
         candidate_id=candidate_id,
         to_stage=payload.to_stage,
         reason=payload.reason,
+        notify_candidate=payload.notify_candidate,
         request=request,
     )
     await session.commit()
     return StageMoveResult.model_validate(result)
+
+
+@router.put(
+    "/candidates/{candidate_id}/tags",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def set_candidate_tags(
+    candidate_id: uuid.UUID,
+    payload: CandidateTags,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    tags = await talent.set_tags(
+        session, user, candidate_id=candidate_id, tags=payload.tags, request=request
+    )
+    await session.commit()
+    return {"tags": tags}
+
+
+@router.get(
+    "/candidate-tags", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))]
+)
+async def candidate_tags(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Tags in use among the candidates you can see, most used first."""
+    return await talent.tag_counts(session, user)
+
+
+@router.get("/talent-pools", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def list_talent_pools(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await talent.list_pools(session, user)
+
+
+@router.post(
+    "/talent-pools",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def create_talent_pool(
+    payload: TalentPoolCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    result = await talent.create_pool(
+        session, user, name=payload.name, description=payload.description, request=request
+    )
+    await session.commit()
+    return result
+
+
+@router.get("/talent-pools/{pool_id}", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def talent_pool(pool_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """The pool and its members, each with their talent-pool consent as it stands."""
+    return await talent.pool_detail(session, user, pool_id)
+
+
+@router.patch("/talent-pools/{pool_id}", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def update_talent_pool(
+    pool_id: uuid.UUID,
+    payload: TalentPoolUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await talent.update_pool(
+        session, user, pool_id, name=payload.name, description=payload.description,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.delete(
+    "/talent-pools/{pool_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def delete_talent_pool(
+    pool_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await talent.delete_pool(session, user, pool_id, request=request)
+    await session.commit()
+
+
+@router.post("/talent-pools/{pool_id}/members", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def add_talent_pool_members(
+    pool_id: uuid.UUID,
+    payload: TalentPoolAdd,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Add those who agreed to be kept; each refusal comes back with its reason."""
+    result = await talent.add_members(
+        session, user, pool_id, candidate_ids=payload.candidate_ids, note=payload.note,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.delete(
+    "/talent-pools/{pool_id}/members/{candidate_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def remove_talent_pool_member(
+    pool_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> None:
+    await talent.remove_member(session, user, pool_id, candidate_id, request=request)
+    await session.commit()
+
+
+@router.get(
+    "/candidates/{candidate_id}/messages",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def list_candidate_messages(
+    candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[dict[str, Any]]:
+    """Every email sent or queued to this candidate, automatic or written."""
+    return await candidate_comms.list_messages(session, user, candidate_id)
+
+
+@router.post(
+    "/candidates/{candidate_id}/messages",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def send_candidate_message(
+    candidate_id: uuid.UUID,
+    payload: CandidateMessageCreate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await candidate_comms.send_message(
+        session,
+        user,
+        candidate_id=candidate_id,
+        subject=payload.subject,
+        message=payload.message,
+        include_portal_link=payload.include_portal_link,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.post(
+    "/candidate-messages/{message_id}/cancel",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def cancel_candidate_message(
+    message_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Withdraw an email that has not gone yet — a held rejection, say."""
+    result = await candidate_comms.cancel_message(session, user, message_id, request=request)
+    await session.commit()
+    return result
 
 
 @router.get(

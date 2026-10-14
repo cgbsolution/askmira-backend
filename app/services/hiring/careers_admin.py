@@ -181,11 +181,16 @@ async def issue_portal_link(
         summary="Candidate portal link issued",
         request=request,
     )
+    from app.services.hiring import candidate_comms
+
+    await candidate_comms.on_portal_link(
+        session, user, candidate=candidate, token=token, event_key=candidate_comms.PORTAL_LINK
+    )
     return {
         "token": token,
         "expires_at": row.expires_at.isoformat(),
         "note": (
-            "This link is shown once and cannot be retrieved again. Send it to the "
-            "candidate now; issue a new one if it is lost."
+            f"The link has been emailed to {candidate.email}. It is shown once, here, and "
+            "cannot be retrieved again; issue a new one if it is lost."
         ),
     }

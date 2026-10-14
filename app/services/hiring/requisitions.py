@@ -355,6 +355,11 @@ async def update_requisition(
         raise _unprocessable("A requisition needs at least one opening.")
     if "employment_type" in changes and changes["employment_type"] is None:
         changes.pop("employment_type")
+    if "description_ai_assisted" in changes and changes["description_ai_assisted"] is None:
+        changes.pop("description_ai_assisted")
+    if "description" in changes and "description_ai_assisted" not in changes:
+        # Edited by hand without saying it came from a draft: a person's words.
+        changes["description_ai_assisted"] = False
     if "skills" in changes:
         changes["skills"] = list(
             dict.fromkeys(s.strip()[:64] for s in (changes["skills"] or []) if s and s.strip())
@@ -408,6 +413,31 @@ async def update_requisition(
     return requisition
 
 
+def publish_jd(requisition: Requisition, *, now: datetime) -> bool:
+    """Record the description candidates will apply against, as a new version.
+
+    FS-HIR-01: a published JD is versioned, because a candidate applied against
+    a specific wording and that wording has to stay retrievable. Called when a
+    requisition opens or reopens; a description unchanged since the last
+    version adds nothing.
+    """
+    body = (requisition.description or "").strip()
+    versions = list(requisition.jd_versions or [])
+    if not body or (versions and versions[-1].get("body") == body):
+        return False
+    versions.append(
+        {
+            "version": len(versions) + 1,
+            "body": body,
+            "published_at": now.isoformat(),
+            "ai_generated": bool(requisition.description_ai_assisted),
+        }
+    )
+    # Reassigned rather than appended in place, so the JSONB change is seen.
+    requisition.jd_versions = versions
+    return True
+
+
 _STATUS_MOVES: dict[RequisitionStatus, frozenset[RequisitionStatus]] = {
     RequisitionStatus.OPEN: frozenset({RequisitionStatus.ON_HOLD, RequisitionStatus.CLOSED}),
     RequisitionStatus.ON_HOLD: frozenset({RequisitionStatus.OPEN, RequisitionStatus.CLOSED}),
@@ -449,6 +479,8 @@ async def change_status(
     requisition.status = to_status
     if to_status is RequisitionStatus.CLOSED:
         requisition.closed_at = datetime.now(UTC)
+    if to_status is RequisitionStatus.OPEN:
+        publish_jd(requisition, now=datetime.now(UTC))
     await session.flush()
     await audit.record(
         session,
@@ -644,6 +676,15 @@ async def requisition_detail(
         "budget_ctc_max": _money(requisition.budget_ctc_max),
         "justification": requisition.justification,
         "description": requisition.description,
+        "description_ai_assisted": requisition.description_ai_assisted,
+        "jd_versions": [
+            {
+                "version": v.get("version"),
+                "published_at": v.get("published_at"),
+                "ai_generated": bool(v.get("ai_generated")),
+            }
+            for v in (requisition.jd_versions or [])
+        ],
         "skills": list(requisition.skills or []),
         "replacement_for_employee_id": requisition.replacement_for_employee_id,
         "target_joining_date": requisition.target_joining_date,
@@ -882,6 +923,7 @@ async def approve_requisition(
             requisition.status = RequisitionStatus.OPEN
             requisition.approved_by_user_id = user.id
             requisition.approved_at = datetime.now(UTC)
+            publish_jd(requisition, now=requisition.approved_at)
 
     await session.flush()
     await audit.record(

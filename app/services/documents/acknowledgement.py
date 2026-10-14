@@ -242,6 +242,11 @@ async def acknowledge(
         summary=f"{employee.full_name} acknowledged letter {letter.reference_number}",
         request=request,
     )
+    # A generated onboarding form is signed by this acknowledgement.
+    from app.services.onboarding import service as onboarding
+
+    await onboarding.form_acknowledged(session, user, letter.id)
+
     notify_ids = {uid for uid in (letter.issued_by_user_id, row.requested_by_user_id) if uid}
     notify_ids.discard(user.id)
     if notify_ids:

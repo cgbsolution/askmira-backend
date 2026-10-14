@@ -576,10 +576,10 @@ async def disburse_bonus(
             PayrollRunStatus.FAILED,
         )
         if run.status in open_statuses:
-            if run.run_type is not PayrollRunType.REGULAR:
+            if run.run_type not in (PayrollRunType.REGULAR, PayrollRunType.BONUS):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Statutory bonus rides a regular payroll run only.",
+                    detail="Statutory bonus rides a regular or a bonus payroll run only.",
                 )
             for row in approved:
                 row.paid_in_run_id = run.id

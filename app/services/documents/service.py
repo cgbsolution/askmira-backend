@@ -245,6 +245,7 @@ async def _build_context(
             for c in sorted(salary.components, key=lambda c: c.display_order)
         ]
 
+    statutory, nominees, family = await _statutory_values(session, user, employee)
     return MergeContext(
         as_of=as_of,
         employee=_employee_values(employee),
@@ -255,7 +256,75 @@ async def _build_context(
         },
         manual=manual,
         salary_components=components,
+        statutory=statutory,
+        nominees=nominees,
+        family=family,
     )
+
+
+def _address_line(address: dict | None) -> str | None:
+    if not address:
+        return None
+    parts = [
+        address.get("line1"),
+        address.get("line2"),
+        address.get("city"),
+        address.get("district"),
+        address.get("state_code"),
+        address.get("pincode"),
+    ]
+    return ", ".join(str(p) for p in parts if p)
+
+
+async def _statutory_values(
+    session: AsyncSession, user: User, employee: Employee
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exactly `AVAILABLE_FIELDS["statutory"]`, plus the nominee and family lists."""
+    from app.models.employee import EmployeeProfile
+
+    profile = await session.scalar(
+        tenant_scoped(
+            select(EmployeeProfile).where(EmployeeProfile.employee_id == employee.id),
+            EmployeeProfile,
+            user,
+        )
+    )
+    personal = (profile.personal if profile else None) or {}
+    addresses = (profile.addresses if profile else None) or {}
+
+    def _parse(value: Any) -> Any:
+        if isinstance(value, str) and len(value) == 10 and value[4] == "-":
+            with contextlib.suppress(ValueError):
+                return date.fromisoformat(value)
+        return value
+
+    values = {
+        "date_of_birth": employee.date_of_birth,
+        "gender": employee.gender.value.replace("_", " ").capitalize()
+        if employee.gender
+        else None,
+        "father_or_spouse_name": personal.get("father_name") or personal.get("spouse_name"),
+        "marital_status": str(personal.get("marital_status") or "").replace("_", " ").capitalize()
+        or None,
+        "mobile": employee.phone,
+        "email": employee.personal_email or employee.work_email,
+        "uan": employee.uan,
+        "pf_number": employee.pf_number,
+        "esi_number": employee.esi_number,
+        "previous_pf_member": bool(employee.uan),
+        "current_address": _address_line(addresses.get("current")),
+        "permanent_address": _address_line(addresses.get("permanent"))
+        or _address_line(addresses.get("current")),
+    }
+    nominees = [
+        {key: _parse(value) for key, value in item.items()}
+        for item in ((profile.nominees if profile else None) or [])
+    ]
+    family = [
+        {key: _parse(value) for key, value in item.items()}
+        for item in ((profile.family_members if profile else None) or [])
+    ]
+    return values, nominees, family
 
 
 def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> MergeContext:
@@ -268,12 +337,14 @@ def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> Merg
     employee = {key: f"[{key.replace('_', ' ')}]" for key in AVAILABLE_FIELDS["employee"]}
     for key in ("date_of_joining", "date_of_exit", "probation_end_date", "notice_period_days"):
         employee[key] = None
+    statutory = {key: f"[{key.replace('_', ' ')}]" for key in AVAILABLE_FIELDS["statutory"]}
     return MergeContext(
         as_of=as_of,
         employee=employee,
         salary={},
         tenant={"name": tenant.name if tenant else "", "slug": tenant.slug if tenant else ""},
         manual=manual,
+        statutory=statutory,
     )
 
 

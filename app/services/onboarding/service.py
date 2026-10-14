@@ -307,6 +307,7 @@ async def _template_reads(
                         "due_offset_days": row.due_offset_days,
                         "task_type": row.task_type,
                         "document_type": row.document_type,
+                        "form_code": row.form_code,
                         "sort_order": row.sort_order,
                         "is_mandatory": row.is_mandatory,
                     }
@@ -414,6 +415,7 @@ async def _write_tasks(
                 due_offset_days=task.due_offset_days,
                 task_type=task.task_type,
                 document_type=task.document_type.value if task.document_type else None,
+                form_code=task.form_code,
                 sort_order=index,
                 is_mandatory=task.is_mandatory,
             )
@@ -609,6 +611,7 @@ async def create_standard_template(
                 due_offset_days=task.due_offset_days,
                 task_type=task.task_type,
                 document_type=task.document_type,  # type: ignore[arg-type]
+                form_code=task.form_code,
                 is_mandatory=task.is_mandatory,
             )
             for task in rules.STANDARD_TASKS
@@ -763,6 +766,8 @@ async def _task_reads(
                 "is_overdue": task.status is OnboardingTaskStatus.PENDING and task.due_date < today,
                 "task_type": task.task_type,
                 "document_type": task.document_type,
+                "form_code": task.form_code,
+                "form_letter_id": task.form_letter_id,
                 "sort_order": task.sort_order,
                 "is_mandatory": task.is_mandatory,
                 "status": task.status,
@@ -1032,6 +1037,7 @@ async def start_plan(
             due_date=rules.due_date_for(joining_date, source.due_offset_days),
             task_type=source.task_type,
             document_type=source.document_type,
+            form_code=source.form_code,
             sort_order=index,
             is_mandatory=source.is_mandatory,
             status=OnboardingTaskStatus.PENDING,
@@ -1292,8 +1298,126 @@ async def complete_task(
     _refuse_completion(user, plan, task)
     if task.task_type is OnboardingTaskType.DOCUMENT_UPLOAD and not permissions.is_hr(user):
         raise _unprocessable(f"'{task.title}' is completed by uploading the document.")
+    if task.form_code and not permissions.is_hr(user):
+        raise _unprocessable(
+            f"'{task.title}' is completed by generating the form and acknowledging it."
+        )
     await _mark_done(session, user, plan, task, note=note, request=request)
     return task
+
+
+async def issue_form(
+    session: AsyncSession,
+    user: User,
+    task_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> OnboardingTask:
+    """Generate a FORM task's statutory form from the joiner's profile.
+
+    Issued as a letter to the joiner, who signs it by acknowledging it (typed
+    name against the form's content hash); that acknowledgement completes the
+    task. Generating again replaces an unsigned form with a fresh one, so a
+    corrected profile produces a corrected form.
+    """
+    from app.models.documents import IssuedLetter, LetterStatus, LetterTemplate
+    from app.services.documents import service as letters
+
+    task, plan = await _task_and_plan(session, user, task_id)
+    if not task.form_code:
+        raise _unprocessable(f"'{task.title}' does not generate a form.")
+    if task.status is not OnboardingTaskStatus.PENDING:
+        raise _conflict(f"'{task.title}' is already {task.status.value}.")
+    is_joiner = user.employee_id is not None and user.employee_id == plan.employee_id
+    if not is_joiner and not can_manage(user, plan):
+        raise permissions.forbidden("Only the joiner, or HR, generates the joiner's forms.")
+
+    query = tenant_scoped(
+        select(LetterTemplate)
+        .where(LetterTemplate.code == task.form_code, LetterTemplate.active.is_(True))
+        .order_by(LetterTemplate.version.desc()),
+        LetterTemplate,
+        user,
+    )
+    template = await session.scalar(query)
+    if template is None:
+        await letters.seed_templates(session, user)
+        template = await session.scalar(query)
+    if template is None:
+        raise _unprocessable(f"The {task.form_code} form template is not available.")
+
+    if task.form_letter_id is not None:
+        previous = await session.scalar(
+            tenant_scoped(
+                select(IssuedLetter).where(IssuedLetter.id == task.form_letter_id),
+                IssuedLetter,
+                user,
+            )
+        )
+        if previous is not None and previous.status is not LetterStatus.REVOKED:
+            previous.status = LetterStatus.REVOKED
+            previous.revoked_reason = "Replaced by a regenerated form."
+
+    try:
+        letter = await letters.issue_letter(
+            session,
+            user,
+            employee_id=plan.employee_id,
+            template_id=template.id,
+            generate_pdf=False,
+            request=request,
+            commit=False,
+        )
+    except HTTPException as exc:
+        # Name the missing details the way the profile does, not as merge tokens.
+        detail = str(exc.detail)
+        for field in template.fields:
+            detail = detail.replace(field.token, f"'{field.label}'")
+        await session.rollback()
+        raise _unprocessable(
+            f"The form could not be generated: {detail} Complete the missing details in "
+            "your profile, then try again."
+        ) from exc
+    task.form_letter_id = letter.id
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="onboarding_task",
+        entity_id=task.id,
+        summary=f"Generated {task.form_code} for onboarding task '{task.title}'",
+        changes={"form_letter_id": str(letter.id)},
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(task)
+    return task
+
+
+async def form_acknowledged(session: AsyncSession, user: User, letter_id: uuid.UUID) -> None:
+    """A joiner signed a generated form: complete the task it belongs to. No commit."""
+    task = await session.scalar(
+        tenant_scoped(
+            select(OnboardingTask).where(
+                OnboardingTask.form_letter_id == letter_id,
+                OnboardingTask.status == OnboardingTaskStatus.PENDING,
+            ),
+            OnboardingTask,
+            user,
+        )
+    )
+    if task is None:
+        return
+    plan = await session.scalar(
+        tenant_scoped(
+            select(OnboardingPlan).where(OnboardingPlan.id == task.plan_id), OnboardingPlan, user
+        )
+    )
+    if plan is None:
+        return
+    await _mark_done(session, user, plan, task, note="Signed by acknowledgement.", request=None)
 
 
 async def skip_task(

@@ -416,6 +416,15 @@ async def create_request(
     )
     session.add(row)
     await session.flush()
+    skip_level = None
+    if subject.manager_id is not None:
+        skip_level = await session.scalar(
+            tenant_scoped(
+                select(Employee.manager_id).where(Employee.id == subject.manager_id),
+                Employee,
+                user,
+            )
+        )
     for rid in reviewer_ids:
         session.add(
             FeedbackReviewer(
@@ -424,6 +433,13 @@ async def create_request(
                 reviewer_employee_id=rid,
                 status=FeedbackReviewerStatus.PENDING,
                 competency_ratings=[],
+                relation=engine.relationship_of(
+                    subject_id=subject.id,
+                    subject_manager_id=subject.manager_id,
+                    skip_level_id=skip_level,
+                    reviewer_id=rid,
+                    reviewer_manager_id=people[rid].manager_id,
+                ),
             )
         )
     await session.flush()
@@ -586,6 +602,7 @@ def _named_responses(
         out.append(
             ResponseRead(
                 reviewer_name=person.full_name if person else "Unknown",
+                relationship=r.relation,
                 competency_ratings=[
                     CompetencyAnswerRead(
                         competency_id=uuid.UUID(str(item["competency_id"])),
@@ -698,6 +715,105 @@ async def get_request(
         visibility_note=note,
         can_manage=_can_manage(req, role, user),
     )
+
+
+def _by_relationship(
+    reviewers: list[FeedbackReviewer], threshold: int
+) -> list[dict[str, Any]]:
+    """Overall average per relationship, only for a group large enough to stay anonymous."""
+    groups: dict[str, list[Decimal]] = {}
+    for r in reviewers:
+        if r.status is FeedbackReviewerStatus.SUBMITTED and r.overall_rating is not None:
+            groups.setdefault(r.relation or "other", []).append(Decimal(str(r.overall_rating)))
+    out = []
+    for name in engine.RELATIONSHIPS:
+        given = groups.get(name, [])
+        if not given:
+            continue
+        shown = len(given) >= max(threshold, engine.ANONYMITY_FLOOR)
+        out.append(
+            {
+                "relationship": name,
+                "responses": len(given),
+                "overall_average": (
+                    str((sum(given) / len(given)).quantize(Decimal("0.01"))) if shown else None
+                ),
+                "withheld": not shown,
+            }
+        )
+    return out
+
+
+async def feedback_for_review(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    cycle_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """The cycle's 360 requests about this person, as the appraisal screen shows them.
+
+    The same visibility as the feedback page: the manager line and HR read
+    names and answers; the person reads what their request's visibility allows;
+    anybody else nothing. Group averages by relationship appear only where a
+    group is large enough that no answer can be traced to one colleague.
+    """
+    requests = (
+        await session.scalars(
+            tenant_scoped(
+                select(FeedbackRequest)
+                .where(
+                    FeedbackRequest.subject_employee_id == employee_id,
+                    FeedbackRequest.appraisal_cycle_id == cycle_id,
+                )
+                .order_by(FeedbackRequest.created_at),
+                FeedbackRequest,
+                user,
+            )
+        )
+    ).all()
+    if not requests:
+        return []
+    line = await permissions.reporting_line(session, user)
+    reviewers = await _reviewers(session, user, [r.id for r in requests])
+    out: list[dict[str, Any]] = []
+    for req in requests:
+        role = await _viewer_role(session, user, req, line)
+        if role is None:
+            continue
+        rows = reviewers[req.id]
+        submitted = sum(1 for r in rows if r.status is FeedbackReviewerStatus.SUBMITTED)
+        questions = list(req.questions or [])
+        entry: dict[str, Any] = {
+            "request_id": str(req.id),
+            "asked": len(rows),
+            "answered": submitted,
+            "status": req.status.value,
+            "aggregate": None,
+            "by_relationship": [],
+            "responses_named": None,
+        }
+        if role == "subject":
+            view = engine.subject_view(
+                req.employee_visibility.value, submitted, req.anonymity_threshold
+            )
+            if view in ("named", "summary") and submitted:
+                entry["aggregate"] = _aggregate_read(rows, questions).model_dump(mode="json")
+                entry["by_relationship"] = _by_relationship(rows, req.anonymity_threshold)
+            if view == "named":
+                people = await _employees(session, user, {r.reviewer_employee_id for r in rows})
+                entry["responses_named"] = [
+                    n.model_dump(mode="json") for n in _named_responses(rows, people, questions)
+                ]
+        elif submitted:
+            people = await _employees(session, user, {r.reviewer_employee_id for r in rows})
+            entry["aggregate"] = _aggregate_read(rows, questions).model_dump(mode="json")
+            entry["by_relationship"] = _by_relationship(rows, req.anonymity_threshold)
+            entry["responses_named"] = [
+                n.model_dump(mode="json") for n in _named_responses(rows, people, questions)
+            ]
+        out.append(entry)
+    return out
 
 
 def _can_manage(req: FeedbackRequest, role: str | None, user: User) -> bool:

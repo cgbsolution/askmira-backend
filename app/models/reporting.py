@@ -280,3 +280,25 @@ class ReportDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
     max_sensitivity: Mapped[str] = mapped_column(
         String(32), default="public", nullable=False, index=True
     )
+
+
+class DashboardWidget(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A saved report pinned to one person's analytics dashboard.
+
+    The report runs as whoever views the dashboard, so pinning shares nothing
+    the viewer could not already see.
+    """
+
+    __tablename__ = "dashboard_widgets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "report_id", name="uq_dashboard_widget_report"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        index=True,
+    )
+    report_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("reports.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

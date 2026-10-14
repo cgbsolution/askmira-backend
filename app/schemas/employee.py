@@ -25,6 +25,8 @@ class EmployeeBase(BaseModel):
     location_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
+    #: A second, dotted-line manager. Informational: no approval rights.
+    dotted_line_manager_id: uuid.UUID | None = None
 
     designation: str | None = Field(default=None, max_length=255)
     grade: str | None = Field(default=None, max_length=32)
@@ -71,6 +73,7 @@ class EmployeeUpdate(BaseModel):
     location_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
+    dotted_line_manager_id: uuid.UUID | None = None
 
     designation: str | None = Field(default=None, max_length=255)
     grade: str | None = Field(default=None, max_length=32)
@@ -143,5 +146,6 @@ class EmployeeSummary(BaseModel):
     department_id: uuid.UUID | None
     location_id: uuid.UUID | None
     manager_id: uuid.UUID | None
+    dotted_line_manager_id: uuid.UUID | None = None
     photo_url: str | None
     status: EmploymentStatus

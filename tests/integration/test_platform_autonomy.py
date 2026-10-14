@@ -70,10 +70,12 @@ async def test_a_proposal_cannot_touch_an_unlisted_column(session, tenant):
     hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
     person = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
     row = await _regularisation(session, tenant, person)
+    # Read before the rollback below expires every loaded object.
+    original = person.employee_id
     with pytest.raises(HTTPException) as exc:
         proposal = await _propose(session, hr, row, {"employee_id": str(hr.employee_id)})
         await autonomy.decide_proposal(session, hr, proposal_id=proposal.id, approve=True)
     assert exc.value.status_code == 400
     await session.rollback()
     await session.refresh(row)
-    assert row.employee_id == person.employee_id
+    assert row.employee_id == original

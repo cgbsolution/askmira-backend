@@ -10,8 +10,8 @@ Point it at a throwaway database:
     export TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/askmira_test
     pytest tests/integration
 
-The schema is created from the models and dropped between modules, so the
-target database is emptied. Never point this at anything you care about — the
+The schema is created from the models on the first test and emptied before
+every later one, so the target database is wiped. Never point this at anything you care about — the
 fixture refuses a URL that does not look like a test database.
 """
 
@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -62,6 +63,51 @@ def _guard(url: str) -> str:
     return url
 
 
+#: Databases this test process has already built the schema in. The first test
+#: on a database builds it from the models; every later test starts from the
+#: same schema emptied by one TRUNCATE, which isolates exactly as well (no row
+#: survives, identities restart) at a fraction of the cost of re-issuing every
+#: CREATE. No test changes the schema, so a built one stays current for the
+#: process. Set TEST_DB_REBUILD_EACH=1 to rebuild for every test regardless.
+_BUILT: set[str] = set()
+
+#: Every row out of every table, sequences restarted. Row deletes rather than
+#: TRUNCATE because TRUNCATE replaces each table's files, which is slow for
+#: hundreds of tables on some filesystems. `replica` mode skips triggers and
+#: foreign-key checks for this one transaction — the insert-only audit trigger
+#: included, which is what a test reset must be allowed to do.
+_EMPTY_ALL = """
+DO $$
+DECLARE r record;
+BEGIN
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE format('DELETE FROM public.%I', r.tablename);
+    END LOOP;
+    FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' LOOP
+        EXECUTE format('ALTER SEQUENCE public.%I RESTART', r.sequencename);
+    END LOOP;
+END $$;
+"""
+
+
+async def prepare_schema(engine, url: str, rebuild) -> None:
+    """Build the schema once per database per process; empty it for every later test."""
+    if url in _BUILT and not os.environ.get("TEST_DB_REBUILD_EACH"):
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("SET LOCAL session_replication_role = replica")
+                await conn.exec_driver_sql(_EMPTY_ALL)
+        except DBAPIError:
+            # Not allowed to bypass triggers (not a superuser): TRUNCATE instead,
+            # slower on some filesystems but equally clean.
+            tables = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
+            async with engine.begin() as conn:
+                await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        return
+    await rebuild()
+    _BUILT.add(url)
+
+
 @pytest_asyncio.fixture(scope="function")
 async def engine():
     if not TEST_DATABASE_URL:
@@ -91,10 +137,13 @@ async def engine():
     # on the next create. Dropping the schema clears tables, constraints and
     # types in one statement — safe here because `_guard` has already refused
     # anything that is not a test database.
-    async with engine.begin() as conn:
-        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        await conn.execute(text("CREATE SCHEMA public"))
-        await conn.run_sync(Base.metadata.create_all)
+    async def rebuild() -> None:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+            await conn.run_sync(Base.metadata.create_all)
+
+    await prepare_schema(engine, TEST_DATABASE_URL, rebuild)
     try:
         yield engine
     finally:

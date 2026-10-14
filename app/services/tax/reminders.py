@@ -29,6 +29,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import tenant_filter
 from app.models.audit import AuditAction
 from app.models.tax import DeclarationStatus, DeclarationWindow, TaxDeclaration, WindowType
 from app.services import audit
@@ -77,7 +78,7 @@ async def _employee_user_ids(
     rows = (
         await session.execute(
             select(User.employee_id, User.id).where(
-                User.tenant_id == tenant_id,
+                tenant_filter(User, tenant_id),
                 User.is_active.is_(True),
                 User.employee_id.is_not(None),
             )
@@ -93,7 +94,7 @@ async def _shortfalls(
     declarations = (
         await session.scalars(
             select(TaxDeclaration).where(
-                TaxDeclaration.tenant_id == tenant_id,
+                tenant_filter(TaxDeclaration, tenant_id),
                 TaxDeclaration.financial_year == financial_year,
                 TaxDeclaration.status == DeclarationStatus.SUBMITTED,
             )
@@ -122,7 +123,7 @@ async def send_window_reminders(
 
     windows = (
         await session.scalars(
-            select(DeclarationWindow).where(DeclarationWindow.tenant_id == tenant_id)
+            select(DeclarationWindow).where(tenant_filter(DeclarationWindow, tenant_id))
         )
     ).all()
     recipients = await _employee_user_ids(session, tenant_id)

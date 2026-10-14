@@ -19,9 +19,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.deps import has_direct_reports
+from app.core.deps import has_direct_reports, tenant_filter
 from app.core.security import (
     create_access_token,
+    create_mfa_token,
     create_refresh_token,
     decode_token,
     hash_password,
@@ -34,7 +35,14 @@ from app.models.employee import Employee, EmploymentStatus
 from app.models.notifications import Channel, DigestMode
 from app.models.tenant import Tenant
 from app.models.user import PasswordResetToken, User, UserRole
-from app.schemas.auth import AuthResponse, LoginRequest, SignupRequest, TenantRead, UserRead
+from app.schemas.auth import (
+    AuthResponse,
+    LoginRequest,
+    MfaChallengeRead,
+    SignupRequest,
+    TenantRead,
+    UserRead,
+)
 from app.services import audit
 from app.services.notifications.dispatch import notify, register_event
 
@@ -86,6 +94,14 @@ async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> 
         user=UserRead.model_validate(user),
         tenant=TenantRead.model_validate(tenant),
     )
+
+
+async def issue_session(session: AsyncSession, user: User) -> AuthResponse:
+    """A fresh token pair for a signed-in user in their own workspace."""
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace not found")
+    return await _build_response(session, user, tenant)
 
 
 async def signup(
@@ -181,7 +197,7 @@ async def signup(
 
 async def login(
     session: AsyncSession, payload: LoginRequest, request: Request | None = None
-) -> AuthResponse:
+) -> AuthResponse | MfaChallengeRead:
     user = await session.scalar(
         select(User).where(func.lower(User.email) == payload.email.lower())
     )
@@ -197,7 +213,7 @@ async def login(
     window_start = datetime.now(UTC) - LOCKOUT_WINDOW
     recent_failures = await session.scalar(
         select(func.count(AuditLog.id)).where(
-            AuditLog.tenant_id == user.tenant_id,
+            tenant_filter(AuditLog, user.tenant_id),
             AuditLog.entity_id == user.id,
             AuditLog.action == AuditAction.LOGIN_FAILED,
             AuditLog.created_at >= window_start,
@@ -244,6 +260,16 @@ async def login(
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(payload.password)
 
+    # The password alone is not enough for somebody who turned on two-step sign-in.
+    from app.services import mfa
+
+    if await mfa.is_enabled(session, user):
+        await session.commit()
+        return MfaChallengeRead(
+            mfa_token=create_mfa_token(user_id=str(user.id), tenant_id=str(user.tenant_id)),
+            expires_in=300,
+        )
+
     user.last_login_at = datetime.now(UTC)
 
     await audit.record(
@@ -254,6 +280,66 @@ async def login(
         entity_id=user.id,
         actor=user,
         summary="Signed in",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(user)
+    return await _build_response(session, user, tenant)
+
+
+async def complete_mfa_login(
+    session: AsyncSession, mfa_token: str, code: str, request: Request | None = None
+) -> AuthResponse:
+    """The second step: the token from a right password, and a code."""
+    from app.services import mfa
+
+    try:
+        payload = decode_token(mfa_token, expected_type="mfa")
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="That sign-in took too long. Enter your email and password again.",
+        ) from exc
+    user = await session.get(User, uuid.UUID(payload["sub"]))
+    if user is None or not user.is_active:
+        raise INVALID_CREDENTIALS
+
+    window_start = datetime.now(UTC) - LOCKOUT_WINDOW
+    recent_failures = await session.scalar(
+        select(func.count(AuditLog.id)).where(
+            tenant_filter(AuditLog, user.tenant_id),
+            AuditLog.entity_id == user.id,
+            AuditLog.action == AuditAction.LOGIN_FAILED,
+            AuditLog.created_at >= window_start,
+        )
+    )
+    if (recent_failures or 0) >= LOCKOUT_THRESHOLD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Try again later, or ask an admin to help.",
+            headers={"Retry-After": str(int(LOCKOUT_WINDOW.total_seconds()))},
+        )
+    if not await mfa.check_code(session, user, code):
+        await audit.record(
+            session, tenant_id=user.tenant_id, action=AuditAction.LOGIN_FAILED,
+            entity_type="user", entity_id=user.id, actor=user,
+            summary="Wrong two-step sign-in code", request=request,
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="That code is not right. Use the code showing now, or a recovery code.",
+        )
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This workspace is not active"
+        )
+    user.last_login_at = datetime.now(UTC)
+    await audit.record(
+        session, tenant_id=user.tenant_id, action=AuditAction.LOGIN, entity_type="user",
+        entity_id=user.id, actor=user, summary="Signed in with two-step sign-in",
         request=request,
     )
     await session.commit()

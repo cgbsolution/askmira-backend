@@ -45,6 +45,12 @@ __all__ = [
 ]
 
 
+#: Every competency is rated on one scale, so two panelists' numbers mean the
+#: same thing. The web and mobile scorecards ask for it; this is where it holds.
+RATING_FLOOR = 1
+RATING_CEILING = 10
+
+
 class FeedbackError(ValueError):
     """Feedback that cannot be recorded as given."""
 
@@ -288,6 +294,18 @@ def validate_feedback(
     makes a rejection undefendable, so it is the one case where prose is
     required rather than encouraged.
     """
+    off_scale = sorted(
+        code
+        for code, value in ratings.items()
+        if value != value.to_integral_value() or not RATING_FLOOR <= value <= RATING_CEILING
+    )
+    if off_scale:
+        raise FeedbackError(
+            f"These ratings are off the scale: {off_scale}. Each competency is rated "
+            f"with a whole number from {RATING_FLOOR} to {RATING_CEILING}, the same scale "
+            "every other panelist used."
+        )
+
     missing = [code for code in required_competencies if code not in ratings]
     if missing:
         raise FeedbackError(

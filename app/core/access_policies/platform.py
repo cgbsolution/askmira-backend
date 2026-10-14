@@ -9,6 +9,19 @@ ENDPOINTS: dict[str, str] = {
     "GET /approvals/count": (
         "permissions: the same per-source rule as the inbox, reduced to a number."
     ),
+    "GET /approvals/delegates": (
+        "reference: names of colleagues who can sign in, to choose a stand-in from."
+    ),
+    "GET /approvals/delegations": (
+        "scoped:from_user_id: the caller's own hand-overs, both ways; HR sees everybody's."
+    ),
+    "POST /approvals/delegations": (
+        "scoped:from_user_id: hands over the caller's own approvals; only HR sets one up "
+        "for somebody else."
+    ),
+    "DELETE /approvals/delegations/{delegation_id}": (
+        "scoped:from_user_id: only the person who handed over, or HR, ends it."
+    ),
     # ── Notifications ───────────────────────────────────────────────────────
     "GET /notifications/unread-count": "own: the caller's own unread count.",
     "POST /notifications/read-all": "own: marks only notifications sent to the caller.",
@@ -59,8 +72,7 @@ ENDPOINTS: dict[str, str] = {
     ),
     "POST /grounding/verify": "reference: checks citations in supplied text.",
     "POST /grounding/classify-refusal": (
-        "scoped:refusal_engine: a pure classification over supplied facts; reads "
-        "no records."
+        "scoped:refusal_engine: a pure classification over supplied facts; reads no records."
     ),
     "POST /grounding/present-score": "reference: formats a supplied score.",
     "POST /grounding/check-inference": "reference: checks supplied text.",
@@ -73,4 +85,11 @@ ENDPOINTS: dict[str, str] = {
     "GET /bi/schema": "reference: the published schema, filtered to the caller's role.",
     "GET /bi/schema/entities": "reference: exposed entity names and the schema version.",
     "GET /bi/benchmark-terms": "reference: the benchmark contribution terms.",
+    "GET /operator/session": (
+        "reference: whether this session is an operator inside a client's workspace; "
+        "no person data."
+    ),
+    "POST /operator/exit": (
+        "own: returns the caller to their own workspace, re-reading their own login by user.id."
+    ),
 }

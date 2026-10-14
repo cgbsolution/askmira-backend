@@ -40,6 +40,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import tenant_filter
 from app.models.opsec import TenantSessionPolicy, UserSession
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -96,7 +97,7 @@ async def enforce_session_policy(
     token_payload: dict[str, Any],
 ) -> None:
     policy_row = await session.scalar(
-        select(TenantSessionPolicy).where(TenantSessionPolicy.tenant_id == user.tenant_id)
+        select(TenantSessionPolicy).where(tenant_filter(TenantSessionPolicy, user.tenant_id))
     )
     if policy_row is None:
         return
@@ -169,7 +170,7 @@ async def _enforce_session(
     tracked = await session.scalar(
         select(UserSession)
         .where(
-            UserSession.tenant_id == user.tenant_id,
+            tenant_filter(UserSession, user.tenant_id),
             UserSession.user_id == user.id,
             UserSession.token_hash == key,
         )
@@ -243,7 +244,7 @@ async def _evict_over_limit(
         await session.scalars(
             select(UserSession)
             .where(
-                UserSession.tenant_id == user.tenant_id,
+                tenant_filter(UserSession, user.tenant_id),
                 UserSession.user_id == user.id,
                 UserSession.revoked_at.is_(None),
             )

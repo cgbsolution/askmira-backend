@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1 import api_router
+from app.api.v1.routers import devices as devices_router
 from app.api.v1.routers import scim as scim_router
 from app.core.config import settings
 from app.db.session import engine
@@ -134,7 +135,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Auth-Transport"],
-    expose_headers=["Content-Disposition", "Retry-After"],
+    expose_headers=["Content-Disposition", "Retry-After", "X-Step-Up-Action"],
 )
 
 
@@ -183,3 +184,7 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # SCIM lives at /scim/v2, outside the versioned prefix: clients expect that
 # exact path and several will not let you configure another.
 app.include_router(scim_router.router)
+
+# ADMS/iclock by serial number, also at the root: eSSL and ZKTeco firmware that
+# takes only a host and port calls exactly `/iclock/cdata`.
+app.include_router(devices_router.iclock_router)

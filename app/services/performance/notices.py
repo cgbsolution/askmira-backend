@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.notifications import Channel, NotificationTemplate
 from app.models.user import User
 from app.services.notifications import dispatch
@@ -92,7 +92,7 @@ async def ensure_templates(
         for channel in (Channel.IN_APP, Channel.EMAIL):
             existing = await session.scalar(
                 select(NotificationTemplate.id).where(
-                    NotificationTemplate.tenant_id == tenant_id,
+                    tenant_filter(NotificationTemplate, tenant_id),
                     NotificationTemplate.event_key == event_key,
                     NotificationTemplate.channel == channel,
                 )

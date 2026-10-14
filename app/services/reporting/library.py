@@ -181,8 +181,8 @@ STARTERS: tuple[StarterReport, ...] = (
     ),
     _report(
         "attrition_by_department",
-        "Attrition by department",
-        "Which teams are losing people fastest this financial year?",
+        "Exits by department",
+        "How many people has each team lost this financial year?",
         Definition(
             entity_key="employee",
             selections=(Selection("department"), Selection("headcount", "count", "Exits")),
@@ -191,6 +191,10 @@ STARTERS: tuple[StarterReport, ...] = (
             ),
             group_by=("department",),
             sort_by=(("headcount", "desc"),),
+        ),
+        description=(
+            "A count of exits, not a rate. For attrition as exits over average headcount, "
+            "total and voluntary, open People analytics."
         ),
         chart_type="bar",
         category="Attrition",

@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.core.deps import tenant_scoped
+from app.core.step_up import Confirm
 from app.models.audit import AuditAction
 from app.models.disbursement import (
     BankProfile,
@@ -441,6 +442,7 @@ async def release_batch(
     user: User,
     *,
     batch_id: uuid.UUID,
+    confirm: Confirm | None = None,
     request: Request | None = None,
 ) -> DisbursementBatch:
     """Mark a batch sent to the bank.
@@ -482,6 +484,8 @@ async def release_batch(
                 "released."
             ),
         )
+    if confirm is not None:
+        await confirm()
 
     batch.status = DisbursementStatus.RELEASED
     batch.released_at = datetime.now(UTC)

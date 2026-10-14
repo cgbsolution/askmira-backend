@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.config import settings
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import DocumentVerification, Employee, EmployeeDocument
 from app.models.user import User
@@ -702,3 +702,126 @@ async def pending_verification_items(session: AsyncSession, user: User) -> list[
         }
         for document, employee in rows
     ]
+
+
+# ── Expiry notices (scheduled) ──────────────────────────────────────────────
+
+register_event(
+    "documents.expiring",
+    "Your {title} {when}",
+    "Your {title} {when}. Upload the renewed document under Documents so your record "
+    "stays current.",
+)
+register_event(
+    "documents.expiring_summary",
+    "{count} document(s) expiring or expired",
+    "{count} document(s) on file are expiring within {days} days or have expired: "
+    "{titles}. Review them under Documents.",
+)
+
+#: How far ahead an expiry is announced.
+EXPIRY_NOTICE_DAYS = 30
+
+
+async def send_expiry_notices(
+    session: AsyncSession, tenant_id: uuid.UUID, *, today: date
+) -> dict[str, int]:
+    """Tell employees and HR about documents expiring soon or expired. Scheduler-callable.
+
+    Each document is announced at most twice — once when it comes within the
+    notice window, once when it expires — tracked on the row, so a daily job
+    does not repeat itself.
+    """
+    from app.models.company_documents import CompanyDocument
+    from app.models.user import UserRole
+
+    soon = today + timedelta(days=EXPIRY_NOTICE_DAYS)
+    hr_users = list(
+        (
+            await session.scalars(
+                select(User.id).where(
+                    tenant_filter(User, tenant_id),
+                    User.is_active.is_(True),
+                    User.role.in_([UserRole.ADMIN, UserRole.SUB_ADMIN]),
+                )
+            )
+        ).all()
+    )
+    titles: list[str] = []
+    notified = 0
+
+    rows = (
+        await session.execute(
+            select(EmployeeDocument, Employee)
+            .join(Employee, Employee.id == EmployeeDocument.employee_id)
+            .where(
+                tenant_filter(EmployeeDocument, tenant_id),
+                EmployeeDocument.valid_until.is_not(None),
+                EmployeeDocument.valid_until <= soon,
+                EmployeeDocument.expiry_reminder_stage < 2,
+                Employee.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    for document, employee in rows:
+        expired = document.valid_until < today  # type: ignore[operator]
+        stage = 2 if expired else 1
+        if document.expiry_reminder_stage >= stage:
+            continue
+        document.expiry_reminder_stage = stage
+        when = (
+            f"expired on {document.valid_until:%d %b %Y}"
+            if expired
+            else f"expires on {document.valid_until:%d %b %Y}"
+        )
+        titles.append(f"{employee.employee_code} {document.title}")
+        if document.is_employee_visible:
+            owner = await session.scalar(
+                select(User.id).where(
+                    tenant_filter(User, tenant_id),
+                    User.employee_id == employee.id,
+                    User.is_active.is_(True),
+                )
+            )
+            if owner is not None:
+                await notify(
+                    session,
+                    tenant_id=tenant_id,
+                    event_key="documents.expiring",
+                    recipient_user_ids=[owner],
+                    payload={"title": document.title, "when": when},
+                    commit=False,
+                )
+                notified += 1
+
+    company_rows = (
+        await session.scalars(
+            select(CompanyDocument).where(
+                tenant_filter(CompanyDocument, tenant_id),
+                CompanyDocument.valid_until.is_not(None),
+                CompanyDocument.valid_until <= soon,
+                CompanyDocument.expiry_reminder_stage < 2,
+            )
+        )
+    ).all()
+    for document in company_rows:
+        stage = 2 if document.valid_until < today else 1  # type: ignore[operator]
+        if document.expiry_reminder_stage >= stage:
+            continue
+        document.expiry_reminder_stage = stage
+        titles.append(document.title)
+
+    if titles and hr_users:
+        await notify(
+            session,
+            tenant_id=tenant_id,
+            event_key="documents.expiring_summary",
+            recipient_user_ids=hr_users,
+            payload={
+                "count": len(titles),
+                "days": EXPIRY_NOTICE_DAYS,
+                "titles": "; ".join(titles[:20]) + (" …" if len(titles) > 20 else ""),
+            },
+            commit=False,
+        )
+    return {"documents": len(titles), "employees_notified": notified}

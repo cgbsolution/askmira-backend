@@ -77,6 +77,23 @@ def set_session_cookies(
     )
 
 
+def set_access_cookie(response: Response, *, access_token: str, access_seconds: int) -> None:
+    """Replace only the access cookie — entering a client workspace as an operator.
+
+    The refresh cookie is left alone on purpose: it is still the operator's own,
+    so when the operator token expires a refresh returns them home.
+    """
+    response.set_cookie(
+        ACCESS_COOKIE,
+        access_token,
+        max_age=access_seconds,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        path="/",
+    )
+
+
 def clear_session_cookies(response: Response) -> None:
     response.delete_cookie(ACCESS_COOKIE, path="/")
     response.delete_cookie(REFRESH_COOKIE, path=REFRESH_PATH)

@@ -25,6 +25,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
+from app.core.step_up import Confirm
 from app.models.audit import AuditAction
 from app.models.payroll import PayrollRuleSet
 from app.models.user import User
@@ -34,7 +35,7 @@ from app.services import audit
 #: Levied by a state; the jurisdiction is the state code.
 STATE_RULE_TYPES = frozenset({"professional_tax", "labour_welfare_fund"})
 #: Levied nationally; the jurisdiction is the country.
-NATIONAL_RULE_TYPES = frozenset({"pf", "esi", "tds"})
+NATIONAL_RULE_TYPES = frozenset({"pf", "esi", "tds", "tds_non_salary"})
 NATIONAL_JURISDICTION = "IN"
 
 #: The keys each engine refuses to run without. Names only — no values.
@@ -48,6 +49,8 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "esi": ("wage_threshold", "employee_rate", "employer_rate"),
     "professional_tax": ("slabs",),
     "tds": ("regimes", "cess_percent"),
+    #: TDS on payments to contractors and professionals (194C, 194J).
+    "tds_non_salary": ("sections", "no_pan_rate"),
     "bonus": ("eligibility_wage_ceiling", "calculation_wage_ceiling"),
 }
 
@@ -235,6 +238,7 @@ async def approve_rule_set(
     rule_set_id: uuid.UUID,
     *,
     attest: bool,
+    confirm: Confirm | None = None,
     request: Request | None = None,
 ) -> RuleSetRead:
     """The SME sign-off. Records who and when, and supersedes the previous version."""
@@ -267,6 +271,8 @@ async def approve_rule_set(
                 "who types the figures in does not attest to them."
             ),
         )
+    if confirm is not None:
+        await confirm()
 
     siblings = (
         await session.scalars(

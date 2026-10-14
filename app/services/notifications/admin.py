@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.crypto import encrypt_secret
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.notifications import (
     Channel,
@@ -84,7 +84,7 @@ async def mark_all_read(session: AsyncSession, user: User) -> int:
     result = await session.execute(
         update(Notification)
         .where(
-            Notification.tenant_id == user.tenant_id,
+            tenant_filter(Notification, user.tenant_id),
             Notification.recipient_user_id == user.id,
             Notification.channel == Channel.IN_APP,
             Notification.read_at.is_(None),

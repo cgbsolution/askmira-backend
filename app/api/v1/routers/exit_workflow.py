@@ -26,7 +26,7 @@ from app.models.exit_workflow import (
 )
 from app.models.user import UserRole
 from app.schemas.payroll_ops import IssuedDocumentRead
-from app.services.exit_workflow import clearance_tasks, operations, resignation
+from app.services.exit_workflow import clearance_tasks, interviews, operations, resignation
 from app.services.exit_workflow import service as exit_service
 from app.services.exit_workflow import settlement as settlement_engine
 from app.services.filings import support
@@ -80,6 +80,10 @@ class ExitRead(BaseModel):
     accepted_by_name: str | None
     withdrawn_at: datetime | None
     awaiting_acceptance: bool
+    # HR only; null for anybody else, including the leaver.
+    is_rehire_eligible: bool | None = None
+    rehire_note: str | None = None
+    has_interview: bool = False
 
 
 class ResignationCreate(BaseModel):
@@ -844,3 +848,68 @@ async def statement_pdf(
     return Response(
         content=data, media_type="application/pdf", headers=support.attachment_headers(name)
     )
+
+
+# ── Exit interviews and rehire eligibility ──────────────────────────────────
+
+
+class ExitInterviewIn(BaseModel):
+    primary_reason: str = Field(max_length=32)
+    other_reasons: list[str] = Field(default_factory=list, max_length=10)
+    #: 1-5 for manager, growth, compensation, culture, work_life.
+    ratings: dict[str, int] = Field(default_factory=dict)
+    would_recommend: bool | None = None
+    would_return: bool | None = None
+    comments: str | None = Field(default=None, max_length=5000)
+    conducted_on: date | None = None
+
+
+class RehireIn(BaseModel):
+    eligible: bool
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.get(
+    "/exits/interviews/summary", dependencies=[Depends(require_roles(*HR_ROLES))]
+)
+async def exit_interview_summary(
+    user: CurrentUser, session: DbSession, start: date, end: date
+) -> dict[str, Any]:
+    """Why people left in a window: reasons and ratings, withheld below a handful."""
+    return await interviews.interview_summary(session, user, start=start, end=end)
+
+
+@router.get("/exits/{exit_id}/interview")
+async def get_exit_interview(
+    exit_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any] | None:
+    """The leaver's own, or HR. Never their manager."""
+    return await interviews.get_interview(session, user, exit_id)
+
+
+@router.put("/exits/{exit_id}/interview")
+async def record_exit_interview(
+    exit_id: uuid.UUID,
+    payload: ExitInterviewIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await interviews.record_interview(
+        session, user, exit_id, payload.model_dump(), request=request
+    )
+    await session.commit()
+    return result
+
+
+@router.post("/exits/{exit_id}/rehire", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def set_rehire_eligibility(
+    exit_id: uuid.UUID, payload: RehireIn, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Whether this person could be hired again. A no needs a reason."""
+    result = await interviews.set_rehire_eligibility(
+        session, user, exit_id, eligible=payload.eligible, note=payload.note, request=request
+    )
+    await session.commit()
+    return result

@@ -47,6 +47,8 @@ class PunchCreate(BaseModel):
     device_id: str | None = Field(default=None, max_length=128)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    #: A JPEG or PNG taken now, base64 (a data URL is fine). Where the workspace asks.
+    photo: str | None = Field(default=None, max_length=900_000)
 
     @model_validator(mode="after")
     def _both_coordinates_or_neither(self) -> PunchCreate:
@@ -66,6 +68,7 @@ class PunchRead(BaseModel):
     device_id: str | None
     outside_geofence: bool
     nearest_location_metres: int | None
+    has_photo: bool = False
     #: Where the punch was made, when a location was shared: the coordinates,
     #: and the nearest work location's name at that moment.
     latitude: float | None = None
@@ -86,6 +89,8 @@ class AttendanceSettings(BaseModel):
     """
 
     location_mode: LocationMode = "optional"
+    #: off: no photo; optional: asked for; required: a self-service punch needs one.
+    photo_mode: LocationMode = "off"
 
 
 class WorkLocationPin(BaseModel):
@@ -448,6 +453,13 @@ class ShiftBase(BaseModel):
     full_day_threshold_minutes: int = Field(ge=1, le=1440)
     is_night_shift: bool = False
     weekly_off_days: list[int] = Field(default_factory=list, max_length=7)
+    #: A per-day differential for working this shift, paid by payroll.
+    allowance_per_day: Decimal | None = Field(default=None, gt=0, max_digits=10, decimal_places=2)
+    allowance_name: str | None = Field(default=None, max_length=128)
+    #: The fewest people the shift needs on a working day, for the coverage view.
+    min_headcount: int | None = Field(default=None, ge=1, le=100_000)
+    #: Courses anyone working the shift must have completed and still hold.
+    required_course_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
     @field_validator("weekly_off_days")
     @classmethod
@@ -491,6 +503,10 @@ class ShiftRead(BaseModel):
     weekly_off_days: list[int]
     active: bool
     is_default: bool = False
+    allowance_per_day: Decimal | None = None
+    allowance_name: str | None = None
+    min_headcount: int | None = None
+    required_course_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 # ── Rosters ─────────────────────────────────────────────────────────────────
@@ -616,3 +632,45 @@ class WorkLocationRead(BaseModel):
     longitude: Decimal
     radius_metres: int
     active: bool
+
+
+# ── Shift swaps ─────────────────────────────────────────────────────────────
+
+
+class ShiftSwapCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    partner_employee_id: uuid.UUID
+    swap_date: date
+    reason: str = Field(min_length=3, max_length=1000)
+
+
+class ShiftSwapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    accept: bool
+
+
+class ShiftSwapDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approve: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+
+# ── Kiosk ───────────────────────────────────────────────────────────────────
+
+
+class KioskPinSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pin: str = Field(min_length=4, max_length=6, pattern=r"^\d+$")
+
+
+class KioskPunchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employee_code: str = Field(min_length=1, max_length=32)
+    pin: str = Field(min_length=4, max_length=6, pattern=r"^\d+$")
+    #: A JPEG or PNG taken at the kiosk, base64, where the workspace asks for one.
+    photo: str | None = Field(default=None, max_length=900_000)

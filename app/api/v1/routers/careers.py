@@ -19,12 +19,14 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, ValidationError
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.jobboard import ApplicationStatus, JobBoard
 from app.models.user import UserRole
 from app.services.hiring import (
+    background_checks,
     candidate_portal,
     careers_admin,
     ingestion,
@@ -101,6 +103,14 @@ class ApplicationStatusUpdate(BaseModel):
 
 class RescheduleRequestIn(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
+
+
+class OfferResponseIn(BaseModel):
+    accept: bool
+    #: Accepting: the candidate's full name, typed. Declining: not needed.
+    typed_name: str | None = Field(default=None, max_length=255)
+    #: Declining: why. Accepting: not needed.
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 _EMAIL = TypeAdapter(EmailStr)
@@ -475,6 +485,247 @@ async def request_reschedule(
     public_guard.throttle(request, public_guard.RESCHEDULE_REQUEST)
     result = await candidate_portal.request_reschedule(
         session, token[:128], interview_id=interview_id, reason=payload.reason
+    )
+    await session.commit()
+    return result
+
+
+@router.get("/public/candidate/{token}/offers")
+async def portal_offers(token: str, request: Request, session: DbSession) -> list[dict[str, Any]]:
+    """The candidate's offers and whether they can still answer."""
+    public_guard.throttle(request, public_guard.PORTAL_READ)
+    result = await candidate_portal.portal_offers(session, token[:128])
+    await session.commit()
+    return result
+
+
+@router.get("/public/candidate/{token}/offers/{offer_id}/letter")
+async def portal_offer_letter(
+    token: str, offer_id: uuid.UUID, request: Request, session: DbSession
+) -> dict[str, Any]:
+    """The offer letter, to read before answering."""
+    public_guard.throttle(request, public_guard.PORTAL_READ)
+    result = await candidate_portal.offer_letter(session, token[:128], offer_id)
+    await session.commit()
+    return result
+
+
+@router.post("/public/candidate/{token}/offers/{offer_id}/respond")
+async def respond_to_offer(
+    token: str,
+    offer_id: uuid.UUID,
+    payload: OfferResponseIn,
+    request: Request,
+    session: DbSession,
+) -> dict[str, Any]:
+    """Accept by typing your full name, or decline with a reason."""
+    public_guard.throttle(request, public_guard.OFFER_RESPONSE)
+    result = await candidate_portal.respond_to_offer(
+        session,
+        token[:128],
+        offer_id,
+        accept=payload.accept,
+        typed_name=payload.typed_name,
+        reason=payload.reason,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+    return result
+
+
+# ── Background verification ─────────────────────────────────────────────────
+
+
+class BackgroundCheckIn(BaseModel):
+    check_types: list[str] = Field(min_length=1, max_length=10)
+    agency_name: str = Field(min_length=1, max_length=255)
+    vendor: str = Field(default="manual", max_length=32)
+    offer_id: uuid.UUID | None = None
+
+
+class CheckOutcomeIn(BaseModel):
+    type: str = Field(max_length=32)
+    status: str = Field(max_length=32)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class BackgroundResultsIn(BaseModel):
+    results: list[CheckOutcomeIn] = Field(min_length=1, max_length=10)
+    summary: str | None = Field(default=None, max_length=4000)
+
+
+class BackgroundCancelIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class BackgroundConsentIn(BaseModel):
+    agree: bool
+    #: Agreeing: the candidate's full name, typed.
+    typed_name: str | None = Field(default=None, max_length=255)
+
+
+@router.get(
+    "/careers/background-check-vendors", dependencies=[Depends(require_roles(*HR_ROLES))]
+)
+async def background_check_vendors() -> dict[str, Any]:
+    """The connectors a check can go through, and the checks there are."""
+    return {
+        "vendors": background_checks.vendors(),
+        "check_types": [
+            {"key": key, "label": label} for key, label in background_checks.CHECK_TYPES.items()
+        ],
+    }
+
+
+@router.get(
+    "/careers/candidates/{candidate_id}/background-checks",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def list_background_checks(
+    candidate_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[dict[str, Any]]:
+    return await background_checks.list_for_candidate(session, user, candidate_id)
+
+
+@router.post(
+    "/careers/candidates/{candidate_id}/background-checks",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def request_background_check(
+    candidate_id: uuid.UUID,
+    payload: BackgroundCheckIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Ask the candidate to consent. Nothing goes to the agency until they do."""
+    result = await background_checks.request_check(
+        session,
+        user,
+        candidate_id=candidate_id,
+        check_types=payload.check_types,
+        agency_name=payload.agency_name,
+        vendor=payload.vendor,
+        offer_id=payload.offer_id,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.post(
+    "/careers/background-checks/{check_id}/results",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def record_background_results(
+    check_id: uuid.UUID,
+    payload: BackgroundResultsIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await background_checks.record_results(
+        session,
+        user,
+        check_id,
+        results=[r.model_dump() for r in payload.results],
+        summary=payload.summary,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.post(
+    "/careers/background-checks/{check_id}/report",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def upload_background_report(
+    check_id: uuid.UUID,
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    _refuse_oversize(request, resume_files.DOCUMENT_MAX_BYTES)
+    data = await _read_upload(file, resume_files.DOCUMENT_MAX_BYTES)
+    if data is None:
+        raise HTTPException(status_code=422, detail="The file is empty.")
+    result = await background_checks.upload_report(
+        session, user, check_id, data=data, filename=file.filename or "report.pdf",
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.get(
+    "/careers/background-checks/{check_id}/report",
+    response_model=None,
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def download_background_report(
+    check_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> Response:
+    data, filename = await background_checks.report_file(session, user, check_id)
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post(
+    "/careers/background-checks/{check_id}/cancel",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def cancel_background_check(
+    check_id: uuid.UUID,
+    payload: BackgroundCancelIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await background_checks.cancel_check(
+        session, user, check_id, reason=payload.reason, request=request
+    )
+    await session.commit()
+    return result
+
+
+@router.get("/public/candidate/{token}/background-checks")
+async def portal_background_checks(
+    token: str, request: Request, session: DbSession
+) -> list[dict[str, Any]]:
+    """What the candidate has been asked to agree to, and their answers."""
+    public_guard.throttle(request, public_guard.PORTAL_READ)
+    return await background_checks.portal_checks(session, token[:128])
+
+
+@router.post("/public/candidate/{token}/background-checks/{check_id}/respond")
+async def respond_to_background_check(
+    token: str,
+    check_id: uuid.UUID,
+    payload: BackgroundConsentIn,
+    request: Request,
+    session: DbSession,
+) -> dict[str, Any]:
+    """Agree by typing your full name, or decline."""
+    public_guard.throttle(request, public_guard.OFFER_RESPONSE)
+    result = await background_checks.respond_to_check(
+        session,
+        token[:128],
+        check_id,
+        agree=payload.agree,
+        typed_name=payload.typed_name,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
     )
     await session.commit()
     return result

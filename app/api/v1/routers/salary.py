@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.schemas.common import Page
+from app.schemas.pay_grades import PayGradeCreate, PayGradeRead, PayGradeUpdate
 from app.schemas.payroll import (
     EmployeeSalaryCreate,
     EmployeeSalaryRead,
@@ -26,6 +27,7 @@ from app.schemas.payroll import (
     SalaryStructureRead,
 )
 from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
+from app.services.payroll import grades as grade_service
 from app.services.payroll import service as salary_service
 
 router = APIRouter(
@@ -185,3 +187,51 @@ async def salary_history(
 ) -> list[EmployeeSalaryRead]:
     rows = await salary_service.salary_history(session, user, employee_id)
     return [EmployeeSalaryRead.model_validate(row) for row in rows]
+
+
+
+# ── Grades and pay bands ────────────────────────────────────────────────────
+
+ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
+
+
+@router.get("/pay-grades", response_model=list[PayGradeRead])
+async def list_pay_grades(
+    user: CurrentUser, session: DbSession, include_inactive: bool = False
+) -> list[PayGradeRead]:
+    rows = await grade_service.list_grades(session, user, include_inactive=include_inactive)
+    return [
+        PayGradeRead.model_validate(grade).model_copy(update={"headcount": count})
+        for grade, count in rows
+    ]
+
+
+@router.post(
+    "/pay-grades",
+    response_model=PayGradeRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=ADMIN_ONLY,
+)
+async def create_pay_grade(
+    payload: PayGradeCreate, user: CurrentUser, session: DbSession, request: Request
+) -> PayGradeRead:
+    row = await grade_service.create_grade(session, user, payload, request=request)
+    return PayGradeRead.model_validate(row)
+
+
+@router.patch("/pay-grades/{grade_id}", response_model=PayGradeRead, dependencies=ADMIN_ONLY)
+async def update_pay_grade(
+    grade_id: uuid.UUID,
+    payload: PayGradeUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> PayGradeRead:
+    row = await grade_service.update_grade(session, user, grade_id, payload, request=request)
+    return PayGradeRead.model_validate(row)
+
+
+@router.get("/pay-grades/positioning")
+async def pay_positioning(user: CurrentUser, session: DbSession) -> dict:
+    """Each current person's CTC against their grade's band, with the compa-ratio."""
+    return await grade_service.positioning(session, user)

@@ -320,7 +320,8 @@ async def test_one_bad_recipient_does_not_lose_the_rest_of_a_bulk_send(
         payload={"name": "Everyone", "thing": "the office move"},
     )
 
-    assert outcome.sent == 4
+    # Four emails and five in-app notices: the default for an announcement is both.
+    assert outcome.sent == 9
     assert outcome.failed == 1
 
     failed = await session.scalar(
@@ -454,7 +455,7 @@ async def test_quiet_hours_defer_non_urgent_and_pass_urgent(
         session, tenant_id=tenant.id, event_key="system.announcement",
         recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
     )
-    assert ordinary.deferred == 1
+    assert ordinary.deferred == 2, "both the email and the in-app notice wait"
     assert ordinary.sent == 0
     assert recorder.sent == []
 
@@ -462,7 +463,7 @@ async def test_quiet_hours_defer_non_urgent_and_pass_urgent(
         session, tenant_id=tenant.id, event_key="payroll.run.failed",
         recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
     )
-    assert urgent.sent == 1, "a payroll failure does not wait until morning"
+    assert urgent.sent == 2, "a payroll failure does not wait until morning"
     assert len(recorder.sent) == 1
 
 
@@ -506,7 +507,8 @@ async def test_the_rate_cap_stops_a_bulk_operation_flooding_one_person(
 
     deferred = await session.scalar(
         select(func.count(Notification.id)).where(
-            Notification.status == NotificationStatus.DEFERRED
+            Notification.status == NotificationStatus.DEFERRED,
+            Notification.channel == Channel.EMAIL,
         )
     )
     assert deferred == 15, "the rest are held, not lost"
@@ -531,7 +533,7 @@ async def test_urgent_bypasses_the_rate_cap(
         session, tenant_id=tenant.id, event_key="payroll.run.failed",
         recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "failure"},
     )
-    assert urgent.sent == 1
+    assert urgent.sent == 2, "email and in-app, both past the cap"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -723,13 +725,17 @@ async def test_notifications_are_tenant_scoped(
 async def test_a_missing_template_suppresses_that_channel_with_an_explanation(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
-    """No template is a configuration gap, and it should say so."""
+    """No template is a configuration gap, and it should say so.
+
+    An event with neither a tenant template nor built-in wording — one a tenant
+    added and never worded.
+    """
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
+        session, tenant_id=tenant.id, event_key="custom.never_worded",
         recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
     )
     assert outcome.sent == 0
-    assert any("No email template" in e for e in outcome.errors)
+    assert any("No in_app template" in e for e in outcome.errors)
 
 
 async def test_seeding_installs_the_default_templates(

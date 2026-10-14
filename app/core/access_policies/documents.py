@@ -1,6 +1,10 @@
 """Letters and the document vault."""
 
 ENDPOINTS: dict[str, str] = {
+    "POST /documents/company/{document_id}/acknowledge": (
+        "own: records the caller's own acknowledgement, keyed by user.employee_id from the "
+        "token; the typed name must be the caller's own."
+    ),
     "GET /documents/company": (
         "reference: company policies and handbooks - published ones for everybody, all for HR."
     ),

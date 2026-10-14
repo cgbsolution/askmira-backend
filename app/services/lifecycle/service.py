@@ -247,8 +247,13 @@ async def raise_event(
     batch_id: uuid.UUID | None = None,
     today: date | None = None,
     request: Request | None = None,
+    status_on_raise: LifecycleStatus = LifecycleStatus.PENDING_APPROVAL,
 ) -> LifecycleEvent:
-    """Draft an event, with its consequences worked out and recorded."""
+    """Draft an event, with its consequences worked out and recorded.
+
+    `status_on_raise` is DRAFT only for an agent: its event waits, outside every
+    approver's queue, until a person approves the agent's proposal to submit it.
+    """
     _refuse_self(user, employee_id, doing="raise")
     resolution_day = today or date.today()
     employee = await _employee(session, user, employee_id)
@@ -277,7 +282,7 @@ async def raise_event(
         new_values=facts.new_values,
         reason=reason,
         new_ctc_annual=new_ctc_annual,
-        status=LifecycleStatus.PENDING_APPROVAL,
+        status=status_on_raise,
         # Snapshotted, so "did the approver know PT would change" is answerable
         # about the moment they signed rather than about what the code says now.
         consequences_shown=described["consequences"],
@@ -470,6 +475,37 @@ async def cancel_event(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def _close_open_probation_review(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> bool:
+    """A confirmation that took effect decides the review it answers.
+
+    Otherwise the review stays undecided and the reminder sweep keeps chasing a
+    manager about somebody who is already confirmed.
+    """
+    from app.models.cycle_config import ProbationOutcome, ProbationReview
+
+    review = await session.scalar(
+        tenant_scoped(
+            select(ProbationReview)
+            .where(
+                ProbationReview.employee_id == employee_id,
+                ProbationReview.outcome.is_(None),
+            )
+            .order_by(ProbationReview.probation_end_date.desc())
+            .limit(1),
+            ProbationReview,
+            user,
+        )
+    )
+    if review is None:
+        return False
+    review.outcome = ProbationOutcome.CONFIRM
+    review.outcome_recorded_at = datetime.now(UTC)
+    review.outcome_recorded_by_user_id = user.id
+    return True
+
+
 async def due_events(
     session: AsyncSession, user: User, *, on: date | None = None
 ) -> list[LifecycleEvent]:
@@ -638,6 +674,9 @@ async def effect_event(
             if row.event_type is LifecycleEventType.CONFIRMATION:
                 employee.status = EmploymentStatus.ACTIVE
                 applied.append("employee.status")
+                closed = await _close_open_probation_review(session, user, employee.id)
+                if closed:
+                    applied.append("probation_review.outcome")
 
             # ── Position assignment (slice 23) ──────────────────────────────
             if "manager_id" in (row.new_values or {}):
@@ -1174,10 +1213,22 @@ async def state_on(
             if key in tracked and key in (event.new_values or {}):
                 state[key] = value
 
+    manager_name = None
+    if state.get("manager_id"):
+        manager = await session.scalar(
+            tenant_scoped(
+                select(Employee).where(Employee.id == _as_uuid(state["manager_id"])),
+                Employee,
+                user,
+            )
+        )
+        manager_name = manager.full_name if manager else None
+
     return {
         "employee_id": str(employee.id),
         "as_of": on.isoformat(),
         "state": state,
+        "manager_name": manager_name,
         "events_undone": len(rows),
     }
 
@@ -1436,6 +1487,89 @@ async def resolve_probation_drift(
         "cases": [case.as_dict() for case in cases],
         "count": len(cases),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Direct edits
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: How a direct edit of the record is filed as events: the field that decides
+#: the type, and what else that type may carry. Read in order; a field already
+#: filed is not filed again, so a department and manager change together is
+#: one department change, as it would be if raised as an event.
+_DIRECT_EDIT_EVENTS: tuple[tuple[LifecycleEventType, frozenset[str]], ...] = (
+    (LifecycleEventType.DEPARTMENT_CHANGE, frozenset({"department_id"})),
+    (LifecycleEventType.LOCATION_CHANGE, frozenset({"location_id"})),
+    (LifecycleEventType.MANAGER_CHANGE, frozenset({"manager_id"})),
+    (LifecycleEventType.REDESIGNATION, frozenset({"designation"})),
+    (LifecycleEventType.GRADE_CHANGE, frozenset({"grade"})),
+    (
+        LifecycleEventType.EMPLOYMENT_TYPE_CHANGE,
+        frozenset({"employment_type", "notice_period_days"}),
+    ),
+    (LifecycleEventType.PROBATION_EXTENSION, frozenset({"probation_end_date"})),
+)
+
+#: Every field a direct edit files as an event.
+DIRECT_EDIT_FIELDS = frozenset().union(
+    *(
+        event_engine.CHANGED_FIELDS[event_engine.EventType(kind.value)]
+        for kind, _ in _DIRECT_EDIT_EVENTS
+    )
+)
+
+
+def record_direct_edit(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    changes: dict[str, Any],
+    *,
+    on: date | None = None,
+) -> list[LifecycleEvent]:
+    """File HR's direct edit of job fields as effected lifecycle events.
+
+    The edit has already been decided by somebody allowed to make it, so the
+    events are born effected, today, with that person as approver. What this
+    keeps is the history: without it a department changed on the record exists
+    only in the audit log, and the as-of view (`state_on`) would report the new
+    department for dates before the change. Call it before the new values are
+    written to the record; the caller commits, with its audit row.
+    """
+    moved = {
+        key: value
+        for key, value in changes.items()
+        if key in DIRECT_EDIT_FIELDS and _plain(getattr(employee, key)) != _plain(value)
+    }
+    if not moved:
+        return []
+    now = datetime.now(UTC)
+    effective = on or date.today()
+    created: list[LifecycleEvent] = []
+    for kind, triggers in _DIRECT_EDIT_EVENTS:
+        if not triggers & moved.keys():
+            continue
+        allowed = event_engine.CHANGED_FIELDS[event_engine.EventType(kind.value)]
+        fields = allowed & moved.keys()
+        event = LifecycleEvent(
+            tenant_id=user.tenant_id,
+            employee_id=employee.id,
+            event_type=kind,
+            effective_from=effective,
+            previous_values={key: _plain(getattr(employee, key)) for key in sorted(fields)},
+            new_values={key: _plain(moved[key]) for key in sorted(fields)},
+            reason="Changed directly on the employee record.",
+            status=LifecycleStatus.EFFECTED,
+            raised_by_user_id=user.id,
+            approved_by_user_id=user.id,
+            approved_at=now,
+            effected_at=now,
+        )
+        session.add(event)
+        created.append(event)
+        for key in fields:
+            moved.pop(key)
+    return created
 
 
 # ═══════════════════════════════════════════════════════════════════════════

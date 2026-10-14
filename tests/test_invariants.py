@@ -160,6 +160,12 @@ _UNSCOPED_BY_DESIGN = {
     # Same shape: a device push token establishes the tenant. Ingestion then
     # filters on `device.tenant_id` throughout.
     "devices.py",
+    # The ADMS adapter: a push token or an opted-in serial number establishes
+    # the tenant, then everything goes through the same device ingestion.
+    "adms.py",
+    # The shared kiosk: its device token establishes the tenant, and every
+    # query after it filters on `device.tenant_id`.
+    "kiosk.py",
     # Resolving which workspace an email address belongs to is the whole job,
     # and it runs on the sign-in screen before anyone is authenticated.
     "sso.py",
@@ -198,11 +204,13 @@ def test_every_service_select_is_tenant_scoped(service_file) -> None:
     """
     source = source_of(service_file)
     selects = len(re.findall(r"(?<![\w.])select\s*\(", source))
-    # Two ways to be scoped, and the guard measures the property rather than
-    # one helper: `tenant_scoped(...)` for services that take a `User`, and an
-    # explicit `X.tenant_id == tenant_id` for those that take a tenant id.
-    scoped = len(re.findall(r"tenant_scoped\s*\(", source)) + len(
-        re.findall(r"\.tenant_id\s*==", source)
+    # The guard measures the property rather than one helper: `tenant_scoped(...)`
+    # for services that take a `User`, `tenant_filter(X, tenant_id)` for those
+    # that take a tenant id, and a bare comparison where one still exists.
+    scoped = (
+        len(re.findall(r"tenant_scoped\s*\(", source))
+        + len(re.findall(r"tenant_filter\s*\(", source))
+        + len(re.findall(r"\.tenant_id\s*==", source))
     )
 
     if selects == 0:

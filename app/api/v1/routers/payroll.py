@@ -15,10 +15,13 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.core.step_up import confirmation
 from app.models.payroll import PayrollRunStatus
 from app.models.user import UserRole
 from app.schemas.common import Page
+from app.schemas.payroll_inputs import LedgerMappingRead, LedgerMappingSave
 from app.schemas.payroll_run import (
+    InputSourceOptionRead,
     PayrollRunCreate,
     PayrollRunRead,
     PayslipRead,
@@ -29,9 +32,11 @@ from app.schemas.payroll_run import (
     RunMarkPaid,
     VarianceAcknowledge,
 )
+from app.services.payroll import journal as journal_service
 from app.services.payroll import payslips as payslip_service
 from app.services.payroll import rule_sets as rule_set_service
 from app.services.payroll import run as run_service
+from app.services.payroll.inputs import PROVIDER_KEYS
 
 PAYROLL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 ADMIN_ROLES = (UserRole.ADMIN,)
@@ -93,7 +98,12 @@ async def approve_rule_set(
 ) -> RuleSetRead:
     """The Compliance SME's sign-off. Not by whoever entered the version."""
     return await rule_set_service.approve_rule_set(
-        session, user, rule_set_id, attest=payload.attest, request=request
+        session,
+        user,
+        rule_set_id,
+        attest=payload.attest,
+        confirm=confirmation(session, user, "payroll.rule_change"),
+        request=request,
     )
 
 
@@ -132,9 +142,57 @@ async def create_run(
         period_month=payload.period_month,
         run_type=payload.run_type,
         payment_date=payload.payment_date,
+        employee_ids=payload.employee_ids or None,
+        included_sources=payload.included_sources or None,
+        reason=payload.reason,
         request=request,
     )
     return await payslip_service.run_read(session, user, run)
+
+
+@router.get("/ledger-mappings", response_model=list[LedgerMappingRead])
+async def list_ledger_mappings(
+    user: CurrentUser, session: DbSession, run_id: uuid.UUID | None = None
+) -> list[LedgerMappingRead]:
+    """The tenant's ledger mapping, plus any line an approved run posts that is unmapped."""
+    rows = await journal_service.mapping_status(session, user, run_id)
+    return [LedgerMappingRead(**row) for row in rows]
+
+
+@router.put("/ledger-mappings", response_model=list[LedgerMappingRead])
+async def save_ledger_mappings(
+    payload: LedgerMappingSave, user: CurrentUser, session: DbSession, request: Request
+) -> list[LedgerMappingRead]:
+    rows = await journal_service.save_mappings(
+        session, user, [m.model_dump() for m in payload.mappings], request=request
+    )
+    return [LedgerMappingRead(**row) for row in rows]
+
+
+@router.get("/runs/{run_id}/journal")
+async def export_journal(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    fmt: str = Query(default="csv", alias="format", pattern=r"^(csv|tally|zoho)$"),
+    by_department: bool = False,
+) -> Response:
+    """An approved run as a journal voucher: generic CSV, Tally XML or Zoho Books CSV."""
+    content, media_type, file_name = await journal_service.export_journal(
+        session, user, run_id, fmt=fmt, by_department=by_department, request=request
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+    )
+
+
+@router.get("/input-sources", response_model=list[InputSourceOptionRead])
+async def list_input_sources() -> list[InputSourceOptionRead]:
+    """The input sources an off-cycle, bonus or arrear run can draw on."""
+    return [InputSourceOptionRead(key=key, label=label) for key, label in PROVIDER_KEYS.items()]
 
 
 @router.get("/runs/{run_id}", response_model=PayrollRunRead)
@@ -173,8 +231,14 @@ async def acknowledge_variance(
 async def approve_run(
     run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> PayrollRunRead:
-    """Maker-checker sign-off. Marks every consumed input with this run."""
-    run = await run_service.approve_run(session, user, run_id, request=request)
+    """Maker-checker sign-off, with fresh proof of identity. Marks every consumed input."""
+    run = await run_service.approve_run(
+        session,
+        user,
+        run_id,
+        confirm=confirmation(session, user, "payroll.run_approve"),
+        request=request,
+    )
     return await payslip_service.run_read(session, user, run)
 
 

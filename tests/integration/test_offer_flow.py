@@ -58,6 +58,10 @@ from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
 
+#: Relative, so the suite does not start failing the day a fixed date passes:
+#: accepting an offer is refused once its validity date is behind us.
+VALID_UNTIL = date.today() + timedelta(days=60)
+
 BAND_MIN = Decimal("1500000")
 BAND_MAX = Decimal("2000000")
 
@@ -202,7 +206,7 @@ async def _draft(
         salary_structure_id=structure.id, ctc_annual=ctc,
         joining_date=date(2026, 11, 3), designation="Senior Engineer",
         grade="L5", legal_entity_id=legal_entity.id,
-        valid_until=date(2026, 10, 15), components=components or [],
+        valid_until=VALID_UNTIL, components=components or [],
     )
     await session.commit()
     # The commit expired everything. Reload through awaits so the selectin
@@ -369,7 +373,7 @@ async def test_internal_parity_returns_the_right_comparable_employees(
         salary_structure_id=structure.id, ctc_annual=Decimal("2200000"),
         joining_date=date(2026, 11, 3), designation="Senior Engineer",
         grade="L5", department_id=engineering.id, legal_entity_id=legal_entity.id,
-        valid_until=date(2026, 10, 15),
+        valid_until=VALID_UNTIL,
     )
     await session.commit()
 
@@ -413,7 +417,7 @@ async def test_parity_ignores_superseded_salary_revisions(
         session, hr_user, candidate_id=candidate.id, code="OFF-REV",
         salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
         joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", legal_entity_id=legal_entity.id, valid_until=date(2026, 10, 15),
+        grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
     )
     await session.commit()
 
@@ -491,7 +495,10 @@ async def test_editing_a_non_material_field_leaves_the_approval_standing(
     await _through_approval(session, tenant, hr_user, offer)
 
     result = await offer_service.update_offer_terms(
-        session, hr_user, offer_id=offer.id, changes={"valid_until": date(2026, 10, 31)}
+        session,
+        hr_user,
+        offer_id=offer.id,
+        changes={"valid_until": VALID_UNTIL + timedelta(days=16)},
     )
     await session.commit()
 
@@ -579,14 +586,15 @@ async def test_the_standard_offer_template_releases_from_the_offers_own_terms(
 
     result = await offer_service.release_offer(
         session, hr_user, offer_id=offer.id, template_id=template.id,
-        valid_until=date(2026, 10, 20),
+        valid_until=VALID_UNTIL + timedelta(days=5),
     )
     await session.commit()
 
     letter = await session.get(IssuedLetter, result["letter_id"])
     assert "03 November 2026" in letter.merged_html
     assert "Bengaluru" in letter.merged_html and "Bengaluru, Bengaluru" not in letter.merged_html
-    assert "20 October 2026" in letter.merged_html, "the deadline set at release"
+    deadline = VALID_UNTIL + timedelta(days=5)
+    assert deadline.strftime("%d %B %Y") in letter.merged_html, "the deadline set at release"
 
 
 async def test_an_unapproved_offer_cannot_be_released(
@@ -621,7 +629,7 @@ async def test_a_second_offer_cannot_take_a_seat_that_is_already_held(
         session, hr_user, candidate_id=second_candidate.id, code="OFF-002",
         salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
         joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", legal_entity_id=legal_entity.id, valid_until=date(2026, 10, 15),
+        grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
     )
     await session.commit()
     await offer_service.submit_offer(session, hr_user, offer_id=second.id)
@@ -853,7 +861,7 @@ async def test_joining_creates_an_employee_with_nothing_re_keyed(
         joining_date=date(2026, 11, 3), designation="Senior Engineer",
         grade="L5", joining_location_id=location.id, department_id=engineering.id,
         legal_entity_id=legal_entity.id, probation_months=6, notice_period_days=90,
-        valid_until=date(2026, 10, 15),
+        valid_until=VALID_UNTIL,
     )
     await session.commit()
     await _through_approval(session, tenant, hr_user, offer)
@@ -1123,7 +1131,7 @@ async def test_a_candidate_cannot_hold_two_live_offers(
             session, hr_user, candidate_id=candidate.id, code="OFF-DUP",
             salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
             joining_date=date(2026, 11, 3), designation="Senior Engineer",
-            grade="L5", legal_entity_id=legal_entity.id, valid_until=date(2026, 10, 15),
+            grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
         )
     assert "already has a live offer" in exc.value.detail
 

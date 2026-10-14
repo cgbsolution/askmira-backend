@@ -20,6 +20,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.deps import tenant_filter
 from app.models.audit import AuditAction
 from app.models.scheduler import SchedulerJobRun, SchedulerRunStatus
 from app.models.tenant import Tenant
@@ -58,7 +59,7 @@ async def _last_started(
     owner = (
         SchedulerJobRun.tenant_id.is_(None)
         if tenant_id is None
-        else SchedulerJobRun.tenant_id == tenant_id
+        else tenant_filter(SchedulerJobRun, tenant_id)
     )
     return await session.scalar(
         select(func.max(SchedulerJobRun.started_at)).where(
@@ -188,7 +189,7 @@ def _run_owner(job: Job, user: User):
     """A platform job's runs belong to no tenant; a tenant job's to the caller's."""
     if job.scope is JobScope.PLATFORM:
         return SchedulerJobRun.tenant_id.is_(None)
-    return SchedulerJobRun.tenant_id == user.tenant_id
+    return tenant_filter(SchedulerJobRun, user.tenant_id)
 
 
 def _run_dict(row: SchedulerJobRun | None) -> dict[str, Any] | None:
@@ -233,7 +234,7 @@ async def list_jobs(session: AsyncSession, user: User) -> dict[str, Any]:
         failures = await session.scalar(
             select(func.count(SchedulerJobRun.id)).where(
                 SchedulerJobRun.job_key == job.key,
-                SchedulerJobRun.tenant_id == user.tenant_id,
+                tenant_filter(SchedulerJobRun, user.tenant_id),
                 SchedulerJobRun.status == SchedulerRunStatus.FAILED,
                 SchedulerJobRun.started_at >= week_ago,
             )

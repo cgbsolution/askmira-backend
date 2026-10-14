@@ -1,6 +1,12 @@
 """Recognition points, redemptions and statements."""
 
 ENDPOINTS: dict[str, str] = {
+    "GET /rewards/catalogue": (
+        "reference: the items recognition points can be spent on; inactive ones for HR only."
+    ),
+    "POST /rewards/catalogue/{item_id}/redeem": (
+        "own: spends the caller's own points, by user.employee_id from the token."
+    ),
     "GET /rewards/posture": "reference: what the module enforces.",
     "GET /rewards/expiry-policy": (
         "reference: the expiry policy and its disclosure, which every employee is "

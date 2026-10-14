@@ -144,6 +144,9 @@ class OnboardingTemplateTask(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     # The vault category an upload lands in (`DocumentCategory` value).
     document_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: A FORM task's statutory form: the letter template code it generates
+    #: (FORM11_STD, FORM2_STD, FORMF_STD, ESI_DECL_STD).
+    form_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_mandatory: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -256,6 +259,14 @@ class OnboardingTask(Base, UUIDMixin, TenantMixin, TimestampMixin):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("employee_documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    #: A FORM task: which form it generates, and the issued form the joiner
+    #: signs by acknowledging. Acknowledging that letter completes the task.
+    form_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    form_letter_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
     # When the assignee was told it is overdue — once, not every morning.

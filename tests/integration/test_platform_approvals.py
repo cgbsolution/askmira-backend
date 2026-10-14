@@ -84,15 +84,16 @@ def _by_source(inbox) -> dict[str, list]:
 async def test_an_employee_has_nothing_to_decide(session, org):
     inbox = await approvals.inbox(session, org["report"])
     assert inbox.total == 0
-    # Sources an employee cannot decide are not even listed.
-    assert {s.key for s in inbox.sources} <= {"leave"}
+    # Sources an employee cannot decide are not even listed. Anybody can be named
+    # on a leave chain, own an exit clearance item or be asked for 360 feedback.
+    assert {s.key for s in inbox.sources} <= {"leave", "clearance_task", "feedback_request"}
 
 
 async def test_a_manager_sees_only_their_reporting_line(session, org):
     inbox = _by_source(await approvals.inbox(session, org["boss"]))
     regs = inbox.get("attendance_regularisation", [])
     assert [r.subject_name for r in regs] == ["Ravi Report"]
-    assert all(r.link == "/time/attendance-review" for r in regs)
+    assert all(r.link.startswith("/time/attendance-review") for r in regs)
     # Lifecycle decisions are admin-only.
     assert "lifecycle_event" not in inbox
 

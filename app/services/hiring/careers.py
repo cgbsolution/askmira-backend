@@ -21,17 +21,20 @@ retained with its dates and its board, and every identifying field is cleared.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
+from app.models.background_checks import BackgroundCheck, BackgroundCheckStatus
+from app.models.candidate_comms import CandidateMessage, CandidateMessageStatus
 from app.models.culture import Club, Shoutout, ShoutoutVisibility
 from app.models.hiring import Candidate, Requisition, RequisitionStatus
 from app.models.jobboard import (
@@ -44,6 +47,7 @@ from app.models.jobboard import (
     ConsentPurpose,
 )
 from app.models.org import Location
+from app.models.talent_pools import TalentPoolMember
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
@@ -52,6 +56,7 @@ from app.services.hiring.structured_data import (
     job_posting_jsonld,
     validate_posting,
 )
+from app.services.storage import StorageError, get_storage
 
 __all__ = [
     "PORTAL_TOKEN_TTL_DAYS",
@@ -109,7 +114,7 @@ async def public_job_list(
     tenant = await session.get(Tenant, config.tenant_id)
 
     stmt = select(Requisition).where(
-        Requisition.tenant_id == config.tenant_id,
+        tenant_filter(Requisition, config.tenant_id),
         Requisition.status == RequisitionStatus.OPEN,
     )
     if department_id is not None:
@@ -176,7 +181,7 @@ async def _culture_highlights(session: AsyncSession, tenant_id: uuid.UUID) -> di
     shoutouts = await session.scalars(
         select(Shoutout)
         .where(
-            Shoutout.tenant_id == tenant_id,
+            tenant_filter(Shoutout, tenant_id),
             Shoutout.visibility == ShoutoutVisibility.COMPANY,
         )
         .order_by(Shoutout.created_at.desc())
@@ -185,7 +190,7 @@ async def _culture_highlights(session: AsyncSession, tenant_id: uuid.UUID) -> di
     clubs = await session.scalars(
         select(Club)
         .where(
-            Club.tenant_id == tenant_id,
+            tenant_filter(Club, tenant_id),
             Club.is_active.is_(True),
             Club.is_private.is_(False),
         )
@@ -221,7 +226,7 @@ async def public_job_detail(session: AsyncSession, slug: str, code: str) -> dict
 
     job = await session.scalar(
         select(Requisition).where(
-            Requisition.tenant_id == config.tenant_id,
+            tenant_filter(Requisition, config.tenant_id),
             Requisition.code == code,
             Requisition.status == RequisitionStatus.OPEN,
         )
@@ -364,7 +369,7 @@ async def portal_view(session: AsyncSession, token: str, *, now: datetime | None
         await session.scalars(
             select(Application)
             .where(
-                Application.tenant_id == row.tenant_id,
+                tenant_filter(Application, row.tenant_id),
                 Application.candidate_id == row.candidate_id,
             )
             .order_by(Application.applied_at.desc())
@@ -381,7 +386,7 @@ async def portal_view(session: AsyncSession, token: str, *, now: datetime | None
     documents = (
         await session.scalars(
             select(CandidateDocument).where(
-                CandidateDocument.tenant_id == row.tenant_id,
+                tenant_filter(CandidateDocument, row.tenant_id),
                 CandidateDocument.candidate_id == row.candidate_id,
                 CandidateDocument.purged_at.is_(None),
             )
@@ -439,6 +444,74 @@ def _status_note(value: ApplicationStatus) -> str:
 REDACTED = "[deleted on request]"
 
 
+async def _purge_hiring_extras(
+    session: AsyncSession, tenant_id: uuid.UUID, candidate: Candidate
+) -> None:
+    """What an erasure clears beyond the candidate row: pools, emails, background checks.
+
+    Kept apart from `_purge_candidate`, which must never delete a row: removing
+    a pool membership or an agency's report file does not touch the hiring
+    numbers that function protects.
+    """
+    # Kept "for later" is exactly what an erasure ends.
+    await session.execute(
+        delete(TalentPoolMember).where(
+            tenant_filter(TalentPoolMember, tenant_id),
+            TalentPoolMember.candidate_id == candidate.id,
+        )
+    )
+    # The emails said their name and went to their address; the log keeps only
+    # that something was sent, and nothing queued goes out after the request.
+    messages = (
+        await session.scalars(
+            select(CandidateMessage).where(
+                tenant_filter(CandidateMessage, tenant_id),
+                CandidateMessage.candidate_id == candidate.id,
+            )
+        )
+    ).all()
+    for message in messages:
+        message.to_address = f"purged+{candidate.id}@invalid"
+        message.subject = REDACTED
+        message.body = REDACTED
+        message.secret_link_encrypted = None
+        if message.status is CandidateMessageStatus.QUEUED:
+            message.status = CandidateMessageStatus.CANCELLED
+            message.failure_reason = "Withdrawn: the candidate's data was erased."
+            message.next_attempt_at = None
+
+    # Background checks keep their shape (that one was run, and how it ended);
+    # the consent signature, the notes and the agency's report go.
+    checks = (
+        await session.scalars(
+            select(BackgroundCheck).where(
+                tenant_filter(BackgroundCheck, tenant_id),
+                BackgroundCheck.candidate_id == candidate.id,
+            )
+        )
+    ).all()
+    for check in checks:
+        if check.report_storage_key:
+            with contextlib.suppress(StorageError):
+                await get_storage().delete(check.report_storage_key)
+        check.report_storage_key = None
+        check.report_filename = None
+        check.consent_typed_name = None
+        check.consent_ip = None
+        check.consent_user_agent = None
+        check.summary = None
+        check.checks = [
+            {"type": c.get("type"), "status": c.get("status"), "note": None}
+            for c in check.checks or []
+        ]
+        if check.status in (
+            BackgroundCheckStatus.AWAITING_CONSENT,
+            BackgroundCheckStatus.IN_PROGRESS,
+        ):
+            check.status = BackgroundCheckStatus.CANCELLED
+            check.cancelled_reason = "The candidate's data was erased."
+
+
 async def _purge_candidate(
     session: AsyncSession, tenant_id: uuid.UUID, candidate: Candidate, *, note: str,
     now: datetime,
@@ -456,11 +529,14 @@ async def _purge_candidate(
     candidate.current_company = None
     candidate.current_ctc = None
     candidate.expected_ctc = None
+    candidate.tags = []
+
+    await _purge_hiring_extras(session, tenant_id, candidate)
 
     applications = (
         await session.scalars(
             select(Application).where(
-                Application.tenant_id == tenant_id,
+                tenant_filter(Application, tenant_id),
                 Application.candidate_id == candidate.id,
             )
         )
@@ -474,7 +550,7 @@ async def _purge_candidate(
     documents = (
         await session.scalars(
             select(CandidateDocument).where(
-                CandidateDocument.tenant_id == tenant_id,
+                tenant_filter(CandidateDocument, tenant_id),
                 CandidateDocument.candidate_id == candidate.id,
                 CandidateDocument.purged_at.is_(None),
             )
@@ -488,7 +564,7 @@ async def _purge_candidate(
     tokens = (
         await session.scalars(
             select(CandidatePortalToken).where(
-                CandidatePortalToken.tenant_id == tenant_id,
+                tenant_filter(CandidatePortalToken, tenant_id),
                 CandidatePortalToken.candidate_id == candidate.id,
                 CandidatePortalToken.revoked_at.is_(None),
             )

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
+from app.schemas.custom_fields import CustomFieldCreate, CustomFieldRead, CustomFieldUpdate
 from app.schemas.org import (
     DepartmentCreate,
     DepartmentRead,
@@ -23,6 +24,7 @@ from app.schemas.org import (
     LocationRead,
     LocationUpdate,
 )
+from app.services import custom_fields, custom_tables
 from app.services import org as org_service
 
 router = APIRouter(prefix="/org", tags=["core-hr"])
@@ -138,3 +140,77 @@ async def update_department(
         session, user, department_id, payload, request=request
     )
     return DepartmentRead.model_validate(row)
+
+
+# ── Custom fields on the employee record ────────────────────────────────────
+
+
+@router.get("/custom-fields", response_model=list[CustomFieldRead])
+async def list_custom_fields(
+    user: CurrentUser, session: DbSession, include_inactive: bool = False
+) -> list[CustomFieldRead]:
+    """The fields the profile draws. Sensitive ones are listed for HR only."""
+    rows = await custom_fields.list_definitions(
+        session, user, include_inactive=include_inactive
+    )
+    return [CustomFieldRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/custom-fields",
+    response_model=CustomFieldRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=ADMIN_ONLY,
+)
+async def create_custom_field(
+    payload: CustomFieldCreate, user: CurrentUser, session: DbSession, request: Request
+) -> CustomFieldRead:
+    row = await custom_fields.create_definition(session, user, payload, request=request)
+    return CustomFieldRead.model_validate(row)
+
+
+@router.patch(
+    "/custom-fields/{definition_id}", response_model=CustomFieldRead, dependencies=ADMIN_ONLY
+)
+async def update_custom_field(
+    definition_id: uuid.UUID,
+    payload: CustomFieldUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> CustomFieldRead:
+    """Label, options, required, sensitive, order, active. Never the key or type."""
+    row = await custom_fields.update_definition(
+        session, user, definition_id, payload, request=request
+    )
+    return CustomFieldRead.model_validate(row)
+
+
+
+# ── Custom tables on the employee record ────────────────────────────────────
+
+
+@router.get("/custom-tables")
+async def list_custom_tables(
+    user: CurrentUser, session: DbSession, include_inactive: bool = False
+) -> list[dict]:
+    """Table designs the profile draws. Sensitive ones are listed for HR only."""
+    return await custom_tables.list_tables(session, user, include_inactive=include_inactive)
+
+
+@router.post("/custom-tables", status_code=status.HTTP_201_CREATED, dependencies=ADMIN_ONLY)
+async def create_custom_table(
+    payload: custom_tables.TableIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await custom_tables.create_table(session, user, payload, request=request)
+
+
+@router.patch("/custom-tables/{table_id}", dependencies=ADMIN_ONLY)
+async def update_custom_table(
+    table_id: uuid.UUID,
+    payload: custom_tables.TableUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    return await custom_tables.update_table(session, user, table_id, payload, request=request)

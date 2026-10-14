@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.models  # noqa: F401 — registers every table before the metadata is walked
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.base import Base
 from app.models.dpdp import DataPrincipalRequest
@@ -675,7 +675,7 @@ async def execute_plan(
                 async with session.begin_nested():
                     result = await session.execute(
                         delete(table).where(
-                            table.c.tenant_id == user.tenant_id, table.c.id == record_id
+                            tenant_filter(table, user.tenant_id), table.c.id == record_id
                         )
                     )
             except IntegrityError:
@@ -816,7 +816,7 @@ async def _anonymise_row(
         return False
     result = await session.execute(
         update(table)
-        .where(table.c.tenant_id == user.tenant_id, table.c.id == record_id)
+        .where(tenant_filter(table, user.tenant_id), table.c.id == record_id)
         .values(values)
     )
     return bool(result.rowcount)
@@ -907,7 +907,7 @@ async def gather_candidates(
             await session.execute(
                 select(table.c.id, table.c.employee_id, table.c.created_at)
                 .where(
-                    table.c.tenant_id == user.tenant_id,
+                    tenant_filter(table, user.tenant_id),
                     table.c.created_at < datetime.combine(cutoff, time.min, tzinfo=UTC),
                 )
                 .limit(cap - len(out))
@@ -961,7 +961,7 @@ async def apply_suppressions(
             async with session.begin_nested():
                 result = await session.execute(
                     delete(table).where(
-                        table.c.tenant_id == user.tenant_id,
+                        tenant_filter(table, user.tenant_id),
                         table.c.id == suppression.record_id,
                     )
                 )

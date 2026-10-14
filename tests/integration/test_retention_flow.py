@@ -54,6 +54,37 @@ def _candidates(count: int, *, category: str = "leave", subject_prefix: str = "e
     ]
 
 
+async def _real(session, employee, count: int) -> list:
+    """Rows that exist, for the tests that execute a plan.
+
+    Execution acts on records that are really there and reports only what it
+    did, so a plan built from invented ids executes to nothing. Shoutouts are
+    culture responses, whose default action is DELETE.
+    """
+    from app.models.culture import Shoutout
+
+    rows = [
+        Shoutout(
+            tenant_id=employee.tenant_id, from_employee_id=employee.id,
+            to_employee_id=employee.id, message=f"Thanks #{i}",
+        )
+        for i in range(count)
+    ]
+    session.add_all(rows)
+    await session.commit()
+    return [
+        planner_engine.CandidateRecord(
+            record_id=str(row.id),
+            table="shoutouts",
+            data_category_key="culture_response",
+            subject_id=str(employee.id),
+            record_created=date(2015, 1, 1),
+            department="Engineering",
+        )
+        for row in rows
+    ]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Gate: the statutory floor
 # ══════════════════════════════════════════════════════════════════════════════
@@ -312,12 +343,12 @@ async def test_a_dry_run_reports_accurately_and_cannot_execute(session, hr_user)
     assert logs == 0
 
 
-async def test_a_run_above_the_threshold_waits_for_a_person(session, hr_user):
+async def test_a_run_above_the_threshold_waits_for_a_person(session, hr_user, employee):
     await retention.seed_default_policies(session, hr_user)
     run = await retention.plan_run(
         session,
         hr_user,
-        candidates=_candidates(10),
+        candidates=await _real(session, employee, 10),
         today=TODAY,
         approval_threshold=5,
         is_dry_run=False,
@@ -339,12 +370,12 @@ async def test_a_run_above_the_threshold_waits_for_a_person(session, hr_user):
     assert result["action_logs_written"] >= 1
 
 
-async def test_a_run_under_the_threshold_runs_without_approval(session, hr_user):
+async def test_a_run_under_the_threshold_runs_without_approval(session, hr_user, employee):
     await retention.seed_default_policies(session, hr_user)
     run = await retention.plan_run(
         session,
         hr_user,
-        candidates=_candidates(2),
+        candidates=await _real(session, employee, 2),
         today=TODAY,
         approval_threshold=100,
         is_dry_run=False,
@@ -401,10 +432,10 @@ async def test_a_run_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
 
 
 async def test_the_action_log_records_who_authorised_it_and_hashes_the_ids(
-    session, hr_user
+    session, hr_user, employee
 ):
     await retention.seed_default_policies(session, hr_user)
-    candidates = _candidates(10)
+    candidates = await _real(session, employee, 10)
     run = await retention.plan_run(
         session,
         hr_user,
@@ -431,14 +462,14 @@ async def test_the_action_log_records_who_authorised_it_and_hashes_the_ids(
             assert len(stored) == 32
 
 
-async def test_the_action_log_survives_and_is_never_updated(session, hr_user):
+async def test_the_action_log_survives_and_is_never_updated(session, hr_user, employee):
     """Insert-only: a second run adds rows rather than replacing them."""
     await retention.seed_default_policies(session, hr_user)
     for _ in range(2):
         run = await retention.plan_run(
             session,
             hr_user,
-            candidates=_candidates(2),
+            candidates=await _real(session, employee, 2),
             today=TODAY,
             approval_threshold=100,
             is_dry_run=False,
@@ -451,20 +482,28 @@ async def test_the_action_log_survives_and_is_never_updated(session, hr_user):
     assert count == 2
 
 
-async def test_execution_does_not_claim_to_have_removed_anything(session, hr_user):
-    """The honest half. Nothing is purged, and the response says so."""
+async def test_execution_claims_only_what_it_actually_removed(session, hr_user, employee):
+    """The honest half. A planned record that is already gone is not counted as removed."""
     await retention.seed_default_policies(session, hr_user)
+    there = await _real(session, employee, 2)
+    gone = [
+        planner_engine.CandidateRecord(
+            record_id=str(uuid.uuid4()), table="shoutouts", data_category_key="culture_response",
+            subject_id=str(employee.id), record_created=date(2015, 1, 1),
+            department="Engineering",
+        )
+    ]
     run = await retention.plan_run(
         session,
         hr_user,
-        candidates=_candidates(2),
+        candidates=[*there, *gone],
         today=TODAY,
         approval_threshold=100,
         is_dry_run=False,
     )
     result = await retention.execute_plan(session, hr_user, run_id=run.id, now=NOW)
-    assert result["records_actually_removed"] == 0
-    assert "not implemented" in result["not_built"]
+    assert result["records_actually_removed"] == 2
+    assert "archive" in result["not_built"], "what is not done is said, not implied"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -472,13 +511,13 @@ async def test_execution_does_not_claim_to_have_removed_anything(session, hr_use
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_deletion_writes_a_suppression_entry(session, hr_user):
+async def test_a_deletion_writes_a_suppression_entry(session, hr_user, employee):
     await retention.seed_default_policies(session, hr_user)
     # culture_response is consent-based, so its action is DELETE.
     run = await retention.plan_run(
         session,
         hr_user,
-        candidates=_candidates(3, category="culture_response"),
+        candidates=await _real(session, employee, 3),
         today=TODAY,
         approval_threshold=100,
         is_dry_run=False,

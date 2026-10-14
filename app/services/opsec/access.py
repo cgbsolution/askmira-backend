@@ -87,6 +87,7 @@ STEP_UP_ACTIONS: frozenset[str] = frozenset(
         "user.role_change",
         "tenant.sso_configure",
         "session.revoke_all",
+        "operator.grant",
     }
 )
 
@@ -114,6 +115,9 @@ _STEP_UP_REASONS: dict[str, str] = {
         "Identity-provider settings decide who can sign in as anybody."
     ),
     "session.revoke_all": "This signs everybody out.",
+    "operator.grant": (
+        "This lets somebody outside your organisation work on your payroll."
+    ),
 }
 
 

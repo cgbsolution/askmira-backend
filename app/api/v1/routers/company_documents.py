@@ -11,7 +11,12 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, Up
 from app.core import permissions
 from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.schemas.documents import CompanyDocumentRead, CompanyDocumentUpdate
+from app.schemas.documents import (
+    AcknowledgementRegisterRead,
+    CompanyDocumentAcknowledge,
+    CompanyDocumentRead,
+    CompanyDocumentUpdate,
+)
 from app.services.documents import company
 
 router = APIRouter(prefix="/documents/company", tags=["documents"])
@@ -47,6 +52,7 @@ async def upload(
     issued_on: Annotated[date | None, Form()] = None,
     valid_until: Annotated[date | None, Form()] = None,
     is_employee_visible: Annotated[bool, Form()] = True,
+    requires_acknowledgement: Annotated[bool, Form()] = False,
 ) -> CompanyDocumentRead:
     """A PDF, PNG or JPEG. Its type is read from the bytes, not the file name."""
     data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
@@ -61,6 +67,7 @@ async def upload(
         issued_on=issued_on,
         valid_until=valid_until,
         is_employee_visible=is_employee_visible,
+        requires_acknowledgement=requires_acknowledgement,
         request=request,
     )
 
@@ -77,6 +84,33 @@ async def download(
         media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/{document_id}/acknowledge", response_model=CompanyDocumentRead)
+async def acknowledge(
+    document_id: uuid.UUID,
+    payload: CompanyDocumentAcknowledge,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> CompanyDocumentRead:
+    """The caller reads and accepts the current version, by typing their own name."""
+    if user.employee_id is None:
+        raise permissions.forbidden("Only an employee acknowledges a company policy.")
+    return await company.acknowledge_company_document(
+        session, user, document_id, typed_name=payload.typed_name, request=request
+    )
+
+
+@router.get(
+    "/{document_id}/acknowledgements",
+    response_model=AcknowledgementRegisterRead,
+    dependencies=HR_ONLY,
+)
+async def acknowledgements(
+    document_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> AcknowledgementRegisterRead:
+    return await company.acknowledgement_register(session, user, document_id)
 
 
 @router.patch("/{document_id}", response_model=CompanyDocumentRead, dependencies=HR_ONLY)

@@ -1088,8 +1088,35 @@ async def submit_claim(
             f"This claim cannot be submitted. {claim.verdict_message}"
         )
 
-    employee, manager_login = await line_manager_login(session, user, claim.employee_id)
-    claim.status, routed = first_stage(manager_login is not None)
+    from app.models.approval_rules import ApprovalProcess
+    from app.services.approvals import rules
+
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == claim.employee_id), Employee, user)
+    )
+    steps, rule_name = (
+        await rules.resolve_steps(
+            session,
+            user,
+            employee,
+            rules.Facts(
+                process=ApprovalProcess.EXPENSE,
+                department_id=employee.department_id,
+                location_id=employee.location_id,
+                amount=Decimal(str(claim.amount)),
+                category=claim.category_key,
+            ),
+        )
+        if employee is not None
+        else ([], None)
+    )
+    claim.approval_chain = rules.chain_from(steps, rule_name)
+    claim.status, routed = first_stage(bool(steps))
+    if steps:
+        routed = f"sent to {steps[0].name}" + (
+            f" (step 1 of {len(steps)}, then finance)" if len(steps) > 1 else ""
+        )
+    first_approver = steps[0].user_id if steps else None
     claim.submitted_at = datetime.now(UTC)
 
     await audit.record(
@@ -1106,12 +1133,12 @@ async def submit_claim(
         ),
         request=request,
     )
-    if manager_login is not None:
+    if first_approver is not None:
         await notify(
             session,
             tenant_id=user.tenant_id,
             event_key=EVENT_CLAIM_AWAITING_MANAGER,
-            recipient_user_ids=[manager_login.id],
+            recipient_user_ids=[first_approver],
             payload={
                 "employee_name": employee.full_name if employee else "A team member",
                 "amount": _rupees(claim.amount),
@@ -1176,24 +1203,46 @@ async def decide_claim_as_manager(
     The line manager decides — or HR, standing in for a manager who is away.
     Nobody decides their own claim.
     """
+    from app.services.approvals import rules
+    from app.services.leave import engine as chain_engine
+
     claim = await _claim_for_decision(session, user, claim_id)
     if claim.status is not ExpenseClaimStatusEnum.PENDING_MANAGER:
         raise _bad_request(
             f"This claim is not waiting for a manager's decision; it is "
             f"{claim.status.value.replace('_', ' ')}."
         )
-    await permissions.require_manager_or_hr(
-        session,
-        user,
-        claim.employee_id,
-        detail="Only the claimant's line manager, or HR, decides this claim.",
-    )
-
+    chain = list(claim.approval_chain or [])
+    outcome = "approved" if approve else "rejected"
     now = datetime.now(UTC)
+    if chain:
+        index = chain_engine.current_step(chain)
+        step = chain[index] if index is not None else {}
+        acting = {str(a) for a in await rules.acting_for(session, user)}
+        if not (permissions.is_hr(user) or step.get("approver_user_id") in acting):
+            raise permissions.forbidden(
+                f"This claim is waiting on {step.get('approver_name', 'another approver')}. "
+                "Only they, somebody standing in for them, or HR can decide it."
+            )
+        chain, outcome = chain_engine.apply_decision(
+            chain, approve=approve, actor_user_id=user.id, actor_name=user.full_name,
+            note=note, at=now,
+        )
+        claim.approval_chain = chain
+    else:
+        await permissions.require_manager_or_hr(
+            session,
+            user,
+            claim.employee_id,
+            detail="Only the claimant's line manager, or HR, decides this claim.",
+        )
+
     claim.manager_decided_by_user_id = user.id
     claim.manager_decided_at = now
     claim.manager_decision_note = note
-    if approve:
+    if outcome == "advanced":
+        pass  # still with the approvers; the next one is told below
+    elif approve:
         claim.status = ExpenseClaimStatusEnum.SUBMITTED
     else:
         # A manager's rejection is the claim's final decision.
@@ -1211,14 +1260,44 @@ async def decide_claim_as_manager(
         entity_type="expense_claim",
         entity_id=claim.id,
         actor=user,
-        changes={"stage": "manager", "status": claim.status.value, "note": note},
+        changes={"stage": "manager", "status": claim.status.value, "note": note,
+                 "outcome": outcome},
         summary=(
-            f"Line manager {'approved' if approve else 'rejected'} the claim"
-            + (" and sent it to finance" if approve else "")
+            f"Approver {'approved' if approve else 'rejected'} the claim"
+            + (
+                " and passed it to the next approver" if outcome == "advanced"
+                else " and sent it to finance" if approve else ""
+            )
             + (f": {note}" if note else ".")
         ),
         request=request,
     )
+    if outcome == "advanced":
+        index = chain_engine.current_step(chain)
+        next_approver = chain[index].get("approver_user_id") if index is not None else None
+        if next_approver:
+            employee = await session.scalar(
+                tenant_scoped(
+                    select(Employee).where(Employee.id == claim.employee_id), Employee, user
+                )
+            )
+            await notify(
+                session,
+                tenant_id=user.tenant_id,
+                event_key=EVENT_CLAIM_AWAITING_MANAGER,
+                recipient_user_ids=[uuid.UUID(next_approver)],
+                payload={
+                    "employee_name": employee.full_name if employee else "A team member",
+                    "amount": _rupees(claim.amount),
+                    "category": _category(claim.category_key),
+                    "incurred_on": _day(claim.incurred_on),
+                    "claim_id": str(claim.id),
+                },
+                commit=False,
+            )
+        await session.commit()
+        await session.refresh(claim)
+        return claim
     recipients = await _login_ids(session, user, {claim.employee_id})
     if claim.employee_id in recipients:
         await notify(

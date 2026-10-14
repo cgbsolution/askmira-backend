@@ -1229,6 +1229,9 @@ async def survey_results(
         "responses": len(rows),
         "min_responses_to_report": survey.min_responses_to_report,
         "overall": overall_scores,
+        # The scale's ends, so a heatmap shades a gap by the scale it is on —
+        # 0.3 is a lot on a five-point scale and little on an eleven-point one.
+        "scale_bounds": list(survey_engine.instrument(survey.instrument_key).scale.bounds),
         "groups": [g.as_dict() for g in breakdown],
         "movement": movement,
         "note": (

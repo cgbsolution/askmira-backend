@@ -996,6 +996,22 @@ async def decide_recommendation(
     row.decided_by_user_id = user.id
     row.decided_at = datetime.now(UTC)
 
+    if approve:
+        # Approved after the cycle's letters went out: apply it now, as the
+        # release would have.
+        cycle = await session.scalar(
+            tenant_scoped(
+                select(IncrementCycle).where(IncrementCycle.id == row.cycle_id),
+                IncrementCycle,
+                user,
+            )
+        )
+        if cycle is not None and cycle.letters_released_at is not None:
+            from app.services.performance.increment_apply import apply_approved_increments
+
+            await session.flush()
+            await apply_approved_increments(session, user, cycle, request=request)
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1310,6 +1326,12 @@ async def release_letters(
     if not decision.permitted:
         raise _bad_request(decision.message)
 
+    # The increments become true: new salaries, letters, and arrears for months
+    # already paid at the old rate - in this same transaction.
+    from app.services.performance.increment_apply import apply_approved_increments
+
+    applied = await apply_approved_increments(session, user, cycle, request=request)
+
     cycle.letters_released_at = datetime.now(UTC)
     cycle.status = IncrementCycleStatusEnum.RELEASED
     cycle.partial_release_acknowledged = bool(pending)
@@ -1321,11 +1343,12 @@ async def release_letters(
         entity_type="increment_cycle",
         entity_id=cycle.id,
         actor=user,
+        changes=applied,
         summary=decision.message,
         request=request,
     )
     await session.commit()
-    return decision.as_dict()
+    return {**decision.as_dict(), "applied": applied}
 
 
 def performance_posture() -> dict[str, Any]:

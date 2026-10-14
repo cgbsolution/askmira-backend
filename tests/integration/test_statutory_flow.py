@@ -1142,7 +1142,36 @@ async def test_a_clean_run_approves(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee, legal_entity
 ) -> None:
     """The counterpart: no flags, so nothing blocks sign-off."""
+    from app.models.user import UserRole
+
     await _ready_to_run(session, tenant, hr_user, employee, year=2026, month=12)
+    # A run without an income tax rule set is flagged, rightly; a clean run has one.
+    await _rules(
+        session,
+        tenant,
+        "tds",
+        {
+            "regimes": {
+                "new": {
+                    "slabs": [{"up_to": None, "rate": 10}],
+                    "standard_deduction": 0,
+                    "deductions_allowed": [],
+                }
+            },
+            "cess_percent": 0,
+        },
+    )
+    # Maker-checker: whoever computes the run is not who approves it.
+    checker = User(
+        tenant_id=tenant.id,
+        email="checker@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Payroll Checker",
+        role=UserRole.ADMIN,
+        is_active=True,
+    )
+    session.add(checker)
+    await session.commit()
 
     run = await run_service.create_run(
         session,
@@ -1154,6 +1183,6 @@ async def test_a_clean_run_approves(
     await run_service.compute_run(session, hr_user, run.id)
     await session.commit()
 
-    approved = await run_service.approve_run(session, hr_user, run.id)
+    approved = await run_service.approve_run(session, checker, run.id)
     await session.commit()
     assert approved.status is PayrollRunStatus.APPROVED

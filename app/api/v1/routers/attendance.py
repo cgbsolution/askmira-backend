@@ -29,6 +29,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -45,6 +46,7 @@ from app.schemas.attendance import (
     AttendanceSettings,
     AttendanceSettingsRead,
     AttendanceSummaryResponse,
+    KioskPinSet,
     LockRead,
     LockRequest,
     MyAttendancePeriod,
@@ -66,13 +68,23 @@ from app.schemas.attendance import (
     ShiftAssignmentCreate,
     ShiftCreate,
     ShiftRead,
+    ShiftSwapCreate,
+    ShiftSwapDecision,
+    ShiftSwapResponse,
     ShiftUpdate,
     TeamToday,
     UnlockRequest,
     WorkLocationCreate,
     WorkLocationRead,
 )
-from app.services.attendance import csv_import, review, setup
+from app.services.attendance import (
+    csv_import,
+    kiosk,
+    punch_photos,
+    review,
+    setup,
+    shift_swaps,
+)
 from app.services.attendance import service as attendance_service
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -108,6 +120,10 @@ async def punch(
     await attendance_service.require_location_if_configured(
         session, user, source=source, has_coordinates=payload.latitude is not None
     )
+    await punch_photos.require_photo_if_configured(
+        session, user, source=source, has_photo=bool(payload.photo)
+    )
+    photo_key = await punch_photos.store_photo(user, payload.photo) if payload.photo else None
     record = await attendance_service.record_punch(
         session,
         user,
@@ -124,10 +140,22 @@ async def punch(
             "recorded_by_user_id": str(user.id),
             "time_supplied_by_client": payload.punched_at is not None,
             "had_coordinates": payload.latitude is not None,
+            "had_photo": photo_key is not None,
         },
+        photo_key=photo_key,
         request=request,
     )
     return PunchRead.model_validate(record)
+
+
+@router.get("/punches/{punch_id}/photo", response_model=None)
+async def punch_photo(punch_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """The photo taken with a punch: for the person, their manager line and HR."""
+    data, media = await punch_photos.photo_for(session, user, punch_id)
+    return Response(
+        content=data, media_type=media,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/punches", response_model=list[PunchRead])
@@ -693,3 +721,111 @@ async def create_work_location(
     return WorkLocationRead.model_validate(
         await setup.create_work_location(session, user, payload, request)
     )
+
+
+
+# ── Shift swaps and coverage ────────────────────────────────────────────────
+
+
+@router.get("/shift-swaps")
+async def my_shift_swaps(user: CurrentUser, session: DbSession) -> list[dict]:
+    """Swaps you asked for or were asked into."""
+    return await shift_swaps.list_swaps(session, user)
+
+
+@router.post("/shift-swaps", status_code=status.HTTP_201_CREATED)
+async def request_shift_swap(
+    payload: ShiftSwapCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """Ask a colleague to trade shifts with you on one day."""
+    return await shift_swaps.request_swap(
+        session,
+        user,
+        partner_employee_id=payload.partner_employee_id,
+        swap_date=payload.swap_date,
+        reason=payload.reason,
+        request=request,
+    )
+
+
+@router.post("/shift-swaps/{swap_id}/respond")
+async def respond_to_shift_swap(
+    swap_id: uuid.UUID,
+    payload: ShiftSwapResponse,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    """The colleague asked agrees or declines."""
+    return await shift_swaps.respond_to_swap(
+        session, user, swap_id, accept=payload.accept, request=request
+    )
+
+
+@router.post("/shift-swaps/{swap_id}/cancel")
+async def cancel_shift_swap(
+    swap_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await shift_swaps.cancel_swap(session, user, swap_id, request=request)
+
+
+@router.get(
+    "/shift-swaps/pending",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def shift_swaps_to_decide(user: CurrentUser, session: DbSession) -> list[dict]:
+    """Agreed swaps waiting for you: your reporting line's, or everyone's for HR."""
+    return await shift_swaps.pending_for_approver(session, user)
+
+
+@router.post(
+    "/shift-swaps/{swap_id}/decide",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def decide_shift_swap(
+    swap_id: uuid.UUID,
+    payload: ShiftSwapDecision,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    return await shift_swaps.decide_swap(
+        session, user, swap_id, approve=payload.approve, note=payload.note, request=request
+    )
+
+
+@router.get(
+    "/coverage",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def shift_coverage(
+    user: CurrentUser,
+    session: DbSession,
+    start: date = Query(alias="from"),
+    end: date = Query(alias="to"),
+    location_id: uuid.UUID | None = None,
+    department_id: uuid.UUID | None = None,
+) -> dict:
+    """Per day and shift: scheduled, on leave, available, and any shortfall."""
+    return await shift_swaps.coverage(
+        session, user, start=start, end=end, location_id=location_id,
+        department_id=department_id,
+    )
+
+
+
+# ── Kiosk PIN ───────────────────────────────────────────────────────────────
+
+
+@router.get("/kiosk-pin")
+async def my_kiosk_pin(user: CurrentUser, session: DbSession) -> dict:
+    """Whether you have a kiosk PIN, and whether it is paused. Never the PIN."""
+    return await kiosk.my_pin_status(session, user)
+
+
+@router.put("/kiosk-pin")
+async def set_my_kiosk_pin(
+    payload: KioskPinSet, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """Set or change your PIN for punching at a shared kiosk."""
+    return await kiosk.set_my_pin(session, user, payload.pin, request=request)

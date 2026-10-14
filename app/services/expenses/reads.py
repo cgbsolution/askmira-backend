@@ -134,6 +134,17 @@ def payment_note(
             )
         return None, None, "Approved. It is paid in your next payroll."
     if status_ is ExpenseClaimStatusEnum.PENDING_MANAGER:
+        chain = claim.approval_chain or []
+        waiting = next((step for step in chain if step.get("status") == "pending"), None)
+        if waiting is not None:
+            later = sum(1 for step in chain if step.get("status") == "pending") - 1
+            return (
+                None,
+                None,
+                f"Waiting for {waiting.get('approver_name') or 'an approver'}"
+                + (f", then {later} more approver(s)" if later else "")
+                + ", then finance.",
+            )
         return None, None, "Waiting for your line manager's approval."
     if status_ is ExpenseClaimStatusEnum.SUBMITTED:
         return None, None, "With finance for a decision."

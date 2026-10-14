@@ -62,9 +62,13 @@ class StepUpIn(BaseModel):
 
 
 class SatisfyIn(BaseModel):
-    """The account password, re-entered. Checked here; never stored or logged."""
+    """The account password, re-entered, and — with two-step sign-in on — a code.
+
+    Checked here; never stored or logged.
+    """
 
     password: str = Field(min_length=1, max_length=512)
+    code: str | None = Field(default=None, max_length=32)
 
 
 class DestinationIn(BaseModel):
@@ -296,17 +300,26 @@ async def satisfy_step_up(
     A run of failed challenges against a disbursement release is exactly the
     signal a SOC wants, and it only exists if the failures are stored.
     """
+    from app.services import mfa
+
+    password_ok = verify_password(payload.password, user.password_hash)
+    second_factor = await mfa.is_enabled(session, user)
+    code_ok = await mfa.check_code(session, user, payload.code) if second_factor else True
     result = await opsec.satisfy_challenge(
         session,
         user,
         challenge_id=challenge_id,
-        succeeded=verify_password(payload.password, user.password_hash),
+        succeeded=password_ok and code_ok,
         request=request,
     )
-    result["not_built"] = (
-        "The account password was re-checked. No second factor (an authenticator "
-        "app or a device) exists yet."
+    result["checked"] = (
+        ["password", "authenticator code"] if second_factor else ["password"]
     )
+    if not second_factor:
+        result["note"] = (
+            "Only your password was re-checked. Turn on two-step sign-in under your "
+            "account so a stolen password is not enough."
+        )
     return result
 
 

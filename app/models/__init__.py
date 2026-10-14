@@ -5,6 +5,8 @@ what lets SQLAlchemy resolve the string-based relationship targets. A new model
 file that is not listed here will silently produce an empty migration.
 """
 
+from app.models.access import AdminScope, UserAreaRights
+from app.models.accounting import LedgerMapping, LedgerNature
 from app.models.agenteval import (
     AgentFeedback,
     EvalCaseRow,
@@ -14,6 +16,7 @@ from app.models.agenteval import (
     EvalSuiteRow,
     EvalTrigger,
 )
+from app.models.ai_features import AssistantArticle, CandidateScreening, SurveyTopicSummary
 from app.models.appraisal import (
     AcknowledgementType,
     Appraisal,
@@ -26,6 +29,7 @@ from app.models.appraisal import (
     StageDelegation,
     StageRole,
 )
+from app.models.approval_rules import ApprovalDelegation, ApprovalProcess, ApprovalRule
 from app.models.arrears import (
     ArrearBatch,
     ArrearLine,
@@ -69,7 +73,18 @@ from app.models.autonomy import (
     ProposalReversal,
     ProposalStatusEnum,
 )
+from app.models.background_checks import BackgroundCheck, BackgroundCheckStatus
 from app.models.base import Base, SoftDeleteMixin, TenantMixin, TimestampMixin, UUIDMixin
+from app.models.benefits import (
+    BenefitEnrolment,
+    BenefitKind,
+    BenefitLifeEvent,
+    BenefitMemberChange,
+    BenefitPlan,
+    EnrolmentStatus,
+    LifeEventKind,
+    LifeEventStatus,
+)
 from app.models.bi import (
     BenchmarkConsent,
     BenchmarkContribution,
@@ -90,7 +105,8 @@ from app.models.calibration import (
     DistributionTarget,
     SessionStatus,
 )
-from app.models.company_documents import CompanyDocument
+from app.models.candidate_comms import CandidateMessage, CandidateMessageStatus
+from app.models.company_documents import CompanyDocument, CompanyDocumentAcknowledgement
 from app.models.competency import (
     AppraisalTemplate,
     Competency,
@@ -103,7 +119,21 @@ from app.models.competency import (
     RatingScaleLevel,
     ScaleType,
 )
-from app.models.culture import Club, ClubMember, Shoutout, ShoutoutReaction, ShoutoutVisibility
+from app.models.contractors import (
+    Contractor,
+    ContractorInvoice,
+    ContractorKind,
+    InvoiceStatus,
+    TdsSection,
+)
+from app.models.culture import (
+    Club,
+    ClubMember,
+    MilestoneRule,
+    Shoutout,
+    ShoutoutReaction,
+    ShoutoutVisibility,
+)
 from app.models.culture_depth import (
     ActionPlanItem,
     Announcement,
@@ -131,6 +161,7 @@ from app.models.culture_depth import (
     TagSourceEnum,
     ValueTag,
 )
+from app.models.custom_tables import CustomTableDefinition, CustomTableRow
 from app.models.cycle_config import (
     AutoAdvanceBehaviour,
     ProbationOutcome,
@@ -183,6 +214,16 @@ from app.models.employee import (
     ProfileChangeRequest,
     ProfileChangeStatus,
 )
+from app.models.engagement import EventRsvp, Poll, PollVote, RsvpResponse, TeamEvent
+from app.models.esop import (
+    EsopExercise,
+    EsopGrant,
+    EsopInstrument,
+    EsopPlan,
+    EsopValuation,
+    GrantStatus,
+)
+from app.models.ewa import EwaRequest, EwaStatus
 from app.models.exit_benefits import (
     EncashmentPolicy,
     EncashmentRequest,
@@ -197,6 +238,7 @@ from app.models.exit_workflow import (
     ClearanceItem,
     ClearanceStatus,
     ClearanceTemplate,
+    ExitInterview,
     ExitRecord,
     ExitStatus,
     ExitType,
@@ -247,6 +289,7 @@ from app.models.filings import (
     TdsChallan,
     TdsChallanMapping,
 )
+from app.models.form16_part_a import Form16PartA
 from app.models.goals import (
     CheckInConfidence,
     Goal,
@@ -305,6 +348,13 @@ from app.models.identity import (
     ScimToken,
     SsoLoginAttempt,
 )
+from app.models.integrations import (
+    ApiKey,
+    DeliveryStatus,
+    WebhookDelivery,
+    WebhookEndpoint,
+    WebhookFormat,
+)
 from app.models.interview import (
     CalendarConnection,
     CalendarProviderKind,
@@ -333,6 +383,8 @@ from app.models.jobboard import (
     JobPosting,
     PostingStatus,
 )
+from app.models.kiosk import KioskPin
+from app.models.learning import AssignmentStatus, Course, CourseAssignment, CourseKind
 from app.models.leave import (
     CompOffRequest,
     CompOffStatus,
@@ -366,6 +418,7 @@ from app.models.loans import (
     ReimbursementClaim,
     ReimbursementComponent,
 )
+from app.models.mfa import UserMfa
 from app.models.notifications import (
     Channel,
     DigestMode,
@@ -410,6 +463,7 @@ from app.models.one_on_one import (
     OneOnOneNote,
     OneOnOneStatus,
 )
+from app.models.operators import OperatorGrant
 from app.models.opsec import (
     DataTierEnum,
     DeliveryStateEnum,
@@ -425,6 +479,7 @@ from app.models.opsec import (
     UserSession,
 )
 from app.models.org import Department, LegalEntity, Location
+from app.models.pay_grades import PayGrade
 from app.models.payroll import (
     BonusComputation,
     BonusStatus,
@@ -443,6 +498,18 @@ from app.models.payroll import (
     SalaryComponent,
     SalaryStructure,
     SalaryStructureComponent,
+)
+from app.models.payroll_inputs import (
+    AdjustmentCategory,
+    AdjustmentKind,
+    AdjustmentRecurrence,
+    AdjustmentStatus,
+    OvertimeEntry,
+    OvertimePolicy,
+    OvertimeStatus,
+    PayrollAdjustment,
+    PayrollAdjustmentApplication,
+    ShiftAllowancePayment,
 )
 from app.models.performance_flow import (
     EmployeeInputStateEnum,
@@ -484,6 +551,7 @@ from app.models.recruiting import (
 from app.models.reporting import (
     Cadence,
     ChartType,
+    DashboardWidget,
     EmptyBehaviour,
     ExportFormat,
     Report,
@@ -503,6 +571,7 @@ from app.models.retention import (
     RetentionRun,
     RetentionRunStatus,
 )
+from app.models.reward_catalogue import RewardCatalogueItem
 from app.models.rewards import (
     BudgetScopeEnum,
     EnforcementModeEnum,
@@ -522,6 +591,9 @@ from app.models.rewards import (
     TaxTreatmentEnum,
 )
 from app.models.scheduler import SchedulerJobRun, SchedulerRunStatus
+from app.models.shift_swaps import ShiftSwapRequest, ShiftSwapStatus
+from app.models.statutory_watch import StatutoryNotice, StatutoryNoticeAlert
+from app.models.talent_pools import TalentPool, TalentPoolMember
 from app.models.tax import (
     DeclarationStatus,
     DeclarationWindow,
@@ -536,11 +608,24 @@ from app.models.tax import (
     WindowType,
 )
 from app.models.tenant import Tenant, TenantPlan
+from app.models.timesheets import (
+    HourlyRate,
+    Project,
+    Timesheet,
+    TimesheetEntry,
+    TimesheetStatus,
+)
+from app.models.types import EncryptedText
 from app.models.user import PasswordResetToken, User, UserRole
 
 __all__ = [
     "AcknowledgementType",
     "ActionPlanItem",
+    "AdjustmentCategory",
+    "AdjustmentKind",
+    "AdjustmentRecurrence",
+    "AdjustmentStatus",
+    "AdminScope",
     "AdvanceSettlement",
     "AdvanceStatusEnum",
     "AgentAutonomyConfig",
@@ -549,6 +634,7 @@ __all__ = [
     "AgentProposal",
     "Announcement",
     "AnnouncementAcknowledgement",
+    "ApiKey",
     "Application",
     "ApplicationStatus",
     "Appraisal",
@@ -559,6 +645,9 @@ __all__ = [
     "AppraisalTemplate",
     "ApprovalChainRule",
     "ApprovalDecision",
+    "ApprovalDelegation",
+    "ApprovalProcess",
+    "ApprovalRule",
     "ApprovalScope",
     "ArrearBatch",
     "ArrearLine",
@@ -571,7 +660,9 @@ __all__ = [
     "AssetRequestStatus",
     "AssetStatus",
     "AssignmentOutcome",
+    "AssignmentStatus",
     "AssignmentType",
+    "AssistantArticle",
     "AttendanceDay",
     "AttendancePeriodLock",
     "AttendancePunch",
@@ -587,6 +678,8 @@ __all__ = [
     "AwardNomination",
     "AwardProgramme",
     "AwardResult",
+    "BackgroundCheck",
+    "BackgroundCheckStatus",
     "BankFileFormat",
     "BankProfile",
     "Base",
@@ -594,6 +687,11 @@ __all__ = [
     "BenchmarkContribution",
     "BenchmarkDataset",
     "BenchmarkSourceEnum",
+    "BenefitEnrolment",
+    "BenefitKind",
+    "BenefitLifeEvent",
+    "BenefitMemberChange",
+    "BenefitPlan",
     "BiConnection",
     "BiDestinationKind",
     "BiExportKind",
@@ -618,7 +716,10 @@ __all__ = [
     "CandidateConsent",
     "CandidateDiversityDisclosure",
     "CandidateDocument",
+    "CandidateMessage",
+    "CandidateMessageStatus",
     "CandidatePortalToken",
+    "CandidateScreening",
     "CandidateStage",
     "CandidateStageEvent",
     "CareersPageConfig",
@@ -635,6 +736,8 @@ __all__ = [
     "CompOffRequest",
     "CompOffStatus",
     "CompanyDocument",
+    "CompanyDocumentAcknowledgement",
+    "CompanyEvent",
     "CompanyEvent",
     "CompanyValue",
     "Competency",
@@ -647,19 +750,29 @@ __all__ = [
     "ConsentCapturedVia",
     "ConsentPurpose",
     "ConsentRecord",
+    "Contractor",
+    "ContractorInvoice",
+    "ContractorKind",
     "ConversionConventionEnum",
     "CostCentre",
     "CostComponentEnum",
+    "Course",
+    "CourseAssignment",
+    "CourseKind",
     "CrossBorderTransfer",
     "CustomFieldDefinition",
+    "CustomTableDefinition",
+    "CustomTableRow",
     "CycleStatus",
     "CycleType",
+    "DashboardWidget",
     "DataPrincipalKind",
     "DataPrincipalRequest",
     "DataTierEnum",
     "DeclarationStatus",
     "DeclarationWindow",
     "DeliveryStateEnum",
+    "DeliveryStatus",
     "Department",
     "DeviceIntegration",
     "DevicePunchException",
@@ -691,9 +804,16 @@ __all__ = [
     "EncashmentPolicy",
     "EncashmentRequest",
     "EncashmentStatus",
+    "EncryptedText",
     "EnforcementModeEnum",
+    "EnrolmentStatus",
     "ErasureSuppression",
     "EsiCoveragePeriod",
+    "EsopExercise",
+    "EsopGrant",
+    "EsopInstrument",
+    "EsopPlan",
+    "EsopValuation",
     "EvalCaseRow",
     "EvalGateOutcome",
     "EvalResultRow",
@@ -702,7 +822,11 @@ __all__ = [
     "EvalTrigger",
     "EventKindEnum",
     "EventPrivacyPreference",
+    "EventRsvp",
+    "EwaRequest",
+    "EwaStatus",
     "ExchangeRateQuote",
+    "ExitInterview",
     "ExitReason",
     "ExitRecord",
     "ExitStatus",
@@ -725,9 +849,11 @@ __all__ = [
     "FilingRecord",
     "FilingStatus",
     "FindingSeverityEnum",
+    "Form16PartA",
     "FulfilmentRecord",
     "Gender",
     "GoalCheckInComment",
+    "GrantStatus",
     "GratuityAccrual",
     "GratuityConfig",
     "GratuityPayout",
@@ -752,6 +878,7 @@ __all__ = [
     "HelpdeskTicket",
     "HelpdeskTicketStatus",
     "Holiday",
+    "HourlyRate",
     "HouseRentDeclaration",
     "IdentityProvider",
     "IdpType",
@@ -769,17 +896,21 @@ __all__ = [
     "InterviewStageType",
     "InterviewStatus",
     "InvocationOutcome",
+    "InvoiceStatus",
     "IssuedLetter",
     "JobBoard",
     "JobBoardAccount",
     "JobPosting",
     "JuryScore",
+    "KioskPin",
     "LeaveBalance",
     "LeaveBalanceAdjustment",
     "LeavePolicy",
     "LeaveRequest",
     "LeaveRequestStatus",
     "LeaveType",
+    "LedgerMapping",
+    "LedgerNature",
     "LegalEntity",
     "LegalHold",
     "LetterAcknowledgement",
@@ -788,6 +919,8 @@ __all__ = [
     "LetterStatus",
     "LetterTemplate",
     "LetterTemplateField",
+    "LifeEventKind",
+    "LifeEventStatus",
     "LifecycleBatch",
     "LifecycleEvent",
     "LifecycleEventType",
@@ -802,6 +935,7 @@ __all__ = [
     "Location",
     "LocationCityTier",
     "MileageRate",
+    "MilestoneRule",
     "MilestoneStatusEnum",
     "NominationStatusEnum",
     "Notification",
@@ -830,11 +964,18 @@ __all__ = [
     "OneOnOneItemKind",
     "OneOnOneNote",
     "OneOnOneStatus",
+    "OperatorGrant",
     "OptionalHolidaySelection",
     "OverageModeEnum",
+    "OvertimeEntry",
+    "OvertimePolicy",
+    "OvertimeStatus",
     "PanelistRole",
     "PasswordResetToken",
+    "PayGrade",
     "PayoutStatusEnum",
+    "PayrollAdjustment",
+    "PayrollAdjustmentApplication",
     "PayrollRuleSet",
     "PayrollRun",
     "PayrollRunStatus",
@@ -855,6 +996,8 @@ __all__ = [
     "PointsTransactionTypeEnum",
     "PointsValuation",
     "PolicyVerdictEnum",
+    "Poll",
+    "PollVote",
     "Position",
     "PositionAssignment",
     "PositionScenario",
@@ -869,6 +1012,7 @@ __all__ = [
     "ProbationReview",
     "ProfileChangeRequest",
     "ProfileChangeStatus",
+    "Project",
     "PromotionRecord",
     "PromptInjectionAttempt",
     "ProofStatus",
@@ -910,6 +1054,7 @@ __all__ = [
     "RetentionRunStatus",
     "ReturnType",
     "RevisionType",
+    "RewardCatalogueItem",
     "RewardEvent",
     "RewardInvoiceLine",
     "RewardTaxRule",
@@ -918,6 +1063,7 @@ __all__ = [
     "RosterAssignment",
     "RosterDay",
     "RoundingMode",
+    "RsvpResponse",
     "RunStatus",
     "SalaryComponent",
     "SalaryRevision",
@@ -938,7 +1084,10 @@ __all__ = [
     "SettlementStatus",
     "ShareChannelEnum",
     "Shift",
+    "ShiftAllowancePayment",
     "ShiftAssignment",
+    "ShiftSwapRequest",
+    "ShiftSwapStatus",
     "Shoutout",
     "ShoutoutReaction",
     "ShoutoutVisibility",
@@ -950,6 +1099,8 @@ __all__ = [
     "SsoLoginAttempt",
     "StageDelegation",
     "StageRole",
+    "StatutoryNotice",
+    "StatutoryNoticeAlert",
     "StepUpChallenge",
     "Survey",
     "SurveyActionPlan",
@@ -957,7 +1108,10 @@ __all__ = [
     "SurveyParticipant",
     "SurveyResponse",
     "SurveyStatusEnum",
+    "SurveyTopicSummary",
     "TagSourceEnum",
+    "TalentPool",
+    "TalentPoolMember",
     "TaxComputationSnapshot",
     "TaxDeclaration",
     "TaxProof",
@@ -966,23 +1120,32 @@ __all__ = [
     "TaxTreatmentEnum",
     "TdsChallan",
     "TdsChallanMapping",
+    "TdsSection",
     "TemplateAssignmentRule",
     "Tenant",
     "TenantExpenseSettings",
     "TenantMixin",
     "TenantPlan",
     "TenantSessionPolicy",
+    "Timesheet",
+    "TimesheetEntry",
+    "TimesheetStatus",
     "TimestampMixin",
     "TravelAdvance",
     "TravelRequest",
     "TravelRequestStatusEnum",
     "UUIDMixin",
     "User",
+    "UserAreaRights",
+    "UserMfa",
     "UserRole",
     "UserSession",
     "ValueTag",
     "VerificationMethod",
     "ViolationActionEnum",
+    "WebhookDelivery",
+    "WebhookEndpoint",
+    "WebhookFormat",
     "WhatsAppConsent",
     "WhatsAppTemplate",
     "WhatsAppTemplateStatus",

@@ -178,6 +178,9 @@ async def run_reads(
                 paid_at=run.paid_at,
                 paid_by_name=names.get(run.paid_by_user_id),  # type: ignore[arg-type]
                 created_at=run.created_at,
+                employee_scope=[uuid.UUID(e) for e in (run.employee_scope or [])],
+                included_sources=run.included_sources,
+                reason=run.reason,
                 caller_may_approve=run.computed_by_user_id != user.id,
             )
         )
@@ -420,6 +423,7 @@ async def _payslip_read(
         payment_date=run.payment_date,
         is_published=payslip.is_published,
         published_at=payslip.published_at,
+        is_supplementary=payslip.is_supplementary,
         working_days=_dec(payslip.working_days),
         paid_days=_dec(payslip.paid_days),
         lop_days=_dec(payslip.lop_days),

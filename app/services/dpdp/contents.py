@@ -28,6 +28,7 @@ from sqlalchemy import ColumnElement, Table, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.models  # noqa: F401 — registers every table on the metadata before it is walked
+from app.core.deps import tenant_filter
 from app.models.base import Base
 from app.models.user import User
 from app.services.dpdp.categories import CATEGORIES
@@ -116,7 +117,7 @@ async def collect_personal_data(
             continue
         stmt = (
             select(table)
-            .where(table.c.tenant_id == user.tenant_id, predicate)
+            .where(tenant_filter(table, user.tenant_id), predicate)
             .limit(row_cap + 1)
         )
         rows = (await session.execute(stmt)).mappings().all()

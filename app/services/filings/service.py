@@ -16,6 +16,7 @@ makes a format change a one-file patch during a filing window.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
@@ -35,7 +36,13 @@ from app.models.filings import (
     TdsChallanMapping,
 )
 from app.models.org import LegalEntity, Location
-from app.models.payroll import PayrollRuleSet, PayrollRun, PayrollRunStatus, Payslip
+from app.models.payroll import (
+    PayrollRuleSet,
+    PayrollRun,
+    PayrollRunStatus,
+    PayrollRunType,
+    Payslip,
+)
 from app.models.tax import TaxComputationSnapshot
 from app.models.user import User
 from app.services import audit
@@ -122,6 +129,7 @@ async def _approved_run(
                 PayrollRun.legal_entity_id == entity_id,
                 PayrollRun.period_year == year,
                 PayrollRun.period_month == month,
+                PayrollRun.run_type == PayrollRunType.REGULAR,
             ),
             PayrollRun,
             user,
@@ -144,22 +152,106 @@ async def _approved_run(
     return run
 
 
+@dataclass(slots=True)
+class _MonthPay:
+    """One employee's month across every approved run that paid it.
+
+    A monthly return has one line per person. Where an off-cycle run topped the
+    month up — overtime keyed in late, a bonus — its amounts are added to the
+    regular payslip's, and the days come from the payslip that paid the days.
+    """
+
+    id: uuid.UUID
+    gross_earnings: Decimal
+    #: Structure gross plus pay for work (overtime, shift allowance): the PT base.
+    month_gross: Decimal
+    pf_wage_base: Decimal
+    esi_wage_base: Decimal
+    pf_employee: Decimal
+    pf_employer: Decimal
+    esi_employee: Decimal
+    esi_employer: Decimal
+    professional_tax: Decimal
+    tds: Decimal
+    lop_days: Decimal
+    paid_days: Decimal
+
+
+def _as_decimal(value: object) -> Decimal:
+    return Decimal(str(value))
+
+
+def _wage_lines(payslip: Payslip) -> Decimal:
+    return sum(
+        (
+            Decimal(str(line.get("amount", "0")))
+            for line in (payslip.input_lines or [])
+            if line.get("counts_as_wages") and not line.get("skipped")
+        ),
+        start=Decimal(0),
+    )
+
+
 async def _payslips(
-    session: AsyncSession, user: User, run_id: uuid.UUID
-) -> list[tuple[Payslip, Employee]]:
+    session: AsyncSession, user: User, run: PayrollRun
+) -> list[tuple[_MonthPay, Employee]]:
+    """The month's pay per employee: the regular run plus any approved top-ups."""
     rows = (
         await session.execute(
             tenant_scoped(
                 select(Payslip, Employee)
                 .join(Employee, Payslip.employee_id == Employee.id)
-                .where(Payslip.run_id == run_id)
-                .order_by(Employee.employee_code),
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .where(
+                    PayrollRun.legal_entity_id == run.legal_entity_id,
+                    PayrollRun.period_year == run.period_year,
+                    PayrollRun.period_month == run.period_month,
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                )
+                .order_by(Employee.employee_code, Payslip.is_supplementary),
                 Payslip,
                 user,
             )
         )
     ).all()
-    return [(payslip, employee) for payslip, employee in rows]
+    merged: dict[uuid.UUID, tuple[_MonthPay, Employee]] = {}
+    for payslip, employee in rows:
+        current = merged.get(employee.id)
+        if current is None:
+            merged[employee.id] = (
+                _MonthPay(
+                    id=payslip.id,
+                    gross_earnings=_as_decimal(payslip.gross_earnings),
+                    month_gross=_as_decimal(payslip.gross_earnings) + _wage_lines(payslip),
+                    pf_wage_base=_as_decimal(payslip.pf_wage_base),
+                    esi_wage_base=_as_decimal(payslip.esi_wage_base),
+                    pf_employee=_as_decimal(payslip.pf_employee),
+                    pf_employer=_as_decimal(payslip.pf_employer),
+                    esi_employee=_as_decimal(payslip.esi_employee),
+                    esi_employer=_as_decimal(payslip.esi_employer),
+                    professional_tax=_as_decimal(payslip.professional_tax),
+                    tds=_as_decimal(payslip.tds),
+                    lop_days=_as_decimal(payslip.lop_days),
+                    paid_days=_as_decimal(payslip.paid_days),
+                ),
+                employee,
+            )
+            continue
+        pay = current[0]
+        pay.gross_earnings += _as_decimal(payslip.gross_earnings)
+        pay.month_gross += _as_decimal(payslip.gross_earnings) + _wage_lines(payslip)
+        pay.pf_wage_base += _as_decimal(payslip.pf_wage_base)
+        pay.esi_wage_base += _as_decimal(payslip.esi_wage_base)
+        pay.pf_employee += _as_decimal(payslip.pf_employee)
+        pay.pf_employer += _as_decimal(payslip.pf_employer)
+        pay.esi_employee += _as_decimal(payslip.esi_employee)
+        pay.esi_employer += _as_decimal(payslip.esi_employer)
+        pay.professional_tax += _as_decimal(payslip.professional_tax)
+        pay.tds += _as_decimal(payslip.tds)
+        if not payslip.is_supplementary:
+            pay.lop_days = _as_decimal(payslip.lop_days)
+            pay.paid_days = _as_decimal(payslip.paid_days)
+    return list(merged.values())
 
 
 async def _rule_set(
@@ -269,7 +361,7 @@ async def generate_ecr(
 ) -> GeneratedFile:
     entity = await _entity(session, user, legal_entity_id)
     run = await _approved_run(session, user, legal_entity_id, year, month)
-    rows = await _payslips(session, user, run.id)
+    rows = await _payslips(session, user, run)
 
     pf_rules = await _rule_set(session, user, "pf", "IN", run.effective_date)
     if pf_rules is None:
@@ -396,7 +488,7 @@ async def generate_esic(
 ) -> GeneratedFile:
     entity = await _entity(session, user, legal_entity_id)
     run = await _approved_run(session, user, legal_entity_id, year, month)
-    rows = await _payslips(session, user, run.id)
+    rows = await _payslips(session, user, run)
     esi_rules = await _rule_set(session, user, "esi", "IN", run.effective_date)
 
     period = f"{year}-{month:02d}"
@@ -510,10 +602,10 @@ async def generate_pt_challans(
     """
     entity = await _entity(session, user, legal_entity_id)
     run = await _approved_run(session, user, legal_entity_id, year, month)
-    rows = await _payslips(session, user, run.id)
+    rows = await _payslips(session, user, run)
 
     period = f"{year}-{month:02d}"
-    by_state: dict[str, list[tuple[Payslip, Employee]]] = {}
+    by_state: dict[str, list[tuple[_MonthPay, Employee]]] = {}
 
     for payslip, employee in rows:
         if not Decimal(str(payslip.professional_tax)):
@@ -541,7 +633,7 @@ async def generate_pt_challans(
             PtLine(
                 employee_code=employee.employee_code,
                 employee_name=employee.full_name,
-                gross_wages=Decimal(str(payslip.gross_earnings)),
+                gross_wages=payslip.month_gross,
                 tax_deducted=Decimal(str(payslip.professional_tax)),
             )
             for payslip, employee in state_rows

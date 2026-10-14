@@ -50,9 +50,11 @@ from app.services.dpdp.inventory import (
 from app.services.dpdp.notices import Language, render_notice
 
 __all__ = [
+    "capability_permitted",
     "current_schema_shape",
     "list_consent",
     "list_requests",
+    "principals_permitting",
     "raise_breach",
     "raise_request",
     "record_consent",
@@ -291,6 +293,53 @@ async def _decisions_for(
         # `retired_purposes` so it is visible, not silently dropped.
         if row.purpose_key in consent_engine.PURPOSES
     ]
+
+
+async def capability_permitted(
+    session: AsyncSession, user: User, *, principal_id: uuid.UUID, capability: str
+) -> bool:
+    """Whether one consent-dependent capability may run for one person, now."""
+    decisions = await _decisions_for(session, user, principal_id)
+    return consent_engine.is_permitted(capability, consent_engine.consent_state(decisions))
+
+
+async def principals_permitting(
+    session: AsyncSession,
+    user: User,
+    *,
+    principal_ids: list[uuid.UUID],
+    capability: str,
+) -> set[uuid.UUID]:
+    """Which of these people currently permit `capability`. One query for all."""
+    if not principal_ids:
+        return set()
+    stmt = tenant_scoped(
+        select(ConsentRecord).where(ConsentRecord.principal_id.in_(principal_ids)),
+        ConsentRecord,
+        user,
+    ).order_by(ConsentRecord.decided_at)
+    by_principal: dict[uuid.UUID, list[consent_engine.ConsentDecision]] = {
+        pid: [] for pid in principal_ids
+    }
+    for row in (await session.execute(stmt)).scalars().all():
+        if row.purpose_key not in consent_engine.PURPOSES:
+            continue
+        by_principal[row.principal_id].append(
+            consent_engine.ConsentDecision(
+                purpose_key=row.purpose_key,
+                granted=row.granted,
+                decided_at=row.decided_at,
+                version=row.purpose_version,
+                captured_via=consent_engine.CapturedVia(row.captured_via.value),
+                ip_address=row.ip_address,
+                notice_id=row.notice_id,
+            )
+        )
+    return {
+        pid
+        for pid, decisions in by_principal.items()
+        if consent_engine.is_permitted(capability, consent_engine.consent_state(decisions))
+    }
 
 
 async def list_consent(
@@ -1197,8 +1246,9 @@ async def tenant_compliance_surface(
             "restored, and the audit trail is never pseudonymised.",
             "Notices ship in English and Hindi only; other Eighth Schedule "
             "languages fall back to English and say so.",
-            "Nothing in the agent layer records a transfer yet, because the "
-            "agent layer is not built.",
+            "Every AI call records its transfer to the model provider, but the "
+            "provider's zero-data-retention and processing agreement are settings on "
+            "the API account that AskMira cannot verify from here.",
             "The lawful-basis mapping has not been reviewed by counsel.",
         ],
     }

@@ -50,8 +50,11 @@ class Shoutout(Base, UUIDMixin, TenantMixin, TimestampMixin):
         # A peer shoutout has a sender. An award announcement has no sender -
         # it is the company's post, recorded against the award result - and it
         # must never be attributed to whichever HR person clicked "declare".
+        # A work-anniversary post is the company's own, so it carries the
+        # milestone in place of an author.
         CheckConstraint(
-            "from_employee_id IS NOT NULL OR award_result_id IS NOT NULL",
+            "from_employee_id IS NOT NULL OR award_result_id IS NOT NULL "
+            "OR milestone_years IS NOT NULL",
             name="ck_shoutout_has_author",
         ),
     )
@@ -83,6 +86,8 @@ class Shoutout(Base, UUIDMixin, TenantMixin, TimestampMixin):
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     points_awarded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Set on the company's own post for a work anniversary: how many years.
+    milestone_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     reactions: Mapped[list[ShoutoutReaction]] = relationship(
         back_populates="shoutout", cascade="all, delete-orphan"
@@ -152,3 +157,20 @@ class ClubMember(Base, UUIDMixin, TenantMixin, TimestampMixin):
     role: Mapped[str] = mapped_column(String(16), default="member", nullable=False)
 
     club: Mapped[Club] = relationship(back_populates="members")
+
+
+class MilestoneRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A work anniversary the company marks: on the feed, and optionally with points.
+
+    `{name}`, `{years}` and `{company}` in the message are filled in. The post
+    is public only for somebody who chose to share their work anniversary;
+    for anybody else it is a private note to them.
+    """
+
+    __tablename__ = "milestone_rules"
+    __table_args__ = (UniqueConstraint("tenant_id", "years", name="uq_milestone_rule_years"),)
+
+    years: Mapped[int] = mapped_column(Integer, nullable=False)
+    points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

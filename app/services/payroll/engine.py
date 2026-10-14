@@ -49,6 +49,7 @@ __all__ = [
     "PayrollComputation",
     "PayrollInput",
     "PayrollRuleError",
+    "SupplementaryContext",
     "compute_payroll",
 ]
 
@@ -97,6 +98,37 @@ class InputLine:
     basis: str = ""
     # The record consumed: {"type": "reimbursement_claim", "id": "..."}.
     source: dict[str, Any] = field(default_factory=dict)
+    # A payment *for work* - overtime, a shift allowance. It raises the ESI
+    # contribution and the Professional Tax slab, as wages do; it never counts
+    # toward PF wages (basic and DA) or toward the ESI coverage threshold, which
+    # ESIC decides on wages excluding overtime.
+    counts_as_wages: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SupplementaryContext:
+    """An off-cycle payslip for somebody the month's regular run already paid.
+
+    Only the input lines are paid. The structure is not paid twice, PF is not
+    deducted again - one-off pay is not PF wages, and the month's PF was taken
+    on the structure - and the month's levies are topped up rather than
+    recomputed:
+
+    - **Professional Tax** is the slab on the month's whole gross (what the
+      regular run paid plus these wage lines), less what the regular run already
+      deducted. Usually nothing; sometimes the wage lines cross a slab.
+    - **ESI** is contributed on these wage lines only if the regular run found
+      the employee covered this month.
+    - **Labour Welfare Fund** is never taken twice in a month.
+    - **TDS** is the extra annual liability these lines create, deducted now -
+      the same rule the regular run applies to one-off pay. The recurring share
+      for the month was already deducted by the regular run.
+    """
+
+    #: Structure gross plus wage lines the regular run paid this month.
+    regular_gross: Decimal
+    pt_already_deducted: Decimal
+    esi_covered: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +162,7 @@ class ComputedInputLine:
     skipped: bool = False
     # A loan recovery's full decision (amount, carried forward, reason).
     recovery: dict[str, Any] | None = None
+    counts_as_wages: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +177,7 @@ class ComputedInputLine:
             "source": self.source,
             "skipped": self.skipped,
             "recovery": self.recovery,
+            "counts_as_wages": self.counts_as_wages,
         }
 
 
@@ -203,6 +237,9 @@ class PayrollInput:
     # zero — right for a structure-only recomputation, and the run refuses to be
     # approved without it (see `run.py`).
     tds: TdsContext | None = None
+    # Set for an off-cycle payslip of somebody already paid by this month's
+    # regular run: pays the input lines only. See `SupplementaryContext`.
+    supplementary: SupplementaryContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +292,12 @@ class PayrollComputation:
     tds_working: dict[str, Any] | None = None
     # Unpaid days outside employment (before joining, after leaving).
     not_employed_days: Decimal = Decimal(0)
+    # The structure's ESI wages, excluding overtime and other wage lines: what
+    # ESI coverage is decided on. `esi_wage_base` is what contributions were
+    # charged on, which includes them.
+    esi_eligibility_base: Decimal = Decimal(0)
+    # An off-cycle payslip that paid input lines only.
+    supplementary: bool = False
 
 
 def _require_rule_set(rule_sets: dict[str, PayrollRuleSet], rule_type: str) -> PayrollRuleSet:
@@ -359,6 +402,19 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             f"({not_employed_days}) exceed working days ({working_days})"
         )
 
+    for item in payroll_input.inputs:
+        _check_input(item)
+    supplementary = payroll_input.supplementary
+    # Overtime, shift allowances and other pay for work: ESI and PT read them.
+    wage_inputs = sum(
+        (
+            item.amount
+            for item in payroll_input.inputs
+            if item.counts_as_wages and item.kind is InputKind.EARNING
+        ),
+        start=_ZERO,
+    )
+
     unpaid_days = lop_days + not_employed_days
     paid_days = working_days - unpaid_days
     lop_factor = paid_days / working_days
@@ -394,6 +450,11 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 basis=basis,
             )
         )
+
+    # The structure is computed either way - the TDS projection needs this
+    # month's figures - but a supplementary payslip does not pay it again.
+    if supplementary is not None:
+        lines = []
 
     gross_earnings = sum(
         (
@@ -432,34 +493,43 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         )
 
     # ── 3. Provident Fund ───────────────────────────────────────────────────
-    pf_rules = _require_rule_set(payroll_input.rule_sets, "pf")
-    pf_ceiling = _rule(pf_rules, "wage_ceiling")
-    pf_employee_rate = _rule(pf_rules, "employee_rate")
-    pf_employer_rate = _rule(pf_rules, "employer_rate")
+    # Not on a supplementary payslip: one-off pay is not PF wages, and the
+    # month's PF was taken on the structure by the regular run.
+    pf_rules: PayrollRuleSet | None = None
+    pf_base = _ZERO
+    pf_employee = pf_employer = vpf = _ZERO
+    pf_employee_rate = pf_employer_rate = _ZERO
+    if supplementary is None:
+        pf_rules = _require_rule_set(payroll_input.rule_sets, "pf")
+        pf_ceiling = _rule(pf_rules, "wage_ceiling")
+        pf_employee_rate = _rule(pf_rules, "employee_rate")
+        pf_employer_rate = _rule(pf_rules, "employer_rate")
 
-    # A tenant may opt out of the ceiling at the rule-set level, and an
-    # individual employee may elect PF on actual wages. Both are configuration.
-    with _statutory_errors():
-        resolved_base = resolve_pf_base(
-            wage_base=pf_wage_base,
-            ceiling=pf_ceiling,
-            ceiling_applies_by_default=bool(pf_rules.rules.get("apply_wage_ceiling", True)),
-            election=payroll_input.pf_election,
-        )
-    pf_base = resolved_base.base
+        # A tenant may opt out of the ceiling at the rule-set level, and an
+        # individual employee may elect PF on actual wages. Both are configuration.
+        with _statutory_errors():
+            resolved_base = resolve_pf_base(
+                wage_base=pf_wage_base,
+                ceiling=pf_ceiling,
+                ceiling_applies_by_default=bool(pf_rules.rules.get("apply_wage_ceiling", True)),
+                election=payroll_input.pf_election,
+            )
+        pf_base = resolved_base.base
 
-    pf_employee = _money(pf_base * pf_employee_rate / Decimal(100))
-    pf_employer = _money(pf_base * pf_employer_rate / Decimal(100))
+        pf_employee = _money(pf_base * pf_employee_rate / Decimal(100))
+        pf_employer = _money(pf_base * pf_employer_rate / Decimal(100))
 
-    # Voluntary PF is an *additional employee* contribution on the full wage
-    # base. It never moves the employer's — treating it as a matched
-    # contribution would silently inflate employer cost.
-    with _statutory_errors():
-        vpf = compute_vpf(pf_wage_base=pf_wage_base, election=payroll_input.pf_election)
+        # Voluntary PF is an *additional employee* contribution on the full wage
+        # base. It never moves the employer's — treating it as a matched
+        # contribution would silently inflate employer cost.
+        with _statutory_errors():
+            vpf = compute_vpf(pf_wage_base=pf_wage_base, election=payroll_input.pf_election)
 
     # ── 4. ESI, only below the eligibility threshold ────────────────────────
     esi_employee = Decimal(0)
     esi_employer = Decimal(0)
+    esi_eligibility_base = _ZERO if supplementary is not None else esi_wage_base
+    contribution_base = _ZERO
     esi_rules = payroll_input.rule_sets.get("esi")
     if esi_rules is not None:
         if not esi_rules.is_approved:
@@ -467,20 +537,28 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 f"The ESI rule set effective {esi_rules.effective_from} has not been "
                 "approved by a Compliance SME."
             )
-        threshold = _rule(esi_rules, "wage_threshold")
-        applies, esi_reason = _esi_applies(
-            wage_base=esi_wage_base,
-            threshold=threshold,
-            month=payroll_input.period_start.month,
-            rules=esi_rules.rules,
-            contributing_at_period_start=payroll_input.esi_contributing_at_period_start,
-        )
-        if applies:
+        if supplementary is not None:
+            applies = supplementary.esi_covered
+            candidate_base = wage_inputs
+        else:
+            threshold = _rule(esi_rules, "wage_threshold")
+            applies, _ = _esi_applies(
+                wage_base=esi_wage_base,
+                threshold=threshold,
+                month=payroll_input.period_start.month,
+                rules=esi_rules.rules,
+                contributing_at_period_start=payroll_input.esi_contributing_at_period_start,
+            )
+            # Coverage is decided on the structure's ESI wages; contributions
+            # are charged on wages *including* overtime and shift pay.
+            candidate_base = esi_wage_base + wage_inputs
+        if applies and candidate_base > 0:
+            contribution_base = candidate_base
             esi_employee = _money(
-                esi_wage_base * _rule(esi_rules, "employee_rate") / Decimal(100)
+                contribution_base * _rule(esi_rules, "employee_rate") / Decimal(100)
             )
             esi_employer = _money(
-                esi_wage_base * _rule(esi_rules, "employer_rate") / Decimal(100)
+                contribution_base * _rule(esi_rules, "employer_rate") / Decimal(100)
             )
 
     # ── 5. Professional Tax — a state slab, looked up by gross ──────────────
@@ -491,6 +569,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     # rather than picking a state. A wrong guess here files in the wrong state,
     # and nobody notices until an inspection.
     professional_tax = Decimal(0)
+    month_gross = gross_earnings + wage_inputs
     review_flags: list[str] = []
     pt_rules = payroll_input.rule_sets.get("professional_tax")
 
@@ -503,7 +582,13 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 f"The Professional Tax rule set for {pt_rules.jurisdiction} effective "
                 f"{pt_rules.effective_from} has not been approved by a Compliance SME."
             )
-        professional_tax = _lookup_slab(pt_rules, gross_earnings)
+        if supplementary is not None:
+            month_gross = supplementary.regular_gross + wage_inputs
+            professional_tax = max(
+                _ZERO, _lookup_slab(pt_rules, month_gross) - supplementary.pt_already_deducted
+            )
+        else:
+            professional_tax = _lookup_slab(pt_rules, month_gross)
 
     # ── 6. Labour Welfare Fund ──────────────────────────────────────────────
     #
@@ -512,6 +597,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     lwf_employee = Decimal(0)
     lwf_employer = Decimal(0)
     lwf_rules = payroll_input.rule_sets.get("labour_welfare_fund")
+    if supplementary is not None:
+        # Collected once in a month, by the regular run.
+        lwf_rules = None
     if lwf_rules is not None:
         if not lwf_rules.is_approved:
             raise PayrollRuleError(
@@ -522,7 +610,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             lwf = compute_lwf(
                 config=lwf_rules.rules,
                 month=payroll_input.period_start.month,
-                monthly_wages=gross_earnings,
+                monthly_wages=gross_earnings + wage_inputs,
                 designation=payroll_input.designation,
             )
         lwf_employee = lwf.employee_contribution
@@ -537,7 +625,6 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     deferred_recoveries: list[InputLine] = []
 
     for item in payroll_input.inputs:
-        _check_input(item)
         if item.kind is InputKind.RECOVERY:
             deferred_recoveries.append(item)
             continue
@@ -559,6 +646,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 taxable_amount=_money(item.taxable_amount),
                 basis=item.basis,
                 source=item.source,
+                counts_as_wages=item.counts_as_wages,
             )
         )
 
@@ -569,13 +657,32 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     tds = Decimal(0)
     tds_working: dict[str, Any] | None = None
     if payroll_input.tds is not None:
-        figures = _month_figures(salary, prorated, professional_tax, one_off_taxable)
+        # The projection reads the month as the regular run did: the same
+        # structure figures, and the Professional Tax that run deducted.
+        month_pt = (
+            supplementary.pt_already_deducted if supplementary is not None else professional_tax
+        )
+        figures = _month_figures(salary, prorated, month_pt, one_off_taxable)
         try:
             result = compute_monthly_tds(payroll_input.tds, figures)
         except TaxRuleError as exc:
             raise PayrollRuleError(str(exc)) from exc
-        tds = result.amount
-        tds_working = result.working
+        if supplementary is not None:
+            # The regular run deducted the month's recurring share; this payslip
+            # deducts only the tax its one-off lines add.
+            tds = result.one_off_amount
+            tds_working = {
+                **result.working,
+                "supplementary": True,
+                "tds": str(result.one_off_amount),
+                "note": (
+                    "Off-cycle payslip: only the tax on this payslip's one-off pay is "
+                    "deducted. The month's recurring TDS was deducted by the regular run."
+                ),
+            }
+        else:
+            tds = result.amount
+            tds_working = result.working
 
     total_deductions = (
         pf_employee + vpf + esi_employee + professional_tax + lwf_employee + tds
@@ -665,27 +772,29 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
         )
 
-    lines.extend(
-        [
-            ComputedLine("PF_EMPLOYEE", "Provident Fund (employee)", ComponentType.DEDUCTION,
-                         pf_employee, f"{pf_employee_rate}% of PF wage base {pf_base}",
-                         str(pf_rules.id)),
-            ComputedLine("PF_EMPLOYER", "Provident Fund (employer)",
-                         ComponentType.EMPLOYER_CONTRIBUTION, pf_employer,
-                         f"{pf_employer_rate}% of PF wage base {pf_base}", str(pf_rules.id)),
-        ]
-    )
+    if pf_rules is not None:
+        lines.extend(
+            [
+                ComputedLine("PF_EMPLOYEE", "Provident Fund (employee)",
+                             ComponentType.DEDUCTION, pf_employee,
+                             f"{pf_employee_rate}% of PF wage base {pf_base}", str(pf_rules.id)),
+                ComputedLine("PF_EMPLOYER", "Provident Fund (employer)",
+                             ComponentType.EMPLOYER_CONTRIBUTION, pf_employer,
+                             f"{pf_employer_rate}% of PF wage base {pf_base}", str(pf_rules.id)),
+            ]
+        )
     if esi_rules is not None and (esi_employee or esi_employer):
         lines.extend(
             [
                 ComputedLine("ESI_EMPLOYEE", "ESI (employee)", ComponentType.DEDUCTION,
-                             esi_employee, f"ESI wage base {esi_wage_base}", str(esi_rules.id)),
+                             esi_employee, f"ESI wages {contribution_base}",
+                             str(esi_rules.id)),
                 ComputedLine("ESI_EMPLOYER", "ESI (employer)",
                              ComponentType.EMPLOYER_CONTRIBUTION, esi_employer,
-                             f"ESI wage base {esi_wage_base}", str(esi_rules.id)),
+                             f"ESI wages {contribution_base}", str(esi_rules.id)),
             ]
         )
-    if vpf:
+    if vpf and pf_rules is not None:
         lines.append(
             ComputedLine("VPF", "Voluntary Provident Fund", ComponentType.DEDUCTION, vpf,
                          f"employee election on PF wage base {pf_wage_base}", str(pf_rules.id))
@@ -708,7 +817,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     if professional_tax:
         lines.append(
             ComputedLine("PT", "Professional Tax", ComponentType.DEDUCTION, professional_tax,
-                         f"{pt_rules.jurisdiction} slab on gross {gross_earnings}",  # type: ignore[union-attr]
+                         f"{pt_rules.jurisdiction} slab on gross {month_gross}",  # type: ignore[union-attr]
                          str(pt_rules.id))  # type: ignore[union-attr]
         )
 
@@ -727,8 +836,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             + esi_employer
             + lwf_employer
         ),
-        pf_wage_base=_money(pf_wage_base),
-        esi_wage_base=_money(esi_wage_base),
+        pf_wage_base=_money(pf_wage_base) if supplementary is None else _ZERO,
+        esi_wage_base=_money(contribution_base),
         pf_employee=pf_employee,
         pf_employer=pf_employer,
         esi_employee=esi_employee,
@@ -744,6 +853,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         input_lines=computed_inputs,
         tds_working=tds_working,
         not_employed_days=not_employed_days,
+        esi_eligibility_base=_money(esi_eligibility_base),
+        supplementary=supplementary is not None,
     )
 
 

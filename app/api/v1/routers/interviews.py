@@ -436,7 +436,10 @@ async def create_self_schedule(
         "token": token,
         "expires_at": link.expires_at.isoformat(),
         "slot_count": len(payload.slots),
-        "note": "This token is shown once. Send the link to the candidate now.",
+        "note": (
+            "The link has been emailed to the candidate. The token is shown once, here, "
+            "in case they need it again by another route."
+        ),
     }
 
 

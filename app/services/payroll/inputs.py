@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.arrears import ArrearBatch, ArrearLine, ArrearStatus
+from app.models.attendance import AttendanceDay, AttendanceStatus, Shift
 from app.models.exit_benefits import EncashmentRequest, EncashmentStatus
 from app.models.expenses import (
     AdvanceSettlement,
@@ -64,6 +65,16 @@ from app.models.loans import (
     ReimbursementComponent,
 )
 from app.models.payroll import BonusComputation, BonusStatus, PayrollRun
+from app.models.payroll_inputs import (
+    AdjustmentKind,
+    AdjustmentRecurrence,
+    AdjustmentStatus,
+    OvertimeEntry,
+    OvertimeStatus,
+    PayrollAdjustment,
+    PayrollAdjustmentApplication,
+    ShiftAllowancePayment,
+)
 from app.models.recruiting import PayoutStatusEnum, Referral, ReferralPayout
 from app.models.rewards import RewardEvent
 from app.models.user import User
@@ -72,6 +83,7 @@ from app.services.payroll.engine import InputKind, InputLine, LoanRecoveryInput
 
 __all__ = [
     "PROVIDERS",
+    "PROVIDER_KEYS",
     "CollectedInputs",
     "InputConsumedElsewhereError",
     "ProviderReport",
@@ -896,6 +908,79 @@ class RewardPerquisiteProvider(InputProvider):
             event.payroll_reference = reference
 
 
+# ── ESOP perquisites ────────────────────────────────────────────────────────
+
+
+class EsopPerquisiteProvider(InputProvider):
+    """The perquisite on an ESOP exercise, as non-cash taxable income.
+
+    Units times (fair value on the exercise date minus exercise price) is
+    salary under section 17(2)(vi). It raises TDS in the first run that covers
+    the exercise date and is never paid in cash.
+    """
+
+    key = "esop_perquisites"
+    label = "ESOP perquisites"
+    source_type = "esop_exercise"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        from app.models.esop import EsopExercise
+
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        rows = (
+            await session.scalars(
+                tenant_scoped(
+                    select(EsopExercise).where(
+                        EsopExercise.employee_id.in_(scope.employee_ids),
+                        EsopExercise.payroll_reference.is_(None),
+                        EsopExercise.exercise_date <= scope.period_end,
+                        EsopExercise.perquisite_value > 0,
+                    ),
+                    EsopExercise,
+                    user,
+                )
+            )
+        ).all()
+        for row in rows:
+            value = _d(row.perquisite_value)
+            output.lines[row.employee_id].append(
+                InputLine(
+                    provider=self.key,
+                    code="ESOP_PERQUISITE",
+                    name="ESOP perquisite (non-cash)",
+                    kind=InputKind.PERQUISITE,
+                    amount=value,
+                    taxable_amount=value,
+                    basis=(
+                        f"{row.units} units exercised on {row.exercise_date}: fair value "
+                        f"{row.fmv_per_unit} less exercise price {row.exercise_price}. Taxed, "
+                        "not paid in cash."
+                    ),
+                    source={"type": self.source_type, "id": str(row.id)},
+                )
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        from app.models.esop import EsopExercise
+
+        row = await session.scalar(
+            tenant_scoped(
+                select(EsopExercise).where(EsopExercise.id == uuid.UUID(line["source"]["id"])),
+                EsopExercise,
+                user,
+            )
+        )
+        reference = _reference(run)
+        if row is None or row.payroll_reference not in (None, reference):
+            raise _conflict("An ESOP exercise on this run")
+        row.payroll_reference = reference
+
+
 # ── Referral bonuses ────────────────────────────────────────────────────────
 
 
@@ -1316,6 +1401,382 @@ class ConcessionalLoanPerquisiteProvider(InputProvider):
         )
 
 
+# ── Ad-hoc adjustments ──────────────────────────────────────────────────────
+
+
+def _period_key(year: int, month: int) -> tuple[int, int]:
+    return (year, month)
+
+
+class AdjustmentProvider(InputProvider):
+    """Approved earnings and deductions keyed in by payroll (maker-checker).
+
+    A one-time adjustment is paid by the first run whose period is on or after
+    its start, once. A monthly one is paid once per period inside its window,
+    until its end or its total cap. Deductions marked `within_net_pay` are
+    recoveries: taken only when they fit, and carried to the next run otherwise.
+    """
+
+    key = "payroll_adjustments"
+    label = "Ad-hoc adjustments"
+    source_type = "payroll_adjustment"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        year, month = scope.run.period_year, scope.run.period_month
+        rows = (
+            await session.scalars(
+                tenant_scoped(
+                    select(PayrollAdjustment).where(
+                        PayrollAdjustment.status == AdjustmentStatus.APPROVED,
+                        PayrollAdjustment.employee_id.in_(scope.employee_ids),
+                    ),
+                    PayrollAdjustment,
+                    user,
+                )
+            )
+        ).all()
+        if not rows:
+            return output
+
+        applied = (
+            await session.execute(
+                tenant_scoped(
+                    select(
+                        PayrollAdjustmentApplication.adjustment_id,
+                        PayrollAdjustmentApplication.period_year,
+                        PayrollAdjustmentApplication.period_month,
+                    ).where(
+                        PayrollAdjustmentApplication.adjustment_id.in_([r.id for r in rows])
+                    ),
+                    PayrollAdjustmentApplication,
+                    user,
+                )
+            )
+        ).all()
+        applied_periods: dict[uuid.UUID, set[tuple[int, int]]] = defaultdict(set)
+        for adjustment_id, a_year, a_month in applied:
+            applied_periods[adjustment_id].add((a_year, a_month))
+
+        here = _period_key(year, month)
+        for adjustment in rows:
+            if _period_key(adjustment.start_year, adjustment.start_month) > here:
+                continue
+            if adjustment.recurrence is AdjustmentRecurrence.ONE_TIME:
+                if applied_periods.get(adjustment.id):
+                    continue
+            else:
+                if here in applied_periods.get(adjustment.id, set()):
+                    continue
+                if (
+                    adjustment.end_year is not None
+                    and adjustment.end_month is not None
+                    and _period_key(adjustment.end_year, adjustment.end_month) < here
+                ):
+                    continue
+            amount = _d(adjustment.amount)
+            note = ""
+            if adjustment.total_cap is not None:
+                remaining = _d(adjustment.total_cap) - _d(adjustment.amount_applied)
+                if remaining <= 0:
+                    continue
+                if remaining < amount:
+                    amount = remaining
+                    note = f" Last instalment: {remaining} left of the {adjustment.total_cap} cap."
+            basis = (
+                f"{adjustment.category.value.replace('_', ' ').capitalize()} adjustment, "
+                f"{adjustment.recurrence.value.replace('_', '-')}"
+                + (f", ref {adjustment.reference}" if adjustment.reference else "")
+                + f": {adjustment.reason}"
+                + note
+            )
+            if adjustment.kind is AdjustmentKind.EARNING:
+                kind = InputKind.EARNING
+                taxable = amount if adjustment.taxable else ZERO
+            else:
+                kind = InputKind.RECOVERY if adjustment.within_net_pay else InputKind.DEDUCTION
+                taxable = ZERO
+            output.lines[adjustment.employee_id].append(
+                InputLine(
+                    provider=self.key,
+                    code=f"ADJ_{adjustment.category.value.upper()}",
+                    name=adjustment.name,
+                    kind=kind,
+                    amount=amount,
+                    taxable_amount=taxable,
+                    basis=basis,
+                    source={
+                        "type": self.source_type,
+                        "id": str(adjustment.id),
+                        "period": f"{year}-{month:02d}",
+                    },
+                    counts_as_wages=(
+                        adjustment.kind is AdjustmentKind.EARNING and adjustment.counts_as_wages
+                    ),
+                )
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        adjustment = await session.scalar(
+            tenant_scoped(
+                select(PayrollAdjustment)
+                .where(PayrollAdjustment.id == uuid.UUID(line["source"]["id"]))
+                .with_for_update(),
+                PayrollAdjustment,
+                user,
+            )
+        )
+        if adjustment is None or adjustment.status is not AdjustmentStatus.APPROVED:
+            raise _conflict("An adjustment on this run")
+        existing = await session.scalar(
+            tenant_scoped(
+                select(PayrollAdjustmentApplication.id).where(
+                    PayrollAdjustmentApplication.adjustment_id == adjustment.id,
+                    *(
+                        ()
+                        if adjustment.recurrence is AdjustmentRecurrence.ONE_TIME
+                        else (
+                            PayrollAdjustmentApplication.period_year == run.period_year,
+                            PayrollAdjustmentApplication.period_month == run.period_month,
+                        )
+                    ),
+                ),
+                PayrollAdjustmentApplication,
+                user,
+            )
+        )
+        if existing is not None:
+            raise _conflict("An adjustment on this run")
+        amount = _d(line["amount"])
+        session.add(
+            PayrollAdjustmentApplication(
+                tenant_id=user.tenant_id,
+                adjustment_id=adjustment.id,
+                run_id=run.id,
+                employee_id=adjustment.employee_id,
+                period_year=run.period_year,
+                period_month=run.period_month,
+                amount=amount,
+            )
+        )
+        adjustment.amount_applied = _d(adjustment.amount_applied) + amount
+        cap_reached = (
+            adjustment.total_cap is not None
+            and _d(adjustment.amount_applied) >= _d(adjustment.total_cap)
+        )
+        if adjustment.recurrence is AdjustmentRecurrence.ONE_TIME or cap_reached:
+            adjustment.status = AdjustmentStatus.COMPLETED
+
+
+# ── Overtime ────────────────────────────────────────────────────────────────
+
+
+class OvertimeProvider(InputProvider):
+    """Approved overtime, priced at approval by the tenant's overtime policy.
+
+    Overtime from any day up to the period's end that no run has paid yet:
+    a day approved after its own month closed is paid by the next run rather
+    than lost.
+    """
+
+    key = "overtime"
+    label = "Overtime"
+    source_type = "overtime_entry"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        entries = (
+            await session.scalars(
+                tenant_scoped(
+                    select(OvertimeEntry)
+                    .where(
+                        OvertimeEntry.status == OvertimeStatus.APPROVED,
+                        OvertimeEntry.paid_in_run_id.is_(None),
+                        OvertimeEntry.attendance_date <= scope.period_end,
+                        OvertimeEntry.employee_id.in_(scope.employee_ids),
+                        OvertimeEntry.amount.is_not(None),
+                    )
+                    .order_by(OvertimeEntry.attendance_date),
+                    OvertimeEntry,
+                    user,
+                )
+            )
+        ).all()
+        for entry in entries:
+            amount = _d(entry.amount)
+            if amount <= 0:
+                continue
+            output.lines[entry.employee_id].append(
+                InputLine(
+                    provider=self.key,
+                    code="OVERTIME",
+                    name=f"Overtime {entry.attendance_date:%d %b}",
+                    kind=InputKind.EARNING,
+                    amount=amount,
+                    taxable_amount=amount,
+                    basis=entry.basis or "",
+                    source={"type": self.source_type, "id": str(entry.id)},
+                    counts_as_wages=True,
+                )
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        entry = await session.scalar(
+            tenant_scoped(
+                select(OvertimeEntry).where(OvertimeEntry.id == uuid.UUID(line["source"]["id"])),
+                OvertimeEntry,
+                user,
+            )
+        )
+        if (
+            entry is None
+            or entry.status is not OvertimeStatus.APPROVED
+            or entry.paid_in_run_id is not None
+        ):
+            raise _conflict("An overtime entry on this run")
+        entry.status = OvertimeStatus.PAID
+        entry.paid_in_run_id = run.id
+
+
+# ── Shift allowances ────────────────────────────────────────────────────────
+
+
+class ShiftAllowanceProvider(InputProvider):
+    """A per-day allowance for every day worked on a shift that carries one.
+
+    Read from the period's locked attendance: a present day counts one, a half
+    day half. Paid once per employee, shift and period.
+    """
+
+    key = "shift_allowances"
+    label = "Shift allowances"
+    source_type = "shift_allowance"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        output = ProviderOutput()
+        if not scope.employee_ids:
+            return output
+        days = (
+            await session.execute(
+                tenant_scoped(
+                    select(AttendanceDay.employee_id, AttendanceDay.status, Shift)
+                    .join(Shift, AttendanceDay.shift_id == Shift.id)
+                    .where(
+                        AttendanceDay.employee_id.in_(scope.employee_ids),
+                        AttendanceDay.attendance_date >= scope.period_start,
+                        AttendanceDay.attendance_date <= scope.period_end,
+                        AttendanceDay.status.in_(
+                            [AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY]
+                        ),
+                        Shift.allowance_per_day.is_not(None),
+                        Shift.allowance_per_day > 0,
+                    ),
+                    AttendanceDay,
+                    user,
+                )
+            )
+        ).all()
+        if not days:
+            return output
+
+        counted: dict[tuple[uuid.UUID, uuid.UUID], Decimal] = defaultdict(lambda: ZERO)
+        shifts: dict[uuid.UUID, Shift] = {}
+        for employee_id, day_status, shift in days:
+            shifts[shift.id] = shift
+            counted[(employee_id, shift.id)] += (
+                Decimal(1) if day_status is AttendanceStatus.PRESENT else Decimal("0.5")
+            )
+
+        paid = {
+            (row.employee_id, row.shift_id)
+            for row in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(ShiftAllowancePayment).where(
+                            ShiftAllowancePayment.employee_id.in_(scope.employee_ids),
+                            ShiftAllowancePayment.period_year == scope.run.period_year,
+                            ShiftAllowancePayment.period_month == scope.run.period_month,
+                        ),
+                        ShiftAllowancePayment,
+                        user,
+                    )
+                )
+            ).all()
+        }
+
+        period = f"{scope.run.period_year}-{scope.run.period_month:02d}"
+        for (employee_id, shift_id), day_count in counted.items():
+            if (employee_id, shift_id) in paid:
+                continue
+            shift = shifts[shift_id]
+            rate = _d(shift.allowance_per_day)
+            amount = (rate * day_count).quantize(Decimal("0.01"))
+            label = shift.allowance_name or f"{shift.name} allowance"
+            output.lines[employee_id].append(
+                InputLine(
+                    provider=self.key,
+                    code="SHIFT_ALLOWANCE",
+                    name=label,
+                    kind=InputKind.EARNING,
+                    amount=amount,
+                    taxable_amount=amount,
+                    basis=f"{day_count} day(s) on {shift.name} at {rate} a day, {period}.",
+                    source={
+                        "type": self.source_type,
+                        "id": f"{employee_id}:{shift_id}:{period}",
+                        "employee_id": str(employee_id),
+                        "shift_id": str(shift_id),
+                        "days": str(day_count),
+                    },
+                    counts_as_wages=True,
+                )
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        source = line["source"]
+        employee_id = uuid.UUID(source["employee_id"])
+        shift_id = uuid.UUID(source["shift_id"])
+        existing = await session.scalar(
+            tenant_scoped(
+                select(ShiftAllowancePayment.id).where(
+                    ShiftAllowancePayment.employee_id == employee_id,
+                    ShiftAllowancePayment.shift_id == shift_id,
+                    ShiftAllowancePayment.period_year == run.period_year,
+                    ShiftAllowancePayment.period_month == run.period_month,
+                ),
+                ShiftAllowancePayment,
+                user,
+            )
+        )
+        if existing is not None:
+            raise _conflict("A shift allowance on this run")
+        session.add(
+            ShiftAllowancePayment(
+                tenant_id=user.tenant_id,
+                employee_id=employee_id,
+                shift_id=shift_id,
+                run_id=run.id,
+                period_year=run.period_year,
+                period_month=run.period_month,
+                days=Decimal(source["days"]),
+                amount=_d(line["amount"]),
+            )
+        )
+
+
 PROVIDERS: tuple[InputProvider, ...] = (
     StatutoryBonusProvider(),
     ArrearsProvider(),
@@ -1328,19 +1789,38 @@ PROVIDERS: tuple[InputProvider, ...] = (
     AdvanceRecoveryProvider(),
     LoanEmiProvider(),
     ConcessionalLoanPerquisiteProvider(),
+    EsopPerquisiteProvider(),
+    AdjustmentProvider(),
+    OvertimeProvider(),
+    ShiftAllowanceProvider(),
 )
 
 _BY_SOURCE = {provider.source_type: provider for provider in PROVIDERS}
 
+#: Every provider's key and label, for choosing what an off-cycle run draws on.
+PROVIDER_KEYS: dict[str, str] = {provider.key: provider.label for provider in PROVIDERS}
 
-async def collect_inputs(session: AsyncSession, user: User, scope: RunScope) -> CollectedInputs:
-    """Ask every provider what is due for this run. Reads only."""
+
+async def collect_inputs(
+    session: AsyncSession,
+    user: User,
+    scope: RunScope,
+    *,
+    sources: frozenset[str] | None = None,
+) -> CollectedInputs:
+    """Ask every provider what is due for this run. Reads only.
+
+    `sources` limits an off-cycle run to the providers it was opened for; a
+    regular run passes None and hears from all of them.
+    """
     lines: dict[uuid.UUID, list[InputLine]] = defaultdict(list)
     loans: dict[uuid.UUID, list[LoanRecoveryInput]] = defaultdict(list)
     reports: list[ProviderReport] = []
     notices: list[dict[str, str]] = []
 
     for provider in PROVIDERS:
+        if sources is not None and provider.key not in sources:
+            continue
         output = await provider.collect(session, user, scope)
         for employee_id, items in output.lines.items():
             lines[employee_id].extend(items)

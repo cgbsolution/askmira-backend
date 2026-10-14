@@ -442,6 +442,17 @@ class IncrementRecommendation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     decided_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # What releasing the cycle produced for this person: the new salary record
+    # and the increment letter. Set once; a second release finds them and skips.
+    salary_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    letter_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("issued_letters.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PromotionRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):

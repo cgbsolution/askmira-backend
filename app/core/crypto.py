@@ -26,7 +26,14 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
 
-__all__ = ["EncryptionError", "decrypt_secret", "encrypt_secret", "is_encrypted"]
+__all__ = [
+    "EncryptionError",
+    "decrypt_field",
+    "decrypt_secret",
+    "encrypt_field",
+    "encrypt_secret",
+    "is_encrypted",
+]
 
 # Marks a value as produced by this module, so a plaintext value written before
 # encryption existed can be detected rather than mangled.
@@ -116,4 +123,44 @@ def decrypt_secret(value: str | None, tenant_id: uuid.UUID) -> str | None:
         raise EncryptionError(
             "A stored secret could not be decrypted. Either it belongs to a different "
             "tenant, or SECRET_ENCRYPTION_KEY has changed since it was written."
+        ) from exc
+
+
+# ── Personal identifiers in ordinary columns ─────────────────────────────────
+#
+# A PAN or a bank account number on the employee row is read in a dozen places
+# (payslips, Form 16, 24Q, the bank file) and is never searched by value. So it
+# is encrypted by its column type, transparently, with a platform field key:
+# a column type sees one value at a time and not the row's tenant. A database
+# dump or a backup then holds ciphertext; the application reads plaintext.
+
+_FIELD_PREFIX = "encf:v1:"
+
+
+def _field_key() -> bytes:
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", _master_key(), b"askmira-field-encryption:v1", iterations=1_000, dklen=32
+    )
+    return base64.urlsafe_b64encode(derived)
+
+
+def encrypt_field(value: str) -> str:
+    """Encrypt a personal identifier for its column. Idempotent on ciphertext."""
+    if not value or value.startswith(_FIELD_PREFIX):
+        return value
+    token = Fernet(_field_key()).encrypt(value.encode("utf-8"))
+    return _FIELD_PREFIX + token.decode("ascii")
+
+
+def decrypt_field(value: str | None) -> str | None:
+    """The identifier as written. A value stored before encryption comes back unchanged."""
+    if not value or not value.startswith(_FIELD_PREFIX):
+        return value
+    try:
+        token = value[len(_FIELD_PREFIX) :].encode("ascii")
+        return Fernet(_field_key()).decrypt(token).decode("utf-8")
+    except (InvalidToken, ValueError) as exc:
+        raise EncryptionError(
+            "A stored identifier could not be decrypted: SECRET_ENCRYPTION_KEY has changed "
+            "since it was written."
         ) from exc

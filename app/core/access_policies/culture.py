@@ -21,6 +21,23 @@ ENDPOINTS: dict[str, str] = {
     "GET /culture/values": (
         "reference: the company's values, which every colleague recognises against."
     ),
+    # ── Polls and events ────────────────────────────────────────────────────
+    "GET /culture/polls": (
+        "permissions: polls whose audience includes the caller (HR sees all); results "
+        "only after voting or closing, never who voted on an anonymous poll."
+    ),
+    "POST /culture/polls/{poll_id}/vote": (
+        "permissions: the caller's own vote (permissions.own_employee_id), only on a "
+        "poll whose audience includes them."
+    ),
+    "GET /culture/events": (
+        "permissions: events whose audience includes the caller; who is coming is "
+        "listed for HR only."
+    ),
+    "POST /culture/events/{event_id}/rsvp": (
+        "permissions: the caller's own answer (permissions.own_employee_id), only on "
+        "an event whose audience includes them."
+    ),
     # ── Clubs ───────────────────────────────────────────────────────────────
     "GET /culture/clubs": (
         "scoped:is_private: public clubs for everybody; a private club only for "

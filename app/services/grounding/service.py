@@ -4,18 +4,19 @@
 checks the forbidden sources are refused here rather than filtered by a caller,
 and that the scope is applied to the query rather than to the results.
 
-**The agent layer does not exist yet.** `ground_and_verify` is the pipeline an
-agent will call — retrieve, build the prompt, verify the response, log — and
-nothing calls it, because there is no agent. It is built and tested now because
-building it after the agents means retrofitting a safety property onto call
-sites that already work without it, which never happens.
+`ground_and_verify` is the pipeline an agent calls — retrieve, build the
+prompt, verify the response, log. It is split into `prepare` and `conclude` so
+an agent whose model call is async (the employee assistant) runs the same
+steps in the same order, with its own call in the middle.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -23,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.employee import Employee
 from app.models.grounding import (
     AgentInvocation,
@@ -49,8 +50,13 @@ from app.services.grounding.retrieval import (
 )
 
 __all__ = [
+    "Grounding",
+    "conclude",
     "ground_and_verify",
     "log_injection_attempts",
+    "log_local_answer",
+    "log_refusal",
+    "prepare",
     "resolve_scope",
     "retrieve",
 ]
@@ -71,8 +77,25 @@ RETRIEVABLE_SOURCES: dict[str, str] = {
     "employee_documents": "employee_id",
     "holidays": "",
     "leave_types": "",
+    "leave_policies": "",
     "payroll_rule_sets": "",
+    "assistant_articles": "",
 }
+
+
+def _narrowing(table: Any, today: date) -> list[Any]:
+    """Conditions a source carries beyond tenant and scope.
+
+    A draft article is not policy, a retired leave type answers nothing, and
+    last year's holidays crowd out this year's within the per-source limit.
+    """
+    if table.name == "assistant_articles":
+        return [table.c.is_published.is_(True)]
+    if table.name in ("leave_types", "leave_policies"):
+        return [table.c.is_active.is_(True)]
+    if table.name == "holidays":
+        return [table.c.holiday_date >= today - timedelta(days=31)]
+    return []
 
 
 def _bad_request(detail: str) -> HTTPException:
@@ -219,7 +242,11 @@ async def _fetch(
     if table is None:
         return []
 
-    stmt = select(table).where(table.c.tenant_id == user.tenant_id)
+    stmt = select(table).where(tenant_filter(table, user.tenant_id))
+    for condition in _narrowing(table, date.today()):
+        stmt = stmt.where(condition)
+    if source == "holidays":
+        stmt = stmt.order_by(table.c.holiday_date)
 
     if subject_column and subject_column in table.c:
         column = table.c[subject_column]
@@ -286,33 +313,35 @@ async def log_injection_attempts(
     return len(attempts)
 
 
-async def ground_and_verify(
+@dataclass(slots=True)
+class Grounding:
+    """Everything `prepare` established, for `conclude` to finish."""
+
+    retrieved: RetrievalResult
+    refusal: refusal_engine.RefusalOutcome
+    attempts: list[injection_engine.InjectionAttempt]
+    prompt: str
+    started: datetime
+
+
+async def prepare(
     session: AsyncSession,
     user: User,
     *,
     agent_key: str,
     question: str,
     sources: tuple[str, ...],
-    answer_fn: Any,
     system_rules: str,
     model: str = "unwired",
     untrusted_sections: tuple[tuple[str, str], ...] = (),
     employee_ids: tuple[str, ...] = (),
     requested_employee_id: str | None = None,
-    confidence: float | None = None,
     now: datetime | None = None,
-) -> dict[str, Any]:
-    """The whole pipeline, in the order it has to happen.
+) -> Grounding | dict[str, Any]:
+    """The steps before the model: retrieve, refuse what should be refused, fence.
 
-    Retrieve, refuse what should be refused, fence the untrusted text, call the
-    agent, verify the citations, check for a cross-topic inference, and log all
-    of it. `answer_fn` is a callable the caller supplies — this module never
-    constructs an agent, which is what lets the pipeline be tested end to end
-    against a deterministic function.
-
-    **Nothing in production calls this yet.** The agent layer is not built. The
-    order is fixed now because retrofitting it later means adding a safety step
-    to call sites that already work without one.
+    A dict back means the pipeline has already answered — with a refusal — and
+    logged it; the caller returns it as is and calls no model.
     """
     started = now or datetime.now(UTC)
 
@@ -375,9 +404,32 @@ async def ground_and_verify(
         untrusted_sections=list(untrusted_sections),
         grounding_blocks=[r.as_prompt_block() for r in retrieved.records],
     )
+    return Grounding(
+        retrieved=retrieved,
+        refusal=refusal,
+        attempts=attempts,
+        prompt=prompt,
+        started=started,
+    )
 
-    raw = answer_fn(prompt)
-    raw_text = raw if isinstance(raw, str) else str(raw)
+
+async def conclude(
+    session: AsyncSession,
+    user: User,
+    grounding: Grounding,
+    *,
+    agent_key: str,
+    question: str,
+    system_rules: str,
+    model: str,
+    raw_text: str,
+    confidence: float | None = None,
+    tokens: int = 0,
+    sub_processor_key: str | None = None,
+) -> dict[str, Any]:
+    """The steps after the model: verify the citations, check inference, log."""
+    retrieved = grounding.retrieved
+    refusal = grounding.refusal
 
     existing_ids = retrieved.citation_ids
     verified = citation_engine.verify(
@@ -416,7 +468,7 @@ async def ground_and_verify(
     if confidence is not None:
         band = confidence_engine.band_for(confidence).value
 
-    result = await _log_and_return(
+    return await _log_and_return(
         session,
         user,
         agent_key=agent_key,
@@ -429,13 +481,149 @@ async def ground_and_verify(
         raw_output=raw_text,
         rendered=rendered,
         refusal_reasons=[r.value for r in refusal.reasons],
-        started=started,
+        started=grounding.started,
         verified=verified,
         confidence=confidence,
         confidence_band=band,
-        injection_attempts=attempts,
+        injection_attempts=grounding.attempts,
+        tokens=tokens,
+        sub_processor_key=sub_processor_key,
     )
-    return result
+
+
+async def ground_and_verify(
+    session: AsyncSession,
+    user: User,
+    *,
+    agent_key: str,
+    question: str,
+    sources: tuple[str, ...],
+    answer_fn: Any,
+    system_rules: str,
+    model: str = "unwired",
+    untrusted_sections: tuple[tuple[str, str], ...] = (),
+    employee_ids: tuple[str, ...] = (),
+    requested_employee_id: str | None = None,
+    confidence: float | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The whole pipeline, in the order it has to happen.
+
+    Retrieve, refuse what should be refused, fence the untrusted text, call the
+    agent, verify the citations, check for a cross-topic inference, and log all
+    of it. `answer_fn` is a callable the caller supplies — sync or async — and
+    this module never constructs an agent, which is what lets the pipeline be
+    tested end to end against a deterministic function.
+    """
+    grounding = await prepare(
+        session,
+        user,
+        agent_key=agent_key,
+        question=question,
+        sources=sources,
+        system_rules=system_rules,
+        model=model,
+        untrusted_sections=untrusted_sections,
+        employee_ids=employee_ids,
+        requested_employee_id=requested_employee_id,
+        now=now,
+    )
+    if isinstance(grounding, dict):
+        return grounding
+
+    raw = answer_fn(grounding.prompt)
+    if inspect.isawaitable(raw):
+        raw = await raw
+    raw_text = raw if isinstance(raw, str) else str(raw)
+
+    return await conclude(
+        session,
+        user,
+        grounding,
+        agent_key=agent_key,
+        question=question,
+        system_rules=system_rules,
+        model=model,
+        raw_text=raw_text,
+        confidence=confidence,
+    )
+
+
+async def log_refusal(
+    session: AsyncSession,
+    user: User,
+    grounding: Grounding,
+    *,
+    agent_key: str,
+    question: str,
+    system_rules: str,
+    model: str,
+    rendered: str,
+    raw_output: str | None,
+    reason: refusal_engine.RefusalReason,
+    tokens: int = 0,
+    sub_processor_key: str | None = None,
+) -> dict[str, Any]:
+    """Log a question the agent said its records could not answer."""
+    return await _log_and_return(
+        session,
+        user,
+        agent_key=agent_key,
+        question=question,
+        system_rules=system_rules,
+        model=model,
+        scope=grounding.retrieved.scope,
+        retrieved=grounding.retrieved,
+        outcome=InvocationOutcome.REFUSED,
+        raw_output=raw_output,
+        rendered=rendered,
+        refusal_reasons=[reason.value],
+        started=grounding.started,
+        injection_attempts=grounding.attempts,
+        tokens=tokens,
+        sub_processor_key=sub_processor_key,
+    )
+
+
+async def log_local_answer(
+    session: AsyncSession,
+    user: User,
+    grounding: Grounding,
+    *,
+    agent_key: str,
+    question: str,
+    system_rules: str,
+    model: str,
+    rendered: str,
+    citations: list[str],
+    tokens: int = 0,
+    sub_processor_key: str | None = None,
+) -> dict[str, Any]:
+    """Log an answer AskMira composed itself from its own records.
+
+    The model decided *what* was being asked; the facts in the answer were read
+    by code and never sent to the model. Its citations are the records it read,
+    verified by construction.
+    """
+    return await _log_and_return(
+        session,
+        user,
+        agent_key=agent_key,
+        question=question,
+        system_rules=system_rules,
+        model=model,
+        scope=grounding.retrieved.scope,
+        retrieved=grounding.retrieved,
+        outcome=InvocationOutcome.ANSWERED,
+        raw_output=None,
+        rendered=rendered,
+        refusal_reasons=[],
+        started=grounding.started,
+        injection_attempts=grounding.attempts,
+        tokens=tokens,
+        sub_processor_key=sub_processor_key,
+        local_citations=citations,
+    )
 
 
 async def _log_and_return(
@@ -458,8 +646,19 @@ async def _log_and_return(
     confidence_band: str | None = None,
     injection_attempts: list[injection_engine.InjectionAttempt] | None = None,
     detail: str | None = None,
+    tokens: int = 0,
+    sub_processor_key: str | None = None,
+    local_citations: list[str] | None = None,
 ) -> dict[str, Any]:
     completed = datetime.now(UTC)
+    citations = (
+        list(local_citations)
+        if local_citations is not None
+        else (list(verified.citations) if verified else [])
+    )
+    citations_verified = local_citations is not None or bool(
+        verified and verified.may_render
+    )
     row = AgentInvocation(
         tenant_id=user.tenant_id,
         agent_key=agent_key,
@@ -476,15 +675,17 @@ async def _log_and_return(
         outcome=outcome,
         raw_output=raw_output,
         rendered_output=rendered,
-        citations=list(verified.citations) if verified else [],
+        citations=citations,
         citation_failures=(
             [f.as_dict() for f in verified.failures] if verified else []
         ),
-        citations_verified=bool(verified and verified.may_render),
+        citations_verified=citations_verified,
         refusal_reasons=refusal_reasons,
         confidence=confidence,
         confidence_band=confidence_band,
         latency_ms=(completed - started).total_seconds() * 1000,
+        tokens=tokens,
+        sub_processor_key=sub_processor_key,
         completed_at=completed,
     )
     session.add(row)
@@ -509,7 +710,7 @@ async def _log_and_return(
         # debugging and is deliberately not returned — a response shape that
         # offered both would eventually have a call site pick the wrong one.
         "answer": rendered,
-        "citations": list(verified.citations) if verified else [],
+        "citations": citations,
         "citation_failures": (
             [f.as_dict() for f in verified.failures] if verified else []
         ),
@@ -568,8 +769,7 @@ async def invocation_log(
             for row in rows
         ],
         "not_built": (
-            "No agent calls this pipeline in production, because the agent layer "
-            "is not built. Every invocation here came from a test or a manual "
-            "call."
+            "The assistant answers in AskMira only. Slack, Teams and WhatsApp "
+            "channels are not built, so no question asked there appears here."
         ),
     }

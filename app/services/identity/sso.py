@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_secret
+from app.core.deps import tenant_filter
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.identity import IdentityProvider, SamlAssertionSeen, SsoLoginAttempt
@@ -94,7 +95,7 @@ async def assert_password_login_allowed(
     """
     provider = await session.scalar(
         select(IdentityProvider).where(
-            IdentityProvider.tenant_id == user.tenant_id,
+            tenant_filter(IdentityProvider, user.tenant_id),
             IdentityProvider.enabled.is_(True),
             IdentityProvider.enforce_sso.is_(True),
         )
@@ -158,7 +159,7 @@ async def provision_user(
 
     user = await session.scalar(
         select(User).where(
-            User.tenant_id == tenant_id, func.lower(User.email) == email
+            tenant_filter(User, tenant_id), func.lower(User.email) == email
         )
     )
 
@@ -229,7 +230,7 @@ async def _try_link_employee(
     """
     employee = await session.scalar(
         select(Employee).where(
-            Employee.tenant_id == user.tenant_id,
+            tenant_filter(Employee, user.tenant_id),
             Employee.employee_code == employee_code,
             Employee.deleted_at.is_(None),
         )
@@ -274,7 +275,7 @@ async def consume_assertion_id(
     """
     existing = await session.scalar(
         select(SamlAssertionSeen.id).where(
-            SamlAssertionSeen.tenant_id == tenant_id,
+            tenant_filter(SamlAssertionSeen, tenant_id),
             SamlAssertionSeen.assertion_id == assertion_id,
         )
     )

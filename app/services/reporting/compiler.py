@@ -59,6 +59,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.deps import tenant_filter
 from app.models.base import Base
 from app.services.reporting import ranges
 from app.services.reporting.semantic import (
@@ -345,6 +346,17 @@ def _aggregate(expression: ColumnElement, aggregation: str | None) -> ColumnElem
     }[aggregation]
 
 
+def _refuse_encrypted(spec: Field, expression: ColumnElement, verb: str) -> None:
+    """An encrypted column can be shown, never compared: in SQL it is ciphertext."""
+    from app.models.types import EncryptedText
+
+    if isinstance(getattr(expression, "type", None), EncryptedText):
+        raise CompileError(
+            f"{spec.display_name} is stored encrypted, so a report can show it but not "
+            f"{verb} it."
+        )
+
+
 def _filter_expression(
     f: Filter, spec: Field, expression: ColumnElement, *, today: date
 ) -> ColumnElement:
@@ -577,7 +589,7 @@ def compile_report(
     statement = select(*columns).select_from(from_clause)
 
     # ── The tenant predicate. Not optional, not from the definition. ────────
-    predicates: list[ColumnElement] = [base.c.tenant_id == scope.tenant_id]
+    predicates: list[ColumnElement] = [tenant_filter(base, scope.tenant_id)]
 
     # Soft-deleted rows are excluded where the table supports it. A headcount
     # that counts deleted employees is a wrong number nobody would query.
@@ -591,6 +603,7 @@ def compile_report(
     for f in definition.filters:
         spec = ent.field(f.field_key)
         expression = _column(alias_map, spec.table, spec.column)
+        _refuse_encrypted(spec, expression, "filter on")
         predicates.append(_filter_expression(f, spec, expression, today=resolution_day))
 
     statement = statement.where(and_(*predicates))
@@ -601,11 +614,14 @@ def compile_report(
             _column(alias_map, ent.field(key).table, ent.field(key).column)
             for key in definition.group_by
         ]
+        for key, grouped in zip(definition.group_by, group_expressions, strict=True):
+            _refuse_encrypted(ent.field(key), grouped, "group by")
         statement = statement.group_by(*group_expressions)
 
     for key, direction in definition.sort_by:
         spec = ent.field(key)
         expression = _column(alias_map, spec.table, spec.column)
+        _refuse_encrypted(spec, expression, "sort by")
         # In a grouped report, sorting by a raw column the database is not
         # grouping on is an error in Postgres. Sort by the aggregate instead.
         matching = next(

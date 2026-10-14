@@ -1,6 +1,46 @@
 """Time off and attendance."""
 
 ENDPOINTS: dict[str, str] = {
+    # ── Timesheets ──────────────────────────────────────────────────────────
+    "GET /timesheets/projects": "reference: the projects open for logging time.",
+    "GET /timesheets/me": (
+        "own: the caller's own week, by user.employee_id from the token; takes no person id."
+    ),
+    "PUT /timesheets/me": "own: the caller's own week, by user.employee_id from the token.",
+    "POST /timesheets/me/submit": (
+        "own: submits the caller's own week, by user.employee_id from the token."
+    ),
+    "GET /attendance/punches/{punch_id}/photo": (
+        "scoped:require_manager_or_hr: the person's own punch photo, or their manager "
+        "line and HR."
+    ),
+    "GET /attendance/kiosk-pin": (
+        "own: whether the caller has a kiosk PIN, by user.employee_id from the token; "
+        "takes no person id."
+    ),
+    "PUT /attendance/kiosk-pin": (
+        "own: sets the caller's own kiosk PIN, by user.employee_id from the token."
+    ),
+    "GET /attendance/shift-swaps": (
+        "own: swaps the caller asked for or was asked into, by user.employee_id from the "
+        "token; takes no person id."
+    ),
+    "POST /attendance/shift-swaps": (
+        "own: the requester is always the caller (user.employee_id from the token); the "
+        "body names only the colleague asked."
+    ),
+    "POST /attendance/shift-swaps/{swap_id}/respond": (
+        "permissions: only the colleague named on the swap may answer it; the service "
+        "compares the token's employee id with the swap."
+    ),
+    "POST /attendance/shift-swaps/{swap_id}/cancel": (
+        "permissions: only the requester may withdraw; the service compares the token's "
+        "employee id with the swap."
+    ),
+    "GET /attendance/overtime/mine": (
+        "own: the caller's own overtime, by user.employee_id from the token; takes no "
+        "person id."
+    ),
     "GET /leave/types": "reference: the leave catalogue.",
     "GET /leave/holidays": "reference: the holiday calendar.",
     "GET /leave/requests": (

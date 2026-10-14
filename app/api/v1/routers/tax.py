@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -53,7 +53,7 @@ from app.schemas.tax import (
 from app.services import audit
 from app.services.attendance.service import local_today
 from app.services.filings import support
-from app.services.tax import form16, reminders
+from app.services.tax import form16, form16_part_a, reminders
 from app.services.tax import service as tax_service
 from app.services.tax.service import TaxWorkflowError
 
@@ -660,6 +660,9 @@ async def form_16_pdf(
         data = form16.render_form16_pdf(statement)
     except form16.Form16UnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    data, with_part_a = await form16_part_a.merged_pdf(
+        await form16_part_a.part_a_for(session, user, target, financial_year), data
+    )
     if target != user.employee_id:
         await audit.record(
             session,
@@ -673,10 +676,36 @@ async def form_16_pdf(
             request=request,
         )
         await session.commit()
-    name = f"Form16-PartB-{statement['employee']['code']}-{financial_year}.pdf"
+    parts = "Form16" if with_part_a else "Form16-PartB"
+    name = f"{parts}-{statement['employee']['code']}-{financial_year}.pdf"
     return Response(
         content=data, media_type="application/pdf", headers=support.attachment_headers(name)
     )
 
 
 __all__ = ["WindowType", "router"]
+
+
+
+# ── Form 16 Part A (from TRACES) ────────────────────────────────────────────
+
+
+@router.post("/form-16/part-a", dependencies=[Depends(require_roles(*PAYROLL_ROLES))])
+async def upload_form16_part_a(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: Annotated[str, Form(pattern=r"^\d{4}-\d{2}$")],
+    file: Annotated[UploadFile, File()],
+    employee_id: Annotated[uuid.UUID | None, Form()] = None,
+) -> dict[str, Any]:
+    """One Part A PDF for one person, or the TRACES ZIP matched on the PAN in each name."""
+    data = await file.read(form16_part_a.MAX_ZIP_BYTES + 1)
+    if employee_id is not None:
+        return await form16_part_a.upload_one(
+            session, user, employee_id=employee_id, financial_year=financial_year,
+            data=data, filename=file.filename, request=request,
+        )
+    return await form16_part_a.upload_zip(
+        session, user, financial_year=financial_year, data=data, request=request
+    )

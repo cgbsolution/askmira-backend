@@ -19,7 +19,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from app.core.config import settings
 
-TokenType = Literal["access", "refresh", "reset", "verify"]
+TokenType = Literal["access", "refresh", "reset", "verify", "mfa"]
 
 _hasher = PasswordHasher(
     time_cost=settings.ARGON2_TIME_COST,
@@ -85,12 +85,35 @@ def create_access_token(*, user_id: str, tenant_id: str | None, role: str) -> st
     )
 
 
+def create_operator_token(*, user_id: str, tenant_id: str, grant_id: str) -> str:
+    """An access token for an operator working inside a client's workspace.
+
+    `tid` is the client's tenant and `opg` the grant that allows it; the grant
+    is re-checked on every request, so revoking it ends the session at once.
+    There is no matching refresh token: when this expires the operator's own
+    refresh token brings them back to their own workspace.
+    """
+    return _encode(
+        {"sub": user_id, "tid": tenant_id, "role": "sub_admin", "opg": grant_id},
+        timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        "access",
+    )
+
+
 def create_refresh_token(*, user_id: str, tenant_id: str | None) -> str:
     return _encode(
         {"sub": user_id, "tid": tenant_id},
         timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         "refresh",
     )
+
+
+def create_mfa_token(*, user_id: str, tenant_id: str | None) -> str:
+    """Proof the password was right, good for five minutes and only for the second step.
+
+    Its `typ` is "mfa", so it is refused anywhere an access token is expected.
+    """
+    return _encode({"sub": user_id, "tid": tenant_id}, timedelta(minutes=5), "mfa")
 
 
 def create_single_use_token(

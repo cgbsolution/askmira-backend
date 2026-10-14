@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, SoftDeleteMixin, TenantMixin, TimestampMixin, UUIDMixin
+from app.models.types import EncryptedText
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -93,6 +94,16 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     manager_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
     )
+    #: A second, dotted-line manager: a project or functional lead the person
+    #: also works for. Shown on the profile and the chart; it carries no
+    #: approval rights — leave, expenses and reviews still go to `manager_id`.
+    dotted_line_manager_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "employees.id", ondelete="SET NULL", name="fk_employees_dotted_line_manager_id"
+        ),
+        nullable=True,
+    )
 
     designation: Mapped[str | None] = mapped_column(String(255), nullable=True)
     grade: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
@@ -115,13 +126,14 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     notice_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # ── Statutory identifiers (India) ───────────────────────────────────────
-    pan: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Encrypted at rest by the column type; plaintext to the application.
+    pan: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     aadhaar_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
     uan: Mapped[str | None] = mapped_column(String(12), nullable=True)
     pf_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     esi_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
-    bank_account_number: Mapped[str | None] = mapped_column(String(34), nullable=True)
+    bank_account_number: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     bank_ifsc: Mapped[str | None] = mapped_column(String(11), nullable=True)
 
     # ── Tenant-defined custom fields (FS-CHR-01) ────────────────────────────
@@ -140,6 +152,9 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     )
     manager: Mapped[Employee | None] = relationship(
         remote_side="Employee.id", foreign_keys=[manager_id]
+    )
+    dotted_line_manager: Mapped[Employee | None] = relationship(
+        remote_side="Employee.id", foreign_keys=[dotted_line_manager_id], viewonly=True
     )
     documents: Mapped[list[EmployeeDocument]] = relationship(
         back_populates="employee", cascade="all, delete-orphan"
@@ -225,6 +240,10 @@ class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Required on a rejection: "rejected" alone tells the employee nothing to fix.
     verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 0 = no expiry notice sent, 1 = "expires soon" sent, 2 = "expired" sent.
+    expiry_reminder_stage: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
 
     employee: Mapped[Employee] = relationship(back_populates="documents")
 

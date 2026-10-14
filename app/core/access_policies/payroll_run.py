@@ -18,6 +18,10 @@ ENDPOINTS: dict[str, str] = {
         "own: the PDF of a payslip that belongs to user.employee_id and is published; any "
         "other id is a 404."
     ),
+    "GET /payroll/my-total-rewards": (
+        "own: the caller's own statement, by user.employee_id from the token; takes no "
+        "person id."
+    ),
     "GET /payroll/my-salary": (
         "own: the caller's own salary history, by user.employee_id; takes no person id."
     ),

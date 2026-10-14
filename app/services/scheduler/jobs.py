@@ -16,6 +16,7 @@ rather than a fabricated one. The scheduler's own run table says which job did i
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -55,6 +56,15 @@ def _tally(result: Any) -> dict[str, Any]:
     return out
 
 
+def _as_dict(result: Any) -> Any:
+    """A pydantic model or a dataclass outcome, as the dict `_tally` reads."""
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if is_dataclass(result) and not isinstance(result, type):
+        return asdict(result)
+    return result
+
+
 def _last_day_of_previous_month(today: date) -> date:
     return today.replace(day=1) - timedelta(days=1)
 
@@ -79,6 +89,12 @@ async def _leave_year_end(session: AsyncSession, ctx: JobContext) -> dict[str, A
     from app.services.leave import ledger
 
     return _tally(await ledger.year_end_job(session, ctx.actor, today=ctx.today))
+
+
+async def _overtime_sync(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.attendance import overtime
+
+    return _tally(await overtime.nightly_sync(session, ctx.actor, as_of=ctx.today))
 
 
 async def _device_silence(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
@@ -129,6 +145,12 @@ async def _probation_reminders(session: AsyncSession, ctx: JobContext) -> dict[s
     from app.services.lifecycle import service as lifecycle
 
     return _tally(await lifecycle.send_probation_reminders(session, ctx.actor, on=ctx.today))
+
+
+async def _probation_agent(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.autonomy import agents
+
+    return _tally(await agents.probation_agent(session, ctx.actor, today=ctx.today))
 
 
 async def _asset_return_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
@@ -267,6 +289,128 @@ async def _prune_scheduler_history(session: AsyncSession, ctx: JobContext) -> di
     return {"runs_pruned": await scheduler.prune_history(session, now=ctx.now)}
 
 
+# ── Reminders and sweeps that used to wait for somebody to press a button ───
+
+
+async def _interview_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.interviews import service as interviews
+
+    return _tally(
+        await interviews.send_due_interview_reminders(session, ctx.actor, window_minutes=30)
+    )
+
+
+async def _performance_sweep(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.appraisal import operations
+
+    return _tally(await operations.run_performance_sweep(session, ctx.actor, as_of=ctx.today))
+
+
+async def _tax_window_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.tax import reminders
+
+    return _tally(
+        _as_dict(await reminders.send_window_reminders(session, ctx.tenant_id, today=ctx.today))
+    )
+
+
+async def _reimbursement_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.loans import service as loans
+
+    raised = await loans.send_unclaimed_entitlement_reminders(
+        session, ctx.tenant_id, today=ctx.today
+    )
+    return {"notifications_raised": raised}
+
+
+async def _announcement_delivery(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.culture import service as culture
+
+    return _tally(await culture.deliver_due_announcements(session, ctx.tenant_id, now=ctx.now))
+
+
+async def _resurvey_scheduling(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.culture import surveys_portal
+
+    return _tally(
+        await surveys_portal.schedule_due_resurveys(session, ctx.tenant_id, today=ctx.today)
+    )
+
+
+async def _document_expiry_notices(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.documents import vault
+
+    return await vault.send_expiry_notices(session, ctx.tenant_id, today=ctx.today)
+
+
+async def _milestones(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.culture import milestones
+
+    assert ctx.actor is not None
+    return await milestones.celebrate_due(session, ctx.actor, today=ctx.today)
+
+
+async def _learning_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import learning
+
+    assert ctx.actor is not None
+    return await learning.send_overdue_reminders(session, ctx.actor, today=ctx.today)
+
+
+async def _webhooks(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import integrations
+
+    assert ctx.tenant_id is not None
+    pumped = await integrations.pump_events(session, ctx.tenant_id, now=ctx.now)
+    sent = await integrations.deliver_due(session, ctx.tenant_id, now=ctx.now)
+    return {**pumped, **sent}
+
+
+async def _statutory_alerts(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import statutory_watch
+
+    assert ctx.actor is not None
+    return await statutory_watch.send_alerts(session, ctx.actor, today=ctx.today)
+
+
+async def _attendance_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.attendance import reminders
+
+    assert ctx.actor is not None
+    return await reminders.send_attendance_reminders(
+        session, ctx.actor, today=ctx.today, now=ctx.now
+    )
+
+
+async def _approval_escalation(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.approvals import rules
+
+    assert ctx.actor is not None
+    return await rules.escalate_due(session, ctx.actor, now=ctx.now)
+
+
+async def _candidate_messages(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.hiring import candidate_comms
+
+    assert ctx.actor is not None
+    return await candidate_comms.deliver_due(session, ctx.actor, now=ctx.now)
+
+
+async def _signal_digest(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.reporting import analytics
+
+    assert ctx.actor is not None
+    return await analytics.send_signal_digest(session, ctx.actor, today=ctx.today)
+
+
+async def _reward_expiry_warnings(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.rewards import portal
+
+    return _tally(
+        _as_dict(await portal.send_expiry_warnings(session, ctx.tenant_id, as_of=ctx.today))
+    )
+
+
 JOBS: tuple[Job, ...] = (
     Job(
         key="attendance.nightly_recompute",
@@ -300,6 +444,189 @@ JOBS: tuple[Job, ...] = (
         handler=_leave_year_end,
         source="app.services.leave.ledger.year_end_job",
         module="leave",
+    ),
+    Job(
+        key="attendance.overtime_sync",
+        name="Overtime from attendance",
+        description=(
+            "Turns the last seven days' overtime minutes into overtime entries under each "
+            "location's policy, for managers to approve. Runs after the attendance recompute."
+        ),
+        cadence=Cadence.daily(hour=2),
+        handler=_overtime_sync,
+        source="app.services.attendance.overtime.nightly_sync",
+        module="leave",
+    ),
+    Job(
+        key="hiring.interview_reminders",
+        name="Interview reminders",
+        description="Reminds the panel and the candidate about interviews starting soon.",
+        cadence=Cadence.every(minutes=15),
+        handler=_interview_reminders,
+        source="app.services.interviews.service.send_due_interview_reminders",
+        module="hiring",
+    ),
+    Job(
+        key="performance.sweep",
+        name="Performance sweep",
+        description=(
+            "Advances appraisal stages whose window closed, escalates overdue steps, reminds "
+            "owners of steps due soon, and schedules probation reviews."
+        ),
+        cadence=Cadence.daily(hour=6),
+        handler=_performance_sweep,
+        source="app.services.appraisal.operations.run_performance_sweep",
+    ),
+    Job(
+        key="tax.window_reminders",
+        name="Tax declaration reminders",
+        description="Reminds employees that a declaration or proof window is opening or closing.",
+        cadence=Cadence.daily(hour=7),
+        handler=_tax_window_reminders,
+        source="app.services.tax.reminders.send_window_reminders",
+        module="payroll",
+    ),
+    Job(
+        key="payroll.reimbursement_reminders",
+        name="Unclaimed reimbursement reminders",
+        description=(
+            "Warns employees whose reimbursement entitlement will become taxable at year end "
+            "if no bills are submitted."
+        ),
+        cadence=Cadence.monthly(day=1, hour=8),
+        handler=_reimbursement_reminders,
+        source="app.services.loans.service.send_unclaimed_entitlement_reminders",
+        module="payroll",
+    ),
+    Job(
+        key="culture.announcement_delivery",
+        name="Announcement delivery",
+        description="Delivers announcements whose publish time has come to their audience.",
+        cadence=Cadence.every(minutes=15),
+        handler=_announcement_delivery,
+        source="app.services.culture.service.deliver_due_announcements",
+        module="culture",
+    ),
+    Job(
+        key="culture.resurvey_scheduling",
+        name="Re-survey scheduling",
+        description="Opens the next wave of every recurring survey that is due.",
+        cadence=Cadence.daily(hour=5),
+        handler=_resurvey_scheduling,
+        source="app.services.culture.surveys_portal.schedule_due_resurveys",
+        module="culture",
+    ),
+    Job(
+        key="documents.expiry_notices",
+        name="Document expiry notices",
+        description=(
+            "Tells employees when a document of theirs expires within 30 days or has expired, "
+            "and sends HR one summary — each document at most twice."
+        ),
+        cadence=Cadence.daily(hour=8),
+        handler=_document_expiry_notices,
+        source="app.services.documents.vault.send_expiry_notices",
+        module="core_hr",
+    ),
+    Job(
+        key="culture.milestones",
+        name="Work anniversaries",
+        description=(
+            "Marks the work anniversaries the company has chosen, on the feed for people who "
+            "share theirs and privately for everyone else, with points where the rule says so."
+        ),
+        cadence=Cadence.daily(hour=9),
+        handler=_milestones,
+        source="app.services.culture.milestones.celebrate_due",
+        module="culture",
+    ),
+    Job(
+        key="attendance.reminders",
+        name="Attendance reminders",
+        description=(
+            "Reminds each approver of attendance corrections waiting more than two days, and "
+            "HR when last month's attendance is still unlocked after the 3rd."
+        ),
+        cadence=Cadence.daily(hour=10),
+        handler=_attendance_reminders,
+        source="app.services.attendance.reminders.send_attendance_reminders",
+        module="leave",
+    ),
+    Job(
+        key="integrations.webhooks",
+        name="Webhook deliveries",
+        description=(
+            "Turns committed changes into webhook deliveries and sends what is due, retrying "
+            "failures with growing gaps."
+        ),
+        cadence=Cadence.every(minutes=1),
+        handler=_webhooks,
+        source="app.services.integrations.deliver_due",
+    ),
+    Job(
+        key="payroll.statutory_alerts",
+        name="Statutory change alerts",
+        description=(
+            "Tells admins once about a published change in PF, ESI, PT, LWF or tax that takes "
+            "effect within 30 days and no rule set covers yet."
+        ),
+        cadence=Cadence.daily(hour=8),
+        handler=_statutory_alerts,
+        source="app.services.statutory_watch.send_alerts",
+        module="payroll",
+    ),
+    Job(
+        key="learning.overdue_reminders",
+        name="Overdue course reminders",
+        description="Reminds people whose assigned course is overdue, at most once a week.",
+        cadence=Cadence.daily(hour=10),
+        handler=_learning_reminders,
+        source="app.services.learning.send_overdue_reminders",
+    ),
+    Job(
+        key="approvals.escalation",
+        name="Approval escalation",
+        description=(
+            "Moves a leave request or expense claim up a level when its current approver has "
+            "had it longer than their approval rule allows: to their manager, else HR."
+        ),
+        cadence=Cadence.every(60),
+        handler=_approval_escalation,
+        source="app.services.approvals.rules.escalate_due",
+        module="core_hr",
+    ),
+    Job(
+        key="hiring.candidate_messages",
+        name="Candidate emails",
+        description=(
+            "Sends queued emails to candidates — application received, interviews, offers, "
+            "decisions — through the tenant's mail relay, retrying a failed send."
+        ),
+        cadence=Cadence.every(5),
+        handler=_candidate_messages,
+        source="app.services.hiring.candidate_comms.deliver_due",
+        module="hiring",
+    ),
+    Job(
+        key="analytics.signal_digest",
+        name="People signals digest",
+        description=(
+            "On Mondays, tells HR and each line manager who in their scope meets a burnout or "
+            "absence rule, with the rule and evidence a click away. Never the pay signal."
+        ),
+        cadence=Cadence.daily(hour=9),
+        handler=_signal_digest,
+        source="app.services.reporting.analytics.send_signal_digest",
+        module="core_hr",
+    ),
+    Job(
+        key="rewards.expiry_warnings",
+        name="Points expiry warnings",
+        description="Warns each person whose reward points are about to expire.",
+        cadence=Cadence.daily(hour=9),
+        handler=_reward_expiry_warnings,
+        source="app.services.rewards.portal.send_expiry_warnings",
+        module="rewards",
     ),
     Job(
         key="devices.silence_check",
@@ -349,6 +676,17 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=9),
         handler=_probation_reminders,
         source="app.services.lifecycle.service.send_probation_reminders",
+    ),
+    Job(
+        key="autonomy.probation_agent",
+        name="Probation agent",
+        description=(
+            "Under an auto-confirm probation policy, drafts the confirmation for a review "
+            "that passed in silence and proposes it for approval."
+        ),
+        cadence=Cadence.daily(hour=10),
+        handler=_probation_agent,
+        source="app.services.autonomy.agents.probation_agent",
     ),
     Job(
         key="assets.return_reminders",
@@ -486,22 +824,6 @@ NOT_YET_REGISTERED: tuple[dict[str, str], ...] = (
     {
         "requirement": "Job-board application polling (prompt 20 §3)",
         "reason": "Ingestion is push/manual only; no poll function exists.",
-    },
-    {
-        "requirement": "Interview reminders (prompt 21 §5)",
-        "reason": "No reminder sweep function exists in the interview module.",
-    },
-    {
-        "requirement": "Appraisal stage reminders (prompt 15 §6)",
-        "reason": "No reminder sweep function exists in the appraisal module.",
-    },
-    {
-        "requirement": "Tax declaration reminders (prompt 07 §6)",
-        "reason": "No reminder sweep function exists in the tax module.",
-    },
-    {
-        "requirement": "Culture re-survey scheduling (prompt 32)",
-        "reason": "No scheduling function exists in the culture module.",
     },
     {
         "requirement": "BI connector scheduled exports (prompt 37 §1)",

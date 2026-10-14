@@ -36,6 +36,13 @@ ignore = [
 # are named for the retry decision they carry, which is the only reason the two
 # types exist. An "Error" suffix would make them read as interchangeable.
 "app/services/jobboards/base.py" = ["N818"]
+# Reuses the payroll-run flow's `org` fixture: pytest injects it by parameter
+# name, which pyflakes reads as redefining the imported name.
+"tests/integration/test_payroll_inputs_flow.py" = ["F811"]
+# Imports the hiring portal's fixtures, which pytest then injects by name.
+"tests/integration/test_candidate_comms_flow.py" = ["F811"]
+"tests/integration/test_talent_pools_flow.py" = ["F811"]
+"tests/integration/test_background_checks_flow.py" = ["F811"]
 # AdapterUnavailable says what is true — there is no adapter — and it is raised
 # alongside the two above, so an "Error" suffix on only this one would suggest a
 # different kind of thing.

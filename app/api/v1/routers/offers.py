@@ -424,7 +424,12 @@ async def accept_offer(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Record the candidate's acceptance. Candidate-side e-sign is not built."""
+    """Record an acceptance HR received outside the portal (by email, on paper).
+
+    A candidate normally accepts in their portal by typing their name against the
+    letter they were shown (`POST /public/candidate/{token}/offers/{id}/respond`),
+    which keeps the typed name, time, address and the letter's hash.
+    """
     result = await offer_service.accept_offer(
         session,
         user,

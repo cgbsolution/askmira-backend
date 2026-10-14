@@ -39,7 +39,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.hiring import Candidate, InterviewScore, Requisition
@@ -67,7 +67,7 @@ from app.services.calendar.base import (
     EventSpec,
     Transport,
 )
-from app.services.hiring import signals, visibility
+from app.services.hiring import candidate_comms, signals, visibility
 from app.services.interviews import availability
 from app.services.interviews import feedback as feedback_engine
 from app.services.notifications import dispatch
@@ -650,6 +650,10 @@ async def schedule_interview(
     interview.calendar_warnings = warnings
     await session.flush()
 
+    await candidate_comms.on_interview(
+        session, user, event_key=candidate_comms.INTERVIEW_SCHEDULED,
+        interview=interview, stage_name=stage.name, candidate=candidate,
+    )
     await dispatch.notify(
         session,
         tenant_id=user.tenant_id,
@@ -776,6 +780,11 @@ async def reschedule_interview(
         ),
         request=request,
     )
+    if candidate is not None:
+        await candidate_comms.on_interview(
+            session, user, event_key=candidate_comms.INTERVIEW_RESCHEDULED,
+            interview=interview, stage_name=stage.name, candidate=candidate,
+        )
     return {
         "interview_id": str(interview.id),
         "scheduled_start": interview.scheduled_start.isoformat(),
@@ -826,6 +835,17 @@ async def cancel_interview(
     interview.cancelled_reason = reason
     interview.calendar_warnings = warnings
     await session.flush()
+    cancelled_for = await session.scalar(
+        tenant_scoped(
+            select(Candidate).where(Candidate.id == interview.candidate_id), Candidate, user
+        )
+    )
+    if cancelled_for is not None:
+        cancelled_stage = await _stage(session, user, interview.stage_id)
+        await candidate_comms.on_interview(
+            session, user, event_key=candidate_comms.INTERVIEW_CANCELLED,
+            interview=interview, stage_name=cancelled_stage.name, candidate=cancelled_for,
+        )
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1738,6 +1758,10 @@ async def create_self_schedule_link(
         entity_id=link.id,
         summary=f"Self-scheduling link issued for '{stage.name}' with {len(cleaned)} slot(s)",
     )
+    await candidate_comms.on_self_schedule_link(
+        session, user, candidate=candidate, stage_name=stage.name, token=token,
+        expires_at=link.expires_at, timezone_name=candidate_timezone,
+    )
     return link, token
 
 
@@ -1760,7 +1784,7 @@ async def view_self_schedule(
         )
     stage = await session.scalar(
         select(InterviewStage).where(
-            InterviewStage.id == link.stage_id, InterviewStage.tenant_id == link.tenant_id
+            InterviewStage.id == link.stage_id, tenant_filter(InterviewStage, link.tenant_id)
         )
     )
     tenant = await session.get(Tenant, link.tenant_id)
@@ -1769,7 +1793,7 @@ async def view_self_schedule(
         interview = await session.scalar(
             select(Interview).where(
                 Interview.id == link.booked_interview_id,
-                Interview.tenant_id == link.tenant_id,
+                tenant_filter(Interview, link.tenant_id),
             )
         )
         if interview is not None:

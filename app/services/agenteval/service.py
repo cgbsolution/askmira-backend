@@ -578,6 +578,19 @@ async def promote_feedback_to_case(
     return case_row
 
 
+#: The model-backed agents that run in production (`services/ai/`). Listed so
+#: one without a suite shows up under `agents_without_suites` rather than not
+#: at all.
+PRODUCTION_AGENTS: tuple[str, ...] = (
+    "assistant",
+    "recognition_draft",
+    "survey_topics",
+    "analytics_questions",
+    "jd_draft",
+    "resume_screening",
+)
+
+
 async def coverage(session: AsyncSession, user: User) -> dict[str, Any]:
     """Which agents have suites, and what is missing.
 
@@ -591,7 +604,7 @@ async def coverage(session: AsyncSession, user: User) -> dict[str, Any]:
 
     known_agents = {
         key for key in fixtures.AGENTS if not key.endswith("_defective")
-    }
+    } | set(PRODUCTION_AGENTS)
 
     return {
         "suites": [
@@ -609,10 +622,10 @@ async def coverage(session: AsyncSession, user: User) -> dict[str, Any]:
         ],
         "agents_without_suites": sorted(known_agents - registered),
         "not_built": (
-            "No production AI agent exists in this codebase yet. The "
-            "implementations these suites run against are reference "
-            "implementations in services/agenteval/fixtures.py, including a "
-            "reconstruction of the Fit Score defect. The suites are real; the "
-            "agents they will guard are slices 28 and 29."
+            "The production agents in services/ai/ call the live model, and none "
+            "of them has an eval suite run against it yet; each is listed under "
+            "agents_without_suites. The suites registered here run against "
+            "reference implementations in services/agenteval/fixtures.py, "
+            "including a reconstruction of the Fit Score defect."
         ),
     }

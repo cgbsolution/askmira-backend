@@ -156,6 +156,10 @@ DIRECT_IDENTIFIER_PATTERNS: tuple[str, ...] = (
 #: which hold no personal data. Every one carries the reason, because an
 #: exemption without one is indistinguishable from an oversight.
 EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
+    ("webhook_endpoints", "secret_encrypted"): (
+        "The key the workspace's webhook deliveries are signed with. A credential of an "
+        "integration, about no person; encrypted at rest."
+    ),
     ("leave_policies", "applies_to_gender"): (
         "Which population a leave policy covers ('female' for maternity leave). A rule "
         "about a group, stored once per policy; it records nobody's gender."
@@ -251,6 +255,7 @@ TABLES: dict[str, TableClassification] = {
     "encashment_policies": _none("Encashment rules."),
     "salary_components": _none("Component definitions: basic, HRA, special allowance."),
     "salary_structures": _none("Named structures built from those components."),
+    "pay_grades": _none("The company's grades and the CTC band for each."),
     "salary_structure_components": _none("A structure's component rows and formulas."),
     "payroll_rule_sets": _none(
         "Effective-dated statutory rates: PF ceilings, ESI thresholds, PT slabs. "
@@ -303,6 +308,7 @@ TABLES: dict[str, TableClassification] = {
     "position_scenarios": _none("A what-if org plan, worked in draft."),
     "position_scenario_changes": _none("The changes a scenario proposes."),
     "reports": _none("A saved report definition — its fields, filters and visibility."),
+    "dashboard_widgets": _none("Which saved reports a person pinned to their dashboard."),
     "report_schedules": _none("When a saved report runs and who it goes to."),
     "clubs": _none("Employee interest groups: their name, description and rules."),
     "lifecycle_batches": _none(
@@ -317,6 +323,13 @@ TABLES: dict[str, TableClassification] = {
         "payslips."
     ),
     "attendance_period_locks": _none("Which attendance periods are frozen."),
+    "ledger_mappings": _none(
+        "Which accounting ledger each payslip line code posts to. Configuration."
+    ),
+    "overtime_policies": _none(
+        "How overtime is counted and priced for a location: multiplier, wage "
+        "components, divisors and caps. Configuration, about nobody."
+    ),
     "bulk_letter_jobs": _none("The header of a bulk letter generation job."),
     "tds_challans": _none(
         "A challan the employer deposited: BSR code, amount, date. The "
@@ -436,6 +449,17 @@ TABLES: dict[str, TableClassification] = {
     "reimbursement_claims": _p(EMP, "compensation"),
     "encashment_requests": _p(EMP, "leave"),
     "loan_accounts": _p(EMP, "compensation"),
+    "payroll_adjustments": _p(EMP, "compensation"),
+    "company_document_acknowledgements": _p(
+        EMP,
+        "governance_record",
+        {"ip_address": "account_security", "user_agent": "account_security"},
+    ),
+    "payroll_adjustment_applications": _p(EMP, "compensation"),
+    "overtime_entries": _p(
+        EMP, "attendance", {"hourly_rate": "compensation", "amount": "compensation"}
+    ),
+    "shift_allowance_payments": _p(EMP, "compensation"),
     "loan_repayments": _p(EMP, "compensation"),
     "gratuity_accruals": _p(EMP, "compensation"),
     "gratuity_payouts": _p(EMP, "compensation"),
@@ -468,6 +492,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     "previous_employer_incomes": _p(EMP, "tax"),
     "tds_challan_mappings": _p(EMP, "tax"),
+    "form16_part_a": _p(EMP, "tax"),
     # ── Attendance and leave ────────────────────────────────────────────────
     "attendance_days": _p(EMP, "attendance"),
     "attendance_punches": _p(
@@ -478,6 +503,52 @@ TABLES: dict[str, TableClassification] = {
     "attendance_regularisations": _p(EMP, "attendance"),
     "shift_assignments": _p(EMP, "attendance"),
     "roster_assignments": _p(EMP, "attendance"),
+    "shift_swap_requests": _p(EMP, "attendance"),
+    "statutory_notices": _none("A change in labour or tax law, published for every workspace."),
+    "statutory_notice_alerts": _none("That a workspace was told about a statutory change."),
+    "api_keys": _none("A hashed key the customer's own systems read the workspace with."),
+    "webhook_endpoints": _none("Where the customer wants change events sent."),
+    "webhook_deliveries": _none(
+        "One event sent to a customer endpoint: the entity type and id, and the audit "
+        "summary of what changed.",
+        {"payload": "audit_trail"},
+    ),
+    "courses": _none("A course HR wrote: its modules, quiz and pass mark."),
+    "course_assignments": _p(EMP, "performance"),
+    "esop_plans": _none("A stock option plan: its pool and default vesting."),
+    "esop_valuations": _none("The fair value per unit from a date, as the valuer set it."),
+    "esop_grants": _p(EMP, "compensation"),
+    "esop_exercises": _p(EMP, "compensation"),
+    "ewa_requests": _p(EMP, "financial"),
+    # A contractor may be a sole proprietor: a person, outside the workforce.
+    "contractors": _p(
+        THIRD,
+        "identity",
+        {"pan": "statutory_identifier", "email": "identity", "gstin": "statutory_identifier"},
+    ),
+    "contractor_invoices": _none("An invoice from a contractor and the TDS deducted on it."),
+    "projects": _none("A project people log time against."),
+    "timesheets": _p(EMP, "attendance"),
+    "timesheet_entries": _p(EMP, "attendance"),
+    "hourly_rates": _p(EMP, "compensation"),
+    "custom_table_definitions": _none("The design of an extra table on the employee record."),
+    "custom_table_rows": _p(EMP, "identity", {"values": "identity"}),
+    "benefit_plans": _none("A group policy the company buys: insurer, cover, premium."),
+    "benefit_enrolments": _p(EMP, "dependent", {"members": "dependent"}),
+    "benefit_life_events": _p(EMP, "dependent", {"add_members": "dependent"}),
+    "benefit_member_changes": _p(EMP, "dependent", {"member": "dependent"}),
+    "reward_catalogue_items": _none("What recognition points can be spent on."),
+    "operator_grants": _p(USER, "account_security", {"operator_email": "identity"}),
+    "assistant_articles": _none("Company policy text HR wrote for the assistant to cite."),
+    "survey_topic_summaries": _none(
+        "Paraphrased themes counted across anonymous survey comments; no respondent link."
+    ),
+    "candidate_screenings": _p(THIRD, "recruitment"),
+    "polls": _none("A question HR asked the company, and its options."),
+    "poll_votes": _p(EMP, "culture_response"),
+    "team_events": _none("A company event people answer: when, where, how many places."),
+    "event_rsvps": _p(EMP, "culture_response"),
+    "kiosk_pins": _p(EMP, "account_security"),
     "device_punch_exceptions": _p(EMP, "attendance"),
     "leave_balances": _p(EMP, "leave"),
     "leave_requests": _p(EMP, "leave"),
@@ -518,6 +589,28 @@ TABLES: dict[str, TableClassification] = {
     "candidate_consents": _p(CAND, "recruitment"),
     "candidate_portal_tokens": _p(
         CAND, "account_security", {"token_hash": "account_security"}
+    ),
+    "background_checks": _p(
+        CAND,
+        "background_check",
+        {
+            "consent_typed_name": "identity",
+            "consent_ip": "account_security",
+            "consent_user_agent": "account_security",
+        },
+    ),
+    "talent_pools": _none(
+        "A named list a recruiter keeps candidates in. The name and description are "
+        "about roles, not people; membership is in talent_pool_members."
+    ),
+    "talent_pool_members": _p(CAND, "recruitment"),
+    "candidate_messages": _p(
+        CAND,
+        "communication",
+        {
+            "to_address": "identity",
+            "secret_link_encrypted": "account_security",
+        },
     ),
     "applications": _p(CAND, "recruitment"),
     "interviews": _p(CAND, "recruitment", secondary_principal=EMP),
@@ -598,6 +691,29 @@ TABLES: dict[str, TableClassification] = {
         },
         # Who asked to reset their password, from where, and whether the link
         # was used — the trail an account-takeover investigation starts from.
+    ),
+    "exit_interviews": _p(EMP, "organisational", {"comments": "organisational"}),
+    "milestone_rules": _none(
+        "Which work anniversaries the company marks, and how. Configuration."
+    ),
+    "approval_rules": _none(
+        "Who approves leave and expenses under which conditions. Workflow configuration."
+    ),
+    "approval_delegations": _p(USER, "organisational"),
+    "user_area_rights": _none(
+        "Which rights a sub-admin holds in each area. Access configuration about a "
+        "login, not personal data about the person."
+    ),
+    "admin_scopes": _none(
+        "Which departments and locations a sub-admin covers. Access configuration."
+    ),
+    "user_mfa": _p(
+        USER,
+        "account_security",
+        {
+            "secret_encrypted": "account_security",
+            "recovery_code_hashes": "account_security",
+        },
     ),
     "step_up_challenges": _p(
         USER,

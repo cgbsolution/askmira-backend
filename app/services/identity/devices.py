@@ -34,6 +34,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import tenant_filter
 from app.models.attendance import (
     AttendancePunch,
     PunchDirection,
@@ -66,6 +67,7 @@ __all__ = [
     "resolve_exception",
     "rotate_token",
     "silent_devices",
+    "touch",
     "update_device",
 ]
 
@@ -113,7 +115,7 @@ async def create_device(
     """
     duplicate = await session.scalar(
         select(DeviceIntegration.id).where(
-            DeviceIntegration.tenant_id == user.tenant_id,
+            tenant_filter(DeviceIntegration, user.tenant_id),
             DeviceIntegration.device_id == device_id,
         )
     )
@@ -356,7 +358,7 @@ async def ingest_punches(
         rows = (
             await session.scalars(
                 select(Employee).where(
-                    Employee.tenant_id == device.tenant_id,
+                    tenant_filter(Employee, device.tenant_id),
                     Employee.employee_code.in_(codes),
                     Employee.deleted_at.is_(None),
                 )
@@ -373,7 +375,7 @@ async def ingest_punches(
         rows = (
             await session.scalars(
                 select(AttendancePunch).where(
-                    AttendancePunch.tenant_id == device.tenant_id,
+                    tenant_filter(AttendancePunch, device.tenant_id),
                     AttendancePunch.device_id == device.device_id,
                     AttendancePunch.punched_at >= earliest,
                     AttendancePunch.punched_at <= latest,
@@ -425,12 +427,16 @@ async def ingest_punches(
         )
         result.accepted += 1
 
+    touch(device)
+    await session.commit()
+    return result
+
+
+def touch(device: DeviceIntegration) -> None:
+    """The device has been heard from: it is no longer silent."""
     device.last_seen_at = datetime.now(UTC)
     if device.status is DeviceStatus.SILENT:
         device.status = DeviceStatus.ACTIVE
-
-    await session.commit()
-    return result
 
 
 async def silent_devices(session: AsyncSession, tenant_id: uuid.UUID) -> list[DeviceIntegration]:
@@ -442,7 +448,7 @@ async def silent_devices(session: AsyncSession, tenant_id: uuid.UUID) -> list[De
     devices = (
         await session.scalars(
             select(DeviceIntegration).where(
-                DeviceIntegration.tenant_id == tenant_id,
+                tenant_filter(DeviceIntegration, tenant_id),
                 DeviceIntegration.status != DeviceStatus.DISABLED,
             )
         )
@@ -478,13 +484,14 @@ def _snapshot(device: DeviceIntegration) -> dict[str, Any]:
         "work_location_id": str(device.work_location_id) if device.work_location_id else None,
         "assumed_timezone": device.assumed_timezone,
         "silence_threshold_minutes": device.silence_threshold_minutes,
+        "accepts_serial_push": device.accepts_serial_push,
     }
 
 
 async def list_devices(session: AsyncSession, user) -> list[DeviceIntegration]:
     stmt = (
         select(DeviceIntegration)
-        .where(DeviceIntegration.tenant_id == user.tenant_id)
+        .where(tenant_filter(DeviceIntegration, user.tenant_id))
         .order_by(DeviceIntegration.name)
     )
     return list((await session.scalars(stmt)).all())
@@ -493,7 +500,7 @@ async def list_devices(session: AsyncSession, user) -> list[DeviceIntegration]:
 async def get_device(session: AsyncSession, user, device_pk: uuid.UUID) -> DeviceIntegration:
     device = await session.scalar(
         select(DeviceIntegration).where(
-            DeviceIntegration.tenant_id == user.tenant_id, DeviceIntegration.id == device_pk
+            tenant_filter(DeviceIntegration, user.tenant_id), DeviceIntegration.id == device_pk
         )
     )
     if device is None:
@@ -508,7 +515,7 @@ async def _check_work_location(
         return
     found = await session.scalar(
         select(WorkLocation.id).where(
-            WorkLocation.tenant_id == user.tenant_id, WorkLocation.id == work_location_id
+            tenant_filter(WorkLocation, user.tenant_id), WorkLocation.id == work_location_id
         )
     )
     if found is None:
@@ -554,6 +561,7 @@ async def update_device(
     assumed_timezone: str | None = None,
     silence_threshold_minutes: int | None = None,
     enabled: bool | None = None,
+    accepts_serial_push: bool | None = None,
     request=None,
 ) -> DeviceIntegration:
     device = await get_device(session, user, device_pk)
@@ -570,6 +578,24 @@ async def update_device(
         device.assumed_timezone = assumed_timezone
     if silence_threshold_minutes is not None:
         device.silence_threshold_minutes = silence_threshold_minutes
+    if accepts_serial_push is True and not device.accepts_serial_push:
+        taken = await session.scalar(
+            select(DeviceIntegration.id).where(
+                DeviceIntegration.device_id == device.device_id,
+                DeviceIntegration.accepts_serial_push.is_(True),
+                DeviceIntegration.id != device.id,
+            )
+        )
+        if taken is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Another workspace already takes pushes from this serial number. Point "
+                    "the device at its token address instead."
+                ),
+            )
+    if accepts_serial_push is not None:
+        device.accepts_serial_push = accepts_serial_push
     if enabled is False:
         device.status = DeviceStatus.DISABLED
     elif enabled is True and device.status is DeviceStatus.DISABLED:
@@ -594,7 +620,7 @@ async def update_device(
 async def list_exceptions(
     session: AsyncSession, user, *, include_resolved: bool = False
 ) -> list[DevicePunchException]:
-    stmt = select(DevicePunchException).where(DevicePunchException.tenant_id == user.tenant_id)
+    stmt = select(DevicePunchException).where(tenant_filter(DevicePunchException, user.tenant_id))
     if not include_resolved:
         stmt = stmt.where(DevicePunchException.resolved_at.is_(None))
     stmt = stmt.order_by(DevicePunchException.punched_at.desc()).limit(1000)
@@ -615,7 +641,7 @@ async def ingestion_status(session: AsyncSession, user) -> IngestionStatus:
         stmt = (
             select(AttendancePunch.device_id, func.count())
             .where(
-                AttendancePunch.tenant_id == user.tenant_id,
+                tenant_filter(AttendancePunch, user.tenant_id),
                 AttendancePunch.device_id.is_not(None),
                 AttendancePunch.created_at >= since,
             )
@@ -628,7 +654,7 @@ async def ingestion_status(session: AsyncSession, user) -> IngestionStatus:
     open_stmt = (
         select(DevicePunchException.device_id, func.count())
         .where(
-            DevicePunchException.tenant_id == user.tenant_id,
+            tenant_filter(DevicePunchException, user.tenant_id),
             DevicePunchException.resolved_at.is_(None),
         )
         .group_by(DevicePunchException.device_id)
@@ -691,7 +717,7 @@ async def resolve_exception(
 
     record = await session.scalar(
         select(DevicePunchException).where(
-            DevicePunchException.tenant_id == user.tenant_id,
+            tenant_filter(DevicePunchException, user.tenant_id),
             DevicePunchException.id == exception_id,
         )
     )
@@ -712,7 +738,7 @@ async def resolve_exception(
 
     employee = await session.scalar(
         select(Employee).where(
-            Employee.tenant_id == user.tenant_id,
+            tenant_filter(Employee, user.tenant_id),
             Employee.id == employee_id,
             Employee.deleted_at.is_(None),
         )
@@ -722,7 +748,7 @@ async def resolve_exception(
 
     device = await session.scalar(
         select(DeviceIntegration).where(
-            DeviceIntegration.tenant_id == user.tenant_id,
+            tenant_filter(DeviceIntegration, user.tenant_id),
             DeviceIntegration.device_id == record.device_id,
         )
     )
@@ -739,7 +765,7 @@ async def resolve_exception(
 
     already = await session.scalar(
         select(AttendancePunch.id).where(
-            AttendancePunch.tenant_id == user.tenant_id,
+            tenant_filter(AttendancePunch, user.tenant_id),
             AttendancePunch.employee_id == employee.id,
             AttendancePunch.punched_at == record.punched_at,
             AttendancePunch.direction == direction,

@@ -58,6 +58,7 @@ __all__ = [
     "record_delivery",
     "record_drill",
     "record_finding",
+    "require_fresh_step_up",
     "require_step_up",
     "revoke_session",
     "satisfy_challenge",
@@ -462,12 +463,40 @@ async def require_step_up(
         "action_key": action_key,
         "reason": challenge.reason,
         "window_minutes": int(access.STEP_UP_WINDOW.total_seconds() // 60),
-        "not_built": (
-            "No second factor is implemented, so nothing can currently satisfy "
-            "this challenge through a real verification. `satisfy_challenge` "
-            "records a claim; it does not check one."
-        ),
     }
+
+
+async def require_fresh_step_up(
+    session: AsyncSession, user: User, action_key: str, *, now: datetime | None = None
+) -> None:
+    """Refuse the action unless this person proved who they are for it just now.
+
+    Proof is a challenge for this exact action, satisfied within the step-up
+    window — the password re-entered and, with two-step sign-in on, a code.
+    The refusal is a 428 naming the action, so the web app can ask and retry.
+    """
+    if not access.requires_step_up(action_key):
+        return
+    moment = now or datetime.now(UTC)
+    fresh = await session.scalar(
+        tenant_scoped(
+            select(StepUpChallenge.id).where(
+                StepUpChallenge.user_id == user.id,
+                StepUpChallenge.action_key == action_key,
+                StepUpChallenge.satisfied_at.is_not(None),
+                StepUpChallenge.satisfied_at >= moment - access.STEP_UP_WINDOW,
+                StepUpChallenge.satisfied_at <= moment,
+            ),
+            StepUpChallenge,
+            user,
+        )
+    )
+    if fresh is None:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail=f"Confirm it is you first. {access.step_up_reason(action_key)}",
+            headers={"X-Step-Up-Action": action_key},
+        )
 
 
 async def satisfy_challenge(
@@ -527,10 +556,6 @@ async def satisfy_challenge(
         "challenge_id": str(challenge.id),
         "satisfied": succeeded,
         "failed_attempts": challenge.failed_attempts,
-        "not_built": (
-            "No second factor was verified. This records the claim so the "
-            "shape of the flow exists; it is not authentication."
-        ),
     }
 
 

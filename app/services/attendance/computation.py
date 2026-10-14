@@ -227,21 +227,13 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
 
     # ── 1. Holiday ──────────────────────────────────────────────────────────
     if inputs.is_holiday:
-        return ComputedDay(
-            attendance_date=day,
-            status=AttendanceStatus.HOLIDAY,
-            payable_fraction=Decimal(1),
-            note=inputs.holiday_name or "Public holiday",
+        return _rest_day(
+            inputs, AttendanceStatus.HOLIDAY, inputs.holiday_name or "Public holiday"
         )
 
     # ── 2. Weekly off ───────────────────────────────────────────────────────
     if inputs.roster_week_off or _is_weekly_off(shift, day):
-        return ComputedDay(
-            attendance_date=day,
-            status=AttendanceStatus.WEEK_OFF,
-            payable_fraction=Decimal(1),
-            note="Weekly off",
-        )
+        return _rest_day(inputs, AttendanceStatus.WEEK_OFF, "Weekly off")
 
     # ── 3. Approved leave — beats any punch ─────────────────────────────────
     # Someone on approved leave who walks in and badges is still on leave. The
@@ -347,6 +339,39 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         overtime_minutes=(
             _overtime(shift, worked_minutes) if status is AttendanceStatus.PRESENT else 0
         ),
+        note=note,
+    )
+
+
+def _rest_day(inputs: DayInputs, rest_status: AttendanceStatus, note: str) -> ComputedDay:
+    """A holiday or weekly off: payable whatever happens, and any work on it is overtime.
+
+    Work on a rest day is recorded rather than discarded: every worked minute is
+    beyond the (zero) scheduled minutes, so it is all overtime. Whether that
+    overtime is counted and paid is the overtime policy's decision, not this
+    one's. An unpaired punch on a rest day leaves the day as it is — nobody is
+    asked to regularise a day off.
+    """
+    if inputs.punches:
+        worked, first_in, last_out, has_unpaired = _pair_punches(inputs.punches)
+        if not has_unpaired and worked > 0:
+            break_minutes = inputs.shift.break_minutes if inputs.shift is not None else 0
+            worked = max(0, worked - break_minutes)
+            if worked > 0:
+                return ComputedDay(
+                    attendance_date=inputs.attendance_date,
+                    status=rest_status,
+                    payable_fraction=Decimal(1),
+                    worked_minutes=worked,
+                    first_in=first_in,
+                    last_out=last_out,
+                    overtime_minutes=worked,
+                    note=f"{note} — worked {worked} minutes",
+                )
+    return ComputedDay(
+        attendance_date=inputs.attendance_date,
+        status=rest_status,
+        payable_fraction=Decimal(1),
         note=note,
     )
 

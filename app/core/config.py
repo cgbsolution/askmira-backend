@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     STORAGE_BACKEND: Literal["local", "supabase"] = "local"
     FILE_STORAGE_ROOT: str | None = None
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+    #: An uploaded archive of many files, such as the Form 16 Part A ZIP from TRACES.
+    MAX_ARCHIVE_BYTES: int = 200 * 1024 * 1024
 
     # Project Settings -> API. The service-role key bypasses Row Level Security,
     # so it stays on the server and is used for Storage only - never Auth.
@@ -85,7 +87,7 @@ class Settings(BaseSettings):
 
     # ── AI (V2+) ────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str | None = None
-    AI_MODEL: str = "claude-sonnet-5"
+    AI_MODEL: str = "claude-opus-5-5"
 
     # ── Email over SMTP (slice 05) ──────────────────────────────────────────
     # The platform relay. A tenant may configure its own relay instead, stored

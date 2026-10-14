@@ -27,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.loans import (
@@ -996,7 +996,7 @@ async def send_unclaimed_entitlement_reminders(
     rows = (
         await session.execute(
             select(UserModel.id, UserModel.employee_id).where(
-                UserModel.tenant_id == tenant_id,
+                tenant_filter(UserModel, tenant_id),
                 UserModel.is_active.is_(True),
                 UserModel.employee_id.is_not(None),
             )
@@ -1005,7 +1005,7 @@ async def send_unclaimed_entitlement_reminders(
     payloads = (
         await session.scalars(
             select(Notification.payload).where(
-                Notification.tenant_id == tenant_id,
+                tenant_filter(Notification, tenant_id),
                 Notification.event_key == EVENT_UNCLAIMED,
             )
         )

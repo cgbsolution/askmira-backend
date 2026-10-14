@@ -17,7 +17,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -41,7 +41,7 @@ from app.schemas.rewards import (
     ValuationCreate,
     ValuationRead,
 )
-from app.services.rewards import portal
+from app.services.rewards import catalogue, portal
 from app.services.rewards import service as rewards
 from app.services.rewards import tax as tax_engine
 
@@ -246,6 +246,11 @@ async def redeem_points(
     employee_id = permissions.resolve_employee(
         user, body.employee_id, detail="You can only redeem your own points."
     )
+    if not permissions.is_hr(user) and await catalogue.has_catalogue(session, user):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Choose an item from the rewards catalogue.",
+        )
     return await rewards.redeem_points(
         session,
         user,
@@ -438,3 +443,47 @@ async def run_reconciliation(
         period_label=body.period_label,
         request=request,
     )
+
+
+
+# ── Catalogue ───────────────────────────────────────────────────────────────
+
+
+@router.get("/rewards/catalogue")
+async def list_catalogue(
+    session: DbSession, user: CurrentUser, include_inactive: bool = False
+) -> list[dict[str, Any]]:
+    """What points can be spent on, cheapest first in each category."""
+    return await catalogue.list_items(session, user, include_inactive=include_inactive)
+
+
+@router.post(
+    "/rewards/catalogue",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
+)
+async def create_catalogue_item(
+    body: catalogue.CatalogueItemIn, session: DbSession, user: CurrentUser, request: Request
+) -> dict[str, Any]:
+    return await catalogue.create_item(session, user, body, request=request)
+
+
+@router.patch(
+    "/rewards/catalogue/{item_id}", dependencies=[Depends(require_roles(*ADMIN_ROLES))]
+)
+async def update_catalogue_item(
+    item_id: uuid.UUID,
+    body: catalogue.CatalogueItemUpdate,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+) -> dict[str, Any]:
+    return await catalogue.update_item(session, user, item_id, body, request=request)
+
+
+@router.post("/rewards/catalogue/{item_id}/redeem", status_code=status.HTTP_201_CREATED)
+async def redeem_catalogue_item(
+    item_id: uuid.UUID, session: DbSession, user: CurrentUser, request: Request
+) -> dict[str, Any]:
+    """Spend your points on one item; one is taken from stock."""
+    return await catalogue.redeem_item(session, user, item_id, request=request)

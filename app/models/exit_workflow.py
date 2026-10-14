@@ -134,6 +134,11 @@ class ExitRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_rehire_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: Why: a "no" without a reason is a blacklist nobody can examine.
+    rehire_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rehire_decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # ── Self-resignation ────────────────────────────────────────────────────
     # An exit the employee submitted themselves waits for their line manager or
@@ -367,3 +372,53 @@ class SettlementLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     settlement: Mapped[Settlement] = relationship(back_populates="lines")
+
+
+#: Why people leave, as HR codes it. Free text alone cannot be counted.
+EXIT_REASONS: tuple[str, ...] = (
+    "compensation",
+    "career_growth",
+    "manager",
+    "role_or_work",
+    "work_life_balance",
+    "culture",
+    "relocation",
+    "higher_studies",
+    "health_or_family",
+    "better_opportunity",
+    "other",
+)
+
+
+class ExitInterview(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """What a leaver said about leaving: one per exit.
+
+    Recorded by HR from a conversation, or filled in by the leaver themselves.
+    The manager of the leaver never reads it individually — answers about one's
+    manager are only honest when the manager cannot see them — and the summary
+    reports reasons and ratings in aggregate.
+    """
+
+    __tablename__ = "exit_interviews"
+    __table_args__ = (UniqueConstraint("exit_id", name="uq_exit_interview_once"),)
+
+    exit_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("exit_records.id", ondelete="CASCADE"), nullable=False
+    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        index=True,
+    )
+    #: "conversation" (HR recorded it) or "self" (the leaver filled it in).
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    primary_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    other_reasons: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    #: 1-5 for each of: manager, growth, compensation, culture, work_life.
+    ratings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    would_recommend: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    would_return: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    conducted_on: Mapped[date] = mapped_column(Date, nullable=False)

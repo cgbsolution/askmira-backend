@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import uuid
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DDL, Boolean, Enum, ForeignKey, String, Text, UniqueConstraint, event
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -46,7 +46,7 @@ class AuditLog(Base, UUIDMixin, TenantMixin, TimestampMixin):
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # "user" | "system" | "ai_companion" | "mcp_agent" — an AI action must be
+    # "user" | "system" | "ai_companion" | "mcp_agent" | "operator" — an AI action must be
     # distinguishable from a human one in the log, not inferred.
     actor_type: Mapped[str] = mapped_column(String(32), default="user", nullable=False)
 
@@ -67,6 +67,42 @@ class AuditLog(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # For AI actions: model, prompt id, token counts, and whether a human
     # approved the outcome.
     ai_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+#: Insert-only, enforced by the database rather than by convention. A row can
+#: be written and read; any UPDATE or DELETE raises — with one exception, the
+#: `ON DELETE SET NULL` of `actor_user_id` when a user row is removed, which
+#: changes nothing else on the row. Removing a whole tenant's trail (contract
+#: end) needs a DBA to disable the trigger, deliberately, outside the app.
+AUDIT_INSERT_ONLY_SQL: tuple[str, ...] = (
+    """
+CREATE OR REPLACE FUNCTION audit_logs_insert_only() RETURNS trigger AS $$
+DECLARE
+    unlinked audit_logs%ROWTYPE;
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.actor_user_id IS NOT NULL AND NEW.actor_user_id IS NULL THEN
+        unlinked := OLD;
+        unlinked.actor_user_id := NULL;
+        IF unlinked IS NOT DISTINCT FROM NEW THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+    RAISE EXCEPTION 'audit_logs is insert-only: % is not allowed', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql
+""",
+    "DROP TRIGGER IF EXISTS audit_logs_insert_only ON audit_logs",
+    """
+CREATE TRIGGER audit_logs_insert_only
+    BEFORE UPDATE OR DELETE ON audit_logs
+    FOR EACH ROW EXECUTE FUNCTION audit_logs_insert_only()
+""",
+)
+
+for _statement in AUDIT_INSERT_ONLY_SQL:
+    # DDL formats its string with %, so the RAISE's placeholder is doubled here.
+    event.listen(AuditLog.__table__, "after_create", DDL(_statement.replace("%", "%%")))
 
 
 class RoleModulePermission(Base, UUIDMixin, TenantMixin, TimestampMixin):

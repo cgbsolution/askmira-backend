@@ -64,6 +64,12 @@ async def record(
     Flushed but not committed — the caller's commit is what makes both the
     change and its audit record durable, together.
     """
+    # An operator working in a client's workspace is recorded as one, with the
+    # grant they came in on — the client can tell their own staff from the bureau.
+    grant_id = getattr(actor, "operator_grant_id", None) if actor is not None else None
+    if grant_id is not None and actor_type == "user":
+        actor_type = "operator"
+        changes = {**(changes or {}), "operator_grant_id": str(grant_id)}
     entry = AuditLog(
         tenant_id=tenant_id,
         actor_user_id=actor_user_id if actor_user_id is not None else (actor.id if actor else None),

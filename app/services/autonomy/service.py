@@ -5,10 +5,9 @@ beside this. An invariant checks the isolation, and a second one checks the
 protected actions directly by key — so the ceiling cannot be lifted by editing a
 config row, a request body, this file, or the catalogue's `max_autonomy` field.
 
-**No agent creates a proposal in production**, because no agent exists.
-`propose` is the entry point one will use, and the tests drive it directly. It is
-built now for the same reason slice 28's pipeline was: a safety step added after
-the call sites work without it does not get added.
+`propose` is the one entry point an agent uses. The agents that call it live
+in `agents.py`; today that is the probation agent, which proposes the
+confirmations a tenant's auto-confirm probation policy calls for.
 """
 
 from __future__ import annotations
@@ -804,8 +803,10 @@ async def transparency_surface(
             await decision_stats(session, user) if permissions.is_hr(user) else None
         ),
         "not_built": [
-            "No agent creates proposals in production — the agent layer is not "
-            "built. Every proposal here was created by a test or a manual call.",
+            "One agent creates proposals: the probation agent "
+            "(lifecycle.raise_confirmation), daily, under an auto-confirm probation "
+            "policy. The other actions in the catalogue have no agent yet, so any "
+            "proposal for them came from a manual call.",
             "Approving applies the change, and reverting restores it, only for "
             "regularisations, expense claims, candidates and lifecycle events; any "
             "other subject type is recorded as a decision and its record is not "

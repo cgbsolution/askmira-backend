@@ -22,6 +22,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import tenant_filter
 from app.models.hiring import CandidateStage, CandidateStageEvent, Requisition, RequisitionStatus
 from app.models.jobboard import CareersPageConfig, ConsentPurpose, JobBoard
 from app.models.user import UserRole
@@ -87,7 +88,7 @@ async def submit_application(
 
     requisition = await session.scalar(
         select(Requisition).where(
-            Requisition.tenant_id == config.tenant_id,
+            tenant_filter(Requisition, config.tenant_id),
             Requisition.code == code,
             Requisition.status == RequisitionStatus.OPEN,
         )
@@ -156,6 +157,15 @@ async def submit_application(
     row, token = await careers.issue_portal_token(
         session, actor, candidate_id=outcome.candidate.id
     )
+    from app.services.hiring import candidate_comms
+
+    await candidate_comms.on_portal_link(
+        session, actor, candidate=outcome.candidate, token=token,
+        event_key=candidate_comms.APPLICATION_RECEIVED,
+        # The role applied for, which for a returning candidate may not be the
+        # one their record was first created against.
+        payload={"job_title": requisition.title},
+    )
     return {
         "applied": True,
         "portal_token": token,
@@ -163,7 +173,7 @@ async def submit_application(
         "retention_days": config.resume_retention_days,
         "resume_stored": resume_key is not None,
         "message": (
-            "Your application is in. Keep the link below — it shows your application's "
-            "progress and you will not need an account. It is shown once."
+            "Your application is in. We have emailed you a link that shows its progress, "
+            "with no account needed; it is also below, shown once."
         ),
     }

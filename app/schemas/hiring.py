@@ -82,6 +82,8 @@ class RequisitionUpdate(BaseModel):
     budget_ctc_max: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     justification: str | None = Field(default=None, max_length=4000)
     description: str | None = Field(default=None, max_length=20000)
+    #: The description being saved started from an AI draft.
+    description_ai_assisted: bool | None = None
     skills: list[str] | None = Field(default=None, max_length=50)
     target_joining_date: date | None = None
     target_close_date: date | None = None
@@ -132,6 +134,9 @@ class RequisitionDetail(RequisitionSummary):
     budget_ctc_max: Decimal | None
     justification: str | None
     description: str | None
+    description_ai_assisted: bool = False
+    #: Each published wording's version and date; the bodies stay server-side.
+    jd_versions: list[dict[str, Any]] = Field(default_factory=list)
     skills: list[str]
     replacement_for_employee_id: uuid.UUID | None
     target_joining_date: date | None
@@ -198,11 +203,41 @@ class CandidateSummary(BaseModel):
     created_at: datetime
     allowed_moves: list[str] = Field(default_factory=list)
     possible_duplicate: bool = False
+    tags: list[str] = Field(default_factory=list)
+
+
+class CandidateTags(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=40)
+
+
+class TalentPoolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class TalentPoolUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class TalentPoolAdd(BaseModel):
+    candidate_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class StageMove(BaseModel):
     to_stage: CandidateStage
     reason: str | None = Field(default=None, max_length=2000)
+    #: For a rejection: email the candidate (after a day's hold). Off for, say,
+    #: a duplicate profile nobody should write to.
+    notify_candidate: bool = True
+
+
+class CandidateMessageCreate(BaseModel):
+    subject: str = Field(min_length=1, max_length=300)
+    message: str = Field(min_length=1, max_length=10_000)
+    #: Add a fresh portal link, so they can reply with documents or see progress.
+    include_portal_link: bool = False
 
 
 class StageMoveResult(BaseModel):

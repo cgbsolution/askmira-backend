@@ -46,6 +46,9 @@ class DeviceUpdate(BaseModel):
     silence_threshold_minutes: int | None = Field(default=None, ge=15, le=10_080)
     #: `silent` is set by the silence check, never by a person.
     enabled: bool | None = None
+    #: Let the device push by serial number alone (ADMS/iclock firmware that
+    #: takes only a host and port).
+    accepts_serial_push: bool | None = None
 
     @field_validator("assumed_timezone")
     @classmethod
@@ -66,6 +69,7 @@ class DeviceRead(BaseModel):
     last_seen_at: datetime | None
     silence_threshold_minutes: int
     push_token_hint: str | None
+    accepts_serial_push: bool = False
 
 
 class DeviceWithToken(DeviceRead):

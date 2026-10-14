@@ -31,7 +31,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -109,6 +109,12 @@ class Requisition(Base, UUIDMixin, TenantMixin, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # [{"version": 1, "body": "...", "published_at": "...", "ai_generated": true}]
     jd_versions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    #: The current description started from an AI draft. Carried into the JD
+    #: version it is published as, so a candidate-facing wording can always be
+    #: traced to whether a person wrote it from scratch.
+    description_ai_assisted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     skills: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     status: Mapped[RequisitionStatus] = mapped_column(
@@ -180,6 +186,7 @@ class Candidate(Base, UUIDMixin, TenantMixin, TimestampMixin):
             "tenant_id",
             text(r"right(regexp_replace(phone, '\D', '', 'g'), 10)"),
         ),
+        Index("ix_candidates_tags", "tags", postgresql_using="gin"),
     )
 
     requisition_id: Mapped[uuid.UUID] = mapped_column(
@@ -207,6 +214,11 @@ class Candidate(Base, UUIDMixin, TenantMixin, TimestampMixin):
         index=True,
     )
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: A recruiter's labels — "java", "campus-2026", "silver-medallist". Lower
+    #: case, de-duplicated; cleared with the rest of the person on erasure.
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(String(48)), default=list, server_default=text("'{}'"), nullable=False
+    )
 
     # Composite 0-100 ranking. Never stored without the component scores in
     # InterviewScore that justify it — a bare number is exactly the defect

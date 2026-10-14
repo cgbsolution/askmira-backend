@@ -7,12 +7,12 @@ there is exactly one implementation of the tenant-isolation rule to audit.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import Select, select
+from sqlalchemy import ColumnElement, Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cookies
@@ -92,6 +92,14 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # An operator inside a client's workspace acts as an identity built from
+    # their grant, which is re-read here on every request — revoked or expired,
+    # and this request is refused. See app.services.operators.
+    if payload.get("opg"):
+        from app.services.operators import acting_identity
+
+        user = await acting_identity(session, request, user, payload)
+
     # The tenant's session policy: privileged-role IP allowlist, idle timeout,
     # absolute lifetime and per-device revocation. A no-op for a tenant that
     # has not saved a policy. Imported here because opsec imports this module.
@@ -100,6 +108,12 @@ async def get_current_user(
     await enforce_session_policy(request, session, user, payload)
 
     user.has_reports = await has_direct_reports(session, user)
+
+    # A sub-admin's rights in this request's area, and their department or
+    # location scope. Imported here because it imports this module.
+    from app.core.access_control import load_request_access
+
+    await load_request_access(request, session, user)
     return user
 
 
@@ -133,8 +147,9 @@ def require_roles(*roles: UserRole, line_managers: bool = False):
     Which people they may act on is still the reporting-line check in
     `app.core.permissions`.
 
-    Fine-grained per-module permissions are checked in the service layer
-    against `RoleModulePermission`; this is the cheap first gate.
+    A sub-admin narrowed by area and right (`RoleModulePermission`,
+    `UserAreaRights`) is refused here when this request needs a right they do
+    not hold — see `app.core.access_control`.
     """
 
     async def _check(user: CurrentUser) -> User:
@@ -144,6 +159,15 @@ def require_roles(*roles: UserRole, line_managers: bool = False):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have access to this resource",
+            )
+        if not user.hr_allowed:
+            # A sub-admin whose rights in this area stop short of this action.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Your HR rights do not cover this here. An admin can change them under "
+                    "Settings, Roles and permissions."
+                ),
             )
         return user
 
@@ -173,7 +197,23 @@ def require_module(module: str):
 ModelT = TypeVar("ModelT")
 
 
-def tenant_scoped(stmt: Select, model: type[ModelT], user: User) -> Select:
+def tenant_filter(target: Any, tenant: Any) -> ColumnElement[bool]:
+    """The tenant predicate for a model, an aliased model or a Core table.
+
+    `tenant` is a tenant id, or anything carrying one (a `User`, a portal
+    token row, a device). This and `tenant_scoped` are the one place tenant
+    isolation is written; a service that has no caller — a scheduled job, a
+    public careers page, a device webhook — uses this with the tenant it was
+    given, rather than spelling the comparison out itself.
+    """
+    tenant_id = getattr(tenant, "tenant_id", tenant)
+    column = getattr(target, "tenant_id", None)
+    if column is None:
+        column = target.c.tenant_id
+    return column == tenant_id
+
+
+def tenant_scoped(stmt: Select, model: type[ModelT], user: Any) -> Select:
     """Apply the tenant filter to a query.
 
     The single place tenant isolation is implemented. Services call this rather
@@ -183,7 +223,7 @@ def tenant_scoped(stmt: Select, model: type[ModelT], user: User) -> Select:
     A super admin acting inside a tenant is still scoped to it; the only way
     to read across tenants is a deliberate query that does not use this helper.
     """
-    return stmt.where(model.tenant_id == user.tenant_id)  # type: ignore[attr-defined]
+    return stmt.where(tenant_filter(model, user))
 
 
 async def get_tenant_id(user: CurrentUser) -> uuid.UUID:
@@ -199,5 +239,6 @@ __all__ = [
     "has_direct_reports",
     "require_roles",
     "select",
+    "tenant_filter",
     "tenant_scoped",
 ]

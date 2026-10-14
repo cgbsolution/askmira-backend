@@ -56,6 +56,7 @@ from app.models.offer import (
     OfferStatus,
     RequisitionApproval,
 )
+from app.models.payroll_inputs import OvertimeEntry, OvertimeStatus
 from app.models.retention import RetentionRun, RetentionRunStatus
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -68,6 +69,7 @@ from app.services.exit_workflow import resignation as resignation_service
 from app.services.expenses import inbox as expense_inbox
 from app.services.leave import comp_off as comp_off_service
 from app.services.leave import service as leave_service
+from app.services.payroll import adjustments as adjustment_service
 from app.services.payroll import inbox as payroll_inbox
 from app.services.performance import feedback as feedback_service
 
@@ -161,6 +163,97 @@ async def _regularisations(session: AsyncSession, user: User) -> list[dict[str, 
             "submitted_at": reg.created_at,
         }
         for reg, emp in rows
+    ]
+
+
+async def _shift_swaps(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    from app.services.attendance import shift_swaps
+
+    return [
+        {
+            "id": row["id"],
+            "title": f"Shift swap on {date.fromisoformat(row['swap_date']):%d %b %Y}",
+            "subject_name": row["requester_name"],
+            "detail": (
+                f"With {row['partner_name']}: {row['requester_shift']['name']} for "
+                f"{row['partner_shift']['name']}"
+            ),
+            "submitted_at": row["created_at"],
+            "due_on": date.fromisoformat(row["swap_date"]),
+        }
+        for row in await shift_swaps.pending_for_approver(session, user)
+    ]
+
+
+async def _timesheets(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    from app.services import timesheets
+
+    return [
+        {
+            "id": row["id"],
+            "title": f"Timesheet, week of {date.fromisoformat(row['week_start']):%d %b %Y}",
+            "subject_name": row["employee_name"],
+            "detail": f"{row['total_hours']} hours",
+            "submitted_at": row["submitted_at"],
+        }
+        for row in await timesheets.pending_for_approver(session, user)
+    ]
+
+
+async def _overtime(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    stmt = tenant_scoped(
+        select(OvertimeEntry, Employee)
+        .join(Employee, Employee.id == OvertimeEntry.employee_id)
+        .where(OvertimeEntry.status == OvertimeStatus.PENDING),
+        OvertimeEntry,
+        user,
+    )
+    if not permissions.is_hr(user):
+        line = await permissions.reporting_line(session, user)
+        if not line:
+            return []
+        stmt = stmt.where(OvertimeEntry.employee_id.in_(line))
+    stmt = _not_own(stmt, OvertimeEntry.employee_id, user)
+    rows = (await session.execute(stmt.order_by(OvertimeEntry.attendance_date))).all()
+    return [
+        {
+            "id": entry.id,
+            "title": f"Overtime on {entry.attendance_date:%d %b %Y}",
+            "subject_name": _person(emp),
+            "detail": f"{entry.eligible_minutes} min"
+            + (" · rest day" if entry.is_rest_day else ""),
+            "submitted_at": entry.created_at,
+        }
+        for entry, emp in rows
+    ]
+
+
+async def _payroll_adjustments(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    rows = await adjustment_service.pending_for(session, user)
+    if not rows:
+        return []
+    people = {
+        emp.id: emp
+        for emp in (
+            await session.scalars(
+                tenant_scoped(
+                    select(Employee).where(Employee.id.in_({r.employee_id for r in rows})),
+                    Employee,
+                    user,
+                )
+            )
+        ).all()
+    }
+    return [
+        {
+            "id": row.id,
+            "title": f"{row.name} ({_humanise(row.category.value)})",
+            "subject_name": _person(people.get(row.employee_id)),
+            "detail": _money(row.amount)
+            + (" a month" if row.recurrence.value == "monthly" else ""),
+            "submitted_at": row.created_at,
+        }
+        for row in rows
     ]
 
 
@@ -475,6 +568,22 @@ SOURCES: tuple[Source, ...] = (
         _regularisations,
         module="leave",
         line_managers=True,
+    ),
+    Source(
+        "overtime", "Overtime", "/time/overtime", permissions.HR_ROLES, _overtime,
+        module="leave", line_managers=True,
+    ),
+    Source(
+        "shift_swap", "Shift swaps", "/time/attendance-review?tab=swaps", permissions.HR_ROLES,
+        _shift_swaps, module="leave", line_managers=True,
+    ),
+    Source(
+        "timesheet", "Timesheets", "/time/timesheets/approvals", permissions.HR_ROLES,
+        _timesheets, line_managers=True,
+    ),
+    Source(
+        "payroll_adjustment", "Payroll adjustments", "/payroll/adjustments", ADMIN_ROLES,
+        _payroll_adjustments, module="payroll",
     ),
     Source(
         "expense_claim", "Expense claims", "/expenses/review", permissions.HR_ROLES,

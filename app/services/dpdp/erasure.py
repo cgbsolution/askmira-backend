@@ -33,7 +33,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.dpdp import DataPrincipalRequest, DprRequestStatus, DprRequestType
 from app.models.employee import Employee
@@ -156,7 +156,7 @@ async def execute_erasure(
         ids = list(
             (
                 await session.execute(
-                    select(table.c.id).where(table.c.tenant_id == user.tenant_id, predicate)
+                    select(table.c.id).where(tenant_filter(table, user.tenant_id), predicate)
                 )
             ).scalars()
         )
@@ -183,7 +183,7 @@ async def execute_erasure(
             if clearable:
                 await session.execute(
                     update(table)
-                    .where(table.c.tenant_id == user.tenant_id, table.c.id.in_(ids))
+                    .where(tenant_filter(table, user.tenant_id), table.c.id.in_(ids))
                     .values({name: None for name in clearable})
                 )
                 executed.append(
@@ -202,7 +202,7 @@ async def execute_erasure(
                 async with session.begin_nested():
                     await session.execute(
                         delete(table).where(
-                            table.c.tenant_id == user.tenant_id, table.c.id.in_(ids)
+                            tenant_filter(table, user.tenant_id), table.c.id.in_(ids)
                         )
                     )
             except IntegrityError:

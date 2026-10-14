@@ -34,6 +34,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -54,6 +55,8 @@ class DeviceVendor(str, enum.Enum):
     MATRIX = "matrix"
     ZKTECO = "zkteco"
     GENERIC = "generic"
+    #: A shared tablet where people punch with their employee code and PIN.
+    KIOSK = "kiosk"
 
 
 class DeviceStatus(str, enum.Enum):
@@ -217,6 +220,20 @@ class DeviceIntegration(Base, UUIDMixin, TenantMixin, TimestampMixin):
         String(64), nullable=True, unique=True, index=True
     )
     push_token_hint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Whether the device may push by serial number alone (the ADMS/iclock
+    #: protocol's only identifier) for firmware that cannot carry the token in
+    #: the server path. Off until HR switches it on for this device.
+    accepts_serial_push: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    #: A kiosk's run of wrong code-and-PIN entries, and the pause it earned:
+    #: one PIN tried against every code is stopped at the tablet, not per person.
+    kiosk_failed_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    kiosk_locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Devices commonly send local wall-clock time with no offset. This is the
     # timezone that assumption uses, and it is recorded on every punch.

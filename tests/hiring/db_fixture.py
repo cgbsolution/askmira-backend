@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.models import Base
-from tests.integration.conftest import TEST_DATABASE_URL, _guard
+from tests.integration.conftest import TEST_DATABASE_URL, _guard, prepare_schema
 
 _BATCH = 20
 _ATTEMPTS = 6
@@ -55,32 +55,35 @@ async def engine():
         connect_args={"statement_cache_size": 0},
     )
 
-    async with engine.connect() as conn:
-        tables = [
-            row[0]
-            for row in await conn.execute(
-                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-            )
-        ]
-    for start in range(0, len(tables), _BATCH):
-        chunk = tables[start : start + _BATCH]
-        names = ", ".join(f'"{name}"' for name in chunk)
+    async def rebuild() -> None:
+        async with engine.connect() as conn:
+            tables = [
+                row[0]
+                for row in await conn.execute(
+                    text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                )
+            ]
+        for start in range(0, len(tables), _BATCH):
+            chunk = tables[start : start + _BATCH]
+            names = ", ".join(f'"{name}"' for name in chunk)
 
-        async def drop(conn, names=names):
-            await conn.execute(text(f"DROP TABLE IF EXISTS {names} CASCADE"))
+            async def drop(conn, names=names):
+                await conn.execute(text(f"DROP TABLE IF EXISTS {names} CASCADE"))
 
-        await _retrying(engine, drop)
+            await _retrying(engine, drop)
 
-    async def reset(conn):
-        await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        await conn.execute(text("CREATE SCHEMA public"))
+        async def reset(conn):
+            await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
 
-    await _retrying(engine, reset)
+        await _retrying(engine, reset)
 
-    async def create(conn):
-        await conn.run_sync(Base.metadata.create_all)
+        async def create(conn):
+            await conn.run_sync(Base.metadata.create_all)
 
-    await _retrying(engine, create)
+        await _retrying(engine, create)
+
+    await prepare_schema(engine, TEST_DATABASE_URL, rebuild)
     try:
         yield engine
     finally:

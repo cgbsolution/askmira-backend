@@ -93,6 +93,8 @@ class ResponseRead(BaseModel):
     """One answer, with its writer. Only ever returned where names are allowed."""
 
     reviewer_name: str
+    #: manager, skip_level, direct_report, peer or other.
+    relationship: str | None = None
     competency_ratings: list[CompetencyAnswerRead]
     strengths: str | None
     improvements: str | None

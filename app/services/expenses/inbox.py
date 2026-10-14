@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -39,26 +39,48 @@ def _span(start, end) -> str:
     return f"{start:%d %b} to {end:%d %b %Y}"
 
 
+def awaits(claim: ExpenseClaim, acting: set[str], line: set) -> bool:
+    """Whether this claim's current step is the caller's (or somebody they stand in for).
+
+    A claim from before approval chains has none, and keeps the old rule: the
+    claimant's line manager decides it.
+    """
+    from app.services.leave import engine
+
+    chain = claim.approval_chain or []
+    if not chain:
+        return claim.employee_id in line
+    index = engine.current_step(chain)
+    return index is not None and chain[index].get("approver_user_id") in acting
+
+
 async def manager_claim_items(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    from app.services.approvals import rules
+
     line = await permissions.reporting_line(session, user)
     line.discard(user.employee_id)  # type: ignore[arg-type]
-    if not line:
-        return []
-    rows = (
-        await session.execute(
-            tenant_scoped(
-                select(ExpenseClaim, Employee)
-                .join(Employee, Employee.id == ExpenseClaim.employee_id)
-                .where(
-                    ExpenseClaim.status == ExpenseClaimStatusEnum.PENDING_MANAGER,
-                    ExpenseClaim.employee_id.in_(line),
+    acting = {str(a) for a in await rules.acting_for(session, user)}
+    named = [ExpenseClaim.approval_chain.contains([{"approver_user_id": a}]) for a in acting]
+    clauses = [*named, *([ExpenseClaim.employee_id.in_(line)] if line else [])]
+    rows = [
+        (claim, employee)
+        for claim, employee in (
+            await session.execute(
+                tenant_scoped(
+                    select(ExpenseClaim, Employee)
+                    .join(Employee, Employee.id == ExpenseClaim.employee_id)
+                    .where(
+                        ExpenseClaim.status == ExpenseClaimStatusEnum.PENDING_MANAGER,
+                        or_(*clauses),
+                    )
+                    .order_by(ExpenseClaim.submitted_at),
+                    ExpenseClaim,
+                    user,
                 )
-                .order_by(ExpenseClaim.submitted_at),
-                ExpenseClaim,
-                user,
             )
-        )
-    ).all()
+        ).all()
+        if claim.employee_id != user.employee_id and awaits(claim, acting, line)
+    ]
     return [
         {
             "id": claim.id,

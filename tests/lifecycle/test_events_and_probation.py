@@ -266,6 +266,20 @@ def test_an_event_whose_values_all_match_the_current_ones_is_refused() -> None:
         )
 
 
+def test_a_confirmation_on_the_planned_date_is_not_a_no_op() -> None:
+    """Confirming on the day probation was due to end is the normal case: the
+    decision is the change, and it is what the letter records."""
+    validate_event(
+        _facts(
+            event_type=EventType.CONFIRMATION,
+            previous_values={"probation_end_date": "2026-09-30"},
+            new_values={"probation_end_date": "2026-09-30"},
+            reason="Probation completed well.",
+        ),
+        today=TODAY,
+    )
+
+
 def test_an_event_needs_a_reason() -> None:
     """It goes on the letter, into the employee's own history, and into whatever
     conversation happens if the decision is questioned."""

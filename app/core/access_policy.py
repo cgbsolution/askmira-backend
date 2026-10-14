@@ -28,6 +28,7 @@ Rules, as the prefix of each entry:
 from __future__ import annotations
 
 from app.core.access_policies import (
+    ai,
     assets,
     culture,
     documents,
@@ -65,6 +66,7 @@ _MODULES = (
     onboarding,
     helpdesk,
     assets,
+    ai,
 )
 
 

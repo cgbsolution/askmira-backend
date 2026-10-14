@@ -253,6 +253,10 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # The budget deviation and parity view computed when the offer went for
     # approval, kept so the approval record shows what the approver was shown.
     approval_context: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    #: How the candidate accepted, when they did it themselves in the portal:
+    #: the name they typed, when, from where, and the hash of the letter they
+    #: were shown - so "I never accepted that version" has an answer.
+    acceptance_record: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

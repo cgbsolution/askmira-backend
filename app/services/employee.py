@@ -15,6 +15,8 @@ Two further rules live here:
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -36,8 +38,9 @@ from app.schemas.employee import (
     EmployeeUpdate,
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
-from app.services import audit
+from app.services import audit, custom_fields
 from app.services.employee_profile import HIRING_KEYS
+from app.services.payroll import grades
 
 #: A reporting chain longer than this is a loop or a data error.
 MAX_CHAIN = 25
@@ -55,34 +58,15 @@ def _unprocessable(detail: str) -> HTTPException:
 
 
 async def _validate_custom_fields(
-    session: AsyncSession, user: User, values: dict
-) -> None:
-    """Reject unknown keys and missing required fields (FS-CHR-01).
+    session: AsyncSession, user: User, values: dict, *, existing: dict | None = None
+) -> dict:
+    """Reject unknown keys, wrong types and missing required fields (FS-CHR-01).
 
     A required field blocking an incomplete save is an acceptance criterion,
     not a nicety — an employee record missing a statutory identifier surfaces
-    as a payroll failure weeks later.
+    as a payroll failure weeks later. Returns the values in stored shape.
     """
-    stmt = tenant_scoped(
-        select(CustomFieldDefinition).where(
-            CustomFieldDefinition.entity == "employee",
-            CustomFieldDefinition.is_active.is_(True),
-        ),
-        CustomFieldDefinition,
-        user,
-    )
-    definitions = (await session.scalars(stmt)).all()
-    known = {d.key for d in definitions}
-
-    unknown = set(values) - known
-    if unknown:
-        raise _unprocessable(f"Unknown custom field(s): {', '.join(sorted(unknown))}")
-
-    missing = [
-        d.label for d in definitions if d.is_required and values.get(d.key) in (None, "", [])
-    ]
-    if missing:
-        raise _unprocessable(f"Required field(s) missing: {', '.join(missing)}")
+    return await custom_fields.check_values(session, user, values, existing=existing)
 
 
 async def _validate_references(
@@ -107,6 +91,16 @@ async def _validate_references(
         )
         if found is None:
             raise _unprocessable(f"That {label} is not part of this workspace.")
+
+    dotted = values.get("dotted_line_manager_id")
+    if dotted is not None:
+        if employee_id is not None and dotted == employee_id:
+            raise _unprocessable("An employee cannot be their own dotted-line manager")
+        row = await session.scalar(
+            tenant_scoped(select(Employee).where(Employee.id == dotted), Employee, user)
+        )
+        if row is None or row.deleted_at is not None:
+            raise _unprocessable("That dotted-line manager is not an active employee here.")
 
     manager_id = values.get("manager_id")
     if manager_id is None:
@@ -190,6 +184,107 @@ async def list_employees(
         )
     ).all()
     return list(rows), total
+
+
+#: The most rows one directory export carries; the screen pages, a file does not.
+EXPORT_LIMIT = 20_000
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _cell(value: Any) -> str:
+    """A cell a spreadsheet shows rather than runs."""
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
+
+
+async def directory_csv(
+    session: AsyncSession,
+    user: User,
+    *,
+    search: str | None = None,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    manager_id: uuid.UUID | None = None,
+    status_filter: str | None = None,
+    current_only: bool = False,
+    request: Request | None = None,
+) -> str:
+    """The directory as CSV, filtered as on screen, with reporting lines named.
+
+    HR only, and recorded as an export: a file of everyone's name, title and
+    manager is the org chart leaving the building.
+    """
+    if not permissions.is_hr(user):
+        raise permissions.forbidden("Only HR can export the directory.")
+    rows, total = await list_employees(
+        session, user, search=search, department_id=department_id,
+        location_id=location_id, manager_id=manager_id, status_filter=status_filter,
+        current_only=current_only, limit=EXPORT_LIMIT,
+    )
+    departments = dict(
+        (await session.execute(
+            tenant_scoped(select(Department.id, Department.name), Department, user)
+        )).all()
+    )
+    locations = dict(
+        (await session.execute(
+            tenant_scoped(select(Location.id, Location.name), Location, user)
+        )).all()
+    )
+    people = {
+        e.id: e
+        for e in (
+            await session.scalars(tenant_scoped(select(Employee), Employee, user))
+        ).all()
+    }
+
+    def who(employee_id: uuid.UUID | None) -> tuple[str | None, str | None]:
+        person = people.get(employee_id) if employee_id else None
+        return (person.full_name, person.employee_code) if person else (None, None)
+
+    reports: dict[uuid.UUID, int] = {}
+    for person in people.values():
+        if person.manager_id and person.deleted_at is None:
+            reports[person.manager_id] = reports.get(person.manager_id, 0) + 1
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow([
+        "Employee code", "Name", "Designation", "Department", "Location", "Work email",
+        "Status", "Manager", "Manager code", "Dotted-line manager", "Direct reports",
+    ])
+    for row in rows:
+        manager_name, manager_code = who(row.manager_id)
+        dotted_name, _ = who(row.dotted_line_manager_id)
+        writer.writerow([
+            _cell(value)
+            for value in (
+                row.employee_code, row.full_name, row.designation,
+                departments.get(row.department_id), locations.get(row.location_id),
+                row.work_email, row.status.value, manager_name, manager_code, dotted_name,
+                reports.get(row.id, 0),
+            )
+        ])
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.EXPORT,
+        entity_type="employee_directory",
+        summary=f"Exported the directory ({len(rows)} of {total} people) as CSV",
+        changes={
+            "rows": len(rows),
+            "search": search,
+            "department_id": str(department_id) if department_id else None,
+            "location_id": str(location_id) if location_id else None,
+            "manager_id": str(manager_id) if manager_id else None,
+            "status": status_filter,
+            "current": current_only,
+        },
+        request=request,
+    )
+    return buffer.getvalue()
 
 
 async def get_employee(session: AsyncSession, user: User, employee_id: uuid.UUID) -> Employee:
@@ -300,9 +395,11 @@ async def create_employee(
     if payload.status is EmploymentStatus.EXITED:
         raise _unprocessable(_EXIT_THROUGH_EXITS)
     await _validate_references(session, user, payload.model_dump())
-    await _validate_custom_fields(session, user, payload.custom_fields)
+    values = payload.model_dump()
+    values["custom_fields"] = await _validate_custom_fields(session, user, payload.custom_fields)
+    await grades.check_grade_code(session, user, payload.grade)
 
-    employee = Employee(tenant_id=user.tenant_id, **payload.model_dump())
+    employee = Employee(tenant_id=user.tenant_id, **values)
     session.add(employee)
     await session.flush()
 
@@ -359,9 +456,13 @@ async def update_employee(
     if "custom_fields" in changes:
         if changes["custom_fields"] is None:
             changes["custom_fields"] = {}
-        await _validate_custom_fields(session, user, changes["custom_fields"])
+        changes["custom_fields"] = await _validate_custom_fields(
+            session, user, changes["custom_fields"], existing=employee.custom_fields or {}
+        )
 
     await _validate_references(session, user, changes, employee_id=employee.id)
+    if changes.get("grade") is not None and changes["grade"] != employee.grade:
+        await grades.check_grade_code(session, user, changes["grade"])
 
     joining = changes.get("date_of_joining", employee.date_of_joining)
     probation_end = changes.get("probation_end_date", employee.probation_end_date)
@@ -372,6 +473,11 @@ async def update_employee(
         raise _unprocessable("The date of exit cannot be before the date of joining")
 
     diff = _diff(employee, changes)
+    # A job field changed here is still a lifecycle change: filed as an
+    # effected event so the history and the as-of view include it.
+    from app.services.lifecycle import service as lifecycle
+
+    lifecycle.record_direct_edit(session, user, employee, changes)
     for key, value in changes.items():
         setattr(employee, key, value)
 

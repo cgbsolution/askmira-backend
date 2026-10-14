@@ -505,11 +505,14 @@ def assess_request(
 
 @dataclass(frozen=True)
 class Approver:
-    #: "manager" or "hr". An "hr" step with no user can be decided by anybody in HR.
+    #: "manager", "skip_level", "approver" or "hr". An "hr" step with no user can
+    #: be decided by anybody in HR.
     role: str
     user_id: uuid.UUID | None
     employee_id: uuid.UUID | None
     name: str
+    #: From the approval rule: hours before the step goes up a level.
+    escalate_after_hours: int | None = None
 
 
 def build_chain(approvers: Sequence[Approver]) -> list[dict[str, Any]]:
@@ -531,6 +534,7 @@ def build_chain(approvers: Sequence[Approver]) -> list[dict[str, Any]]:
             "decided_by_name": None,
             "decided_at": None,
             "note": None,
+            "escalate_after_hours": approver.escalate_after_hours,
         }
         for index, approver in enumerate(approvers)
     ]

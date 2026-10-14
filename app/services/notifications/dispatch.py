@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.crypto import decrypt_secret
+from app.core.deps import tenant_filter
 from app.models.notifications import (
     Channel,
     DigestMode,
@@ -67,6 +68,8 @@ __all__ = [
     "URGENT_EVENT_KEYS",
     "DispatchOutcome",
     "NotificationError",
+    "email_adapter_for",
+    "email_wording",
     "notify",
     "process_due_notifications",
     "register_event",
@@ -241,7 +244,7 @@ async def _template_for(
     stmt = (
         select(NotificationTemplate)
         .where(
-            NotificationTemplate.tenant_id == tenant_id,
+            tenant_filter(NotificationTemplate, tenant_id),
             NotificationTemplate.event_key == event_key,
             NotificationTemplate.channel == channel,
             NotificationTemplate.active.is_(True),
@@ -270,12 +273,27 @@ async def _template_for(
     )
 
 
+async def email_wording(
+    session: AsyncSession, tenant_id: uuid.UUID, event_key: str, locale: str = "en-IN"
+) -> tuple[str, str] | None:
+    """The subject and body a tenant sends by email for an event.
+
+    Its own active template if it wrote one, else the built-in wording. For
+    messages to people who are not users — candidates — which still deserve
+    the tenant's own words.
+    """
+    template = await _template_for(session, tenant_id, event_key, Channel.EMAIL, locale)
+    if template is None:
+        return None
+    return template.subject or "", template.body
+
+
 # ── Policy gates ────────────────────────────────────────────────────────────
 
 
 async def _policy(session: AsyncSession, tenant_id: uuid.UUID) -> NotificationPolicy:
     policy = await session.scalar(
-        select(NotificationPolicy).where(NotificationPolicy.tenant_id == tenant_id)
+        select(NotificationPolicy).where(tenant_filter(NotificationPolicy, tenant_id))
     )
     if policy is None:
         policy = NotificationPolicy(tenant_id=tenant_id)
@@ -343,7 +361,7 @@ async def _over_rate_limit(
             # Scoped explicitly. User ids are UUIDs so a collision is not
             # realistic, but the isolation rule holds without needing anyone to
             # reason that through — and it is the better index path.
-            Notification.tenant_id == tenant_id,
+            tenant_filter(Notification, tenant_id),
             Notification.recipient_user_id == user_id,
             Notification.channel == channel,
             Notification.created_at >= since,
@@ -374,7 +392,7 @@ async def _whatsapp_gate(
     """
     consent = await session.scalar(
         select(WhatsAppConsent).where(
-            WhatsAppConsent.tenant_id == tenant_id, WhatsAppConsent.user_id == user_id
+            tenant_filter(WhatsAppConsent, tenant_id), WhatsAppConsent.user_id == user_id
         )
     )
     if consent is None or not consent.is_active:
@@ -418,7 +436,7 @@ async def _preferences_for(
     rows = (
         await session.scalars(
             select(NotificationPreference).where(
-                NotificationPreference.tenant_id == tenant_id,
+                tenant_filter(NotificationPreference, tenant_id),
                 NotificationPreference.user_id == user_id,
                 NotificationPreference.event_key == event_key,
             )
@@ -467,7 +485,7 @@ async def email_adapter_for(
     """The adapter email for this tenant goes through, and which relay it is."""
     row = await session.scalar(
         select(TenantSmtpSettings).where(
-            TenantSmtpSettings.tenant_id == tenant_id,
+            tenant_filter(TenantSmtpSettings, tenant_id),
             TenantSmtpSettings.enabled.is_(True),
         )
     )
@@ -650,7 +668,7 @@ async def _dispatch_one(
     if notification.channel is Channel.WHATSAPP:
         consent = await session.scalar(
             select(WhatsAppConsent).where(
-                WhatsAppConsent.tenant_id == notification.tenant_id,
+                tenant_filter(WhatsAppConsent, notification.tenant_id),
                 WhatsAppConsent.user_id == user.id,
             )
         )
@@ -738,7 +756,7 @@ async def _append_to_digest(
 
     digest = await session.scalar(
         select(NotificationDigest).where(
-            NotificationDigest.tenant_id == tenant_id,
+            tenant_filter(NotificationDigest, tenant_id),
             NotificationDigest.recipient_user_id == user.id,
             NotificationDigest.status == NotificationStatus.QUEUED,
         )
@@ -793,7 +811,7 @@ async def send_digests(session: AsyncSession, tenant_id: uuid.UUID) -> int:
     due = (
         await session.scalars(
             select(NotificationDigest).where(
-                NotificationDigest.tenant_id == tenant_id,
+                tenant_filter(NotificationDigest, tenant_id),
                 NotificationDigest.status == NotificationStatus.QUEUED,
                 NotificationDigest.scheduled_for <= datetime.now(UTC),
             )
@@ -852,7 +870,7 @@ async def process_due_notifications(session: AsyncSession, tenant_id: uuid.UUID)
     due = (
         await session.scalars(
             select(Notification).where(
-                Notification.tenant_id == tenant_id,
+                tenant_filter(Notification, tenant_id),
                 Notification.status.in_(
                     [NotificationStatus.QUEUED, NotificationStatus.DEFERRED]
                 ),
@@ -900,7 +918,7 @@ async def seed_default_templates(
         for channel in (Channel.EMAIL, Channel.IN_APP):
             existing = await session.scalar(
                 select(NotificationTemplate).where(
-                    NotificationTemplate.tenant_id == tenant_id,
+                    tenant_filter(NotificationTemplate, tenant_id),
                     NotificationTemplate.event_key == event_key,
                     NotificationTemplate.channel == channel,
                 )

@@ -25,6 +25,8 @@ argon2-cffi==23.1.0
 # Pure-Python PDF rendering. WeasyPrint gives better typography but needs GTK
 # native libraries, which is a poor Windows developer experience.
 xhtml2pdf==0.2.17
+# Imported directly (resume text, Form 16 Part A); also an xhtml2pdf dependency.
+pypdf==6.17.0
 
 # ── Identity (slice 04) ─────────────────────────────────────────────────────
 # signxml verifies SAML XML signatures without needing native xmlsec, which is
@@ -32,6 +34,10 @@ xhtml2pdf==0.2.17
 cryptography==50.0.1
 signxml==5.1.0
 lxml==6.1.3
+
+# ── AI (gap closure) ────────────────────────────────────────────────────────
+# The official SDK; every model call goes through app/services/ai/client.py.
+anthropic==1.13.0
 
 # ── Utilities ───────────────────────────────────────────────────────────────
 python-dateutil==2.9.0.post0

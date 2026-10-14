@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.culture import (
     Club,
@@ -331,7 +331,12 @@ async def _read_many(
     return [
         ShoutoutRead(
             id=row.id,
-            kind="award" if row.award_result_id else "peer",
+            kind=(
+                "award" if row.award_result_id
+                else "milestone" if row.milestone_years
+                else "peer"
+            ),
+            milestone_years=row.milestone_years,
             from_employee_id=row.from_employee_id,
             to_employee_id=row.to_employee_id,
             sender=people.get(row.from_employee_id) if row.from_employee_id else None,
@@ -543,7 +548,7 @@ async def set_reaction(
     elif not active and existing is not None:
         await session.execute(
             delete(ShoutoutReaction).where(
-                ShoutoutReaction.tenant_id == tenant_id,
+                tenant_filter(ShoutoutReaction, tenant_id),
                 ShoutoutReaction.id == existing,
             )
         )
@@ -582,18 +587,18 @@ async def delete_shoutout(
 
     await session.execute(
         delete(ValueTag).where(
-            ValueTag.tenant_id == tenant_id,
+            tenant_filter(ValueTag, tenant_id),
             ValueTag.source == TagSourceEnum.SHOUTOUT,
             ValueTag.source_id == target,
         )
     )
     await session.execute(
         delete(ShoutoutReaction).where(
-            ShoutoutReaction.tenant_id == tenant_id, ShoutoutReaction.shoutout_id == target
+            tenant_filter(ShoutoutReaction, tenant_id), ShoutoutReaction.shoutout_id == target
         )
     )
     await session.execute(
-        delete(Shoutout).where(Shoutout.tenant_id == tenant_id, Shoutout.id == target)
+        delete(Shoutout).where(tenant_filter(Shoutout, tenant_id), Shoutout.id == target)
     )
     await audit.record(
         session,
@@ -844,7 +849,9 @@ async def leave_club(
     membership_id = membership.id
     session.expunge(membership)
     await session.execute(
-        delete(ClubMember).where(ClubMember.tenant_id == tenant_id, ClubMember.id == membership_id)
+        delete(ClubMember).where(
+            tenant_filter(ClubMember, tenant_id), ClubMember.id == membership_id
+        )
     )
     remaining = await session.scalar(
         tenant_scoped(

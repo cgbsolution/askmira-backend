@@ -239,6 +239,21 @@ async def _enrich(
             )
         ).all()
     }
+    from app.core import permissions
+    from app.models.exit_workflow import ExitInterview
+
+    hr = permissions.is_hr(user)
+    interviewed = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(ExitInterview.exit_id).where(ExitInterview.exit_id.in_(ids)),
+                    ExitInterview,
+                    user,
+                )
+            )
+        ).all()
+    )
     out = []
     for record in records:
         mine = [item for item in items if item.exit_record_id == record.id]
@@ -280,6 +295,9 @@ async def _enrich(
                 "awaiting_acceptance": (
                     record.accepted_at is None and record.status is not ExitStatus.CANCELLED
                 ),
+                "is_rehire_eligible": record.is_rehire_eligible if hr else None,
+                "rehire_note": record.rehire_note if hr else None,
+                "has_interview": record.id in interviewed,
             }
         )
     return out
@@ -874,6 +892,8 @@ async def settlement_sources(
                         PayrollRun.period_year == last_day.year,
                         PayrollRun.period_month == last_day.month,
                         PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                        # A supplementary payslip paid extra lines, not days.
+                        Payslip.is_supplementary.is_(False),
                     ),
                     Payslip,
                     user,

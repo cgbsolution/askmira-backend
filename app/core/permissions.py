@@ -50,6 +50,7 @@ __all__ = [
     "ADMIN_ROLES",
     "HR_ROLES",
     "forbidden",
+    "is_admin",
     "is_hr",
     "is_line_manager_of",
     "is_manager_or_hr",
@@ -82,7 +83,20 @@ def forbidden(detail: str) -> HTTPException:
 
 
 def is_hr(user: User) -> bool:
-    return user.role in HR_ROLES or user.role is UserRole.SUPER_ADMIN
+    """Acts on anybody's record — unless this request is outside the caller's HR rights.
+
+    `hr_allowed` is worked out per request for a sub-admin narrowed by area and
+    right; when it is False they are treated as the employee (or manager) they
+    also are, so their own self-service still works and the HR action does not.
+    """
+    if user.role is UserRole.SUPER_ADMIN:
+        return True
+    return user.role in HR_ROLES and getattr(user, "hr_allowed", True)
+
+
+def is_admin(user: User) -> bool:
+    """The tenant admin role: decisions a sub-admin prepares but does not sign."""
+    return user.role in ADMIN_ROLES or user.role is UserRole.SUPER_ADMIN
 
 
 def is_manager_or_hr(user: User) -> bool:
@@ -103,6 +117,8 @@ def scope_role(user: User) -> str:
     """
     if user.role is UserRole.EMPLOYEE and user.has_reports:
         return "manager"
+    if user.role is UserRole.SUB_ADMIN and not getattr(user, "hr_allowed", True):
+        return "manager" if user.has_reports else "employee"
     return user.role.value
 
 

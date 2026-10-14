@@ -29,6 +29,10 @@ Phase = Literal["pre_joining", "week_1", "later"]
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+#: The statutory declarations a FORM task can generate, as letter template codes.
+STATUTORY_FORM_CODES: tuple[str, ...] = ("FORM11_STD", "FORM2_STD", "FORMF_STD", "ESI_DECL_STD")
+
+
 class TemplateTaskIn(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
@@ -39,10 +43,20 @@ class TemplateTaskIn(BaseModel):
     due_offset_days: int = Field(default=0, ge=-180, le=365)
     task_type: OnboardingTaskType = OnboardingTaskType.GENERAL
     document_type: DocumentCategory | None = None
+    #: A FORM task's statutory form (FORM11_STD, FORM2_STD, FORMF_STD, ESI_DECL_STD).
+    form_code: str | None = Field(default=None, max_length=32)
     is_mandatory: bool = True
 
     @model_validator(mode="after")
     def _upload_needs_a_category(self) -> TemplateTaskIn:
+        if self.task_type is OnboardingTaskType.FORM:
+            if self.form_code is not None and self.form_code not in STATUTORY_FORM_CODES:
+                raise ValueError(
+                    "A form task generates one of the statutory forms: "
+                    + ", ".join(STATUTORY_FORM_CODES)
+                )
+        else:
+            self.form_code = None
         if self.task_type is OnboardingTaskType.DOCUMENT_UPLOAD and self.document_type is None:
             raise ValueError("A document upload task needs the document type it collects.")
         if self.task_type is not OnboardingTaskType.DOCUMENT_UPLOAD:
@@ -92,6 +106,7 @@ class TemplateTaskRead(BaseModel):
     due_offset_days: int
     task_type: OnboardingTaskType
     document_type: str | None
+    form_code: str | None = None
     sort_order: int
     is_mandatory: bool
 
@@ -188,6 +203,9 @@ class TaskRead(BaseModel):
     note: str | None
     document_id: uuid.UUID | None
     document_title: str | None
+    form_code: str | None = None
+    #: The generated statutory form, once the joiner has generated it.
+    form_letter_id: uuid.UUID | None = None
     #: Whether the caller may mark it done (or upload for it).
     can_complete: bool
     #: Whether the caller may skip, reassign or re-date it (HR).

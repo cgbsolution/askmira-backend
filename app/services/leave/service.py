@@ -541,38 +541,51 @@ async def _post_to_ledger(
 
 
 async def approvers_for(
-    session: AsyncSession, user: User, employee: Employee
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    *,
+    days: Decimal | None = None,
+    leave_type_id: uuid.UUID | None = None,
 ) -> list[engine.Approver]:
-    """The line manager when they can sign in; HR otherwise.
+    """The chain from the tenant's approval rules, else the line manager; HR otherwise.
 
     A manager with no login cannot act, and a request routed to somebody who
-    cannot act is a request that waits forever.
+    cannot act is a request that waits forever — so a step nobody can take is
+    skipped, and a chain left empty goes to HR.
     """
-    if employee.manager_id is not None:
-        manager = await session.scalar(
-            tenant_scoped(
-                select(Employee).where(
-                    Employee.id == employee.manager_id, Employee.deleted_at.is_(None)
-                ),
-                Employee,
-                user,
+    from app.models.approval_rules import ApprovalProcess
+    from app.services.approvals import rules
+
+    steps, _rule = await rules.resolve_steps(
+        session,
+        user,
+        employee,
+        rules.Facts(
+            process=ApprovalProcess.LEAVE,
+            department_id=employee.department_id,
+            location_id=employee.location_id,
+            days=days,
+            leave_type_id=leave_type_id,
+        ),
+    )
+    if steps:
+        return [
+            engine.Approver(
+                s.role if s.role != "user" else "approver", s.user_id, s.employee_id, s.name,
+                escalate_after_hours=s.escalate_after_hours,
             )
-        )
-        if manager is not None:
-            manager_user = await session.scalar(
-                tenant_scoped(
-                    select(User).where(User.employee_id == manager.id, User.is_active.is_(True)),
-                    User,
-                    user,
-                )
-            )
-            if manager_user is not None:
-                return [engine.Approver("manager", manager_user.id, manager.id, _name(manager))]
+            for s in steps
+        ]
     return [engine.Approver("hr", None, None, "HR team")]
 
 
 def _may_decide(user: User, leave: LeaveRequest) -> bool:
-    """The named approver of the current step, or HR, and never the person on leave."""
+    """The approver of the current step — or whoever they delegated to — or HR.
+
+    Never the person on leave. `acting_for_ids` is loaded by the callers that
+    decide or list (see `_load_acting`); without it, only the caller themselves.
+    """
     if user.employee_id is not None and user.employee_id == leave.employee_id:
         return False
     if leave.status is not LeaveRequestStatus.PENDING:
@@ -582,7 +595,16 @@ def _may_decide(user: User, leave: LeaveRequest) -> bool:
         return False
     if permissions.is_hr(user):
         return True
-    return leave.approval_chain[index].get("approver_user_id") == str(user.id)
+    acting = getattr(user, "acting_for_ids", None) or {user.id}
+    approver = leave.approval_chain[index].get("approver_user_id")
+    return approver is not None and approver in {str(a) for a in acting}
+
+
+async def _load_acting(session: AsyncSession, user: User) -> None:
+    """Whose approvals this person may take today: theirs, and any delegated to them."""
+    from app.services.approvals import rules
+
+    user.acting_for_ids = await rules.acting_for(session, user)
 
 
 def _may_cancel(user: User, leave: LeaveRequest, today: date) -> bool:
@@ -774,7 +796,10 @@ async def preview(
     count, assessment, balance, _, projected = await _assess(
         session, user, employee, payload, today
     )
-    approvers = await approvers_for(session, user, employee)
+    approvers = await approvers_for(
+        session, user, employee, days=count.total,
+        leave_type_id=payload.leave_type_id,
+    )
     return LeavePreviewRead(
         total_days=count.total,
         working_days=len(count.working_dates),
@@ -812,7 +837,11 @@ async def apply(
     if payload.document_url:
         await attachments.require_stored(payload.document_url)
 
-    chain = engine.build_chain(await approvers_for(session, user, employee))
+    chain = engine.build_chain(
+        await approvers_for(
+            session, user, employee, days=count.total, leave_type_id=leave_type.id
+        )
+    )
     leave = LeaveRequest(
         tenant_id=user.tenant_id,
         employee_id=employee.id,
@@ -928,6 +957,7 @@ async def decide(
         raise _conflict(f"This request is already {leave.status.value}.")
     if user.employee_id is not None and user.employee_id == leave.employee_id:
         raise permissions.forbidden("You cannot decide your own leave request.")
+    await _load_acting(session, user)
     if not _may_decide(user, leave):
         raise permissions.forbidden(
             "This request is waiting on somebody else. Only its approver or HR can decide it."
@@ -1125,6 +1155,7 @@ async def list_requests(
     Reasons are routinely medical, so the visibility rule is the same one the
     employee profile uses.
     """
+    await _load_acting(session, user)
     stmt = tenant_scoped(
         select(LeaveRequest, Employee, LeaveType)
         .join(Employee, Employee.id == LeaveRequest.employee_id)
@@ -1207,13 +1238,20 @@ async def approvals_inbox(session: AsyncSession, user: User) -> list[LeaveReques
         LeaveRequest,
         user,
     )
+    await _load_acting(session, user)
     if not permissions.is_hr(user):
-        # Narrow in SQL before the per-step check: a manager only ever
-        # approves people in their own reporting line.
+        # Narrow in SQL before the per-step check: the caller's reporting line,
+        # plus any request whose chain names them or somebody they stand in for
+        # (a skip-level step, a named approver, a delegation).
         line = await permissions.reporting_line(session, user)
-        if not line:
-            return []
-        stmt = stmt.where(LeaveRequest.employee_id.in_(line))
+        named = [
+            LeaveRequest.approval_chain.contains([{"approver_user_id": str(uid)}])
+            for uid in user.acting_for_ids
+        ]
+        clauses = [*named]
+        if line:
+            clauses.append(LeaveRequest.employee_id.in_(line))
+        stmt = stmt.where(or_(*clauses))
     rows = [
         (leave, emp, lt)
         for leave, emp, lt in (

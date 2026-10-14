@@ -59,6 +59,8 @@ class PunchSource(str, enum.Enum):
     WEB = "web"
     MANUAL = "manual"
     IMPORT = "import"
+    #: A shared kiosk, with the person's employee code and PIN.
+    KIOSK = "kiosk"
 
 
 class AttendanceStatus(str, enum.Enum):
@@ -152,6 +154,20 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Without it, an unassigned employee's days cannot be judged at all.
     is_default: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
+    )
+
+    # A per-day allowance for working this shift — a night or rotating-shift
+    # differential. Paid by payroll for every present day on the shift in a
+    # locked period. Null pays nothing.
+    allowance_per_day: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    allowance_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    #: The fewest people this shift needs on a working day, for the coverage
+    #: view. Null: no minimum is set and coverage only counts.
+    min_headcount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Courses (Learning) anyone working this shift must hold, valid on the day.
+    required_course_ids: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
 
     def __repr__(self) -> str:
@@ -300,6 +316,12 @@ class AttendancePunch(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     # Whatever the device or client sent, kept verbatim for dispute resolution.
     raw_payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    #: A photo taken at the punch, where the workspace asks for one. Private storage.
+    photo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    @property
+    def has_photo(self) -> bool:
+        return self.photo_key is not None
 
     def __repr__(self) -> str:
         return f"<AttendancePunch {self.direction.value} @ {self.punched_at}>"

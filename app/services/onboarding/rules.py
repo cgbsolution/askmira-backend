@@ -235,6 +235,7 @@ class StandardTask:
     task_type: OnboardingTaskType = OnboardingTaskType.GENERAL
     document_type: str | None = None
     is_mandatory: bool = True
+    form_code: str | None = None
 
 
 STANDARD_TEMPLATE_NAME = "Standard onboarding (India)"
@@ -292,18 +293,40 @@ STANDARD_TASKS: tuple[StandardTask, ...] = (
         False,
     ),
     StandardTask(
-        "Fill in your PF nomination (Form 2)",
-        "Name your nominees for Provident Fund and EPS.",
+        "Sign your PF and EPS nomination (Form 2)",
+        "Add your Provident Fund nominees and family under Profile, then generate and sign "
+        "the form here.",
         OnboardingOwnerType.NEW_JOINER,
         0,
         OnboardingTaskType.FORM,
+        form_code="FORM2_STD",
     ),
     StandardTask(
-        "Submit your EPF declaration (Form 11)",
-        "Declare your previous PF membership and UAN, if you have one.",
+        "Sign your EPF declaration (Form 11)",
+        "Declares your previous PF membership and UAN, if you have one. Check your profile, "
+        "then generate and sign the form here.",
         OnboardingOwnerType.NEW_JOINER,
         0,
         OnboardingTaskType.FORM,
+        form_code="FORM11_STD",
+    ),
+    StandardTask(
+        "Sign your gratuity nomination (Form F)",
+        "Add your gratuity nominees under Profile, then generate and sign the form here.",
+        OnboardingOwnerType.NEW_JOINER,
+        7,
+        OnboardingTaskType.FORM,
+        form_code="FORMF_STD",
+    ),
+    StandardTask(
+        "Sign your ESI declaration (Form 1)",
+        "Only if your wages are within the ESI ceiling. Check your family details, then "
+        "generate and sign the form here.",
+        OnboardingOwnerType.NEW_JOINER,
+        7,
+        OnboardingTaskType.FORM,
+        is_mandatory=False,
+        form_code="ESI_DECL_STD",
     ),
     StandardTask(
         "Provision laptop and work email",

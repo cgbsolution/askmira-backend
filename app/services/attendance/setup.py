@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import time, timedelta
+from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request, status
@@ -52,6 +53,7 @@ from app.schemas.attendance import (
     WorkLocationPin,
 )
 from app.services import audit
+from app.services.attendance import qualifications
 
 _SHIFT_FIELDS = (
     "name",
@@ -64,6 +66,9 @@ _SHIFT_FIELDS = (
     "full_day_threshold_minutes",
     "is_night_shift",
     "weekly_off_days",
+    "allowance_per_day",
+    "allowance_name",
+    "min_headcount",
 )
 
 
@@ -79,7 +84,12 @@ def _snapshot(shift: Shift) -> dict[str, Any]:
     out: dict[str, Any] = {"code": shift.code, "active": shift.active}
     for field in _SHIFT_FIELDS:
         value = getattr(shift, field)
-        out[field] = value.isoformat() if isinstance(value, time) else value
+        if isinstance(value, time):
+            value = value.isoformat()
+        elif isinstance(value, Decimal):
+            value = str(value)
+        out[field] = value
+    out["required_course_ids"] = list(shift.required_course_ids or [])
     return out
 
 
@@ -126,6 +136,9 @@ async def create_shift(
         active=True,
         is_default=has_default is None,
         **{field: getattr(data, field) for field in _SHIFT_FIELDS},
+        required_course_ids=await qualifications.check_course_ids(
+            session, user, data.required_course_ids
+        ),
     )
     session.add(shift)
     await session.flush()
@@ -156,6 +169,9 @@ async def update_shift(
     before = _snapshot(shift)
     for field in _SHIFT_FIELDS:
         setattr(shift, field, getattr(data, field))
+    shift.required_course_ids = await qualifications.check_course_ids(
+        session, user, data.required_course_ids
+    )
     shift.active = data.active
     if not shift.active and shift.is_default:
         raise _conflict(
@@ -496,6 +512,9 @@ async def assign_shift(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Shift {shift.code} is inactive. Reactivate it before assigning it.",
         )
+    await qualifications.require_qualified(
+        session, user, employee.id, [shift], data.effective_from, who=employee.employee_code
+    )
     closed = await _close_open_assignments(
         session, user, ShiftAssignment, employee.id, data.effective_from
     )
@@ -546,6 +565,14 @@ async def assign_roster(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Roster {roster.name} is inactive. Reactivate it before assigning it.",
         )
+    await qualifications.require_qualified(
+        session,
+        user,
+        employee.id,
+        [day.shift for day in roster.days if day.shift is not None],
+        data.effective_from,
+        who=employee.employee_code,
+    )
     closed = await _close_open_assignments(
         session, user, RosterAssignment, employee.id, data.effective_from
     )
@@ -727,9 +754,14 @@ async def update_attendance_settings(
         raise _not_found("Workspace")
     before = await attendance_settings(session, user)
     settings = dict(tenant.settings or {})
-    settings["attendance"] = {**(settings.get("attendance") or {}), **data.model_dump()}
+    # Only what was sent: saving the location rule must not reset the photo rule.
+    settings["attendance"] = {
+        **(settings.get("attendance") or {}),
+        **data.model_dump(exclude_unset=True),
+    }
     # Reassigned, not mutated: JSONB changes are only seen on assignment.
     tenant.settings = settings
+    after = AttendanceSettings.model_validate(settings["attendance"])
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -737,9 +769,11 @@ async def update_attendance_settings(
         entity_type="attendance_settings",
         entity_id=tenant.id,
         actor=user,
-        changes={"before": before.model_dump(), "after": data.model_dump()},
-        summary=f"Punch location is now {data.location_mode}",
+        changes={"before": before.model_dump(), "after": after.model_dump()},
+        summary=(
+            f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}"
+        ),
         request=request,
     )
     await session.commit()
-    return data
+    return after

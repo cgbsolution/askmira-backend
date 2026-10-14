@@ -86,6 +86,12 @@ class User(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # it can never lag a reorg. False until then, so a User loaded any other
     # way fails closed on manager-only actions.
     has_reports = False
+    # Not columns either, and also set per request by `get_current_user`. Whether
+    # this request may use the caller's HR powers (a sub-admin narrowed by area
+    # and right may not), and the area the request is in. True and None for a
+    # User loaded any other way: a job or a test acting as HR keeps HR powers.
+    hr_allowed = True
+    request_area = None
 
     def __repr__(self) -> str:
         return f"<User {self.email} ({self.role.value})>"

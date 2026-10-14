@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from app.core.crypto import encrypt_secret
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
+from app.core.step_up import confirmation
 from app.models.audit import AuditAction
 from app.models.disbursement import (
     BankFileFormat,
@@ -507,7 +508,11 @@ async def release(
     request: Request,
 ) -> BatchRead:
     batch = await disbursement_service.release_batch(
-        session, user, batch_id=batch_id, request=request
+        session,
+        user,
+        batch_id=batch_id,
+        confirm=confirmation(session, user, "disbursement.release"),
+        request=request,
     )
     await session.commit()
     await session.refresh(batch)

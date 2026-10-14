@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.api.v1.routers import (
     admin,
     agenteval,
+    ai,
     appraisal,
     approvals,
     arrears,
@@ -12,11 +13,13 @@ from app.api.v1.routers import (
     attendance,
     auth,
     autonomy,
+    benefits,
     bi,
     calibration,
     careers,
     company_documents,
     competency,
+    contractors,
     culture,
     culture_depth,
     cycle_config,
@@ -26,9 +29,12 @@ from app.api.v1.routers import (
     documents,
     dpdp,
     employees,
+    esop,
+    ewa,
     exit_benefits,
     exit_workflow,
     expenses,
+    ext,
     feedback,
     filings,
     goals,
@@ -37,17 +43,22 @@ from app.api.v1.routers import (
     helpdesk,
     hiring,
     interviews,
+    learning,
     leave,
     letters,
     lifecycle,
     loans,
+    mcp,
     notifications,
     offers,
     onboarding,
     one_on_ones,
+    operators,
     opsec,
     org,
+    overtime,
     payroll,
+    payroll_adjustments,
     payslips,
     performance_flow,
     positions,
@@ -58,7 +69,9 @@ from app.api.v1.routers import (
     salary,
     sso,
     statutory,
+    statutory_watch,
     tax,
+    timesheets,
 )
 from app.core.deps import require_module
 
@@ -79,9 +92,11 @@ api_router.include_router(dashboard.router)
 api_router.include_router(employees.router)
 api_router.include_router(org.router)
 api_router.include_router(leave.router, dependencies=_module("leave"))
+api_router.include_router(overtime.router, dependencies=_module("leave"))
 api_router.include_router(attendance.router, dependencies=_module("leave"))
 api_router.include_router(bi.router, dependencies=_module("analytics"))
 api_router.include_router(payroll.router, dependencies=_module("payroll"))
+api_router.include_router(payroll_adjustments.router, dependencies=_module("payroll"))
 api_router.include_router(payslips.router, dependencies=_module("payroll"))
 api_router.include_router(salary.router, dependencies=_module("payroll"))
 api_router.include_router(tax.router, dependencies=_module("payroll"))
@@ -130,3 +145,14 @@ api_router.include_router(approvals.router)
 api_router.include_router(assets.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(helpdesk.router)
+api_router.include_router(timesheets.router)
+api_router.include_router(statutory_watch.router, dependencies=_module("payroll"))
+api_router.include_router(ext.router)
+api_router.include_router(learning.router)
+api_router.include_router(esop.router)
+api_router.include_router(ewa.router, dependencies=_module("payroll"))
+api_router.include_router(contractors.router, dependencies=_module("payroll"))
+api_router.include_router(benefits.router, dependencies=_module("payroll"))
+api_router.include_router(ai.router)
+api_router.include_router(mcp.router)
+api_router.include_router(operators.router)

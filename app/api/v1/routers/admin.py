@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
+from app.core.step_up import confirmation
 from app.models.audit import AuditAction, AuditLog, RoleModulePermission
 from app.models.tenant import Tenant
 from app.models.user import UserRole
@@ -31,6 +32,7 @@ from app.schemas.platform_admin import (
     RoleChange,
     TenantSettingsUpdate,
 )
+from app.services import access_admin, integrations
 from app.services.identity import users as user_admin
 from app.services.scheduler import service as scheduler_service
 
@@ -292,3 +294,158 @@ async def run_job_now(
 ) -> dict[str, Any]:
     """Run one job now, for this workspace only. Admins only."""
     return await scheduler_service.run_job_now(session, user, job_key=job_key, request=request)
+
+
+# ── HR operators: rights by area, and scope ─────────────────────────────────
+
+
+class AreaRightsIn(BaseModel):
+    can_view: bool = False
+    can_create: bool = False
+    can_edit: bool = False
+    can_delete: bool = False
+    can_approve: bool = False
+    can_export: bool = False
+
+
+class ScopeIn(BaseModel):
+    department_ids: list[uuid.UUID] = []
+    location_ids: list[uuid.UUID] = []
+
+
+@router.get("/access")
+async def access_overview(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Areas, the sub-admin role's rights in each, and each sub-admin's own rights and scope."""
+    return await access_admin.access_overview(session, user)
+
+
+@router.put("/access/role/{area}")
+async def set_role_rights(
+    area: str, payload: AreaRightsIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, bool]:
+    result = await access_admin.set_role_rights(
+        session, user, area, payload.model_dump(),
+        confirm=confirmation(session, user, "user.role_change"), request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.delete("/access/role/{area}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def clear_role_rights(
+    area: str, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await access_admin.clear_role_rights(
+        session, user, area, confirm=confirmation(session, user, "user.role_change"),
+        request=request,
+    )
+    await session.commit()
+
+
+@router.put("/access/users/{user_id}/areas/{area}")
+async def set_user_rights(
+    user_id: uuid.UUID,
+    area: str,
+    payload: AreaRightsIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, bool]:
+    result = await access_admin.set_user_rights(
+        session, user, user_id, area, payload.model_dump(),
+        confirm=confirmation(session, user, "user.role_change"), request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.delete(
+    "/access/users/{user_id}/areas/{area}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def clear_user_rights(
+    user_id: uuid.UUID, area: str, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await access_admin.clear_user_rights(
+        session, user, user_id, area, confirm=confirmation(session, user, "user.role_change"),
+        request=request,
+    )
+    await session.commit()
+
+
+@router.put("/access/users/{user_id}/scope")
+async def set_scope(
+    user_id: uuid.UUID, payload: ScopeIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Limit a sub-admin to some departments or locations; both empty removes the limit."""
+    result = await access_admin.set_scope(
+        session, user, user_id,
+        department_ids=payload.department_ids, location_ids=payload.location_ids,
+        confirm=confirmation(session, user, "user.role_change"), request=request,
+    )
+    await session.commit()
+    return {"scope": result}
+
+
+
+# ── API keys and webhooks ───────────────────────────────────────────────────
+
+_ADMIN = [Depends(require_roles(UserRole.ADMIN))]
+
+
+class _WebhookActive(BaseModel):
+    active: bool
+
+
+@router.get("/integrations/api-keys", dependencies=_ADMIN)
+async def list_api_keys(user: CurrentUser, session: DbSession) -> list[dict]:
+    return await integrations.list_keys(session, user)
+
+
+@router.post("/integrations/api-keys", status_code=status.HTTP_201_CREATED, dependencies=_ADMIN)
+async def create_api_key(
+    payload: integrations.ApiKeyIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """The key is in this response only; it cannot be shown again."""
+    return await integrations.create_key(session, user, payload, request=request)
+
+
+@router.post("/integrations/api-keys/{key_id}/revoke", dependencies=_ADMIN)
+async def revoke_api_key(
+    key_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await integrations.revoke_key(session, user, key_id, request=request)
+
+
+@router.get("/integrations/webhooks", dependencies=_ADMIN)
+async def list_webhooks(user: CurrentUser, session: DbSession) -> list[dict]:
+    return await integrations.list_endpoints(session, user)
+
+
+@router.post("/integrations/webhooks", status_code=status.HTTP_201_CREATED, dependencies=_ADMIN)
+async def create_webhook(
+    payload: integrations.EndpointIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """The signing secret is in this response only."""
+    return await integrations.create_endpoint(session, user, payload, request=request)
+
+
+@router.patch("/integrations/webhooks/{endpoint_id}", dependencies=_ADMIN)
+async def set_webhook_active(
+    endpoint_id: uuid.UUID,
+    payload: _WebhookActive,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict:
+    return await integrations.set_endpoint_active(
+        session, user, endpoint_id, payload.active, request=request
+    )
+
+
+@router.get("/integrations/webhooks/{endpoint_id}/deliveries", dependencies=_ADMIN)
+async def webhook_deliveries(
+    endpoint_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[dict]:
+    return await integrations.list_deliveries(session, user, endpoint_id)

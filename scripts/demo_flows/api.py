@@ -111,6 +111,31 @@ class Api:
     async def delete(self, path: str, **kwargs: Any) -> Any:
         return await self.request("DELETE", path, **kwargs)
 
+    async def step_up(self, action_key: str) -> None:
+        """Stand in for the person confirming it is them before a guarded action.
+
+        The seed has no passwords to re-enter, so it records the satisfied
+        challenge the step-up dialog would have — straight into the database,
+        as the trusted script it is. Money-moving routes refuse without it.
+        """
+        from datetime import UTC, datetime
+
+        from app.db.session import SessionLocal
+        from app.models.opsec import StepUpChallenge
+
+        assert self.tenant_id is not None
+        async with SessionLocal() as session:
+            session.add(
+                StepUpChallenge(
+                    tenant_id=self.tenant_id,
+                    user_id=self.user_id,
+                    action_key=action_key,
+                    reason="Seeded: confirmed by the demo script",
+                    satisfied_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
     async def refused(self, method: str, path: str, body: Any = None, *, status: int) -> str:
         """A request that must be refused with `status` — a guard the flow relies on."""
         url = f"{API}{path}"

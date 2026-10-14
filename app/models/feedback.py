@@ -43,6 +43,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
 )
@@ -152,6 +153,10 @@ class FeedbackReviewer(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
     )
     #: [{"competency_id", "rating", "comment"}] against the request's snapshot.
+    #: How the reviewer relates to the person, from the org chart when asked:
+    #: manager, skip_level, direct_report, peer or other. A 360 read without it
+    #: cannot tell a peer's 2 from a report's.
+    relation: Mapped[str | None] = mapped_column(String(16), nullable=True)
     competency_ratings: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     strengths: Mapped[str | None] = mapped_column(Text, nullable=True)
     improvements: Mapped[str | None] = mapped_column(Text, nullable=True)

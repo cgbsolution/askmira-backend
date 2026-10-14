@@ -8,17 +8,25 @@ Other clients (the mobile app, scripts) keep receiving Bearer tokens.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+import uuid
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.core import cookies
 from app.core.config import settings
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.tenant import Tenant
+from app.models.user import UserRole
 from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
+    MfaChallengeRead,
+    MfaCodeRequest,
+    MfaDisableRequest,
+    MfaLoginRequest,
     RefreshRequest,
     ResetPasswordRequest,
     SessionRead,
@@ -27,6 +35,7 @@ from app.schemas.auth import (
     UserRead,
 )
 from app.services import auth as auth_service
+from app.services import mfa as mfa_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -53,12 +62,73 @@ async def signup(
     return _deliver(result, request, response)
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post("/login", response_model=AuthResponse | MfaChallengeRead)
 async def login(
     payload: LoginRequest, session: DbSession, request: Request, response: Response
-) -> AuthResponse:
+) -> AuthResponse | MfaChallengeRead:
+    """Signs in, or — with two-step sign-in on — asks for the code next."""
     result = await auth_service.login(session, payload, request)
+    if isinstance(result, MfaChallengeRead):
+        return result
     return _deliver(result, request, response)
+
+
+@router.post("/login/mfa", response_model=AuthResponse)
+async def login_mfa(
+    payload: MfaLoginRequest, session: DbSession, request: Request, response: Response
+) -> AuthResponse:
+    """The second step of sign-in: the token from the first, and a code."""
+    result = await auth_service.complete_mfa_login(
+        session, payload.mfa_token, payload.code, request
+    )
+    return _deliver(result, request, response)
+
+
+@router.get("/mfa")
+async def mfa_status(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await mfa_service.mfa_status(session, user)
+
+
+@router.post("/mfa/setup")
+async def mfa_setup(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """A secret for the authenticator app. Nothing is switched on until a code confirms it."""
+    result = await mfa_service.begin_setup(session, user)
+    await session.commit()
+    return result
+
+
+@router.post("/mfa/enable")
+async def mfa_enable(
+    payload: MfaCodeRequest, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Switch it on with a code; the recovery codes come back once, here."""
+    result = await mfa_service.enable(session, user, code=payload.code, request=request)
+    await session.commit()
+    return result
+
+
+@router.post("/mfa/disable", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def mfa_disable(
+    payload: MfaDisableRequest, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await mfa_service.disable(
+        session, user, password=payload.password, code=payload.code, request=request
+    )
+    await session.commit()
+
+
+@router.post(
+    "/mfa/reset/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+async def mfa_admin_reset(
+    user_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """An admin clears somebody else's two-step sign-in after a lost phone."""
+    await mfa_service.admin_reset(session, user, user_id, request=request)
+    await session.commit()
 
 
 @router.post("/refresh", response_model=AuthResponse)

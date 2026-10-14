@@ -6,6 +6,28 @@ or is catalogue material about nobody in particular.
 """
 
 ENDPOINTS: dict[str, str] = {
+    "GET /esop/me": "own: the caller's own grants, by user.employee_id from the token.",
+    # ── Earned wage access ──────────────────────────────────────────────────
+    "GET /ewa/policy": "reference: whether advances are on and the share allowed; no person data.",
+    "GET /ewa/me": "own: the caller's own earned pay and advances, by user.employee_id.",
+    "POST /ewa/requests": "own: an advance for the caller (user.employee_id from the token).",
+    "GET /ewa/requests": "permissions: HR reads every request; anyone else only their own.",
+    # ── Benefits ────────────────────────────────────────────────────────────
+    "GET /benefits/plans": (
+        "permissions: active plans for everyone; ended plans and enrolment counts for HR."
+    ),
+    "GET /benefits/me": (
+        "own: the caller's own enrolments, by user.employee_id from the token."
+    ),
+    "POST /benefits/plans/{plan_id}/enrol": (
+        "own: enrols the caller (user.employee_id from the token) in the plan."
+    ),
+    "GET /benefits/life-events": (
+        "permissions: HR reads pending changes; anyone else only their own."
+    ),
+    "POST /benefits/life-events": (
+        "own: the caller's own change, against their own enrolment (user.employee_id)."
+    ),
     # ── Leave encashment ────────────────────────────────────────────────────
     "GET /encashment/policies": "reference: the encashment rules.",
     "POST /encashment/requests": "permissions: your own encashment unless payroll.",

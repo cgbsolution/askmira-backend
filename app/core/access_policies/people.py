@@ -1,6 +1,19 @@
 """People, organisation structure and positions."""
 
 ENDPOINTS: dict[str, str] = {
+    # ── Learning ────────────────────────────────────────────────────────────
+    "GET /learning/me": "own: the caller's own courses, by user.employee_id from the token.",
+    "GET /learning/me/{assignment_id}": (
+        "permissions: only the caller's own assignment (permissions.own_employee_id); the "
+        "quiz answers are never sent."
+    ),
+    "POST /learning/me/{assignment_id}/complete": (
+        "permissions: only the caller's own assignment (permissions.own_employee_id); "
+        "scored on the server."
+    ),
+    "GET /learning/assignments/{assignment_id}/certificate": (
+        "permissions: the person the certificate is for, or HR."
+    ),
     "GET /employees": (
         "reference: the company directory - names, titles, departments and work "
         "email, which every colleague may see. Personal fields are not in it."
@@ -37,6 +50,10 @@ ENDPOINTS: dict[str, str] = {
     "POST /employees/change-requests/{request_id}/withdraw": (
         "own: only the requester withdraws; anybody else's request is a 404."
     ),
+    "GET /employees/{employee_id}/timeline": (
+        "permissions: HR and the person read every module; their line manager reads the "
+        "working record only, without pay, documents or tickets."
+    ),
     "GET /employees/{employee_id}/profile": (
         "permissions: the person themselves and HR; identifiers masked for "
         "everyone but HR."
@@ -64,9 +81,33 @@ ENDPOINTS: dict[str, str] = {
         "scoped:require_item_permission: the item's named owner, the leaver's line "
         "manager for a manager item, or HR - never on the caller's own exit."
     ),
+    "GET /exits/{exit_id}/interview": (
+        "scoped:is_leaver: the leaver's own exit interview, or HR; never the manager."
+    ),
+    "PUT /exits/{exit_id}/interview": (
+        "scoped:is_leaver: the leaver fills in their own, or HR records it."
+    ),
     "POST /exits/{exit_id}/withdraw": (
         "own: the caller withdraws their own unaccepted resignation; anybody "
         "else's exit is a 404."
+    ),
+    "GET /org/custom-fields": (
+        "reference: field labels for the profile; the service lists sensitive ones to HR only."
+    ),
+    "GET /org/custom-tables": (
+        "reference: table designs for the profile; the service lists sensitive ones to HR only."
+    ),
+    "GET /employees/{employee_id}/custom-tables": (
+        "permissions: HR, or the person themselves for tables that are not sensitive."
+    ),
+    "POST /employees/{employee_id}/custom-tables/{table_id}/rows": (
+        "permissions: HR, or the person on their own record where the table allows it."
+    ),
+    "PATCH /employees/custom-table-rows/{row_id}": (
+        "permissions: HR, or the person on their own record where the table allows it."
+    ),
+    "DELETE /employees/custom-table-rows/{row_id}": (
+        "permissions: HR, or the person on their own record where the table allows it."
     ),
     "GET /org/departments": "reference: the organisation's structure.",
     "GET /org/legal-entities": "reference: the organisation's structure.",
