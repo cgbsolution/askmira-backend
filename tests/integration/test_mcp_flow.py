@@ -172,3 +172,110 @@ async def test_a_bad_range_is_a_tool_error_not_a_crash(
         headers={"Authorization": f"Bearer {key}"},
     )
     assert response.json()["result"]["isError"] is True
+
+
+async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    client: httpx.AsyncClient,
+) -> None:
+    import base64
+    import hashlib
+    import secrets
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.core.security import create_access_token
+
+    unauthenticated = await client.post("/api/v1/mcp", json=_rpc("tools/list"))
+    assert unauthenticated.status_code == 401
+    challenge = unauthenticated.headers["www-authenticate"]
+    assert 'resource_metadata="' in challenge
+    metadata_path = urlsplit(challenge.split('"')[1]).path
+    resource = (await client.get(metadata_path)).json()
+    assert resource["resource"].endswith("/api/v1/mcp")
+    server = (await client.get("/.well-known/oauth-authorization-server")).json()
+    assert server["code_challenge_methods_supported"] == ["S256"]
+
+    bad = await client.post(
+        "/api/v1/oauth/register", json={"redirect_uris": ["http://evil.example/cb"]}
+    )
+    assert bad.status_code == 400 and bad.json()["error"] == "invalid_redirect_uri"
+    registered = await client.post(
+        "/api/v1/oauth/register",
+        json={"client_name": "Claude", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]},
+    )
+    assert registered.status_code == 201
+    client_id = registered.json()["client_id"]
+
+    verifier = secrets.token_urlsafe(48)
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    )
+    jwt = create_access_token(
+        user_id=str(hr_user.id), tenant_id=str(hr_user.tenant_id), role=hr_user.role.value
+    )
+    as_person = {"Authorization": f"Bearer {jwt}"}
+    redirect = "https://claude.ai/api/mcp/auth_callback"
+    details = await client.get(
+        "/api/v1/oauth/authorize/details",
+        params={"client_id": client_id, "redirect_uri": redirect},
+        headers=as_person,
+    )
+    assert details.json()["client_name"] == "Claude"
+    approved = await client.post(
+        "/api/v1/oauth/authorize",
+        json={
+            "client_id": client_id, "redirect_uri": redirect, "code_challenge": code_challenge,
+            "scope": "employees:read org:read", "state": "xyz",
+        },
+        headers=as_person,
+    )
+    query = parse_qs(urlsplit(approved.json()["redirect_to"]).query)
+    assert query["state"] == ["xyz"]
+    code = query["code"][0]
+
+    wrong_verifier = await client.post(
+        "/api/v1/oauth/token",
+        data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": redirect, "code_verifier": "x" * 50,
+        },
+    )
+    assert wrong_verifier.status_code == 400
+    tokens = await client.post(
+        "/api/v1/oauth/token",
+        data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": redirect, "code_verifier": verifier,
+        },
+    )
+    assert tokens.status_code == 200, tokens.text
+    access = tokens.json()["access_token"]
+    assert access.startswith("amo_") and tokens.json()["scope"] == "employees:read org:read"
+
+    bearer = {"Authorization": f"Bearer {access}"}
+    listed = await client.post("/api/v1/mcp", json=_rpc("tools/list"), headers=bearer)
+    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert "search_employees" in names and "attendance_summary" not in names
+
+    refreshed = await client.post(
+        "/api/v1/oauth/token",
+        data={
+            "grant_type": "refresh_token", "refresh_token": tokens.json()["refresh_token"],
+            "client_id": client_id,
+        },
+    )
+    assert refreshed.status_code == 200
+    stale = await client.post("/api/v1/mcp", json=_rpc("tools/list"), headers=bearer)
+    assert stale.status_code == 401, "a refresh rotates the access token"
+
+    replay = await client.post(
+        "/api/v1/oauth/token",
+        data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": redirect, "code_verifier": verifier,
+        },
+    )
+    assert replay.status_code == 400
+    fresh = {"Authorization": f"Bearer {refreshed.json()['access_token']}"}
+    revoked = await client.post("/api/v1/mcp", json=_rpc("tools/list"), headers=fresh)
+    assert revoked.status_code == 401, "a replayed code revokes what it produced"

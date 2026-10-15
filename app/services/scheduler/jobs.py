@@ -153,6 +153,18 @@ async def _probation_agent(session: AsyncSession, ctx: JobContext) -> dict[str, 
     return _tally(await agents.probation_agent(session, ctx.actor, today=ctx.today))
 
 
+async def _timesheet_agent(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.autonomy import agents
+
+    return _tally(await agents.timesheet_agent(session, ctx.actor, today=ctx.today))
+
+
+async def _schedule_agent(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.autonomy import agents
+
+    return _tally(await agents.schedule_agent(session, ctx.actor, today=ctx.today))
+
+
 async def _asset_return_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.assets import service as assets
 
@@ -382,6 +394,15 @@ async def _attendance_reminders(session: AsyncSession, ctx: JobContext) -> dict[
     )
 
 
+async def _timesheet_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import timesheets
+
+    assert ctx.actor is not None
+    return await timesheets.send_timesheet_reminders(
+        session, ctx.actor, today=ctx.today, now=ctx.now
+    )
+
+
 async def _approval_escalation(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.approvals import rules
 
@@ -553,6 +574,18 @@ JOBS: tuple[Job, ...] = (
         module="leave",
     ),
     Job(
+        key="timesheets.reminders",
+        name="Timesheet reminders",
+        description=(
+            "Reminds people of finished weeks they saved but did not submit, and approvers "
+            "of timesheets waiting on them more than two days."
+        ),
+        cadence=Cadence.daily(hour=10),
+        handler=_timesheet_reminders,
+        source="app.services.timesheets.send_timesheet_reminders",
+        module="leave",
+    ),
+    Job(
         key="integrations.webhooks",
         name="Webhook deliveries",
         description=(
@@ -687,6 +720,28 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=10),
         handler=_probation_agent,
         source="app.services.autonomy.agents.probation_agent",
+    ),
+    Job(
+        key="autonomy.timesheet_agent",
+        name="Timesheet agent",
+        description=(
+            "Checks submitted timesheets against attendance and proposes approving the ones "
+            "whose hours are supported, for their approver to decide."
+        ),
+        cadence=Cadence.daily(hour=11),
+        handler=_timesheet_agent,
+        source="app.services.autonomy.agents.timesheet_agent",
+    ),
+    Job(
+        key="autonomy.schedule_agent",
+        name="Schedule agent",
+        description=(
+            "Finds shifts short of their minimum headcount over the coming week and proposes "
+            "qualified, available people to cover them, for a person to approve."
+        ),
+        cadence=Cadence.daily(hour=12),
+        handler=_schedule_agent,
+        source="app.services.autonomy.agents.schedule_agent",
     ),
     Job(
         key="assets.return_reminders",

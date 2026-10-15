@@ -603,3 +603,35 @@ async def test_employee_acknowledges_a_letter_in_the_portal(
         json={"typed_name": "Ravi Kumar", "accept": True},
     )
     assert twice.status_code == 409
+
+
+async def test_a_recurring_one_on_one_books_the_next(client, session, team) -> None:
+    ravi, maya = team["ravi"], team["maya"]
+    first_day = datetime.now(UTC).date() + timedelta(days=3)
+    created = await client.post(
+        "/api/v1/one-on-ones",
+        headers=bearer(maya),
+        json={
+            "with_employee_id": str(ravi.employee_id),
+            "scheduled_on": first_day.isoformat(),
+            "start_time": "11:00",
+            "repeat_every_weeks": 2,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["repeat_every_weeks"] == 2
+    held = await client.post(
+        f"/api/v1/one-on-ones/{created.json()['id']}/complete",
+        headers=bearer(maya),
+        json={"summary": "Pipeline reviewed."},
+    )
+    assert held.status_code == 200, held.text
+    listing = await client.get("/api/v1/one-on-ones", headers=bearer(maya))
+    upcoming = [
+        m for m in listing.json() if m["status"] == "scheduled"
+        and m["with_employee_id"] == str(ravi.employee_id)
+    ]
+    assert [m["scheduled_on"] for m in upcoming] == [
+        (first_day + timedelta(weeks=2)).isoformat()
+    ]
+    assert upcoming[0]["repeat_every_weeks"] == 2

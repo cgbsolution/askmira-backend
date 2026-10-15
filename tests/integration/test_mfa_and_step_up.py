@@ -212,3 +212,39 @@ async def test_an_admin_resets_others_but_not_themselves(client, session, tenant
     # A sub-admin cannot reset anybody's.
     denied = await client.post(f"/api/v1/auth/mfa/reset/{admin.id}", headers=_auth(staff))
     assert denied.status_code == 403
+
+
+async def test_a_workspace_can_require_two_step_of_its_admins(client, session, tenant) -> None:
+    from app.services.opsec import service as opsec
+
+    admin = await _user(session, tenant, "asha@acme-demo.com", UserRole.ADMIN)
+    staff = await _user(session, tenant, "ravi@acme-demo.com", UserRole.EMPLOYEE)
+    await opsec.configure_sessions(
+        session, admin, idle_timeout_minutes=60, absolute_lifetime_hours=12,
+        require_two_step="privileged",
+    )
+
+    # Not set up: the session says so, and everything but set-up is closed.
+    me = await client.get("/api/v1/auth/me", headers=_auth(admin))
+    assert me.status_code == 200 and me.json()["two_step_required"] is True
+    blocked = await client.get("/api/v1/employees", headers=_auth(admin))
+    assert blocked.status_code == 403
+    assert blocked.headers.get("X-Two-Step-Required") == "1"
+    # An employee is not covered by a privileged-only rule.
+    assert (await client.get("/api/v1/auth/me", headers=_auth(staff))).json()[
+        "two_step_required"
+    ] is False
+
+    secret, _ = await _turn_on(client, admin)
+    me = await client.get("/api/v1/auth/me", headers=_auth(admin))
+    assert me.json()["two_step_required"] is False
+    assert (await client.get("/api/v1/employees", headers=_auth(admin))).status_code == 200
+
+    # While the rule stands, it cannot be switched off.
+    refused = await client.post(
+        "/api/v1/auth/mfa/disable",
+        json={"password": PASSWORD,
+              "code": totp.code_at(secret, datetime.now(UTC) + timedelta(seconds=30))},
+        headers=_auth(admin),
+    )
+    assert refused.status_code == 409

@@ -30,10 +30,12 @@ __all__ = [
     "BOOKING",
     "DOCUMENT_UPLOAD",
     "LIMITER",
+    "OAUTH_REGISTER",
     "OFFER_RESPONSE",
     "PORTAL_READ",
     "RESCHEDULE_REQUEST",
     "SCHEDULE_READ",
+    "WHATSAPP_CHOICE",
     "Limit",
     "RateLimiter",
     "client_address",
@@ -56,6 +58,8 @@ RESCHEDULE_REQUEST = Limit("reschedule_request", 5, 3600)
 SCHEDULE_READ = Limit("schedule_read", 60, 600)
 BOOKING = Limit("booking", 10, 600)
 OFFER_RESPONSE = Limit("offer_response", 10, 3600)
+WHATSAPP_CHOICE = Limit("whatsapp_choice", 10, 3600)
+OAUTH_REGISTER = Limit("oauth_register", 20, 3600)
 
 
 class RateLimiter:

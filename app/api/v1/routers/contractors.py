@@ -81,6 +81,64 @@ async def mark_paid(
     )
 
 
+class ChallanLinkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Null unlinks.
+    challan_id: uuid.UUID | None
+
+
+@router.post("/invoices/{invoice_id}/challan")
+async def link_challan(
+    invoice_id: uuid.UUID,
+    payload: ChallanLinkIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Tie an invoice's TDS to the 26Q challan it was deposited under."""
+    return await contractors.link_challan(
+        session, user, invoice_id, payload.challan_id, request=request
+    )
+
+
+@router.get("/form-26q/challans")
+async def challan_position(
+    user: CurrentUser,
+    session: DbSession,
+    financial_year: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    quarter: int = Query(ge=1, le=4),
+) -> dict[str, Any]:
+    """The quarter's 26Q challans against the TDS tied to them, and what is untied."""
+    return await contractors.challan_position(
+        session, user, financial_year=financial_year, quarter=quarter
+    )
+
+
+@router.get("/{contractor_id}/tds-statement")
+async def tds_statement(
+    contractor_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    quarter: int = Query(ge=1, le=4),
+) -> Response:
+    """A contractor's TDS deductions for a quarter with their challans, as a PDF."""
+    data, filename = await contractors.tds_statement_pdf(
+        session, user, contractor_id, financial_year=financial_year, quarter=quarter,
+        request=request,
+    )
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/form-26q")
 async def form_26q(
     user: CurrentUser,

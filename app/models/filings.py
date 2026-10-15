@@ -161,6 +161,12 @@ class TdsChallan(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # than a bank payment; the return reports it differently.
     is_book_entry: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    #: Which return the deposit belongs to: 24Q (salary, Form 281 code 92B) or 26Q
+    #: (non-salary payments such as 194C/194J). A 24Q never reads a 26Q challan.
+    form: Mapped[str] = mapped_column(
+        String(3), default="24Q", server_default="24Q", nullable=False
+    )
+
     mappings: Mapped[list[TdsChallanMapping]] = relationship(
         back_populates="challan", cascade="all, delete-orphan"
     )

@@ -443,6 +443,15 @@ async def update_employee(
         )
     employee = await get_employee(session, user, employee_id)
     changes = payload.model_dump(exclude_unset=True)
+    effective = changes.pop("changes_effective_from", None)
+    if effective is not None:
+        if effective > datetime.now(UTC).date():
+            raise _unprocessable(
+                "A change dated in the future is raised as a lifecycle event (promotion, "
+                "transfer…), so it is approved and takes effect on its day."
+            )
+        if employee.date_of_joining and effective < employee.date_of_joining:
+            raise _unprocessable("A change cannot take effect before the date of joining.")
 
     for key in _NOT_NULL:
         if key in changes and changes[key] is None:
@@ -477,7 +486,7 @@ async def update_employee(
     # effected event so the history and the as-of view include it.
     from app.services.lifecycle import service as lifecycle
 
-    lifecycle.record_direct_edit(session, user, employee, changes)
+    lifecycle.record_direct_edit(session, user, employee, changes, on=effective)
     for key, value in changes.items():
         setattr(employee, key, value)
 

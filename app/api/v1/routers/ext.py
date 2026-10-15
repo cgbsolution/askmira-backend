@@ -1,25 +1,36 @@
-"""The customer API: read-only, authenticated by an API key, not a person's login.
+"""The customer API, authenticated by an API key, not a person's login.
 
 `Authorization: Bearer amk_...`. Each route names the scope it needs; a key
 without it is refused. Everything returned is scoped to the key's workspace.
+
+Reads cover the directory, org, holidays, leave and balances, attendance and
+open roles. Writes are deliberately few: adding and updating employees (through
+the same validation and audit as the screens, recorded as the key) and pushing
+attendance punches from a system the workspace runs.
 """
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Annotated, Any
+import uuid
+from datetime import date, datetime
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.core.deps import DbSession, tenant_scoped
-from app.models.attendance import AttendanceDay
+from app.models.attendance import AttendanceDay, AttendancePunch, PunchDirection, PunchSource
+from app.models.audit import AuditAction
 from app.models.employee import Employee
-from app.models.leave import LeaveRequest, LeaveType
+from app.models.hiring import Requisition, RequisitionStatus
+from app.models.leave import Holiday, LeaveBalance, LeaveRequest, LeaveType
 from app.models.org import Department, Location
 from app.models.user import User
-from app.services import integrations
+from app.schemas.employee import EmployeeCreate, EmployeeUpdate
+from app.services import audit, integrations
+from app.services import employee as employee_service
 
 router = APIRouter(prefix="/ext", tags=["customer-api"])
 
@@ -190,3 +201,251 @@ async def attendance_days(
         }
         for d, code in rows
     ]
+
+
+def _employee_out(e: Employee) -> dict[str, Any]:
+    return {
+        "id": str(e.id),
+        "employee_code": e.employee_code,
+        "first_name": e.first_name,
+        "last_name": e.last_name,
+        "work_email": e.work_email,
+        "designation": e.designation,
+        "department_id": str(e.department_id) if e.department_id else None,
+        "location_id": str(e.location_id) if e.location_id else None,
+        "manager_id": str(e.manager_id) if e.manager_id else None,
+        "status": e.status.value,
+        "date_of_joining": e.date_of_joining.isoformat() if e.date_of_joining else None,
+    }
+
+
+# ── Reads ───────────────────────────────────────────────────────────────────
+
+
+@router.get("/holidays")
+async def holidays(
+    session: DbSession,
+    actor: Annotated[User, Depends(_key("org:read"))],
+    year: int = Query(ge=2000, le=2100),
+) -> list[dict[str, Any]]:
+    """The year's holidays: national, state and location-specific, optional ones marked."""
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(Holiday).where(Holiday.year == year).order_by(Holiday.holiday_date),
+                Holiday,
+                actor,
+            )
+        )
+    ).all()
+    return [
+        {
+            "date": h.holiday_date.isoformat(),
+            "name": h.name,
+            "state_code": h.state_code,
+            "location_id": str(h.location_id) if h.location_id else None,
+            "optional": h.is_optional,
+        }
+        for h in rows
+    ]
+
+
+@router.get("/leave-balances")
+async def leave_balances(
+    session: DbSession,
+    actor: Annotated[User, Depends(_key("leave:read"))],
+    year: int = Query(ge=2000, le=2100),
+) -> list[dict[str, Any]]:
+    """Each person's balance per leave type for the year, with its parts."""
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(LeaveBalance, LeaveType.code, Employee.employee_code)
+                .join(LeaveType, LeaveType.id == LeaveBalance.leave_type_id)
+                .join(Employee, Employee.id == LeaveBalance.employee_id)
+                .where(LeaveBalance.year == year)
+                .order_by(Employee.employee_code, LeaveType.code),
+                LeaveBalance,
+                actor,
+            )
+        )
+    ).all()
+    out = []
+    for b, type_code, code in rows:
+        parts = {
+            "opening": b.opening_balance, "accrued": b.accrued, "used": b.used,
+            "encashed": b.encashed, "carried_forward": b.carried_forward,
+            "adjusted": b.adjusted,
+        }
+        available = (
+            parts["opening"] + parts["accrued"] + parts["carried_forward"] + parts["adjusted"]
+            - parts["used"] - parts["encashed"]
+        )
+        out.append(
+            {
+                "employee_code": code,
+                "leave_type": type_code,
+                **{k: str(v) for k, v in parts.items()},
+                "available": str(available),
+            }
+        )
+    return out
+
+
+@router.get("/job-openings")
+async def job_openings(
+    session: DbSession, actor: Annotated[User, Depends(_key("hiring:read"))]
+) -> list[dict[str, Any]]:
+    """Open requisitions: what is being hired for, where, and how many."""
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(Requisition)
+                .where(Requisition.status == RequisitionStatus.OPEN)
+                .order_by(Requisition.code),
+                Requisition,
+                actor,
+            )
+        )
+    ).all()
+    return [
+        {
+            "id": str(r.id),
+            "code": r.code,
+            "title": r.title,
+            "department_id": str(r.department_id) if r.department_id else None,
+            "location_id": str(r.location_id) if r.location_id else None,
+            "openings": r.openings,
+            "employment_type": r.employment_type,
+        }
+        for r in rows
+    ]
+
+
+# ── Writes ──────────────────────────────────────────────────────────────────
+
+
+@router.post("/employees", status_code=status.HTTP_201_CREATED)
+async def create_employee(
+    payload: EmployeeCreate,
+    session: DbSession,
+    request: Request,
+    actor: Annotated[User, Depends(_key("employees:write"))],
+) -> dict[str, Any]:
+    """Add an employee, validated exactly as the screen validates one; audited as the key."""
+    employee = await employee_service.create_employee(session, actor, payload, request=request)
+    return _employee_out(employee)
+
+
+@router.patch("/employees/{employee_id}")
+async def update_employee(
+    employee_id: uuid.UUID,
+    payload: EmployeeUpdate,
+    session: DbSession,
+    request: Request,
+    actor: Annotated[User, Depends(_key("employees:write"))],
+) -> dict[str, Any]:
+    """Change the fields named; a future-dated job change is refused here as on screen."""
+    employee = await employee_service.update_employee(
+        session, actor, employee_id, payload, request=request
+    )
+    return _employee_out(employee)
+
+
+class PunchIn(BaseModel):
+    employee_code: str = Field(min_length=1, max_length=32)
+    #: With its offset, e.g. 2026-10-15T09:31:00+05:30.
+    punched_at: datetime
+    direction: Literal["in", "out"]
+    device_id: str | None = Field(default=None, max_length=64)
+
+
+class PunchBatchIn(BaseModel):
+    punches: list[PunchIn] = Field(min_length=1, max_length=1000)
+
+
+@router.post("/attendance-punches")
+async def push_punches(
+    payload: PunchBatchIn,
+    session: DbSession,
+    request: Request,
+    actor: Annotated[User, Depends(_key("attendance:write"))],
+) -> dict[str, Any]:
+    """Punches from your own system. Unknown codes and repeats are reported, not stored.
+
+    Days are judged from punches by the nightly recompute, as for any device.
+    """
+    if any(p.punched_at.tzinfo is None for p in payload.punches):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Every punched_at needs its UTC offset, e.g. +05:30.",
+        )
+    codes = {p.employee_code for p in payload.punches}
+    people = {
+        e.employee_code: e.id
+        for e in (
+            await session.scalars(
+                tenant_scoped(
+                    select(Employee).where(
+                        Employee.employee_code.in_(codes), Employee.deleted_at.is_(None)
+                    ),
+                    Employee,
+                    actor,
+                )
+            )
+        ).all()
+    }
+    earliest = min(p.punched_at for p in payload.punches)
+    latest = max(p.punched_at for p in payload.punches)
+    existing = {
+        (row.employee_id, row.punched_at)
+        for row in (
+            await session.scalars(
+                tenant_scoped(
+                    select(AttendancePunch).where(
+                        AttendancePunch.employee_id.in_(list(people.values()) or [uuid.uuid4()]),
+                        AttendancePunch.punched_at >= earliest,
+                        AttendancePunch.punched_at <= latest,
+                    ),
+                    AttendancePunch,
+                    actor,
+                )
+            )
+        ).all()
+    }
+    stored = duplicates = 0
+    unknown: set[str] = set()
+    for punch in payload.punches:
+        employee_id = people.get(punch.employee_code)
+        if employee_id is None:
+            unknown.add(punch.employee_code)
+            continue
+        key = (employee_id, punch.punched_at)
+        if key in existing:
+            duplicates += 1
+            continue
+        existing.add(key)
+        session.add(
+            AttendancePunch(
+                tenant_id=actor.tenant_id,
+                employee_id=employee_id,
+                punched_at=punch.punched_at,
+                direction=PunchDirection(punch.direction),
+                source=PunchSource.IMPORT,
+                device_id=punch.device_id,
+                raw_payload={"via": "customer_api"},
+            )
+        )
+        stored += 1
+    await audit.record(
+        session,
+        tenant_id=actor.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="attendance_punch_batch",
+        actor=actor,
+        changes={"stored": stored, "duplicates": duplicates, "unknown_codes": sorted(unknown)},
+        summary=f"{stored} punch(es) received through the customer API",
+        request=request,
+    )
+    await session.commit()
+    return {"stored": stored, "duplicates": duplicates, "unknown_codes": sorted(unknown)}

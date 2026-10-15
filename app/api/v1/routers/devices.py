@@ -333,7 +333,9 @@ async def kiosk_details(token: str, session: DbSession) -> dict:
 
 @router.post("/kiosk/{token}/punch")
 async def kiosk_punch(token: str, payload: KioskPunchIn, session: DbSession) -> dict:
-    """Punch in or out with an employee code and PIN; the direction follows the last punch."""
+    """Punch in or out with an employee code and PIN, or a badge; the direction follows
+    the last punch."""
     return await kiosk.kiosk_punch(
-        session, token, employee_code=payload.employee_code, pin=payload.pin, photo=payload.photo
+        session, token, employee_code=payload.employee_code, pin=payload.pin,
+        badge=payload.badge, photo=payload.photo,
     )

@@ -67,11 +67,16 @@ class TableIn(BaseModel):
     is_sensitive: bool = False
     employee_editable: bool = False
     display_order: int = Field(default=0, ge=0, le=10_000)
+    #: A profile tab of the admin's own, by name; empty for the Employment tab.
+    tab: str | None = Field(default=None, max_length=40)
 
     @model_validator(mode="after")
     def _unique(self) -> TableIn:
+        from app.schemas.custom_fields import clean_tab
+
         if len({c.key for c in self.columns}) != len(self.columns):
             raise ValueError("Each column needs its own key.")
+        self.tab = clean_tab(self.tab)
         return self
 
 
@@ -84,6 +89,8 @@ class TableUpdate(BaseModel):
     employee_editable: bool | None = None
     display_order: int | None = Field(default=None, ge=0, le=10_000)
     active: bool | None = None
+    #: An empty string moves the table back to the Employment tab.
+    tab: str | None = Field(default=None, max_length=40)
 
 
 def _unprocessable(detail: str) -> HTTPException:
@@ -100,6 +107,7 @@ def _definition_read(row: CustomTableDefinition) -> dict[str, Any]:
         "employee_editable": row.employee_editable,
         "display_order": row.display_order,
         "active": row.active,
+        "tab": row.tab,
     }
 
 
@@ -180,9 +188,16 @@ async def update_table(
     *,
     request: Request | None,
 ) -> dict[str, Any]:
+    from app.schemas.custom_fields import clean_tab
+
     row = await _table(session, user, table_id)
     before = _definition_read(row)
     changes = payload.model_dump(exclude_unset=True)
+    if "tab" in changes:
+        try:
+            changes["tab"] = clean_tab(changes["tab"])
+        except ValueError as exc:
+            raise _unprocessable(str(exc)) from exc
     if changes.get("columns") is not None:
         has_rows = await session.scalar(
             tenant_scoped(
@@ -207,7 +222,7 @@ async def update_table(
                         f"Column '{column['label']}' holds values; its type cannot change."
                     )
     for key, value in changes.items():
-        if value is None and key in (
+        if value is None and key != "tab" and key in (
             "label",
             "columns",
             "is_sensitive",

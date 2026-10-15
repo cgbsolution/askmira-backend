@@ -325,9 +325,11 @@ def trust_centre_disclosure() -> dict[str, Any]:
             "may receive are enforced in code, not only in contract — a payload "
             "containing a category not listed is refused before it is sent."
         ),
-        "not_yet_wired": (
-            "The AI feature layer is not built as of this release, so no "
-            "transfer to a model provider has occurred. This register describes "
-            "what will be permitted when it is."
+        "when_transfers_happen": (
+            "AI features are off in every workspace until one of its admins "
+            "switches them on, and each person's consent is checked before "
+            "anything about them is sent. Every call that is made is recorded "
+            "in the workspace's cross-border transfer register, with the "
+            "provider, purpose and data categories."
         ),
     }

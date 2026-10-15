@@ -382,6 +382,39 @@ async def outstanding_clearances(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def release_settled_claims(
+    session: AsyncSession, user: User, settlement_id: uuid.UUID
+) -> None:
+    """Undo what approving a settlement did to its claims, before it is recomputed."""
+    from app.models.expenses import ExpenseClaim, ExpenseClaimStatusEnum
+    from app.models.loans import ReimbursementClaim
+
+    for claim in (
+        await session.scalars(
+            tenant_scoped(
+                select(ReimbursementClaim).where(
+                    ReimbursementClaim.settled_in_settlement_id == settlement_id
+                ),
+                ReimbursementClaim,
+                user,
+            )
+        )
+    ).all():
+        claim.settled_in_settlement_id = None
+    for claim in (
+        await session.scalars(
+            tenant_scoped(
+                select(ExpenseClaim).where(ExpenseClaim.settled_in_settlement_id == settlement_id),
+                ExpenseClaim,
+                user,
+            )
+        )
+    ).all():
+        claim.settled_in_settlement_id = None
+        claim.status = ExpenseClaimStatusEnum.APPROVED
+        claim.reimbursed_at = None
+
+
 async def compute_settlement(
     session: AsyncSession,
     user: User,
@@ -504,6 +537,7 @@ async def compute_settlement(
         ).all()
         for line in previous:
             await session.delete(line)
+        await release_settled_claims(session, user, existing.id)
         await session.flush()
         settlement = existing
     else:

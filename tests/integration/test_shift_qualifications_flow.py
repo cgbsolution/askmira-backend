@@ -85,3 +85,51 @@ async def test_a_forklift_shift_needs_a_valid_certificate(
                         half_day_threshold_minutes=240, full_day_threshold_minutes=420,
                         required_course_ids=[uuid.uuid4()]),
         )
+
+
+async def test_a_plant_shift_is_for_people_based_at_that_plant(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    from app.models.org import Location
+    from app.services.attendance import shift_swaps
+
+    plant = Location(tenant_id=tenant.id, legal_entity_id=employee.legal_entity_id,
+                     name="Pune plant", code="PUN", state_code="MH")
+    other = Location(tenant_id=tenant.id, legal_entity_id=employee.legal_entity_id,
+                     name="Chennai plant", code="CHN", state_code="TN")
+    session.add_all([plant, other])
+    await session.flush()
+    employee.location_id = other.id
+    await session.commit()
+
+    line = await attendance_setup.create_shift(
+        session, hr_user,
+        ShiftCreate(code="L2A", name="Line 2, A shift", start_time=time(6), end_time=time(14),
+                    half_day_threshold_minutes=240, full_day_threshold_minutes=420,
+                    location_id=plant.id, work_area=" Line 2 "),
+    )
+    assert line.work_area == "Line 2"
+    with pytest.raises(HTTPException) as refused:
+        await attendance_setup.assign_shift(
+            session, hr_user,
+            ShiftAssignmentCreate(employee_id=employee.id, shift_id=line.id,
+                                  effective_from=date(2026, 11, 2)),
+        )
+    assert "Pune plant" in refused.value.detail and "Chennai plant" in refused.value.detail
+
+    employee.location_id = plant.id
+    await session.commit()
+    await attendance_setup.assign_shift(
+        session, hr_user,
+        ShiftAssignmentCreate(employee_id=employee.id, shift_id=line.id,
+                              effective_from=date(2026, 11, 2)),
+    )
+    view = await shift_swaps.coverage(
+        session, hr_user, start=date(2026, 11, 2), end=date(2026, 11, 3), work_area="line 2"
+    )
+    assert [s["work_area"] for s in view["shifts"]] == ["Line 2"]
+    assert view["shifts"][0]["location_name"] == "Pune plant"
+    none = await shift_swaps.coverage(
+        session, hr_user, start=date(2026, 11, 2), end=date(2026, 11, 3), work_area="Line 9"
+    )
+    assert none["shifts"] == []

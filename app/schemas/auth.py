@@ -118,6 +118,9 @@ class UserRead(BaseModel):
     #: Somebody reports to them, so the portal shows their team's pages and
     #: approvals. Not a role: it follows the org chart (`User.has_reports`).
     is_manager: bool = Field(default=False, validation_alias="has_reports")
+    #: The workspace requires two-step sign-in of this person and it is not set
+    #: up: the portal sends them to set it up before anything else.
+    two_step_required: bool = False
     employee_id: uuid.UUID | None
     last_login_at: datetime | None
     created_at: datetime

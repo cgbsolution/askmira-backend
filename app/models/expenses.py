@@ -725,6 +725,14 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("advance_settlements.id", ondelete="SET NULL"),
         nullable=True,
     )
+    #: Paid in a leaver's full and final settlement instead of a payroll run.
+    settled_in_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "settlements.id", ondelete="SET NULL",
+            name="fk_expense_claims_settled_in_settlement_id",
+        ),
+        nullable=True,
+    )
 
 
 class ExpensePolicyViolation(Base, UUIDMixin, TenantMixin, TimestampMixin):

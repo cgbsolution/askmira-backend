@@ -340,3 +340,80 @@ async def test_the_scheduled_accrual_needs_approved_configuration(
             session, tenant.id, as_of=datetime.now(UTC).date()
         )
     assert exc.value.status_code == 409
+
+
+async def test_claims_owed_to_a_leaver_are_settled_once_in_full_and_final(
+    session: AsyncSession, tenant, legal_entity, location
+) -> None:
+    """An approved expense claim is suggested, must be paid in full, and is then
+    marked so that no payroll run pays it again."""
+    from app.models.expenses import (
+        CityTierEnum,
+        ClaimKindEnum,
+        ExpenseClaim,
+        ExpenseClaimStatusEnum,
+        PolicyVerdictEnum,
+    )
+
+    org = await _org(session, tenant, legal_entity, location)
+    record = await _cleared(session, org)
+    claim = ExpenseClaim(
+        tenant_id=tenant.id, employee_id=org["leaver"].id, category_key="local_travel",
+        city_tier=CityTierEnum.A, kind=ClaimKindEnum.RECEIPTED, amount=Decimal("2400.00"),
+        original_amount=Decimal("2400.00"), original_currency="INR",
+        incurred_on=date(2026, 8, 20), has_receipt=True,
+        status=ExpenseClaimStatusEnum.APPROVED, policy_verdict=PolicyVerdictEnum.WITHIN_POLICY,
+        verdict_message="Within policy.", evaluated_at=datetime.now(UTC),
+    )
+    session.add(claim)
+    await session.commit()
+
+    sources = await operations.settlement_sources(session, org["hr"], record.id)
+    suggestion = next(
+        s for s in sources["suggestions"] if s["field"] == "pending_reimbursements"
+    )
+    assert suggestion["amount"] == Decimal("2400.00")
+    assert "local_travel" in suggestion["basis"]
+
+    # A settlement that leaves the claim out cannot be approved.
+    short = await exit_service.compute_settlement(
+        session, org["hr"], exit_id=record.id,
+        inputs=engine.SettlementInput(final_month_salary=Decimal(45000),
+                                      final_month_basis="Full month."),
+    )
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await operations.approve_settlement(session, org["hr"], short.id)
+    assert exc.value.status_code == 409
+
+    settlement = await exit_service.compute_settlement(
+        session, org["hr"], exit_id=record.id,
+        inputs=engine.SettlementInput(
+            final_month_salary=Decimal(45000), final_month_basis="Full month.",
+            pending_reimbursements=Decimal("2400.00"),
+            reimbursement_basis=suggestion["basis"],
+        ),
+    )
+    await session.commit()
+    await operations.approve_settlement(session, org["hr"], settlement.id)
+    await session.commit()
+    await session.refresh(claim)
+    assert claim.settled_in_settlement_id == settlement.id
+    assert claim.status is ExpenseClaimStatusEnum.REIMBURSED
+
+    after = await operations.settlement_sources(session, org["hr"], record.id)
+    assert not [s for s in after["suggestions"] if s["field"] == "pending_reimbursements"]
+
+    # Recomputing gives the claim back to the open pool.
+    await exit_service.compute_settlement(
+        session, org["hr"], exit_id=record.id,
+        inputs=engine.SettlementInput(
+            final_month_salary=Decimal(45000), final_month_basis="Full month.",
+            pending_reimbursements=Decimal("2400.00"),
+            reimbursement_basis=suggestion["basis"],
+        ),
+    )
+    await session.commit()
+    await session.refresh(claim)
+    assert claim.settled_in_settlement_id is None
+    assert claim.status is ExpenseClaimStatusEnum.APPROVED

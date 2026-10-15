@@ -66,6 +66,7 @@ async def submit_application(
     consent_application_processing: bool,
     consent_talent_pool: bool,
     notice_version: str,
+    consent_whatsapp: bool = False,
     resume: bytes | None,
     source_ip: str | None,
 ) -> dict[str, Any]:
@@ -154,6 +155,9 @@ async def submit_application(
         )
     await session.flush()
 
+    if consent_whatsapp and outcome.candidate.phone:
+        outcome.candidate.whatsapp_opt_in_at = datetime.now(UTC)
+        outcome.candidate.whatsapp_opted_out_at = None
     row, token = await careers.issue_portal_token(
         session, actor, candidate_id=outcome.candidate.id
     )

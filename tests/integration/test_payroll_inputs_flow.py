@@ -357,3 +357,114 @@ async def test_overtime_from_attendance_to_the_payslip(session: AsyncSession, or
             select(PayrollAdjustmentApplication.id).limit(1)
         )
     ) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The legal ceiling on deductions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_deductions_past_the_legal_ceiling_need_an_acknowledgement(
+    session: AsyncSession, org
+) -> None:
+    from app.schemas.payroll_run import RuleSetCreate
+    from app.services.payroll import rule_sets as rule_set_service
+
+    await _approved_rules(session, org)
+    ceiling = await rule_set_service.create_rule_set(
+        session, org["maker"],
+        RuleSetCreate(rule_type="wage_deductions", jurisdiction="IN",
+                      effective_from=date(2026, 4, 1), rules={"max_deduction_percent": "50"},
+                      source_reference="Test fixture, not a statutory source"),
+    )
+    await rule_set_service.approve_rule_set(session, org["checker"], ceiling.id, attest=True)
+
+    attachment = await adjustment_service.create(
+        session,
+        org["checker"],
+        AdjustmentCreate(
+            employee_id=org["ravi_emp"].id,
+            category=AdjustmentCategory.COURT_ATTACHMENT,
+            name="Attachment order",
+            amount=Decimal("60000"),
+            within_net_pay=False,
+            start_year=2026,
+            start_month=4,
+            reference="OS 9/2026, City Civil Court",
+            reason="Decree for recovery",
+        ),
+    )
+    await adjustment_service.approve(session, org["maker"], attachment.id)
+
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    run = await run_service.compute_run(session, org["maker"], run.id)
+
+    flags = [f for f in run.variance_flags if f["employee_id"] == str(org["ravi_emp"].id)]
+    assert len(flags) == 1
+    assert flags[0]["change_percent"] is None
+    assert flags[0]["deduction_ceiling"]["ceiling_percent"] == "50"
+    assert Decimal(flags[0]["deduction_ceiling"]["share_percent"]) > Decimal(50)
+
+    with pytest.raises(HTTPException) as exc:
+        await run_service.approve_run(session, org["checker"], run.id)
+    assert exc.value.status_code == 409
+
+    await run_service.acknowledge_variance(
+        session, org["checker"], run.id, org["ravi_emp"].id,
+        note="Court order served; the decree overrides the ceiling for this month.",
+    )
+    approved = await run_service.approve_run(session, org["checker"], run.id)
+    assert approved.status is PayrollRunStatus.APPROVED
+
+
+async def test_a_week_past_48_hours_is_weekly_overtime(session: AsyncSession, org) -> None:
+    """Six 9-hour days on a 9-hour shift: no day runs over, the week does (54 > 48)."""
+    await overtime_service.create_policy(
+        session,
+        org["maker"],
+        OvertimePolicyCreate(
+            name="Factory",
+            rate_multiplier=Decimal("2.00"),
+            wage_component_codes=["BASIC"],
+            days_divisor=26,
+            hours_per_day=Decimal("8.00"),
+            weekly_threshold_minutes=2880,
+            week_starts_on=6,
+            effective_from=date(2026, 4, 1),
+        ),
+    )
+    for offset in range(6):  # Monday 6 to Saturday 11 April; Sunday 5 is off
+        session.add(
+            AttendanceDay(
+                tenant_id=org["tenant"].id,
+                employee_id=org["meera_emp"].id,
+                attendance_date=date(2026, 4, 6 + offset),
+                worked_minutes=540,
+                status=AttendanceStatus.PRESENT,
+                payable_fraction=Decimal(1),
+                overtime_minutes=0,
+                computed_at=datetime.now(UTC),
+            )
+        )
+    await session.commit()
+
+    result = await overtime_service.sync(
+        session, org["maker"], start=date(2026, 4, 1), end=date(2026, 4, 30)
+    )
+    assert result.created == 1
+    entry = await session.scalar(select(OvertimeEntry))
+    assert entry.kind == "weekly"
+    assert entry.attendance_date == date(2026, 4, 11)
+    assert entry.eligible_minutes == 360
+
+    # A second sync finds nothing new to do.
+    again = await overtime_service.sync(
+        session, org["maker"], start=date(2026, 4, 1), end=date(2026, 4, 30)
+    )
+    assert (again.created, again.updated, again.removed) == (0, 0, 0)
+
+    decided = await overtime_service.decide(session, org["checker"], entry.id, approve_it=True)
+    assert decided.status is OvertimeStatus.APPROVED
+    assert "weekly limit of 48 h" in decided.basis

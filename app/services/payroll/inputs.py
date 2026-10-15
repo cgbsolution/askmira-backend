@@ -39,7 +39,7 @@ from decimal import Decimal
 from typing import Any, ClassVar
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -78,6 +78,7 @@ from app.models.payroll_inputs import (
 from app.models.recruiting import PayoutStatusEnum, Referral, ReferralPayout
 from app.models.rewards import RewardEvent
 from app.models.user import User
+from app.services.loans import flexi
 from app.services.loans.reimbursements import ReimbursementError, accepted_for_payment
 from app.services.payroll.engine import InputKind, InputLine, LoanRecoveryInput
 
@@ -418,6 +419,7 @@ class ReimbursementProvider(InputProvider):
                         ReimbursementClaim.employee_id.in_(scope.employee_ids),
                         ReimbursementClaim.status.in_([ClaimStatus.VERIFIED, ClaimStatus.PARTIAL]),
                         ReimbursementClaim.paid_in_run_id.is_(None),
+                        ReimbursementClaim.settled_in_settlement_id.is_(None),
                         ReimbursementClaim.accepted_amount > 0,
                     )
                     .order_by(ReimbursementClaim.created_at),
@@ -443,7 +445,10 @@ class ReimbursementProvider(InputProvider):
                 tenant_scoped(
                     select(ReimbursementClaim).where(
                         ReimbursementClaim.employee_id.in_({c.employee_id for c in claims}),
-                        ReimbursementClaim.paid_in_run_id.is_not(None),
+                        or_(
+                            ReimbursementClaim.paid_in_run_id.is_not(None),
+                            ReimbursementClaim.settled_in_settlement_id.is_not(None),
+                        ),
                     ),
                     ReimbursementClaim,
                     user,
@@ -465,7 +470,10 @@ class ReimbursementProvider(InputProvider):
                 )
                 continue
             key = (claim.employee_id, claim.component_code, claim.financial_year)
-            remaining = max(ZERO, _d(component.annual_entitlement) - used[key])
+            entitlement = await flexi.entitlement_for(
+                session, user, claim.employee_id, claim.financial_year, component
+            )
+            remaining = max(ZERO, entitlement - used[key])
             try:
                 payable, why = accepted_for_payment(
                     claim_amount=_d(claim.amount),
@@ -1212,6 +1220,7 @@ class ExpenseClaimProvider(InputProvider):
                         ExpenseClaim.status == ExpenseClaimStatusEnum.APPROVED,
                         ExpenseClaim.reimbursed_in_run_id.is_(None),
                         ExpenseClaim.advance_settlement_id.is_(None),
+                        ExpenseClaim.settled_in_settlement_id.is_(None),
                         ExpenseClaim.amount > 0,
                     )
                     .order_by(ExpenseClaim.incurred_on, ExpenseClaim.created_at),
@@ -1617,7 +1626,11 @@ class OvertimeProvider(InputProvider):
                 InputLine(
                     provider=self.key,
                     code="OVERTIME",
-                    name=f"Overtime {entry.attendance_date:%d %b}",
+                    name=(
+                        f"Overtime, week ending {entry.attendance_date:%d %b}"
+                        if entry.kind == "weekly"
+                        else f"Overtime {entry.attendance_date:%d %b}"
+                    ),
                     kind=InputKind.EARNING,
                     amount=amount,
                     taxable_amount=amount,

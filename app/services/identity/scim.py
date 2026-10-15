@@ -58,6 +58,7 @@ __all__ = [
     "authenticate_token",
     "create_scim_token",
     "deactivate_user",
+    "get_user",
     "list_users",
     "provision_user",
     "scim_error",
@@ -298,6 +299,16 @@ async def provision_user(
     )
     await session.commit()
     await session.refresh(user)
+    return user
+
+
+async def get_user(session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID) -> User:
+    """One user of the token's workspace, or a SCIM 404."""
+    user = await session.scalar(
+        select(User).where(tenant_filter(User, tenant_id), User.id == user_id)
+    )
+    if user is None:
+        raise ScimError(404, f"No user with id {user_id}")
     return user
 
 

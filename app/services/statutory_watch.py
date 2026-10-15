@@ -52,7 +52,7 @@ __all__ = [
 
 ALERT_WINDOW = timedelta(days=30)
 NATIONAL = "IN"
-NATIONAL_TYPES = ("pf", "esi", "tds")
+NATIONAL_TYPES = ("pf", "esi", "tds", "wage_deductions")
 STATE_TYPES = ("professional_tax", "labour_welfare_fund")
 
 register_event(

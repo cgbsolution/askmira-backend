@@ -192,6 +192,9 @@ class CustomFieldDefinition(Base, UUIDMixin, TenantMixin, TimestampMixin):
     is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: The profile tab the field is shown on, named by the admin ("Safety",
+    #: "Uniform"). Null: the "More details" card on the Employment tab.
+    tab: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):

@@ -8,8 +8,9 @@ person id. Declared in `app/core/access_policies/payroll_run.py`.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -47,6 +48,25 @@ async def my_payslip_pdf(payslip_id: uuid.UUID, user: CurrentUser, session: DbSe
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.get("/payslip-protection")
+async def payslip_protection(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Whether your payslip PDFs open with a password, and which."""
+    return {
+        "enabled": await payslip_service.payslip_protection(session, user),
+        "rule": payslip_service.PASSWORD_RULE,
+    }
+
+
+@router.put("/payslip-protection", dependencies=[Depends(require_roles(UserRole.ADMIN))])
+async def set_payslip_protection(
+    payload: dict[str, bool], user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Admins: payslip PDFs employees download open with a password (or not)."""
+    return await payslip_service.set_payslip_protection(
+        session, user, bool(payload.get("enabled")), request=request
     )
 
 

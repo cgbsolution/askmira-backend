@@ -28,6 +28,7 @@ from app.models.loans import (
 from app.models.user import UserRole
 from app.services.attendance.service import local_today
 from app.services.filings import support
+from app.services.loans import flexi
 from app.services.loans import service as loan_service
 
 router = APIRouter(tags=["loans"])
@@ -426,6 +427,81 @@ async def prepay(
     return schedule
 
 
+# ── Flexi-benefit declarations ──────────────────────────────────────────────
+
+
+class FlexiPotIn(BaseModel):
+    financial_year: str = Field(pattern=r"^\d{4}-\d{4}$")
+    pot: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+
+
+class FlexiDeclareIn(BaseModel):
+    financial_year: str = Field(pattern=r"^\d{4}-\d{4}$")
+    allocations: dict[str, Decimal] = Field(default_factory=dict, max_length=50)
+    submit: bool = False
+
+
+class FlexiDecisionIn(BaseModel):
+    #: True approves, False sends back, null reopens an approved declaration.
+    approve: bool | None
+    note: str | None = Field(default=None, max_length=1000)
+
+
+@router.get("/reimbursements/flexi/me")
+async def my_flexi(user: CurrentUser, session: DbSession, financial_year: str) -> dict[str, Any]:
+    """Your flexi pot for the year and how you split it."""
+    return await flexi.declaration_for(
+        session, user, permissions.own_employee_id(user), financial_year
+    )
+
+
+@router.put("/reimbursements/flexi/me")
+async def declare_flexi(
+    payload: FlexiDeclareIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await flexi.declare(
+        session, user, payload.financial_year, payload.allocations,
+        submit=payload.submit, request=request,
+    )
+
+
+@router.get(
+    "/reimbursements/flexi/{employee_id}",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def employee_flexi(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession, financial_year: str
+) -> dict[str, Any]:
+    return await flexi.declaration_for(session, user, employee_id, financial_year)
+
+
+@router.put(
+    "/reimbursements/flexi/{employee_id}/pot",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def set_flexi_pot(
+    employee_id: uuid.UUID, payload: FlexiPotIn, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    return await flexi.set_pot(
+        session, user, employee_id, payload.financial_year, payload.pot, request=request
+    )
+
+
+@router.post(
+    "/reimbursements/flexi-declarations/{declaration_id}/decide",
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def decide_flexi(
+    declaration_id: uuid.UUID, payload: FlexiDecisionIn, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    return await flexi.decide(
+        session, user, declaration_id, approve=payload.approve, note=payload.note,
+        request=request,
+    )
+
+
 # ── Reimbursement components ────────────────────────────────────────────────
 
 
@@ -458,9 +534,9 @@ async def create_component(
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def run_reminders(user: CurrentUser, session: DbSession) -> dict[str, int]:
-    """Warn about entitlement that will become taxable at year end.
+    """Warn about entitlement that will become taxable at year end, now.
 
-    What a monthly scheduler calls; there is none in this build.
+    The scheduler runs the same check daily ("Unclaimed reimbursement reminders").
     """
     raised = await loan_service.send_unclaimed_entitlement_reminders(
         session, user.tenant_id, today=await local_today(session, user)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -136,4 +137,29 @@ async def test_only_a_kiosk_device_takes_kiosk_punches(
     )
     with pytest.raises(HTTPException) as refused:
         await kiosk.kiosk_info(session, token)
+    assert refused.value.status_code == 401
+
+
+async def test_a_badge_punches_until_it_is_revoked(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    from app.models.kiosk import EmployeeBadge
+
+    token = await _tablet(session, hr_user)
+    card = await kiosk.issue_badge(session, hr_user, employee.id, "04 A1 B2 C3 9F")
+    assert card["last_four"] == "C39F"
+    stored = await session.scalar(select(EmployeeBadge))
+    assert "04A1B2C39F" not in stored.badge_hash
+    with pytest.raises(HTTPException) as twice:
+        await kiosk.issue_badge(session, hr_user, employee.id, "04a1b2c39f")
+    assert twice.value.status_code == 409
+
+    punched = await kiosk.kiosk_punch(session, token, badge="04A1B2C39F", now=MORNING)
+    assert punched["direction"] == "in" and punched["first_name"] == "Anita"
+
+    await kiosk.revoke_badge(session, hr_user, uuid.UUID(card["id"]))
+    with pytest.raises(HTTPException) as refused:
+        await kiosk.kiosk_punch(
+            session, token, badge="04A1B2C39F", now=MORNING + timedelta(hours=1)
+        )
     assert refused.value.status_code == 401

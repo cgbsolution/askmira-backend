@@ -156,8 +156,21 @@ async def portal_overview(session: AsyncSession, token: str) -> dict[str, Any]:
         )
     ).all()
 
+    candidate = await session.scalar(
+        select(Candidate).where(
+            Candidate.id == row.candidate_id, tenant_filter(Candidate, row.tenant_id)
+        )
+    )
+    from app.services.hiring import candidate_comms
+
     return base | {
         "organisation": tenant.name if tenant else "",
+        "whatsapp": {
+            "opted_in": bool(candidate and candidate_comms.whatsapp_on(candidate)),
+            "phone_on_file": bool(
+                candidate and candidate_comms.whatsapp_number(candidate.phone)
+            ),
+        },
         "interviews": [
             {
                 "id": str(interview.id),
@@ -353,6 +366,42 @@ async def request_reschedule(
             "Please also contact the company directly."
         ),
     }
+
+
+async def set_whatsapp(session: AsyncSession, token: str, *, opt_in: bool) -> dict[str, Any]:
+    """The candidate's own WhatsApp choice. Only they can make it."""
+    from app.services.hiring import candidate_comms
+
+    row = await careers.resolve_portal_token(session, token)
+    candidate = await session.scalar(
+        select(Candidate).where(
+            Candidate.id == row.candidate_id, tenant_filter(Candidate, row.tenant_id)
+        )
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    now = datetime.now(UTC)
+    if opt_in:
+        if candidate_comms.whatsapp_number(candidate.phone) is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="There is no usable phone number on your application to message.",
+            )
+        candidate.whatsapp_opt_in_at = now
+        candidate.whatsapp_opted_out_at = None
+    elif candidate.whatsapp_opt_in_at is not None:
+        candidate.whatsapp_opted_out_at = now
+    await audit.record(
+        session,
+        tenant_id=row.tenant_id,
+        actor_type="candidate",
+        action=AuditAction.UPDATE,
+        entity_type="candidate",
+        entity_id=candidate.id,
+        changes={"whatsapp": opt_in},
+        summary=f"Candidate turned WhatsApp updates {'on' if opt_in else 'off'}",
+    )
+    return {"opted_in": candidate_comms.whatsapp_on(candidate)}
 
 
 # ── Offers in the portal ────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -117,6 +118,11 @@ class LifecycleEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: The employee record as it stood. Recorded rather than derived: the record
     #: has moved on, and reconstructing it from an audit log is a reconstruction.
     previous_values: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    #: The approvers, in order, snapshotted from the tenant's rules when the event
+    #: went for approval. Empty on older events: an admin decides.
+    approval_chain: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
     new_values: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
 

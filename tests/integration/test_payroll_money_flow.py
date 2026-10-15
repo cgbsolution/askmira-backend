@@ -323,6 +323,19 @@ async def test_a_claim_is_approved_twice_paid_once_and_joiners_and_leavers_are_p
     await run_service.publish_run(session, checker, run.id)
     data, filename = await payslip_service.my_payslip_pdf(session, staff, staff_slip.id)
     assert data[:5] == b"%PDF-" and filename == "payslip-STAFF-2026-09.pdf"
+
+    # Protected: the same payslip opens only with the person's password.
+    import io
+
+    from pypdf import PdfReader
+
+    await payslip_service.set_payslip_protection(session, maker, True)
+    locked, _ = await payslip_service.my_payslip_pdf(session, staff, staff_slip.id)
+    reader = PdfReader(io.BytesIO(locked))
+    assert reader.is_encrypted
+    staff_record = await session.get(Employee, staff.employee_id)
+    assert reader.decrypt(payslip_service.payslip_password(staff_record)) != 0
+    await payslip_service.set_payslip_protection(session, maker, False)
     with pytest.raises(HTTPException) as exc:
         await payslip_service.my_payslip_pdf(session, org["loner"], staff_slip.id)
     assert exc.value.status_code == 404

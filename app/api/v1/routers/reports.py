@@ -565,6 +565,26 @@ async def absence_signals(user: CurrentUser, session: DbSession) -> list[dict[st
     return await analytics.absence_signals(session, user, today=await local_today(session, user))
 
 
+@router.get("/reports/analytics/signal-rules", dependencies=ANALYTICS)
+async def get_signal_rules(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """The thresholds every people signal is checked against, as this workspace set them."""
+    from app.services.reporting import analytics
+
+    return analytics.rules_read(await analytics.signal_rules(session, user))
+
+
+@router.put(
+    "/reports/analytics/signal-rules", dependencies=[Depends(require_roles(*ADMIN_ROLES))]
+)
+async def put_signal_rules(
+    payload: dict[str, Any], user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Change the thresholds; zero switches a signal off. Admins only, audited."""
+    from app.services.reporting import analytics
+
+    return await analytics.set_signal_rules(session, user, payload, request=request)
+
+
 @router.get("/reports/analytics/performance", dependencies=ANALYTICS)
 async def performance(user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """Ratings over recent cycles, goal attainment, and rater spread (HR only)."""

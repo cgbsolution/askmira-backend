@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
@@ -48,6 +48,8 @@ class SessionPolicyIn(BaseModel):
     #: different states, and a tenant must not meet this feature by being locked
     #: out of their own payroll.
     ip_allowlist: list[str] = Field(default_factory=list)
+    #: Who must use two-step sign-in: nobody, admins and sub-admins, or everyone.
+    require_two_step: Literal["off", "privileged", "everyone"] = "off"
 
 
 class RevokeIn(BaseModel):
@@ -223,6 +225,7 @@ async def set_session_policy(
             payload.enforce_ip_allowlist_for_privileged
         ),
         ip_allowlist=payload.ip_allowlist,
+        require_two_step=payload.require_two_step,
         request=request,
     )
     return {
@@ -231,6 +234,7 @@ async def set_session_policy(
         "absolute_lifetime_hours": row.absolute_lifetime_hours,
         "max_concurrent_sessions": row.max_concurrent_sessions,
         "ip_allowlist_entries": len(row.ip_allowlist or []),
+        "require_two_step": row.require_two_step,
     }
 
 

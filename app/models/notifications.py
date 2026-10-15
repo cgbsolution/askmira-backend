@@ -46,6 +46,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TenantMixin, TimestampMixin, UUIDMixin
+from app.models.types import EncryptedText
 
 
 class Channel(str, enum.Enum):
@@ -347,3 +348,48 @@ class TenantSmtpSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
     configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+
+class TenantWhatsAppSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """This workspace's own WhatsApp Business account (Meta Cloud API).
+
+    The phone number id and access token come from the customer's Meta business
+    manager. With these saved and enabled, WhatsApp messages to staff who opted
+    in, and to candidates who opted in, go through the customer's own number.
+    The token is encrypted with the tenant key and never returned.
+    """
+
+    __tablename__ = "tenant_whatsapp_settings"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_whatsapp_settings_tenant"),)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    phone_number_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class PushDevice(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A phone the AskMira app is signed in on, and the push token it registered.
+
+    One token belongs to one person at a time: a phone that changes hands
+    re-registers, and the token moves to whoever signed in last. A token Expo
+    reports as no longer registered is revoked and never pushed to again.
+    """
+
+    __tablename__ = "push_devices"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "push_token_hash", name="uq_push_device_token"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        index=True,
+    )
+    #: SHA-256 of the token, to find a phone again; the token itself is encrypted.
+    push_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    push_token_encrypted: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    platform: Mapped[str] = mapped_column(String(16), default="expo", nullable=False)
+    last_registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -718,7 +718,7 @@ def test_the_trust_centre_lists_model_providers_first_and_separately():
     assert all(
         not s["is_ai_model_provider"] for s in disclosure["other_sub_processors"]
     )
-    assert disclosure["not_yet_wired"]
+    assert disclosure["when_transfers_happen"]
 
 
 def test_a_category_a_provider_may_not_receive_is_absent_from_its_permission():

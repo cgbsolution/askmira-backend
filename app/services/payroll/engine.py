@@ -280,6 +280,8 @@ class PayrollComputation:
     # Things payroll declined to decide alone. A non-empty list does not stop
     # the computation; it stops the run being approved without a look.
     review_flags: list[str] = field(default_factory=list)
+    #: Set when the deductions that cannot wait pass the legal ceiling alone.
+    over_deduction_ceiling: dict[str, str] | None = None
 
     # Cash earnings from input lines (arrears, encashment, bonus, referral,
     # reimbursements). Deliberately **not** part of `gross_earnings`, which stays
@@ -716,8 +718,33 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             "paying this employee."
         )
 
+    # The legal ceiling on a wage period's deductions, where the tenant has an
+    # approved rule set for it. Recoveries are the deductions that can wait, so
+    # they are what the ceiling holds back: what does not fit stays owed for a
+    # later month, as the Act allows. Deductions that cannot wait (tax, PF, ESI,
+    # an attachment the employer must honour) are never cut here; if they alone
+    # pass the ceiling, the payslip is flagged for a person to look at.
+    ceiling: Decimal | None = None
+    ceiling_percent: Decimal | None = None
+    ceiling_rules = payroll_input.rule_sets.get("wage_deductions")
+    if ceiling_rules is not None:
+        if not ceiling_rules.is_approved:
+            raise PayrollRuleError(
+                f"The deductions-ceiling rule set effective {ceiling_rules.effective_from} "
+                "has not been approved by a Compliance SME."
+            )
+        ceiling_percent = _rule(ceiling_rules, "max_deduction_percent")
+        if not Decimal(0) < ceiling_percent <= Decimal(100):
+            raise PayrollRuleError(
+                "The deductions ceiling must be a percentage above 0 and at most 100."
+            )
+        ceiling = _money((gross_earnings + other_earnings) * ceiling_percent / Decimal(100))
+
+    def _within_ceiling(amount: Decimal) -> bool:
+        return ceiling is None or total_deductions + amount <= ceiling
+
     for item in deferred_recoveries:
-        if item.amount <= net_running:
+        if item.amount <= net_running and _within_ceiling(item.amount):
             net_running -= item.amount
             total_deductions += item.amount
             computed_inputs.append(
@@ -728,13 +755,20 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 )
             )
         else:
+            reason = (
+                f"{_money(item.amount)} is more than the {_money(net_running)} net pay left"
+                if item.amount > net_running
+                else (
+                    f"it would take this month's deductions past {ceiling_percent}% of wages "
+                    f"({ceiling}), the legal ceiling"
+                )
+            )
             computed_inputs.append(
                 ComputedInputLine(
                     provider=item.provider, code=item.code, name=item.name, kind=item.kind,
                     amount=_ZERO, requested=_money(item.amount), taxable_amount=_ZERO,
                     basis=(
-                        f"Not recovered this month: {_money(item.amount)} is more than the "
-                        f"{_money(net_running)} net pay left. It stays owed and is attempted "
+                        f"Not recovered this month: {reason}. It stays owed and is attempted "
                         "again next run."
                     ),
                     source=item.source,
@@ -743,11 +777,16 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
 
     for loan in payroll_input.loan_recoveries:
+        # The ceiling raises the floor the loan must leave: net pay may not drop
+        # below what is left once deductions reach the ceiling.
+        floor = loan.minimum_net_pay
+        if ceiling is not None:
+            floor = max(floor, _money(net_running - max(ceiling - total_deductions, _ZERO)))
         try:
             decision = plan_recovery(
                 emi=loan.emi,
                 net_pay_before_recovery=_money(net_running),
-                minimum_net_pay=loan.minimum_net_pay,
+                minimum_net_pay=floor,
                 outstanding_principal=loan.outstanding_principal,
                 already_carried_forward=loan.carried_forward,
                 allow_partial=loan.allow_partial,
@@ -765,7 +804,12 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 amount=decision.amount,
                 requested=_money(loan.emi + loan.carried_forward),
                 taxable_amount=_ZERO,
-                basis=decision.reason,
+                basis=(
+                    decision.reason
+                    if floor == loan.minimum_net_pay
+                    else f"{decision.reason} The floor here is set by the {ceiling_percent}% "
+                    "legal ceiling on deductions, not the scheme's minimum net pay."
+                ),
                 source=loan.source,
                 skipped=decision.is_skipped,
                 recovery=decision.as_dict(),
@@ -821,6 +865,21 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                          str(pt_rules.id))  # type: ignore[union-attr]
         )
 
+    over_ceiling: dict[str, str] | None = None
+    if ceiling is not None and total_deductions > ceiling:
+        wages = gross_earnings + other_earnings
+        over_ceiling = {
+            "wages": str(_money(wages)),
+            "deductions": str(_money(total_deductions)),
+            "share_percent": str(
+                (total_deductions / wages * Decimal(100)).quantize(Decimal("0.01"))
+                if wages > 0
+                else Decimal(100)
+            ),
+            "ceiling_percent": str(ceiling_percent),
+            "ceiling": str(ceiling),
+        }
+
     return PayrollComputation(
         working_days=working_days,
         paid_days=paid_days,
@@ -855,6 +914,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         not_employed_days=not_employed_days,
         esi_eligibility_base=_money(esi_eligibility_base),
         supplementary=supplementary is not None,
+        over_deduction_ceiling=over_ceiling,
     )
 
 

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api import well_known
 from app.api.v1 import api_router
 from app.api.v1.routers import devices as devices_router
 from app.api.v1.routers import scim as scim_router
@@ -180,6 +181,9 @@ async def health_db() -> dict[str, str]:
 
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+# OAuth discovery for MCP connectors, at the root where clients look for it.
+app.include_router(well_known.router)
 
 # SCIM lives at /scim/v2, outside the versioned prefix: clients expect that
 # exact path and several will not let you configure another.

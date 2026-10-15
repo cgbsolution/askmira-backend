@@ -18,6 +18,7 @@ a reviewer looks at it, as with any punch photo.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -35,7 +36,7 @@ from app.models.attendance import AttendancePunch, PunchDirection, PunchSource, 
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.identity import DeviceIntegration, DeviceVendor
-from app.models.kiosk import KioskPin
+from app.models.kiosk import EmployeeBadge, KioskPin
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
@@ -44,9 +45,13 @@ from app.services.identity import devices as device_service
 
 __all__ = [
     "KIOSK_PIN_LENGTHS",
+    "badge_hash",
+    "issue_badge",
     "kiosk_info",
     "kiosk_punch",
+    "list_badges",
     "my_pin_status",
+    "revoke_badge",
     "set_my_pin",
 ]
 
@@ -175,12 +180,19 @@ async def kiosk_info(session: AsyncSession, token: str) -> dict[str, Any]:
     }
 
 
+def badge_hash(tenant_id: uuid.UUID, number: str) -> str:
+    """The stored form of a card number: hashed with the workspace, never kept plain."""
+    clean = "".join(number.split()).upper()
+    return hashlib.sha256(f"{tenant_id}:{clean}".encode()).hexdigest()
+
+
 async def kiosk_punch(
     session: AsyncSession,
     token: str,
     *,
-    employee_code: str,
-    pin: str,
+    employee_code: str | None = None,
+    pin: str | None = None,
+    badge: str | None = None,
     photo: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -191,6 +203,38 @@ async def kiosk_punch(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many wrong entries at this kiosk. Try again in a few minutes.",
         )
+
+    if badge:
+        card = await session.scalar(
+            select(EmployeeBadge).where(
+                tenant_filter(EmployeeBadge, device.tenant_id),
+                EmployeeBadge.badge_hash == badge_hash(device.tenant_id, badge),
+                EmployeeBadge.revoked_at.is_(None),
+            )
+        )
+        holder = (
+            await session.scalar(
+                select(Employee).where(
+                    tenant_filter(Employee, device.tenant_id),
+                    Employee.id == card.employee_id,
+                    Employee.deleted_at.is_(None),
+                    Employee.status != EmploymentStatus.EXITED,
+                )
+            )
+            if card is not None
+            else None
+        )
+        if holder is None:
+            device.kiosk_failed_attempts += 1
+            if device.kiosk_failed_attempts >= DEVICE_ATTEMPTS:
+                device.kiosk_locked_until = moment + DEVICE_LOCK
+                device.kiosk_failed_attempts = 0
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="That badge is not one this workspace knows. Use your code and PIN.",
+            )
+        return await _record_punch(session, device, holder, photo, moment, via="badge")
 
     employee = await session.scalar(
         select(Employee).where(
@@ -226,6 +270,19 @@ async def kiosk_punch(
         await session.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_MATCH)
 
+    record.failed_attempts = 0
+    return await _record_punch(session, device, employee, photo, moment, via="pin")
+
+
+async def _record_punch(
+    session: AsyncSession,
+    device: DeviceIntegration,
+    employee: Employee,
+    photo: str | None,
+    moment: datetime,
+    *,
+    via: str,
+) -> dict[str, Any]:
     mode = await _photo_mode(session, device.tenant_id)
     if mode == "required" and not photo:
         raise HTTPException(
@@ -234,7 +291,6 @@ async def kiosk_punch(
             "again.",
         )
 
-    record.failed_attempts = 0
     device.kiosk_failed_attempts = 0
     last = await session.scalar(
         select(AttendancePunch)
@@ -270,7 +326,7 @@ async def kiosk_punch(
         source=PunchSource.KIOSK,
         device_id=device.device_id,
         location_label=label,
-        raw_payload={"kiosk": device.device_id, "photo": photo_key is not None},
+        raw_payload={"kiosk": device.device_id, "photo": photo_key is not None, "via": via},
         photo_key=photo_key,
     )
     session.add(punch)
@@ -282,3 +338,122 @@ async def kiosk_punch(
         "punched_at": moment.isoformat(),
         "photo_taken": photo_key is not None,
     }
+
+
+# ── Badges ──────────────────────────────────────────────────────────────────
+
+
+def _badge_read(row: EmployeeBadge) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "employee_id": str(row.employee_id),
+        "last_four": row.last_four,
+        "issued_at": row.created_at.isoformat() if row.created_at else None,
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+    }
+
+
+async def list_badges(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    permissions.require_hr(user, detail="Badges are issued by HR.")
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(EmployeeBadge)
+                .where(EmployeeBadge.employee_id == employee_id)
+                .order_by(EmployeeBadge.created_at.desc()),
+                EmployeeBadge,
+                user,
+            )
+        )
+    ).all()
+    return [_badge_read(r) for r in rows]
+
+
+async def issue_badge(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    number: str,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Record a card for a person. A card already in someone's hands cannot be issued twice."""
+    permissions.require_hr(user, detail="Badges are issued by HR.")
+    clean = "".join(number.split()).upper()
+    if len(clean) < 4 or not clean.isalnum():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A badge number is at least four letters or digits.",
+        )
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    digest = badge_hash(user.tenant_id, clean)
+    taken = await session.scalar(
+        tenant_scoped(
+            select(EmployeeBadge.id).where(
+                EmployeeBadge.badge_hash == digest, EmployeeBadge.revoked_at.is_(None)
+            ),
+            EmployeeBadge,
+            user,
+        )
+    )
+    if taken is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That card is already issued to somebody. Revoke it there first.",
+        )
+    row = EmployeeBadge(
+        tenant_id=user.tenant_id,
+        employee_id=employee.id,
+        badge_hash=digest,
+        last_four=clean[-4:],
+        issued_by_user_id=user.id,
+    )
+    session.add(row)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="employee_badge",
+        entity_id=row.id,
+        actor=user,
+        changes={"employee": employee.employee_code, "last_four": row.last_four},
+        summary=f"Issued a kiosk badge ending {row.last_four} to {employee.employee_code}",
+        request=request,
+    )
+    await session.commit()
+    return _badge_read(row)
+
+
+async def revoke_badge(
+    session: AsyncSession, user: User, badge_id: uuid.UUID, *, request: Request | None = None
+) -> dict[str, Any]:
+    permissions.require_hr(user, detail="Badges are revoked by HR.")
+    row = await session.scalar(
+        tenant_scoped(
+            select(EmployeeBadge).where(EmployeeBadge.id == badge_id), EmployeeBadge, user
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Badge not found")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.now(UTC)
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="employee_badge",
+            entity_id=row.id,
+            actor=user,
+            changes={"revoked": True, "last_four": row.last_four},
+            summary=f"Revoked the kiosk badge ending {row.last_four}",
+            request=request,
+        )
+        await session.commit()
+    return _badge_read(row)

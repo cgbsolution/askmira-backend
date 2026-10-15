@@ -302,3 +302,47 @@ class ReimbursementClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     paid_in_run_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="SET NULL"), nullable=True
     )
+    #: Paid in a leaver's full and final settlement instead of a payroll run.
+    settled_in_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "settlements.id", ondelete="SET NULL",
+            name="fk_reimbursement_claims_settled_in_settlement_id",
+        ),
+        nullable=True,
+    )
+
+
+class FlexiDeclaration(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """How one person splits their flexi-benefit pot across reimbursement components, for a year.
+
+    HR sets the pot — the part of the person's CTC that is flexible. The person
+    declares how much goes to each component (fuel, telephone, meals…), each no
+    more than the component's own limit and together no more than the pot. Once
+    HR approves it, the split is that person's entitlement for the year: claims,
+    payroll and the year-end taxable balance all read it instead of the
+    component's default. A change after approval is a new declaration for HR.
+    """
+
+    __tablename__ = "flexi_declarations"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "employee_id", "financial_year", name="uq_flexi_declaration_year"
+        ),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        index=True,
+    )
+    financial_year: Mapped[str] = mapped_column(String(9), nullable=False)
+    pot: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    #: {component_code: amount}, as text amounts.
+    allocations: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    #: draft | submitted | approved | rejected
+    status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
+    decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)

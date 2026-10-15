@@ -129,6 +129,27 @@ async def retry_failed(
     )
 
 
+class DeviceIn(BaseModel):
+    push_token: str = Field(min_length=10, max_length=255)
+    platform: str = Field(default="expo", max_length=16)
+
+
+@router.post("/devices")
+async def register_device(
+    payload: DeviceIn, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """The app on the caller's phone, for push."""
+    return await notification_admin.register_device(
+        session, user, push_token=payload.push_token, platform=payload.platform
+    )
+
+
+@router.post("/devices/unregister", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def unregister_device(payload: DeviceIn, user: CurrentUser, session: DbSession) -> None:
+    """Stop pushing to this phone (sign-out)."""
+    await notification_admin.unregister_device(session, user, push_token=payload.push_token)
+
+
 @router.get("/admin/smtp", dependencies=ADMIN_ONLY)
 async def get_smtp(user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """The relay settings. The password is never returned — only whether one is set."""
@@ -140,6 +161,28 @@ async def save_smtp(
     payload: SmtpSave, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
     return await notification_admin.save_smtp(
+        session, user, **payload.model_dump(), request=request
+    )
+
+
+class WhatsAppSave(BaseModel):
+    enabled: bool
+    phone_number_id: str = Field(min_length=1, max_length=64)
+    #: Null keeps the stored token; an empty string clears it.
+    access_token: str | None = Field(default=None, max_length=1024)
+
+
+@router.get("/admin/whatsapp", dependencies=ADMIN_ONLY)
+async def get_whatsapp(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """This workspace's WhatsApp Business account. The token is never returned."""
+    return await notification_admin.whatsapp_settings(session, user)
+
+
+@router.put("/admin/whatsapp", dependencies=ADMIN_ONLY)
+async def save_whatsapp(
+    payload: WhatsAppSave, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await notification_admin.save_whatsapp(
         session, user, **payload.model_dump(), request=request
     )
 

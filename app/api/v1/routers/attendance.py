@@ -33,6 +33,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import BaseModel, Field
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -429,12 +430,12 @@ async def list_regularisations(
 @router.get(
     "/regularisations/pending",
     response_model=list[RegularisationQueueItem],
-    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def pending_regularisations(
     user: CurrentUser, session: DbSession
 ) -> list[RegularisationQueueItem]:
-    """Waiting on the caller: their reporting line, or all for HR. Never their own."""
+    """Waiting on the caller: the step a chain gave them (or someone they stand in
+    for), older requests from their reporting line, or all for HR. Never their own."""
     return await review.pending_regularisations(session, user)
 
 
@@ -453,7 +454,6 @@ async def cancel_regularisation(
 @router.patch(
     "/regularisation/{regularisation_id}",
     response_model=RegularisationRead,
-    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def decide_regularisation(
     regularisation_id: uuid.UUID,
@@ -462,7 +462,7 @@ async def decide_regularisation(
     session: DbSession,
     request: Request,
 ) -> RegularisationRead:
-    """Approve or reject. The person's manager or HR; never your own."""
+    """Approve or reject the current step: its approver, their delegate or HR; never your own."""
     record = await attendance_service.decide_regularisation(
         session,
         user,
@@ -805,16 +805,47 @@ async def shift_coverage(
     end: date = Query(alias="to"),
     location_id: uuid.UUID | None = None,
     department_id: uuid.UUID | None = None,
+    work_area: str | None = Query(default=None, max_length=80),
 ) -> dict:
-    """Per day and shift: scheduled, on leave, available, and any shortfall."""
+    """Per day and shift: scheduled, on leave, available, and any shortfall, by site and line."""
     return await shift_swaps.coverage(
         session, user, start=start, end=end, location_id=location_id,
-        department_id=department_id,
+        department_id=department_id, work_area=work_area,
     )
 
 
 
 # ── Kiosk PIN ───────────────────────────────────────────────────────────────
+
+
+class BadgeIssue(BaseModel):
+    employee_id: uuid.UUID
+    badge_number: str = Field(min_length=4, max_length=64)
+
+
+@router.get("/badges", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def list_badges(employee_id: uuid.UUID, user: CurrentUser, session: DbSession) -> list[dict]:
+    """The kiosk badges issued to one person, revoked ones included."""
+    return await kiosk.list_badges(session, user, employee_id)
+
+
+@router.post(
+    "/badges", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_roles(*HR_ROLES))]
+)
+async def issue_badge(
+    payload: BadgeIssue, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    """Issue a card that punches at a kiosk on its own. Only a hash of its number is kept."""
+    return await kiosk.issue_badge(
+        session, user, payload.employee_id, payload.badge_number, request=request
+    )
+
+
+@router.post("/badges/{badge_id}/revoke", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def revoke_badge(
+    badge_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict:
+    return await kiosk.revoke_badge(session, user, badge_id, request=request)
 
 
 @router.get("/kiosk-pin")

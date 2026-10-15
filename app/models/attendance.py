@@ -165,6 +165,16 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: The fewest people this shift needs on a working day, for the coverage
     #: view. Null: no minimum is set and coverage only counts.
     min_headcount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The plant or site the shift runs at. Set, only people based there may be
+    #: rostered on it. Null: any location.
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("locations.id", ondelete="SET NULL", name="fk_shifts_location_id"),
+        nullable=True,
+    )
+    #: The line, cell or area within the site ("Line 2", "Packing"), so coverage
+    #: can be read per line.
+    work_area: Mapped[str | None] = mapped_column(String(80), nullable=True)
     #: Courses (Learning) anyone working this shift must hold, valid on the day.
     required_course_ids: Mapped[list] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
@@ -428,6 +438,11 @@ class AttendanceRegularisation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The approvers, in order, snapshotted from the tenant's rules when raised.
+    #: Empty on requests raised before chains existed: the manager or HR decides.
+    approval_chain: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
 
 
 class AttendancePeriodLock(Base, UUIDMixin, TenantMixin, TimestampMixin):

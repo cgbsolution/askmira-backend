@@ -10,4 +10,5 @@ ENDPOINTS: dict[str, str] = {
     "POST /auth/mfa/enable": "own: switches on the caller's own two-step sign-in.",
     "POST /auth/mfa/disable": "own: switches off the caller's own two-step sign-in.",
     "GET /dashboard/summary": "reference: tenant-wide counts; no individual's record.",
+    "GET /dashboard/quick-links": "reference: the workspace's own links; no individual's record.",
 }

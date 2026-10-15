@@ -141,3 +141,88 @@ async def test_committed_changes_become_signed_deliveries_once(
 
 def test_a_hostname_that_resolves_inside_is_refused() -> None:
     assert integrations._public_address("localhost") is False
+
+
+async def test_a_write_key_adds_people_and_pushes_punches_audited_as_itself(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    client: httpx.AsyncClient,
+) -> None:
+    from app.models.attendance import AttendancePunch
+    from app.models.audit import AuditLog
+
+    created = await integrations.create_key(
+        session, hr_user,
+        integrations.ApiKeyIn(
+            name="HRIS bridge", scopes=["employees:read", "employees:write", "attendance:write"]
+        ),
+        request=None,
+    )
+    auth = {"Authorization": f"Bearer {created['key']}"}
+    added = await client.post(
+        "/api/v1/ext/employees",
+        json={
+            "employee_code": "API001", "first_name": "Kiran", "last_name": "Rao",
+            "work_email": "kiran@acme-demo.com", "legal_entity_id": str(employee.legal_entity_id),
+            "date_of_joining": "2026-10-01",
+        },
+        headers=auth,
+    )
+    assert added.status_code == 201, added.text
+    changed = await client.patch(
+        f"/api/v1/ext/employees/{added.json()['id']}", json={"designation": "Analyst"},
+        headers=auth,
+    )
+    assert changed.status_code == 200 and changed.json()["designation"] == "Analyst"
+
+    punches = {
+        "punches": [
+            {"employee_code": "API001", "punched_at": "2026-10-05T09:30:00+05:30",
+             "direction": "in"},
+            {"employee_code": "API001", "punched_at": "2026-10-05T09:30:00+05:30",
+             "direction": "in"},
+            {"employee_code": "NOBODY", "punched_at": "2026-10-05T09:31:00+05:30",
+             "direction": "in"},
+        ]
+    }
+    pushed = await client.post("/api/v1/ext/attendance-punches", json=punches, headers=auth)
+    assert pushed.json() == {"stored": 1, "duplicates": 1, "unknown_codes": ["NOBODY"]}
+    again = await client.post("/api/v1/ext/attendance-punches", json=punches, headers=auth)
+    assert again.json()["stored"] == 0, "a repeat push stores nothing twice"
+    assert len((await session.scalars(select(AttendancePunch))).all()) == 1
+
+    by_key = (
+        await session.scalars(select(AuditLog).where(AuditLog.actor_type == "api_key"))
+    ).all()
+    assert by_key and all(row.changes.get("api_key") == "HRIS bridge" for row in by_key)
+
+    read_only = await integrations.create_key(
+        session, hr_user, integrations.ApiKeyIn(name="Reader", scopes=["employees:read"]),
+        request=None,
+    )
+    refused = await client.post(
+        "/api/v1/ext/attendance-punches", json=punches,
+        headers={"Authorization": f"Bearer {read_only['key']}"},
+    )
+    assert refused.status_code == 403
+
+
+async def test_quick_links_are_the_workspaces_own_and_only_safe_addresses(
+    session: AsyncSession, tenant: Tenant, hr_user: User
+) -> None:
+    from app.services import quick_links
+
+    assert (await quick_links.quick_links(session, hr_user))["is_default"] is True
+    with pytest.raises(HTTPException) as unsafe:
+        await quick_links.set_quick_links(
+            session, hr_user, [quick_links.QuickLinkIn(label="x", url="javascript:alert(1)")]
+        )
+    assert unsafe.value.status_code == 422
+    saved = await quick_links.set_quick_links(
+        session, hr_user,
+        [
+            quick_links.QuickLinkIn(label="Intranet", url="https://intranet.example.com"),
+            quick_links.QuickLinkIn(label="Leave", url="/time"),
+        ],
+    )
+    assert [link["label"] for link in saved["links"]] == ["Intranet", "Leave"]
+    assert (await quick_links.set_quick_links(session, hr_user, None))["is_default"] is True

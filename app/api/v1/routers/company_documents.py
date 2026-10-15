@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 
@@ -17,11 +17,53 @@ from app.schemas.documents import (
     CompanyDocumentRead,
     CompanyDocumentUpdate,
 )
-from app.services.documents import company
+from app.services.documents import company, handbook
 
 router = APIRouter(prefix="/documents/company", tags=["documents"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
+
+
+# ── Handbook builder ────────────────────────────────────────────────────────
+
+
+@router.get("/handbooks", dependencies=HR_ONLY)
+async def list_handbooks(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await handbook.list_handbooks(session, user)
+
+
+@router.post("/handbooks", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY)
+async def create_handbook(
+    payload: handbook.HandbookIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await handbook.create_handbook(session, user, payload, request=request)
+
+
+@router.get("/handbooks/{handbook_id}", dependencies=HR_ONLY)
+async def get_handbook(
+    handbook_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    return await handbook.get_handbook(session, user, handbook_id)
+
+
+@router.put("/handbooks/{handbook_id}", dependencies=HR_ONLY)
+async def update_handbook(
+    handbook_id: uuid.UUID,
+    payload: handbook.HandbookIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Save the draft; employees keep the published version until it is republished."""
+    return await handbook.update_handbook(session, user, handbook_id, payload, request=request)
+
+
+@router.post("/handbooks/{handbook_id}/publish", dependencies=HR_ONLY)
+async def publish_handbook(
+    handbook_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Render the draft to PDF and file it in the library; asks for acknowledgement again."""
+    return await handbook.publish_handbook(session, user, handbook_id, request=request)
 
 
 @router.get("", response_model=list[CompanyDocumentRead])

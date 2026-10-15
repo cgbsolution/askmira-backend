@@ -1,15 +1,15 @@
 """Themes in a survey's free-text comments (EXP-04). Counted, paraphrased, never quoted.
 
 ═══════════════════════════════════════════════════════════════════════════════
-WHY EVERY RESPONDENT HAS TO HAVE AGREED, NOT JUST MOST
+WHOSE COMMENTS ARE SENT
 ═══════════════════════════════════════════════════════════════════════════════
 
-Survey answers are stored with no link to who gave them; that is what makes
-them anonymous. So there is no way to send only the comments of the people who
-agreed to AI analysis — and marking each response with its writer's consent
-would itself be the link, since HR can see who declined. The only honest rule
-is all or nothing: if anyone who responded has not agreed to culture analytics,
-no comment is sent, and the screen says how many have not.
+Only comments whose writers ticked "AI may read this comment" when they wrote
+it. The choice is stored on the anonymous response itself — a yes or no beside
+the words — so it says nothing about who wrote them, and HR never learns who
+ticked it. Survey answers keep no link to their writers, which is why the
+choice has to be made with the comment rather than looked up afterwards. Too
+few ticked comments to clear the survey's reporting floor, and nothing is sent.
 
 ═══════════════════════════════════════════════════════════════════════════════
 WHAT COMES BACK
@@ -37,11 +37,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.ai_features import SurveyTopicSummary
-from app.models.culture_depth import Survey, SurveyParticipant, SurveyResponse
+from app.models.culture_depth import Survey, SurveyResponse
 from app.models.grounding import InvocationOutcome
 from app.models.user import User
 from app.services.ai import client, governance
-from app.services.dpdp import service as dpdp_service
 from app.services.grounding import injection
 from app.services.grounding import service as grounding
 from app.services.grounding.confidence import band_for
@@ -171,57 +170,27 @@ async def generate(session: AsyncSession, user: User, survey_id: uuid.UUID) -> d
     survey = await _survey(session, user, survey_id)
     floor = survey.min_responses_to_report
 
-    comments = [
-        text.strip()
-        for text in (
-            await session.scalars(
-                tenant_scoped(
-                    select(SurveyResponse.free_text).where(
-                        SurveyResponse.survey_id == survey_id,
-                        SurveyResponse.free_text.is_not(None),
-                    ),
-                    SurveyResponse,
-                    user,
-                )
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(SurveyResponse.free_text, SurveyResponse.comment_ai_ok).where(
+                    SurveyResponse.survey_id == survey_id,
+                    SurveyResponse.free_text.is_not(None),
+                ),
+                SurveyResponse,
+                user,
             )
-        ).all()
-        if text and text.strip()
-    ]
+        )
+    ).all()
+    written = [(text.strip(), ok) for text, ok in rows if text and text.strip()]
+    comments = [text for text, ok in written if ok]
     if len(comments) < floor:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"This survey has {len(comments)} comment(s), fewer than its reporting floor "
-                f"of {floor}. Themes from so few comments could point at who wrote them."
-            ),
-        )
-
-    respondents = list(
-        (
-            await session.scalars(
-                tenant_scoped(
-                    select(SurveyParticipant.employee_id).where(
-                        SurveyParticipant.survey_id == survey_id,
-                        SurveyParticipant.responded_at.is_not(None),
-                    ),
-                    SurveyParticipant,
-                    user,
-                )
-            )
-        ).all()
-    )
-    permitting = await dpdp_service.principals_permitting(
-        session, user, principal_ids=respondents, capability="culture_sentiment_analysis"
-    )
-    not_agreed = len(respondents) - len(permitting)
-    if not_agreed:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"{not_agreed} of the {len(respondents)} people who responded have not agreed "
-                "to AI analysis of survey comments. Answers are stored with no link to who "
-                "gave them, so their comments cannot be left out on their own — no comment "
-                "is sent."
+                f"{len(comments)} of the survey's {len(written)} comment(s) were left open to AI "
+                f"reading by their writers, fewer than its reporting floor of {floor}. Themes "
+                "from so few comments could point at who wrote them."
             ),
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -746,3 +747,45 @@ async def test_seeding_installs_the_default_templates(
 
     # Idempotent — a second seed adds nothing.
     assert await notification_service.seed_default_templates(session, tenant.id) == []
+
+
+async def test_push_goes_to_the_phone_the_app_registered_and_stops_when_gone(
+    session: AsyncSession, tenant: Tenant, hr_user: User
+) -> None:
+    from app.models.notifications import PushDevice
+    from app.services.notifications import admin
+
+    await _template(session, tenant, "system.announcement", Channel.PUSH)
+    session.add(
+        NotificationPreference(
+            tenant_id=tenant.id, user_id=hr_user.id, event_key="system.announcement",
+            channel=Channel.PUSH, enabled=True, digest_mode=DigestMode.IMMEDIATE,
+        )
+    )
+    await session.commit()
+    with pytest.raises(HTTPException):
+        await admin.register_device(session, hr_user, push_token="not-a-token", platform="expo")
+    token = "ExponentPushToken[abc123]"
+    await admin.register_device(session, hr_user, push_token=token, platform="expo")
+    stored = await session.scalar(select(PushDevice))
+    assert stored.push_token_hash != token, "the token is not stored in the clear"
+
+    recorder = RecordingAdapter()
+    notification_service.register_adapter(Channel.PUSH, recorder)
+    outcome = await notification_service.notify(
+        session, tenant_id=tenant.id, event_key="system.announcement",
+        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "thing": "the move"},
+    )
+    assert outcome.sent == 1 and recorder.sent[0].push_token == token
+
+    class Gone(ChannelAdapter):
+        async def send(self, message):
+            raise PermanentFailure("DeviceNotRegistered: the app is gone from that phone")
+
+    notification_service.register_adapter(Channel.PUSH, Gone())
+    await notification_service.notify(
+        session, tenant_id=tenant.id, event_key="system.announcement",
+        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "thing": "again"},
+    )
+    await session.refresh(stored)
+    assert stored.revoked_at is not None, "a phone Expo calls gone is not pushed to again"

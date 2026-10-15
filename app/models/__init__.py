@@ -106,7 +106,11 @@ from app.models.calibration import (
     SessionStatus,
 )
 from app.models.candidate_comms import CandidateMessage, CandidateMessageStatus
-from app.models.company_documents import CompanyDocument, CompanyDocumentAcknowledgement
+from app.models.company_documents import (
+    CompanyDocument,
+    CompanyDocumentAcknowledgement,
+    Handbook,
+)
 from app.models.competency import (
     AppraisalTemplate,
     Competency,
@@ -129,6 +133,7 @@ from app.models.contractors import (
 from app.models.culture import (
     Club,
     ClubMember,
+    ClubPost,
     MilestoneRule,
     Shoutout,
     ShoutoutReaction,
@@ -383,7 +388,7 @@ from app.models.jobboard import (
     JobPosting,
     PostingStatus,
 )
-from app.models.kiosk import KioskPin
+from app.models.kiosk import EmployeeBadge, KioskPin
 from app.models.learning import AssignmentStatus, Course, CourseAssignment, CourseKind
 from app.models.leave import (
     CompOffRequest,
@@ -409,6 +414,7 @@ from app.models.lifecycle import (
 )
 from app.models.loans import (
     ClaimStatus,
+    FlexiDeclaration,
     InterestType,
     LoanAccount,
     LoanRepayment,
@@ -428,11 +434,14 @@ from app.models.notifications import (
     NotificationPreference,
     NotificationStatus,
     NotificationTemplate,
+    PushDevice,
     TenantSmtpSettings,
+    TenantWhatsAppSettings,
     WhatsAppConsent,
     WhatsAppTemplate,
     WhatsAppTemplateStatus,
 )
+from app.models.oauth import OAuthAuthorizationCode, OAuthClient, OAuthGrant
 from app.models.offer import (
     ApprovalChainRule,
     ApprovalDecision,
@@ -611,6 +620,7 @@ from app.models.tenant import Tenant, TenantPlan
 from app.models.timesheets import (
     HourlyRate,
     Project,
+    ProjectTask,
     Timesheet,
     TimesheetEntry,
     TimesheetStatus,
@@ -733,6 +743,7 @@ __all__ = [
     "ClearanceTemplate",
     "Club",
     "ClubMember",
+    "ClubPost",
     "CompOffRequest",
     "CompOffStatus",
     "CompanyDocument",
@@ -790,6 +801,7 @@ __all__ = [
     "DprRequestType",
     "DrillOutcomeEnum",
     "Employee",
+    "EmployeeBadge",
     "EmployeeBankAccount",
     "EmployeeDocument",
     "EmployeeInputStateEnum",
@@ -849,6 +861,7 @@ __all__ = [
     "FilingRecord",
     "FilingStatus",
     "FindingSeverityEnum",
+    "FlexiDeclaration",
     "Form16PartA",
     "FulfilmentRecord",
     "Gender",
@@ -868,6 +881,7 @@ __all__ = [
     "Gstr2bImport",
     "Gstr2bLine",
     "Gstr2bMatchEnum",
+    "Handbook",
     "HeadcountBudget",
     "HelpdeskAttachment",
     "HelpdeskCategory",
@@ -944,6 +958,9 @@ __all__ = [
     "NotificationPreference",
     "NotificationStatus",
     "NotificationTemplate",
+    "OAuthAuthorizationCode",
+    "OAuthClient",
+    "OAuthGrant",
     "Offer",
     "OfferApproval",
     "OfferComponent",
@@ -1013,6 +1030,7 @@ __all__ = [
     "ProfileChangeRequest",
     "ProfileChangeStatus",
     "Project",
+    "ProjectTask",
     "PromotionRecord",
     "PromptInjectionAttempt",
     "ProofStatus",
@@ -1020,6 +1038,7 @@ __all__ = [
     "ProposalStatusEnum",
     "PunchDirection",
     "PunchSource",
+    "PushDevice",
     "RatingScale",
     "RatingScaleLevel",
     "Recommendation",
@@ -1127,6 +1146,7 @@ __all__ = [
     "TenantMixin",
     "TenantPlan",
     "TenantSessionPolicy",
+    "TenantWhatsAppSettings",
     "Timesheet",
     "TimesheetEntry",
     "TimesheetStatus",

@@ -97,7 +97,7 @@ from app.services.tax.sources import PAID_THROUGH_PAYROLL
 
 # Rule types resolved for every run. Professional Tax and the Labour Welfare
 # Fund are state levies, so they are resolved per employee by their location.
-CENTRAL_RULE_TYPES = ("pf", "esi", "tds")
+CENTRAL_RULE_TYPES = ("pf", "esi", "tds", "wage_deductions")
 STATE_RULE_TYPES = ("professional_tax", "labour_welfare_fund")
 
 # A run in one of these states has been signed off and is history.
@@ -825,27 +825,35 @@ async def compute_run(
             )
 
         # ── Variance flagging (FS-PAY-01) ───────────────────────────────────
+        # One flag per person, for a net-pay swing, deductions past the legal
+        # ceiling, or both; one acknowledgement with a note covers it.
         prior = previous.get(employee.id)
+        change: Decimal | None = None
         if prior is not None and prior > 0:
-            change = abs(computation.net_pay - prior) / prior * Decimal(100)
-            if change > variance_threshold_percent:
-                variances.append(
-                    {
-                        "employee_id": str(employee.id),
-                        "employee_code": employee.employee_code,
-                        "employee_name": employee.full_name,
-                        "previous_net": str(prior),
-                        "current_net": str(computation.net_pay),
-                        "change_percent": str(change.quantize(Decimal("0.01"))),
-                        # A joining or leaving month swings net pay for a
-                        # reason the reviewer should see beside the number.
-                        "not_employed_days": str(computation.not_employed_days),
-                        "acknowledged": False,
-                        "acknowledged_by_user_id": None,
-                        "acknowledged_at": None,
-                        "note": None,
-                    }
-                )
+            moved = abs(computation.net_pay - prior) / prior * Decimal(100)
+            if moved > variance_threshold_percent:
+                change = moved
+        if change is not None or computation.over_deduction_ceiling is not None:
+            variances.append(
+                {
+                    "employee_id": str(employee.id),
+                    "employee_code": employee.employee_code,
+                    "employee_name": employee.full_name,
+                    "previous_net": str(prior) if change is not None else None,
+                    "current_net": str(computation.net_pay),
+                    "change_percent": (
+                        str(change.quantize(Decimal("0.01"))) if change is not None else None
+                    ),
+                    # A joining or leaving month swings net pay for a
+                    # reason the reviewer should see beside the number.
+                    "not_employed_days": str(computation.not_employed_days),
+                    "deduction_ceiling": computation.over_deduction_ceiling,
+                    "acknowledged": False,
+                    "acknowledged_by_user_id": None,
+                    "acknowledged_at": None,
+                    "note": None,
+                }
+            )
 
     run.computed_by_user_id = user.id
 
@@ -979,7 +987,7 @@ async def acknowledge_variance(
     if not note:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Say why this change in net pay is correct.",
+            detail="Say why this payslip is correct.",
         )
 
     flags = [dict(flag) for flag in (run.variance_flags or [])]
@@ -1018,6 +1026,9 @@ async def acknowledge_variance(
         },
         summary=(
             f"Acknowledged a {target.get('change_percent')}% net pay change for "
+            f"{target.get('employee_code')}"
+            if target.get("change_percent") is not None
+            else f"Acknowledged deductions above the legal ceiling for "
             f"{target.get('employee_code')}"
         ),
         request=request,

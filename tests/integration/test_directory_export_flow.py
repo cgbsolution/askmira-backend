@@ -85,3 +85,36 @@ async def test_only_hr_exports_the_directory(
     with pytest.raises(HTTPException) as refused:
         await employee_service.directory_csv(session, user)
     assert refused.value.status_code == 403
+
+
+async def test_a_job_change_can_be_dated_back_and_the_as_of_view_follows(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
+) -> None:
+    from datetime import date
+
+    from app.services.lifecycle import service as lifecycle
+
+    person = await _person(session, tenant, legal_entity, "BACK")
+    person.date_of_joining = date(2024, 1, 1)
+    person.designation = "Analyst"
+    await session.commit()
+
+    with pytest.raises(HTTPException) as future:
+        await employee_service.update_employee(
+            session, hr_user, person.id,
+            EmployeeUpdate(designation="Lead", changes_effective_from=date(2099, 1, 1)),
+        )
+    assert future.value.status_code == 422
+
+    await employee_service.update_employee(
+        session, hr_user, person.id,
+        EmployeeUpdate(designation="Senior Analyst", changes_effective_from=date(2025, 7, 1)),
+    )
+    before = await lifecycle.state_on(
+        session, hr_user, employee_id=person.id, on=date(2025, 6, 30)
+    )
+    after = await lifecycle.state_on(
+        session, hr_user, employee_id=person.id, on=date(2025, 7, 2)
+    )
+    assert before["state"]["designation"] == "Analyst"
+    assert after["state"]["designation"] == "Senior Analyst"

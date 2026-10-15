@@ -17,6 +17,7 @@ from sqlalchemy import (
     CheckConstraint,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -139,6 +140,21 @@ class Club(Base, UUIDMixin, TenantMixin, TimestampMixin):
     members: Mapped[list[ClubMember]] = relationship(
         back_populates="club", cascade="all, delete-orphan"
     )
+
+
+class ClubPost(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A message in a club: what the members talk about. Members only, for a private club."""
+
+    __tablename__ = "club_posts"
+    __table_args__ = (Index("ix_club_posts_club", "tenant_id", "club_id", "created_at"),)
+
+    club_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("clubs.id", ondelete="CASCADE"), nullable=False
+    )
+    author_employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class ClubMember(Base, UUIDMixin, TenantMixin, TimestampMixin):

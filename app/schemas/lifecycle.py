@@ -55,6 +55,10 @@ class EventRead(BaseModel):
     letter_id: uuid.UUID | None
     batch_id: uuid.UUID | None
     created_at: datetime
+    #: The approvers in order, each with its status; empty on older events.
+    approval_chain: list = []
+    #: Whether the caller decides the current step (on the single-event read).
+    caller_may_decide: bool = False
 
 
 class BulkRow(BaseModel):

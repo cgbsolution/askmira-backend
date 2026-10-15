@@ -69,7 +69,24 @@ _SHIFT_FIELDS = (
     "allowance_per_day",
     "allowance_name",
     "min_headcount",
+    "location_id",
+    "work_area",
 )
+
+
+async def _check_site(session: AsyncSession, user: User, location_id: uuid.UUID | None) -> None:
+    if location_id is None:
+        return
+    from app.models.org import Location
+
+    found = await session.scalar(
+        tenant_scoped(select(Location.id).where(Location.id == location_id), Location, user)
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="That location is not one of this workspace's.",
+        )
 
 
 def _not_found(what: str) -> HTTPException:
@@ -86,7 +103,7 @@ def _snapshot(shift: Shift) -> dict[str, Any]:
         value = getattr(shift, field)
         if isinstance(value, time):
             value = value.isoformat()
-        elif isinstance(value, Decimal):
+        elif isinstance(value, Decimal | uuid.UUID):
             value = str(value)
         out[field] = value
     out["required_course_ids"] = list(shift.required_course_ids or [])
@@ -123,6 +140,8 @@ async def create_shift(
     )
     if duplicate is not None:
         raise _conflict(f"A shift with code {code} already exists")
+    await _check_site(session, user, data.location_id)
+    data.work_area = (data.work_area or "").strip() or None
 
     # The first shift a workspace creates becomes its default, so people with
     # no assignment are judged against something from day one. HR can move the
@@ -167,6 +186,8 @@ async def update_shift(
 ) -> Shift:
     shift = await _shift(session, user, shift_id)
     before = _snapshot(shift)
+    await _check_site(session, user, data.location_id)
+    data.work_area = (data.work_area or "").strip() or None
     for field in _SHIFT_FIELDS:
         setattr(shift, field, getattr(data, field))
     shift.required_course_ids = await qualifications.check_course_ids(

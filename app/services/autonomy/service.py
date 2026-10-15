@@ -803,14 +803,16 @@ async def transparency_surface(
             await decision_stats(session, user) if permissions.is_hr(user) else None
         ),
         "not_built": [
-            "One agent creates proposals: the probation agent "
-            "(lifecycle.raise_confirmation), daily, under an auto-confirm probation "
-            "policy. The other actions in the catalogue have no agent yet, so any "
-            "proposal for them came from a manual call.",
+            "Three agents create proposals, daily: the probation agent "
+            "(lifecycle.raise_confirmation) under an auto-confirm probation policy; the "
+            "timesheet agent (timesheets.recommend_approval) for submitted weeks whose hours "
+            "attendance supports; and the schedule agent (scheduling.cover_short_shift) for "
+            "shifts short of their minimum headcount. The other actions in the catalogue have "
+            "no agent yet, so any proposal for them came from a manual call.",
             "Approving applies the change, and reverting restores it, only for "
-            "regularisations, expense claims, candidates and lifecycle events; any "
-            "other subject type is recorded as a decision and its record is not "
-            "touched.",
+            "regularisations, expense claims, candidates, lifecycle events, timesheets and "
+            "shift cover (approval only for the last two); any other subject type is recorded "
+            "as a decision and its record is not touched.",
             "Rejected proposals are not yet fed into the slice 27 eval set; the "
             "column linking them exists and nothing writes it.",
         ],

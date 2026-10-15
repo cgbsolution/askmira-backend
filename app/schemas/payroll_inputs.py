@@ -135,6 +135,9 @@ class OvertimePolicyCreate(BaseModel):
     quarterly_cap_minutes: int | None = Field(default=None, gt=0)
     count_rest_days: bool = True
     requires_approval: bool = True
+    #: Factories Act s.51: 48 hours = 2880. Null for no weekly rule.
+    weekly_threshold_minutes: int | None = Field(default=None, gt=0, le=10080)
+    week_starts_on: int = Field(default=6, ge=0, le=6)
     effective_from: date
 
 
@@ -162,6 +165,8 @@ class OvertimePolicyRead(BaseModel):
     quarterly_cap_minutes: int | None
     count_rest_days: bool
     requires_approval: bool
+    weekly_threshold_minutes: int | None
+    week_starts_on: int
     effective_from: date
     effective_to: date | None
     is_active: bool
@@ -173,6 +178,8 @@ class OvertimeEntryRead(BaseModel):
     employee_code: str | None
     employee_name: str | None
     attendance_date: date
+    #: daily | weekly
+    kind: str = "daily"
     policy_id: uuid.UUID
     policy_name: str | None
     recorded_minutes: int

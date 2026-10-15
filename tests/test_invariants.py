@@ -166,6 +166,10 @@ _UNSCOPED_BY_DESIGN = {
     # The shared kiosk: its device token establishes the tenant, and every
     # query after it filters on `device.tenant_id`.
     "kiosk.py",
+    # OAuth for MCP connectors: a client registers before any tenant exists, and
+    # a code or token is looked up by unique hash, which is what establishes the
+    # tenant. The person's own connection list goes through tenant_scoped.
+    "oauth.py",
     # Resolving which workspace an email address belongs to is the whole job,
     # and it runs on the sign-in screen before anyone is authenticated.
     "sso.py",
@@ -10178,20 +10182,23 @@ def test_every_culture_service_query_is_tenant_scoped() -> None:
 
 
 def test_the_culture_posture_discloses_what_is_not_wired() -> None:
-    """Announcements that are stored but never sent are the easiest thing in
-    this slice for a buyer to assume works."""
+    """Email that silently goes nowhere is the easiest thing in this slice for
+    a buyer to assume works; so is a benchmark or a validated instrument."""
     from app.services.culture.service import culture_posture
 
     posture = culture_posture()
     assert posture["not_built"]
     joined = " ".join(posture["not_built"]).lower()
-    for phrase in ("nothing is sent", "benchmark", "psychometrically"):
+    for phrase in ("mail relay", "benchmark", "psychometrically"):
         assert phrase in joined, (
-            f"The culture posture no longer discloses {phrase!r}. Nothing is "
-            "delivered by this slice, external benchmarks are slice 37, and the "
+            f"The culture posture no longer discloses {phrase!r}. Email needs the "
+            "workspace's mail relay, external benchmarks are slice 37, and the "
             "instruments are composed from published structures rather than "
             "validated on this population."
         )
+    enforced = " ".join(posture["enforced"]).lower()
+    assert "scheduler" in enforced, "Scheduled delivery is no longer stated as enforced."
+
 
 
 def test_the_survey_results_endpoint_is_not_gated_to_hr() -> None:
@@ -10932,10 +10939,13 @@ def test_the_rewards_posture_leads_with_the_unreviewed_tax_position() -> None:
         f"It reads: {posture['not_built'][0]!r}"
     )
     joined = " ".join(posture["not_built"]).lower()
-    for phrase in ("payroll", "merchandise partner", "schedules expiry"):
-        assert phrase in joined, (
-            f"The rewards posture no longer discloses {phrase!r}."
-        )
+    assert "merchandise partner" in joined, (
+        "The rewards posture no longer discloses the missing merchandise partner."
+    )
+    enforced = " ".join(posture["enforced"]).lower()
+    for phrase in ("payroll run", "expiry runs daily"):
+        assert phrase in enforced, f"The rewards posture no longer states {phrase!r}."
+
 
 
 def test_a_redemption_cannot_overdraw_the_balance() -> None:

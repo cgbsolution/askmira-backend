@@ -123,3 +123,150 @@ async def test_a_rejected_week_goes_back_for_changes(
         session, dev_login, MONDAY, [EntryIn(work_date=MONDAY, hours=Decimal("4"))]
     )
     assert again["status"] == "draft"
+
+
+async def test_tasks_project_rates_notifications_and_reminders(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.notifications import Notification
+    from app.services.timesheets import TaskIn
+
+    lead, lead_login = await _person(session, tenant, legal_entity, "PM")
+    dev, dev_login = await _person(session, tenant, legal_entity, "ENG", manager_id=lead.id)
+    lead_login = await as_caller(session, lead_login)
+    client_work = await timesheets.create_project(
+        session, hr_user, ProjectIn(code="CLIENT", name="Client build"), request=None
+    )
+    internal = await timesheets.create_project(
+        session, hr_user, ProjectIn(code="INT", name="Internal", billable=False), request=None
+    )
+    client_id, internal_id = uuid.UUID(client_work["id"]), uuid.UUID(internal["id"])
+    design = await timesheets.create_task(
+        session, hr_user, client_id, TaskIn(name="Design"), request=None
+    )
+    projects = {p["code"]: p for p in await timesheets.list_projects(session, dev_login)}
+    assert [t["name"] for t in projects["CLIENT"]["tasks"]] == ["Design"]
+
+    # General rate 400; on the client project the person is paid 700.
+    await timesheets.add_rate(
+        session, hr_user, RateIn(employee_id=dev.id, rate=Decimal("400"),
+                                 effective_from=date(2026, 1, 1)), request=None,
+    )
+    await timesheets.add_rate(
+        session, hr_user, RateIn(employee_id=dev.id, project_id=client_id, rate=Decimal("700"),
+                                 effective_from=date(2026, 1, 1)), request=None,
+    )
+
+    # A project split into tasks needs one on every entry.
+    with pytest.raises(HTTPException) as exc:
+        await timesheets.save_week(
+            session, dev_login, MONDAY,
+            [EntryIn(work_date=MONDAY, project_id=client_id, hours=Decimal("5"))],
+        )
+    assert exc.value.status_code == 422
+    week = await timesheets.save_week(
+        session, dev_login, MONDAY,
+        [
+            EntryIn(work_date=MONDAY, project_id=client_id,
+                    task_id=uuid.UUID(design["id"]), hours=Decimal("5")),
+            EntryIn(work_date=MONDAY, project_id=internal_id, hours=Decimal("3")),
+        ],
+    )
+    assert week["entries"][0]["task"] == "Design"
+
+    # Saved but not submitted after the week ended: the person is reminded.
+    later = MONDAY + timedelta(days=9)
+    sent = await timesheets.send_timesheet_reminders(session, hr_user, today=later)
+    assert sent["people_reminded"] == 1
+
+    await timesheets.submit_week(session, dev_login, MONDAY)
+    told = (
+        await session.scalars(
+            select(Notification).where(Notification.event_key == "timesheets.submitted")
+        )
+    ).all()
+    assert [n.recipient_user_id for n in told] == [lead_login.id]
+
+    # Waiting more than two days: the approver is reminded.
+    sent = await timesheets.send_timesheet_reminders(
+        session, hr_user, today=later, now=datetime.now(UTC) + timedelta(days=3)
+    )
+    assert sent["approvers_reminded"] == 1
+
+    decided = await timesheets.decide(
+        session, lead_login, uuid.UUID(week["id"]), approve=True, note=None
+    )
+    assert decided["pay"] == "4700.00"  # 5 h at 700 on the client project + 3 h at 400
+    decision = (
+        await session.scalars(
+            select(Notification).where(Notification.event_key == "timesheets.decided")
+        )
+    ).all()
+    assert [n.recipient_user_id for n in decision] == [dev_login.id]
+
+    report = await timesheets.hours_report(
+        session, hr_user, start=MONDAY, end=MONDAY + timedelta(days=6)
+    )
+    client_row = next(p for p in report["projects"] if p["code"] == "CLIENT")
+    assert client_row["tasks"] == [{"name": "Design", "hours": "5.00"}]
+
+
+async def test_the_timesheet_agent_proposes_only_weeks_attendance_supports(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.models.attendance import AttendanceDay, AttendanceStatus
+    from app.models.autonomy import AgentProposal
+    from app.models.timesheets import Timesheet, TimesheetStatus
+    from app.services.autonomy import agents
+    from app.services.autonomy import service as autonomy
+
+    lead, lead_login = await _person(session, tenant, legal_entity, "LEAD")
+    good, good_login = await _person(session, tenant, legal_entity, "GOOD", manager_id=lead.id)
+    padded, padded_login = await _person(session, tenant, legal_entity, "PAD", manager_id=lead.id)
+    lead_login = await as_caller(session, lead_login)
+    project = await timesheets.create_project(
+        session, hr_user, ProjectIn(code="AGENT", name="Agent check"), request=None
+    )
+    project_id = uuid.UUID(project["id"])
+    for person in (good, padded):
+        for day, minutes in ((7, 8 * 60), (8, 6 * 60)):
+            session.add(
+                AttendanceDay(
+                    tenant_id=tenant.id, employee_id=person.id,
+                    attendance_date=date(2026, 9, day), worked_minutes=minutes,
+                    status=AttendanceStatus.PRESENT, payable_fraction=Decimal("1"),
+                    computed_at=datetime(2026, 9, day + 1, tzinfo=UTC),
+                )
+            )
+    await session.commit()
+    for login, second_day in ((good_login, "6"), (padded_login, "8")):
+        await timesheets.save_week(
+            session, login, MONDAY,
+            [
+                EntryIn(work_date=date(2026, 9, 7), project_id=project_id, hours=Decimal("8")),
+                EntryIn(work_date=date(2026, 9, 8), project_id=project_id,
+                        hours=Decimal(second_day)),
+            ],
+        )
+        await timesheets.submit_week(session, login, MONDAY)
+
+    outcome = await agents.timesheet_agent(session, hr_user, today=date(2026, 9, 14))
+    assert outcome["proposed"] == 1
+    [held] = outcome["held"]
+    assert "Tue 08 Sep: 8.00 h logged, 6.00 h in attendance" in held
+    again = await agents.timesheet_agent(session, hr_user, today=date(2026, 9, 14))
+    assert again["proposed"] == 0, "one proposal per timesheet"
+
+    proposal = await session.scalar(select(AgentProposal))
+    good_sheet = await session.scalar(select(Timesheet).where(Timesheet.employee_id == good.id))
+    assert proposal.subject_id == good_sheet.id and proposal.citations[0].startswith("timesheets:")
+
+    await autonomy.decide_proposal(session, lead_login, proposal_id=proposal.id, approve=True)
+    await session.commit()
+    await session.refresh(good_sheet)
+    assert good_sheet.status is TimesheetStatus.APPROVED
+    assert good_sheet.decided_by_user_id == lead_login.id

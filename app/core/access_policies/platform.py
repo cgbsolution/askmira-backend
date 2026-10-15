@@ -24,6 +24,16 @@ ENDPOINTS: dict[str, str] = {
     ),
     # ── Notifications ───────────────────────────────────────────────────────
     "GET /notifications/unread-count": "own: the caller's own unread count.",
+    "GET /oauth/authorize/details": (
+        "reference: a registered client's name and the scopes on offer; no individual's record."
+    ),
+    "POST /oauth/authorize": "own: a code acting as the caller, within their own role's scopes.",
+    "GET /oauth/connections": "own: the caller's own connected clients (user.id from the token).",
+    "POST /oauth/connections/{grant_id}/revoke": "own: only the caller's own grant is found.",
+    "POST /notifications/devices": (
+        "own: registers a phone for the caller (user.id from the token)."
+    ),
+    "POST /notifications/devices/unregister": "own: only the caller's own phone is unregistered.",
     "POST /notifications/read-all": "own: marks only notifications sent to the caller.",
     "GET /notifications/channels": "reference: which channels deliver in this workspace.",
     "GET /notifications/events": "reference: the event catalogue and shipped defaults.",

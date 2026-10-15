@@ -44,7 +44,7 @@ from app.services import audit
 from app.services.attendance.service import local_today
 from app.services.documents.indian_numbers import group_indian
 from app.services.filings import support
-from app.services.loans import amortisation, recovery, reimbursements
+from app.services.loans import amortisation, flexi, recovery, reimbursements
 from app.services.notifications.dispatch import notify, register_event
 
 ZERO = Decimal(0)
@@ -931,7 +931,9 @@ async def entitlement_positions(
         position = reimbursements.position(
             component_code=component.code,
             financial_year=financial_year,
-            entitlement=Decimal(str(component.annual_entitlement)),
+            entitlement=await flexi.entitlement_for(
+                session, user, employee_id, financial_year, component
+            ),
             claims=[
                 {
                     "amount": Decimal(str(c.amount)),

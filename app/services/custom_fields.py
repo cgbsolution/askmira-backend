@@ -126,11 +126,18 @@ async def update_definition(
     *,
     request: Request | None,
 ) -> CustomFieldDefinition:
+    from app.schemas.custom_fields import clean_tab
+
     row = await _get(session, user, definition_id)
     changes = payload.model_dump(exclude_unset=True)
     for key in ("label", "is_required", "is_sensitive", "display_order", "is_active"):
         if key in changes and changes[key] is None:
             raise _unprocessable(f"'{key}' cannot be cleared.")
+    if "tab" in changes:
+        try:
+            changes["tab"] = clean_tab(changes["tab"])
+        except ValueError as exc:
+            raise _unprocessable(str(exc)) from exc
     if "options" in changes:
         options = [o.strip() for o in (changes["options"] or []) if o.strip()] or None
         try:

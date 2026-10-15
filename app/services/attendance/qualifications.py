@@ -1,9 +1,10 @@
-"""Who may work a shift: the courses it requires, completed and still valid.
+"""Who may work a shift: at its site, with the courses it requires.
 
-A shift can name courses — forklift safety, fire warden, first aid — that
+A shift can belong to a plant or site; only people based there may be put on
+it. And it can name courses — forklift safety, fire warden, first aid — that
 anyone working it must have completed, with the completion still in date on
 the day. Assigning the shift, a roster that contains it, or approving a swap
-onto it is refused for somebody who does not hold them, naming what is
+onto it is refused for somebody who does not meet both, naming what is
 missing. The certificates come from Learning; nothing here decides competence
 on its own.
 """
@@ -96,6 +97,41 @@ async def require_qualified(
     *,
     who: str,
 ) -> None:
+    sited = [s for s in shifts if s.location_id is not None]
+    if sited:
+        from app.models.employee import Employee
+        from app.models.org import Location
+
+        based_at = await session.scalar(
+            tenant_scoped(
+                select(Employee.location_id).where(Employee.id == employee_id), Employee, user
+            )
+        )
+        for shift in sited:
+            if based_at != shift.location_id:
+                names = dict(
+                    (
+                        await session.execute(
+                            tenant_scoped(
+                                select(Location.id, Location.name).where(
+                                    Location.id.in_(
+                                        [x for x in (shift.location_id, based_at) if x]
+                                    )
+                                ),
+                                Location,
+                                user,
+                            )
+                        )
+                    ).all()
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"{who} cannot work {shift.name}: it runs at "
+                        f"{names.get(shift.location_id, 'another site')}, and they are based "
+                        f"at {names.get(based_at, 'no location') if based_at else 'no location'}."
+                    ),
+                )
     for shift in shifts:
         missing = await missing_for(session, user, employee_id, shift, on)
         if missing:

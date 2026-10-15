@@ -60,6 +60,11 @@ class EmployeeUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: When a changed job field (department, manager, designation, grade,
+    #: location) took effect, for a correction of the past. Today if left out;
+    #: a future change is raised as a lifecycle event instead.
+    changes_effective_from: date | None = None
+
     first_name: str | None = Field(default=None, min_length=1, max_length=128)
     last_name: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=255)

@@ -80,6 +80,9 @@ class OneOnOne(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: teams fix the day and find the slot on the day.
     start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     duration_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    #: A recurring 1:1: every this many weeks. When one is held or cancelled,
+    #: the next is scheduled. Null: a one-off.
+    repeat_every_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[OneOnOneStatus] = mapped_column(
         Enum(OneOnOneStatus, name="one_on_one_status"),

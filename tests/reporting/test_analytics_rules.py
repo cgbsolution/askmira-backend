@@ -68,3 +68,33 @@ def test_month_ends_cross_the_year() -> None:
         date(2026, 1, 31),
         date(2026, 2, 28),
     ]
+
+
+def test_attrition_signals_are_facts_with_their_rule() -> None:
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.services.reporting.analytics import SignalRules, _attrition_signals, _Facts
+
+    today = date(2026, 10, 13)
+    person = Employee(date_of_joining=date(2021, 1, 4))
+    facts = _Facts(
+        manager_changed_on=date(2026, 9, 1),
+        scores=[
+            (datetime(2025, 4, 1, tzinfo=UTC), Decimal("4.0")),
+            (datetime(2026, 4, 1, tzinfo=UTC), Decimal("2.5")),
+        ],
+    )
+    kinds = {
+        s["kind"]: s
+        for s in _attrition_signals(
+            person, facts, SignalRules(), [date(2026, 8, 1), date(2026, 9, 2)], today
+        )
+    }
+    assert set(kinds) == {"team_exits", "manager_change", "rating_drop", "no_role_change"}
+    assert "4 then 2.5" in kinds["rating_drop"]["evidence"][0]
+    assert "since joining" in kinds["no_role_change"]["evidence"][0]
+
+    # Zero switches a signal off.
+    quiet = SignalRules(manager_change_days=0, rating_drop=Decimal(0), no_role_change_months=0)
+    assert _attrition_signals(person, facts, quiet, None, today) == []

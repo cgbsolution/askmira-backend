@@ -398,6 +398,8 @@ async def apply(
     notice_period_days: Annotated[int | None, Form(ge=0, le=365)] = None,
     expected_ctc: Annotated[str | None, Form(max_length=16)] = None,
     consent_talent_pool: Annotated[bool, Form()] = False,
+    #: Updates about this application on WhatsApp, to the phone given.
+    consent_whatsapp: Annotated[bool, Form()] = False,
     notice_version: Annotated[str, Form(max_length=32)] = "1",
     #: Invisible to people. Anything in it means a script filled the form.
     website: Annotated[str | None, Form(max_length=255)] = None,
@@ -433,6 +435,7 @@ async def apply(
         ),
         consent_application_processing=consent_application_processing,
         consent_talent_pool=consent_talent_pool,
+        consent_whatsapp=consent_whatsapp,
         notice_version=notice_version,
         resume=data,
         source_ip=public_guard.client_address(request),
@@ -469,6 +472,21 @@ async def upload_candidate_document(
     result = await candidate_portal.upload_document(
         session, token[:128], category=category, file_name=file.filename, data=data
     )
+    await session.commit()
+    return result
+
+
+class WhatsAppChoiceIn(BaseModel):
+    opt_in: bool
+
+
+@router.post("/public/candidate/{token}/whatsapp")
+async def candidate_whatsapp(
+    token: str, payload: WhatsAppChoiceIn, request: Request, session: DbSession
+) -> dict[str, Any]:
+    """The candidate turns WhatsApp updates on or off for themselves."""
+    public_guard.throttle(request, public_guard.WHATSAPP_CHOICE)
+    result = await candidate_portal.set_whatsapp(session, token[:128], opt_in=payload.opt_in)
     await session.commit()
     return result
 

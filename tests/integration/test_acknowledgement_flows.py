@@ -265,6 +265,7 @@ async def test_a_joiner_signs_their_pf_nomination_and_the_task_completes(
         select(IssuedLetter).where(IssuedLetter.id == task.form_letter_id)
     )
     assert "Lata Rao" in letter.merged_html and "100" in letter.merged_html
+    assert letter.pdf_storage_key, "a generated statutory form is kept as a PDF too"
 
     await acknowledgement.acknowledge(
         session, login, letter.id, LetterAcknowledgeRequest(typed_name="Kiran Rao", accept=True)

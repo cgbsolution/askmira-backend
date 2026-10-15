@@ -71,6 +71,40 @@ async def update_project(
     )
 
 
+class TaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    active: bool | None = None
+
+
+@router.post(
+    "/projects/{project_id}/tasks", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY
+)
+async def create_task(
+    project_id: uuid.UUID,
+    payload: timesheets.TaskIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Split a project into tasks; once it has any, every entry on it names one."""
+    return await timesheets.create_task(session, user, project_id, payload, request=request)
+
+
+@router.patch("/tasks/{task_id}", dependencies=HR_ONLY)
+async def update_task(
+    task_id: uuid.UUID,
+    payload: TaskUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    return await timesheets.update_task(
+        session, user, task_id, name=payload.name, active=payload.active, request=request
+    )
+
+
 @router.get("/me")
 async def my_week(user: CurrentUser, session: DbSession, week_of: date) -> dict[str, Any]:
     """Your timesheet for the week containing that date."""
@@ -92,13 +126,14 @@ async def submit_my_week(
     return await timesheets.submit_week(session, user, week_of, request=request)
 
 
-@router.get("/pending", dependencies=MANAGERS)
+@router.get("/pending")
 async def pending(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
-    """Submitted weeks waiting for you: your reporting line's, or everyone's for HR."""
+    """Submitted weeks waiting for you: a chain step that is yours, older weeks from
+    your reporting line, or everyone's for HR."""
     return await timesheets.pending_for_approver(session, user)
 
 
-@router.post("/{timesheet_id}/decide", dependencies=MANAGERS)
+@router.post("/{timesheet_id}/decide")
 async def decide(
     timesheet_id: uuid.UUID,
     payload: DecisionIn,

@@ -83,10 +83,13 @@ async def raise_event(
     return next(row for row in rows if row.id == event.id)
 
 
-@router.post(
-    "/lifecycle/events/{event_id}/decide",
-    dependencies=[Depends(require_roles(*ADMIN_ROLES))],
-)
+@router.get("/lifecycle/events/{event_id}", response_model=EventRead)
+async def get_event(event_id: uuid.UUID, user: CurrentUser, session: DbSession) -> EventRead:
+    """One event: for an admin, or for the approver its chain is waiting on."""
+    return await lifecycle_service.event_for_decision(session, user, event_id)
+
+
+@router.post("/lifecycle/events/{event_id}/decide")
 async def decide(
     event_id: uuid.UUID,
     payload: EventDecision,
@@ -94,7 +97,8 @@ async def decide(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Approve or reject. Effecting is separate, and happens on its own date."""
+    """Approve or reject the current step: its approver, their delegate, or an admin.
+    Effecting is separate, and happens on its own date."""
     result = await lifecycle_service.approve_event(
         session, user, event_id=event_id, approve=payload.approve,
         note=payload.note, request=request,

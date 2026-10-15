@@ -99,17 +99,9 @@ async def list_users(
 async def get_user(
     user_id: uuid.UUID, session: DbSession, authorization: str | None = Header(default=None)
 ) -> JSONResponse:
-    from sqlalchemy import select
-
-    from app.models.user import User
-
     try:
         token = await scim_service.authenticate_token(session, authorization)
-        user = await session.scalar(
-            select(User).where(User.tenant_id == token.tenant_id, User.id == user_id)
-        )
-        if user is None:
-            raise ScimError(404, f"No user with id {user_id}")
+        user = await scim_service.get_user(session, token.tenant_id, user_id)
         await session.commit()
         return _scim_response(scim_service.to_scim_user(user))
     except ScimError as exc:

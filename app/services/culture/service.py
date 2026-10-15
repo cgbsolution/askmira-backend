@@ -969,6 +969,7 @@ async def submit_response(
     free_text: str | None = None,
     group_key: str | None = None,
     submitted_on: date | None = None,
+    comment_ai_ok: bool = False,
 ) -> dict[str, Any]:
     """Store the answers and, separately, the fact that this person responded.
 
@@ -1031,6 +1032,7 @@ async def submit_response(
             survey_id=survey_id,
             answers=dict(answers),
             free_text=free_text,
+            comment_ai_ok=bool(comment_ai_ok and free_text),
             group_key=group_key,
             department_key=(
                 str(employee.department_id)
@@ -2066,21 +2068,19 @@ def culture_posture() -> dict[str, Any]:
             "Birthday and work-anniversary sharing default to off, in the "
             "column, and are separate consents.",
             "Announcements are delivered to their audience through the "
-            "notification engine when published, exactly once.",
+            "notification engine when published, exactly once. Scheduled ones "
+            "are picked up every 15 minutes by the scheduler.",
+            "Re-survey waves that are due are opened daily by the scheduler.",
             "A declared award result is posted to the feed in the same "
             "transaction, as the company's post.",
             "A club's member list is visible to its members only; HR sees "
             "participation in aggregate.",
         ],
         "not_built": [
-            "Email and WhatsApp: nothing is sent on those channels in this "
-            "deployment. Delivery writes in-app notifications; email goes to a "
-            "console adapter, and WhatsApp needs an approved Meta template and "
-            "the person's recorded consent before the engine will queue it.",
-            "No scheduler runs in this deployment. Scheduled announcements and "
-            "re-surveys are delivered when `deliver_due_announcements` and "
-            "`schedule_due_resurveys` are called - by HR from the admin screen "
-            "or by an external cron.",
+            "Email goes out only once the workspace's mail relay is set up "
+            "(Settings → Notifications); until then delivery is in-app. "
+            "WhatsApp needs an approved Meta template and the person's "
+            "recorded consent before the engine will queue it.",
             "No external benchmarks - that is slice 37. Comparison is against "
             "this company's own prior waves only.",
             "The validated instruments are composed from published item "
@@ -2088,7 +2088,7 @@ def culture_posture() -> dict[str, Any]:
             "population.",
             "No club invitations. A private club is visible to and joinable by "
             "its members only, which in practice means its organiser.",
-            "No Swag Store, no Your Voice inbox. Those were assumed by the "
-            "brief to exist already and do not exist in this repository.",
+            "No Your Voice inbox. It was assumed by the brief to exist already "
+            "and does not exist in this repository.",
         ],
     }

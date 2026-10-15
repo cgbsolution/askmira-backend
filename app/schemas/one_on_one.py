@@ -18,6 +18,8 @@ class OneOnOneCreate(BaseModel):
     duration_minutes: int = Field(default=30, gt=0, le=480)
     #: Talking points to start the agenda with.
     agenda: list[str] = Field(default_factory=list, max_length=20)
+    #: Every this many weeks; the next is booked when this one is held or cancelled.
+    repeat_every_weeks: int | None = Field(default=None, ge=1, le=12)
 
 
 class OneOnOneUpdate(BaseModel):
@@ -85,6 +87,7 @@ class OneOnOneRead(BaseModel):
     scheduled_on: date
     start_time: time | None
     duration_minutes: int
+    repeat_every_weeks: int | None = None
     status: OneOnOneStatus
     summary: str | None
     completed_at: datetime | None

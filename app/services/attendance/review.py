@@ -510,6 +510,8 @@ async def pending_regularisations(
     session: AsyncSession, user: User
 ) -> list[RegularisationQueueItem]:
     """Requests waiting on this person: a reporting line, or all for HR. Never their own."""
+    from app.services.approvals import rules
+
     scope = await _others_in_scope(session, user)
     stmt = (
         select(AttendanceRegularisation, Employee)
@@ -519,11 +521,18 @@ async def pending_regularisations(
     )
     if user.employee_id is not None:
         stmt = stmt.where(AttendanceRegularisation.employee_id != user.employee_id)
-    if scope is not None:
-        if not scope:
-            return []
-        stmt = stmt.where(AttendanceRegularisation.employee_id.in_(scope))
     pairs = (await session.execute(tenant_scoped(stmt, AttendanceRegularisation, user))).all()
+    if not permissions.is_hr(user):
+        scope = scope or set()
+        # Not HR: what a chain has put in front of the caller (or someone they
+        # stand in for), and, for requests from before chains, the reporting line.
+        acting = {str(a) for a in await rules.acting_for(session, user)}
+        pairs = [
+            (reg, emp)
+            for reg, emp in pairs
+            if (reg.approval_chain and rules.waiting_on(reg.approval_chain, acting))
+            or (not reg.approval_chain and reg.employee_id in scope)
+        ]
     if not pairs:
         return []
 
@@ -555,6 +564,7 @@ async def pending_regularisations(
                 current_status=day.status if day else None,
                 current_note=day.computation_note if day else None,
                 period_locked=_covered(locks, reg.attendance_date),
+                approval_chain=list(reg.approval_chain or []),
             )
         )
     return items

@@ -64,7 +64,17 @@ from app.services import audit
 from app.services.documents import service as letter_service
 from app.services.lifecycle import events as event_engine
 from app.services.lifecycle import probation as probation_engine
+from app.services.notifications.dispatch import notify, register_event
 from app.services.payroll import service as payroll_service
+
+#: A lifecycle event waiting on one approver in its chain.
+EVENT_STEP_WAITING = "lifecycle.approval.waiting"
+register_event(
+    EVENT_STEP_WAITING,
+    "A {event} for {employee_name} is waiting on you",
+    "A {event} for {employee_name}, effective {effective_from}, needs your approval. "
+    "Open Approvals to decide it.",
+)
 
 __all__ = [
     "approve_event",
@@ -291,6 +301,8 @@ async def raise_event(
     )
     session.add(row)
     await session.flush()
+    if status_on_raise is LifecycleStatus.PENDING_APPROVAL:
+        await attach_chain(session, user, row, employee)
 
     await audit.record(
         session,
@@ -312,6 +324,42 @@ async def raise_event(
         request=request,
     )
     return row
+
+
+async def attach_chain(
+    session: AsyncSession, user: User, row: LifecycleEvent, employee: Employee | None = None
+) -> None:
+    """Snapshot who approves this event, from the tenant's rules (HR by default),
+    and tell the first approver."""
+    from app.models.approval_rules import ApprovalProcess
+    from app.services.approvals import rules
+
+    subject = employee or await _employee(session, user, row.employee_id)
+    row.approval_chain = await rules.attach(
+        session,
+        user,
+        subject,
+        rules.Facts(
+            process=ApprovalProcess.LIFECYCLE,
+            department_id=subject.department_id,
+            location_id=subject.location_id,
+            category=row.event_type.value,
+        ),
+    )
+    first = rules.chain_first_named(row.approval_chain)
+    if first is not None and first != user.id:
+        await notify(
+            session,
+            tenant_id=user.tenant_id,
+            event_key=EVENT_STEP_WAITING,
+            recipient_user_ids=[first],
+            payload={
+                "event": row.event_type.value.replace("_", " "),
+                "employee_name": subject.full_name,
+                "effective_from": f"{row.effective_from:%d %b %Y}",
+            },
+            commit=False,
+        )
 
 
 async def preview_event(
@@ -368,6 +416,8 @@ async def approve_event(
     request: Request | None = None,
 ) -> dict[str, Any]:
     """Approve an event. Effecting it is a separate step, on its own date."""
+    from app.services.approvals import rules
+
     resolution_day = today or date.today()
     row = await _event(session, user, event_id)
     _refuse_self(user, row.employee_id, doing="decide")
@@ -377,6 +427,60 @@ async def approve_event(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This event is {row.status.value}, not awaiting approval.",
         )
+
+    chain = list(row.approval_chain or [])
+    if not chain:
+        # Raised before approval chains: an admin's decision, as it always was.
+        if not permissions.is_admin(user):
+            raise permissions.forbidden("Only an admin approves this lifecycle event.")
+    else:
+        chain, outcome = await rules.decide(
+            session, user, chain, approve=approve, note=note or None,
+            hr_may=permissions.is_admin(user),
+        )
+        row.approval_chain = chain
+        if outcome == "advanced":
+            await session.flush()
+            await audit.record(
+                session,
+                tenant_id=user.tenant_id,
+                actor=user,
+                action=AuditAction.APPROVE,
+                entity_type="lifecycle_event",
+                entity_id=row.id,
+                summary=f"{row.event_type.value}: a step approved, passed to the next approver",
+                changes={"note": note},
+                request=request,
+            )
+            following = rules.chain_first_named(chain)
+            employee = await _employee(session, user, row.employee_id)
+            recipients = (
+                [following]
+                if following is not None
+                else await rules.next_recipients(session, user, chain)
+            )
+            recipients = [uid for uid in recipients if uid != user.id]
+            if recipients:
+                await notify(
+                    session,
+                    tenant_id=user.tenant_id,
+                    event_key=EVENT_STEP_WAITING,
+                    recipient_user_ids=recipients,
+                    payload={
+                        "event": row.event_type.value.replace("_", " "),
+                        "employee_name": employee.full_name,
+                        "effective_from": f"{row.effective_from:%d %b %Y}",
+                    },
+                    commit=False,
+                )
+            index = next(
+                (i for i, step in enumerate(chain) if step.get("status") == "pending"), None
+            )
+            return {
+                "event_id": str(row.id),
+                "status": row.status.value,
+                "waiting_on": chain[index].get("approver_name") if index is not None else None,
+            }
 
     if not approve:
         row.status = LifecycleStatus.CANCELLED
@@ -1100,9 +1204,58 @@ async def list_events(
             letter_id=row.letter_id,
             batch_id=row.batch_id,
             created_at=row.created_at,
+            approval_chain=list(row.approval_chain or []),
         )
         for row in rows
     ]
+
+
+async def event_for_decision(
+    session: AsyncSession, user: User, event_id: uuid.UUID
+) -> EventRead:
+    """One event, for an admin or for whoever its approval chain is waiting on.
+
+    A rule may name somebody outside HR — a regional head, a finance controller —
+    who has no lifecycle screen of their own; this is what they decide from.
+    """
+    from app.services.approvals import rules
+
+    row = await _event(session, user, event_id)
+    chain = list(row.approval_chain or [])
+    may = bool(chain) and await rules.may_decide(
+        session, user, chain, hr_may=permissions.is_admin(user)
+    )
+    if user.employee_id is not None and user.employee_id == row.employee_id:
+        raise permissions.forbidden("This event is about you; somebody else decides it.")
+    if not (permissions.is_admin(user) or may):
+        raise permissions.forbidden("This event is not waiting on you.")
+    employee = await _employee(session, user, row.employee_id)
+    return EventRead(
+        id=row.id,
+        employee_id=row.employee_id,
+        employee_name=employee.full_name,
+        employee_code=employee.employee_code,
+        event_type=row.event_type,
+        effective_from=row.effective_from,
+        status=row.status,
+        previous_values=row.previous_values or {},
+        new_values=row.new_values or {},
+        reason=row.reason,
+        new_ctc_annual=_dec(row.new_ctc_annual),
+        consequences_shown=row.consequences_shown or [],
+        approved_at=row.approved_at,
+        effected_at=row.effected_at,
+        cancelled_reason=row.cancelled_reason,
+        failure_reason=row.failure_reason,
+        letter_id=row.letter_id,
+        batch_id=row.batch_id,
+        created_at=row.created_at,
+        approval_chain=chain,
+        caller_may_decide=(
+            row.status is LifecycleStatus.PENDING_APPROVAL
+            and (may or (not chain and permissions.is_admin(user)))
+        ),
+    )
 
 
 async def employee_history(

@@ -25,10 +25,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
-from app.models.attendance import AttendanceRegularisation
+from app.models.attendance import AttendanceRegularisation, Shift
 from app.models.expenses import ExpenseClaim
 from app.models.hiring import Candidate
 from app.models.lifecycle import LifecycleEvent
+from app.models.timesheets import Timesheet
 from app.models.user import User
 
 __all__ = ["SUBJECTS", "apply_change", "is_registered", "restore"]
@@ -47,6 +48,12 @@ SUBJECTS: dict[str, SubjectType] = {
     "expense_claim": SubjectType(ExpenseClaim, frozenset({"status", "decision_note"})),
     "candidate": SubjectType(Candidate, frozenset({"stage"})),
     "lifecycle_event": SubjectType(LifecycleEvent, frozenset({"status", "cancelled_reason"})),
+    # Applied through the timesheet's own decision, never by writing the column:
+    # approval prices the hours and routes the chain.
+    "timesheet": SubjectType(Timesheet, frozenset({"status"})),
+    # A cover proposal names the short shift; approving it writes a one-day
+    # assignment for the person named, through the same checks as a swap.
+    "shift_cover": SubjectType(Shift, frozenset({"employee_id", "date"})),
 }
 
 
@@ -106,9 +113,52 @@ async def apply_change(
         raise _bad_request("An approved proposal with no change has nothing to apply.")
     _check_columns(spec, subject_type, set(change))
     row = await _load(session, user, spec, subject_id)
+    if subject_type == "shift_cover":
+        # Not a column edit: the proposal names who covers the shift, and when.
+        from app.services.autonomy import agents
+
+        await agents.apply_shift_cover(session, user, shift=row, change=change)
+        return {"employee_id": None, "date": None}
     previous = {column: _plain(getattr(row, column)) for column in change}
+    if subject_type == "timesheet":
+        from app.services import timesheets
+
+        if change.get("status") != "approved":
+            raise _bad_request("A timesheet proposal can only approve it.")
+        # Decided by the person approving the proposal, under the timesheet's own
+        # rules: only its approver may, and it is priced into pay as usual.
+        await timesheets.decide(
+            session,
+            user,
+            subject_id,
+            approve=True,
+            note="Approved on the timesheet agent's check against attendance.",
+            commit=False,
+        )
+        return previous
     for column, value in change.items():
         setattr(row, column, _coerce(spec.model, column, value))
+    if subject_type == "attendance_regularisation" and change.get("status") == "approved":
+        # The same as a person's approval: the day is recomputed in this transaction.
+        from app.services.attendance.service import recompute_range
+
+        await recompute_range(
+            session,
+            user,
+            employee_ids=[row.employee_id],
+            start=row.attendance_date,
+            end=row.attendance_date,
+            commit=False,
+        )
+    if (
+        subject_type == "lifecycle_event"
+        and change.get("status") == "pending_approval"
+        and not row.approval_chain
+    ):
+        # Submitted on an approved proposal: it is routed like any raised event.
+        from app.services.lifecycle import service as lifecycle
+
+        await lifecycle.attach_chain(session, user, row)
     return previous
 
 

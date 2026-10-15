@@ -274,3 +274,87 @@ async def test_an_empty_message_is_refused(session, tenant, people) -> None:
             include_portal_link=False,
         )
     assert exc.value.status_code == 422
+
+
+async def test_whatsapp_goes_only_to_a_candidate_who_opted_in(
+    client, session, tenant, people, outbox, monkeypatch
+) -> None:
+    from app.models.notifications import (
+        Channel,
+        NotificationTemplate,
+        WhatsAppTemplate,
+        WhatsAppTemplateStatus,
+    )
+
+    whatsapp = Outbox()
+
+    async def whatsapp_for(_session, _tenant_id):
+        return whatsapp
+
+    monkeypatch.setattr(candidate_comms, "whatsapp_adapter_for", whatsapp_for)
+    meta = WhatsAppTemplate(
+        tenant_id=tenant.id, meta_name="application_received",
+        status=WhatsAppTemplateStatus.APPROVED,
+        parameter_names=["first_name", "job_title", "link"],
+    )
+    session.add(meta)
+    await session.flush()
+    session.add(
+        NotificationTemplate(
+            tenant_id=tenant.id, event_key=candidate_comms.APPLICATION_RECEIVED,
+            channel=Channel.WHATSAPP, body="Hi {first_name}, we have your application.",
+            whatsapp_template_id=meta.id,
+        )
+    )
+    await _open_requisition(session, tenant, people)
+    code = (
+        await client.get("/api/v1/hiring/requisitions", headers=_auth(people["hr"]))
+    ).json()["items"][0]["code"]
+    session.add(CareersPageConfig(tenant_id=tenant.id, slug="acme-jobs", is_published=True))
+    await session.commit()
+
+    async def apply(email: str, phone: str, whatsapp_ok: bool) -> str:
+        response = await client.post(
+            f"/api/v1/public/careers/acme-jobs/jobs/{code}/apply",
+            data={
+                "full_name": "Meera Iyer", "email": email, "phone": phone,
+                "consent_application_processing": "true",
+                "consent_whatsapp": "true" if whatsapp_ok else "false",
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["portal_token"]
+
+    await apply("quiet@example.com", "98765 43210", whatsapp_ok=False)
+    token = await apply("meera@example.com", "098765 43211", whatsapp_ok=True)
+    candidate = await session.scalar(
+        select(Candidate).where(Candidate.email == "meera@example.com")
+    )
+    queued = await _messages(session, candidate.id)
+    assert sorted(m.channel for m in queued) == ["email", "whatsapp"]
+    [wa] = [m for m in queued if m.channel == "whatsapp"]
+    assert wa.to_address == "+919876543211"
+    assert token not in str(wa.whatsapp_parameters), "the link is not readable at rest"
+
+    outcome = await candidate_comms.deliver_due(session, people["admin"])
+    assert outcome["sent"] == 3, "two emails and one WhatsApp"
+    [sent] = whatsapp.sent
+    assert sent.whatsapp_template_name == "application_received"
+    assert sent.whatsapp_parameters[0] == "Meera" and token in sent.whatsapp_parameters[2]
+
+    off = await client.post(f"/api/v1/public/candidate/{token}/whatsapp", json={"opt_in": False})
+    assert off.status_code == 200 and off.json() == {"opted_in": False}
+    await session.refresh(candidate)
+    assert candidate_comms.whatsapp_on(candidate) is False
+    await candidate_comms.on_portal_link(
+        session, people["admin"], candidate=candidate, token="t",
+        event_key=candidate_comms.APPLICATION_RECEIVED, payload={"job_title": "X"},
+    )
+    await session.commit()
+    assert [m.channel for m in await _messages(session, candidate.id)].count("whatsapp") == 1
+
+
+def test_whatsapp_numbers_are_read_as_indian_by_default() -> None:
+    assert candidate_comms.whatsapp_number("98765 43210") == "+919876543210"
+    assert candidate_comms.whatsapp_number("+44 20 7946 0958") == "+442079460958"
+    assert candidate_comms.whatsapp_number("12345") is None

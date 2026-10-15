@@ -49,6 +49,8 @@ from app.services.notifications.dispatch import (
     email_wording,
     register_event,
     render,
+    whatsapp_adapter_for,
+    whatsapp_template_for,
 )
 
 __all__ = [
@@ -75,6 +77,8 @@ __all__ = [
     "queue",
     "self_schedule_url",
     "send_message",
+    "whatsapp_number",
+    "whatsapp_on",
 ]
 
 APPLICATION_RECEIVED = "hiring.candidate.application_received"
@@ -204,6 +208,81 @@ async def queue(
         to_address=candidate.email,
         subject=subject or "(no subject)",
         body=body,
+        secret_link_encrypted=(
+            encrypt_secret(secret_link, tenant_id) if secret_link is not None else None
+        ),
+        status=CandidateMessageStatus.QUEUED,
+        next_attempt_at=send_after or datetime.now(UTC),
+        sent_by_user_id=sent_by_user_id,
+    )
+    session.add(message)
+    await _queue_whatsapp(
+        session,
+        tenant_id=tenant_id,
+        candidate=candidate,
+        event_key=event_key,
+        values=values,
+        secret_link=secret_link,
+        send_after=send_after,
+        sent_by_user_id=sent_by_user_id,
+    )
+    return message
+
+
+def whatsapp_on(candidate: Candidate) -> bool:
+    """The candidate opted in and has not opted out since."""
+    return candidate.whatsapp_opt_in_at is not None and candidate.whatsapp_opted_out_at is None
+
+
+def whatsapp_number(phone: str | None) -> str | None:
+    """A phone as WhatsApp addresses it (+ and country code); a bare 10 digits is Indian."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        digits = "91" + digits
+    if not 11 <= len(digits) <= 15:
+        return None
+    return "+" + digits
+
+
+async def _queue_whatsapp(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    candidate: Candidate,
+    event_key: str,
+    values: dict[str, Any],
+    secret_link: str | None,
+    send_after: datetime | None,
+    sent_by_user_id: uuid.UUID | None,
+) -> CandidateMessage | None:
+    """The same event on WhatsApp, when the candidate opted in and the tenant can send it.
+
+    Needs all of: the candidate's own opt-in, a usable number, a tenant WhatsApp
+    template for the event naming an approved Meta template, and a connected
+    account. Missing any one, only the email goes — never an unapproved message.
+    """
+    if not whatsapp_on(candidate):
+        return None
+    phone = whatsapp_number(candidate.phone)
+    if phone is None:
+        return None
+    found = await whatsapp_template_for(session, tenant_id, event_key)
+    if found is None or await whatsapp_adapter_for(session, tenant_id) is None:
+        return None
+    template, meta = found
+    parameters = [str(values.get(name, "")) for name in meta.parameter_names]
+    message = CandidateMessage(
+        tenant_id=tenant_id,
+        candidate_id=candidate.id,
+        event_key=event_key,
+        channel="whatsapp",
+        to_address=phone,
+        subject=f"WhatsApp: {meta.meta_name}"[:500],
+        body=render(template.body, values),
+        whatsapp_template_name=meta.meta_name,
+        whatsapp_parameters=parameters,
         secret_link_encrypted=(
             encrypt_secret(secret_link, tenant_id) if secret_link is not None else None
         ),
@@ -395,17 +474,31 @@ async def deliver_due(
             )
         ).all()
     }
-    try:
-        adapter, _relay = await email_adapter_for(session, actor.tenant_id)
-    except Exception as exc:
-        for message in due:
-            message.status = CandidateMessageStatus.FAILED
-            message.failure_reason = f"The configured mail relay could not be used: {exc}"
-            outcome["failed"] += 1
-        await session.commit()
-        return outcome
+    email_adapter = whatsapp_adapter = None
+    email_error = whatsapp_error = None
+    if any(m.channel != "whatsapp" for m in due):
+        try:
+            email_adapter, _relay = await email_adapter_for(session, actor.tenant_id)
+        except Exception as exc:
+            email_error = f"The configured mail relay could not be used: {exc}"
+    if any(m.channel == "whatsapp" for m in due):
+        try:
+            whatsapp_adapter = await whatsapp_adapter_for(session, actor.tenant_id)
+        except Exception as exc:
+            whatsapp_error = f"This workspace's WhatsApp account could not be used: {exc}"
+        if whatsapp_adapter is None and whatsapp_error is None:
+            whatsapp_error = "WhatsApp is no longer connected for this workspace."
 
     for message in due:
+        is_whatsapp = message.channel == "whatsapp"
+        adapter = whatsapp_adapter if is_whatsapp else email_adapter
+        if adapter is None:
+            message.status = CandidateMessageStatus.FAILED
+            message.failure_reason = whatsapp_error if is_whatsapp else email_error
+            message.next_attempt_at = None
+            message.secret_link_encrypted = None
+            outcome["failed"] += 1
+            continue
         candidate = candidates.get(message.candidate_id)
         if candidate is None:
             _withdraw(message, "The candidate no longer exists.")
@@ -415,21 +508,31 @@ async def deliver_due(
             _withdraw(message, "The candidate is no longer rejected.")
             outcome["withdrawn"] += 1
             continue
+        if is_whatsapp and not whatsapp_on(candidate):
+            _withdraw(message, "The candidate has turned WhatsApp off.")
+            outcome["withdrawn"] += 1
+            continue
 
         body = message.body
+        link = ""
         if message.secret_link_encrypted:
             link = decrypt_secret(message.secret_link_encrypted, actor.tenant_id) or ""
             body = body.replace(LINK_SHOWN, link)
+        parameters = [
+            str(value).replace(LINK_SHOWN, link) for value in (message.whatsapp_parameters or [])
+        ]
         message.attempt_count += 1
         try:
             result = await adapter.send(
                 OutboundMessage(
                     recipient_name=candidate.full_name,
-                    recipient_email=message.to_address,
-                    recipient_phone=None,
+                    recipient_email=None if is_whatsapp else message.to_address,
+                    recipient_phone=message.to_address if is_whatsapp else None,
                     subject=message.subject,
                     body=body,
                     event_key=message.event_key,
+                    whatsapp_template_name=message.whatsapp_template_name,
+                    whatsapp_parameters=parameters if is_whatsapp else None,
                 )
             )
         except PermanentFailure as exc:
@@ -477,6 +580,7 @@ def _read(row: CandidateMessage, names: dict[uuid.UUID, str]) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "event_key": row.event_key,
+        "channel": row.channel,
         "to_address": row.to_address,
         "subject": row.subject,
         "body": row.body,

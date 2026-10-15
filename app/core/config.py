@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Where the web portal lives, for links in emails (password reset). Falls
     # back to the first CORS origin, which is the portal in every deployment.
     WEB_APP_URL: str | None = None
+    # Where this API is reached from outside, for OAuth discovery documents
+    # (the MCP connector flow). Falls back to the address the request came in on.
+    PUBLIC_API_URL: str | None = None
 
     # ── Secret encryption at rest (slice 04) ───────────────────────────────
     # A distinct key from JWT_SECRET_KEY on purpose: reusing the token-signing

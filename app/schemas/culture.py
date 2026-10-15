@@ -443,6 +443,8 @@ class MySurveyRead(BaseModel):
 class SurveyResponseCreate(BaseModel):
     answers: dict[str, int] = Field(min_length=1, max_length=100)
     free_text: str | None = Field(default=None, max_length=4000)
+    #: The respondent agrees that this comment may go into an AI theme summary.
+    comment_ai_ok: bool = False
 
 
 # ── Action plans ────────────────────────────────────────────────────────────

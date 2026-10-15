@@ -46,7 +46,9 @@ from app.models.notifications import (
     NotificationPreference,
     NotificationStatus,
     NotificationTemplate,
+    PushDevice,
     TenantSmtpSettings,
+    TenantWhatsAppSettings,
     WhatsAppConsent,
     WhatsAppTemplate,
 )
@@ -54,12 +56,14 @@ from app.models.user import User
 from app.services.notifications.adapters import (
     ChannelAdapter,
     ConsoleEmailAdapter,
+    ExpoPushAdapter,
     InAppAdapter,
     NullPushAdapter,
     OutboundMessage,
     PermanentFailure,
     SmtpEmailAdapter,
     TransientFailure,
+    WhatsAppCloudAdapter,
 )
 
 __all__ = [
@@ -75,6 +79,8 @@ __all__ = [
     "register_event",
     "render",
     "send_digests",
+    "whatsapp_adapter_for",
+    "whatsapp_template_for",
 ]
 
 
@@ -458,10 +464,17 @@ async def _preferences_for(
 
 # One instance per channel. Replaced wholesale in tests, which is why the
 # registry is a plain dict rather than a container framework.
+def _push_adapter() -> ChannelAdapter:
+    from app.services.notifications.adapters import _under_test_suite
+
+    # Under the test suite nothing leaves the machine; a test registers its own.
+    return NullPushAdapter() if _under_test_suite() else ExpoPushAdapter()
+
+
 _ADAPTERS: dict[Channel, ChannelAdapter] = {
     Channel.EMAIL: ConsoleEmailAdapter(),
     Channel.IN_APP: InAppAdapter(),
-    Channel.PUSH: NullPushAdapter(),
+    Channel.PUSH: _push_adapter(),
 }
 
 
@@ -477,6 +490,40 @@ def get_adapter(channel: Channel) -> ChannelAdapter | None:
 #: test registers its own), each send looks for a real relay: the tenant's own,
 #: then the platform's, and only then falls back to logging.
 _DEFAULT_EMAIL_ADAPTER = _ADAPTERS[Channel.EMAIL]
+
+
+async def whatsapp_adapter_for(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> ChannelAdapter | None:
+    """WhatsApp for this tenant: the platform's adapter, else the tenant's own account."""
+    registered = _ADAPTERS.get(Channel.WHATSAPP)
+    if registered is not None:
+        return registered
+    row = await session.scalar(
+        select(TenantWhatsAppSettings).where(
+            tenant_filter(TenantWhatsAppSettings, tenant_id),
+            TenantWhatsAppSettings.enabled.is_(True),
+        )
+    )
+    if row is None or not row.access_token_encrypted:
+        return None
+    token = decrypt_secret(row.access_token_encrypted, tenant_id)
+    if not token or not row.phone_number_id:
+        return None
+    return WhatsAppCloudAdapter(row.phone_number_id, token)
+
+
+async def whatsapp_template_for(
+    session: AsyncSession, tenant_id: uuid.UUID, event_key: str
+) -> tuple[NotificationTemplate, WhatsAppTemplate] | None:
+    """The tenant's WhatsApp wording for an event and its approved Meta template, if both."""
+    template = await _template_for(session, tenant_id, event_key, Channel.WHATSAPP)
+    if template is None or template.whatsapp_template_id is None:
+        return None
+    meta = await session.get(WhatsAppTemplate, template.whatsapp_template_id)
+    if meta is None or not meta.is_sendable:
+        return None
+    return template, meta
 
 
 async def email_adapter_for(
@@ -650,6 +697,15 @@ async def _dispatch_one(
     lands on the row instead of propagating.
     """
     adapter = get_adapter(notification.channel)
+    if notification.channel is Channel.WHATSAPP and adapter is None:
+        try:
+            adapter = await whatsapp_adapter_for(session, notification.tenant_id)
+        except Exception as exc:
+            notification.status = NotificationStatus.FAILED
+            notification.failure_reason = (
+                f"This workspace's WhatsApp account could not be used: {exc}"
+            )
+            return False
     if notification.channel is Channel.EMAIL and adapter is _DEFAULT_EMAIL_ADAPTER:
         try:
             adapter, _relay = await email_adapter_for(session, notification.tenant_id)
@@ -673,6 +729,18 @@ async def _dispatch_one(
             )
         )
         phone = consent.phone_e164 if consent else None
+    device: PushDevice | None = None
+    if notification.channel is Channel.PUSH:
+        device = await session.scalar(
+            select(PushDevice)
+            .where(
+                tenant_filter(PushDevice, notification.tenant_id),
+                PushDevice.user_id == user.id,
+                PushDevice.revoked_at.is_(None),
+            )
+            .order_by(PushDevice.last_registered_at.desc())
+            .limit(1)
+        )
 
     message = OutboundMessage(
         recipient_name=user.full_name,
@@ -686,6 +754,7 @@ async def _dispatch_one(
             str(notification.payload.get(name, ""))
             for name in (meta_template.parameter_names if meta_template else [])
         ],
+        push_token=device.push_token_encrypted if device else None,
     )
 
     notification.attempt_count += 1
@@ -695,6 +764,8 @@ async def _dispatch_one(
     except PermanentFailure as exc:
         # No retry: the address is wrong, or they unsubscribed. Retrying an
         # unsubscribe is worse than not sending.
+        if device is not None and "DeviceNotRegistered" in str(exc):
+            device.revoked_at = datetime.now(UTC)
         notification.status = NotificationStatus.FAILED
         notification.failure_reason = f"Permanent: {exc}"
         notification.next_attempt_at = None

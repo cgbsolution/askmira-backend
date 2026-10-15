@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from app.core import permissions
@@ -93,6 +94,18 @@ async def record_exercise(
 async def my_grants(user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """Your grants, their schedule, and what they are worth at today's fair value."""
     return await esop.portfolio(session, user, permissions.own_employee_id(user))
+
+
+@router.get("/me/projection")
+async def my_projection(
+    user: CurrentUser,
+    session: DbSession,
+    price_per_unit: Decimal = Query(ge=0, le=Decimal("100000000"), max_digits=14, decimal_places=2),
+) -> dict[str, Any]:
+    """What your options would be worth at a price you choose, as each tranche vests."""
+    return await esop.projection(
+        session, user, permissions.own_employee_id(user), price_per_unit=price_per_unit
+    )
 
 
 @router.get("/employees/{employee_id}", dependencies=HR_ONLY)

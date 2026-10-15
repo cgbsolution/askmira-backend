@@ -365,6 +365,8 @@ class RegularisationRead(BaseModel):
     decided_at: datetime | None
     decision_note: str | None = None
     created_at: datetime | None = None
+    #: The approvers in order, each with its status; empty on older requests.
+    approval_chain: list[dict] = []
 
 
 class RegularisationQueueItem(RegularisationRead):
@@ -458,6 +460,10 @@ class ShiftBase(BaseModel):
     allowance_name: str | None = Field(default=None, max_length=128)
     #: The fewest people the shift needs on a working day, for the coverage view.
     min_headcount: int | None = Field(default=None, ge=1, le=100_000)
+    #: The plant or site the shift runs at; only people based there work it.
+    location_id: uuid.UUID | None = None
+    #: The line or area within the site, for coverage by line.
+    work_area: str | None = Field(default=None, max_length=80)
     #: Courses anyone working the shift must have completed and still hold.
     required_course_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
@@ -507,6 +513,8 @@ class ShiftRead(BaseModel):
     allowance_name: str | None = None
     min_headcount: int | None = None
     required_course_ids: list[uuid.UUID] = Field(default_factory=list)
+    location_id: uuid.UUID | None = None
+    work_area: str | None = None
 
 
 # ── Rosters ─────────────────────────────────────────────────────────────────
@@ -668,9 +676,21 @@ class KioskPinSet(BaseModel):
 
 
 class KioskPunchIn(BaseModel):
+    """An employee code and PIN, or a badge alone."""
+
     model_config = ConfigDict(extra="forbid")
 
-    employee_code: str = Field(min_length=1, max_length=32)
-    pin: str = Field(min_length=4, max_length=6, pattern=r"^\d+$")
+    employee_code: str | None = Field(default=None, min_length=1, max_length=32)
+    pin: str | None = Field(default=None, min_length=4, max_length=6, pattern=r"^\d+$")
+    #: The number a badge reader typed.
+    badge: str | None = Field(default=None, min_length=4, max_length=64)
     #: A JPEG or PNG taken at the kiosk, base64, where the workspace asks for one.
     photo: str | None = Field(default=None, max_length=900_000)
+
+    @model_validator(mode="after")
+    def _one_way_in(self) -> KioskPunchIn:
+        if self.badge:
+            return self
+        if not (self.employee_code and self.pin):
+            raise ValueError("Give an employee code and PIN, or tap a badge.")
+        return self

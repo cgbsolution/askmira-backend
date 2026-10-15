@@ -1364,7 +1364,7 @@ async def issue_form(
             user,
             employee_id=plan.employee_id,
             template_id=template.id,
-            generate_pdf=False,
+            generate_pdf=True,
             request=request,
             commit=False,
         )

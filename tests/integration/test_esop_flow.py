@@ -86,6 +86,19 @@ async def test_grant_value_exercise_and_payroll_perquisite(
     assert held["vested"] == 312 and held["unvested"] == 688
     assert held["value_vested_unexercised"] == "9360.00"
 
+    # What-if: at ₹100 a share the spread is 90; 312 vested now, 1000 in the end.
+    what_if = await esop.projection(
+        session, me, employee.id, price_per_unit=Decimal("100"), on=date(2027, 4, 1)
+    )
+    assert what_if["value_now"] == "28080.00"
+    assert what_if["value_when_fully_vested"] == "90000.00"
+    assert what_if["timeline"][0]["value"] == "28080.00"
+    assert what_if["timeline"][-1]["value"] == "90000.00"
+    below = await esop.projection(
+        session, me, employee.id, price_per_unit=Decimal("5"), on=date(2027, 4, 1)
+    )
+    assert below["value_when_fully_vested"] == "0.00", "under water is worth nothing, not less"
+
     with pytest.raises(HTTPException):
         await esop.record_exercise(
             session, hr_user, grant_id,

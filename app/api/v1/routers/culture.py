@@ -148,6 +148,33 @@ async def leave_club(
     return await feed.leave_club(session, user, club_id, request=request)
 
 
+class ClubPostIn(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+@router.get("/clubs/{club_id}/posts")
+async def club_posts(club_id: uuid.UUID, user: CurrentUser, session: DbSession) -> list[dict]:
+    """What the club's members have posted, newest first."""
+    return await feed.club_posts(session, user, club_id)
+
+
+@router.post("/clubs/{club_id}/posts", status_code=status.HTTP_201_CREATED)
+async def add_club_post(
+    club_id: uuid.UUID, payload: ClubPostIn, user: CurrentUser, session: DbSession,
+    request: Request,
+) -> dict:
+    return await feed.add_club_post(session, user, club_id, payload.body, request=request)
+
+
+@router.delete(
+    "/club-posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
+)
+async def delete_club_post(
+    post_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await feed.delete_club_post(session, user, post_id, request=request)
+
+
 @router.get("/clubs/{club_id}/members", response_model=list[ClubMemberRead])
 async def club_members(
     club_id: uuid.UUID, user: CurrentUser, session: DbSession

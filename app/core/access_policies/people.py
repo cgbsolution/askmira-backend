@@ -1,6 +1,14 @@
 """People, organisation structure and positions."""
 
 ENDPOINTS: dict[str, str] = {
+    "GET /lifecycle/events/{event_id}": (
+        "permissions: an admin, or the approver (or their delegate) of the event's current "
+        "step; never the person the event is about."
+    ),
+    "POST /lifecycle/events/{event_id}/decide": (
+        "permissions: the current step's approver, their delegate, or an admin (an admin "
+        "alone for an event from before chains); never somebody deciding their own event."
+    ),
     # ── Learning ────────────────────────────────────────────────────────────
     "GET /learning/me": "own: the caller's own courses, by user.employee_id from the token.",
     "GET /learning/me/{assignment_id}": (

@@ -48,7 +48,7 @@ def test_a_protected_action_cannot_be_configured_to_auto_apply(action_key, level
     assert "cannot" in message or "capped" in message
 
 
-def test_the_four_protected_actions_are_exactly_the_ones_named():
+def test_the_protected_actions_are_exactly_the_ones_named():
     """Asserted by key, not derived from the field being checked."""
     assert {a.key for a in protected_actions()} == PROTECTED_KEYS
     assert {
@@ -56,6 +56,8 @@ def test_the_four_protected_actions_are_exactly_the_ones_named():
         "disbursement.release_payment_file",
         "appraisal_assistant.change_rating",
         "your_voice.act_on_case",
+        "timesheets.recommend_approval",
+        "scheduling.cover_short_shift",
     } == PROTECTED_KEYS
 
 

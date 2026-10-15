@@ -339,8 +339,8 @@ async def run_resurveys(
     user: CurrentUser,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Open every re-survey wave that is due. The same function a scheduler
-    would call; no scheduler runs in this deployment."""
+    """Open every re-survey wave that is due, now. The scheduler runs the same
+    function daily ("Re-survey scheduling")."""
     return await surveys_portal.schedule_due_resurveys(session, user.tenant_id)
 
 
@@ -488,8 +488,8 @@ async def deliver_due(
     user: CurrentUser,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    """Deliver scheduled announcements whose time has come. The same function
-    a scheduler would call; no scheduler runs in this deployment."""
+    """Deliver scheduled announcements whose time has come, now. The scheduler
+    runs the same function every 15 minutes ("Announcement delivery")."""
     return await culture.deliver_due_announcements(session, user.tenant_id)
 
 

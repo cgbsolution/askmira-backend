@@ -23,6 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -97,3 +98,37 @@ class CompanyDocumentAcknowledgement(Base, UUIDMixin, TenantMixin, TimestampMixi
     acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class Handbook(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A handbook HR writes in the app, section by section.
+
+    Editing changes the draft only. Publishing renders the sections to a PDF and
+    files it in the company library as `document`, so employees find it with
+    every other policy and acknowledge it the same way. Publishing again replaces
+    that file: its hash changes, so everyone who must acknowledge it is asked
+    again, for the version they can now read.
+    """
+
+    __tablename__ = "handbooks"
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: [{"heading": str, "body": str}], in order.
+    sections: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    requires_acknowledgement: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("company_documents.id", ondelete="SET NULL", name="fk_handbooks_document_id"),
+        nullable=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The draft differs from what was last published.
+    has_unpublished_changes: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

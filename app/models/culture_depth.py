@@ -519,6 +519,11 @@ class SurveyResponse(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Item key to integer answer.
     answers: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     free_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The respondent's own choice, made with the comment: it may go into an AI
+    #: theme summary. Says nothing about who they are; off unless ticked.
+    comment_ai_ok: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     #: The team or department this response is reported under, captured at
     #: submission. Coarse by construction.
     group_key: Mapped[str | None] = mapped_column(String(120), nullable=True)

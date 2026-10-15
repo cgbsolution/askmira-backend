@@ -196,3 +196,141 @@ async def test_a_step_waiting_too_long_goes_up_a_level(session, chain_org) -> No
     step = waiting[0].approval_chain[0]
     assert step.approver_name == "Dev Director"
     assert (await rules.escalate_due(session, hr, now=later))["escalated"] == 0, "once only"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Attendance corrections, timesheets and lifecycle events
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_a_missed_punch_rule_adds_a_named_approver(session, chain_org) -> None:
+    """The named approver has no reports and no HR role, and still decides their step."""
+    from app.models.attendance import (
+        AttendanceStatus,
+        RegularisationKind,
+        RegularisationStatus,
+    )
+    from app.services.attendance import review
+    from app.services.attendance import service as attendance
+
+    hr, boss, finance = chain_org["hr"], chain_org["boss"], chain_org["finance"]
+    day = datetime.now(UTC).date() - timedelta(days=2)
+
+    plain = await attendance.raise_regularisation(
+        session, chain_org["meera"], employee_id=chain_org["meera_emp"].id,
+        attendance_date=day, requested_status=AttendanceStatus.PRESENT, reason="Status",
+    )
+    assert [s["approver_name"] for s in plain.approval_chain] == ["Mala Manager"]
+    await attendance.cancel_regularisation(session, chain_org["meera"], plain.id)
+
+    await rules.create_rule(
+        session, hr,
+        {"process": "regularisation", "name": "Missed punches", "priority": 10,
+         "expense_categories": ["missed_punch"],
+         "steps": [{"kind": "line_manager"}, {"kind": "user", "user_id": str(finance.id)}]},
+    )
+    await session.commit()
+    reg = await attendance.raise_regularisation(
+        session, chain_org["meera"], employee_id=chain_org["meera_emp"].id,
+        attendance_date=day, requested_status=AttendanceStatus.PRESENT,
+        kind=RegularisationKind.MISSED_PUNCH, reason="Forgot to punch out",
+        requested_first_in=datetime.combine(day, datetime.min.time(), UTC) + timedelta(hours=4),
+    )
+    assert [s["approver_name"] for s in reg.approval_chain] == ["Mala Manager", "Farah Finance"]
+    assert await review.pending_regularisations(session, finance) == []
+    with pytest.raises(HTTPException):
+        await attendance.decide_regularisation(session, finance, reg.id, approve=True)
+
+    advanced = await attendance.decide_regularisation(session, boss, reg.id, approve=True)
+    assert advanced.status is RegularisationStatus.PENDING
+    assert [i.id for i in await review.pending_regularisations(session, finance)] == [reg.id]
+    done = await attendance.decide_regularisation(session, finance, reg.id, approve=True)
+    assert done.status is RegularisationStatus.APPROVED
+
+    with pytest.raises(HTTPException) as exc:
+        await rules.create_rule(
+            session, hr,
+            {"process": "regularisation", "name": "Bad", "expense_categories": ["vacation"],
+             "steps": [{"kind": "hr"}]},
+        )
+    assert exc.value.status_code == 422
+
+
+async def test_a_timesheet_rule_adds_the_skip_level_manager(session, chain_org) -> None:
+    from app.models.timesheets import TimesheetStatus
+    from app.services import timesheets
+
+    hr, boss, director = chain_org["hr"], chain_org["boss"], chain_org["director"]
+    await rules.create_rule(
+        session, hr,
+        {"process": "timesheet", "name": "Two levels", "priority": 10,
+         "steps": [{"kind": "line_manager"}, {"kind": "skip_level"}]},
+    )
+    await session.commit()
+    monday = date(2026, 9, 7)
+    week = await timesheets.save_week(
+        session, chain_org["meera"], monday,
+        [timesheets.EntryIn(work_date=monday, hours=Decimal("8"))],
+    )
+    week = await timesheets.submit_week(session, chain_org["meera"], monday)
+    assert [s["approver_name"] for s in week["approval_chain"]] == ["Mala Manager", "Dev Director"]
+    assert await timesheets.pending_for_approver(session, director) == []
+
+    after_boss = await timesheets.decide(
+        session, boss, uuid.UUID(week["id"]), approve=True, note=None
+    )
+    assert after_boss["status"] == TimesheetStatus.SUBMITTED.value
+    assert [w["id"] for w in await timesheets.pending_for_approver(session, director)] == [
+        week["id"]
+    ]
+    done = await timesheets.decide(
+        session, director, uuid.UUID(week["id"]), approve=True, note=None
+    )
+    assert done["status"] == TimesheetStatus.APPROVED.value
+
+
+async def test_lifecycle_events_go_to_hr_unless_a_rule_says_otherwise(
+    session, chain_org
+) -> None:
+    from app.models.lifecycle import LifecycleEventType, LifecycleStatus
+    from app.services.approvals import service as approvals
+    from app.services.lifecycle import service as lifecycle
+
+    hr, boss = chain_org["hr"], chain_org["boss"]
+    effective = datetime.now(UTC).date() + timedelta(days=30)
+    plain = await lifecycle.raise_event(
+        session, hr, employee_id=chain_org["meera_emp"].id,
+        event_type=LifecycleEventType.PROMOTION, effective_from=effective,
+        new_values={"designation": "Senior Analyst"}, reason="Strong year.",
+    )
+    await session.commit()
+    assert [s["role"] for s in plain.approval_chain] == ["hr"]
+    with pytest.raises(HTTPException):
+        await lifecycle.approve_event(session, boss, event_id=plain.id)
+    await lifecycle.cancel_event(session, hr, event_id=plain.id, reason="Superseded")
+    await session.commit()
+
+    await rules.create_rule(
+        session, hr,
+        {"process": "lifecycle", "name": "Promotions", "priority": 10,
+         "expense_categories": ["promotion"],
+         "steps": [{"kind": "line_manager"}, {"kind": "hr"}]},
+    )
+    await session.commit()
+    event = await lifecycle.raise_event(
+        session, hr, employee_id=chain_org["meera_emp"].id,
+        event_type=LifecycleEventType.PROMOTION, effective_from=effective,
+        new_values={"designation": "Senior Analyst"}, reason="Strong year.",
+    )
+    await session.commit()
+    assert [s["approver_name"] for s in event.approval_chain] == ["Mala Manager", "HR team"]
+    inbox = await approvals.inbox(session, boss)
+    assert any(i.id == event.id for i in inbox.items)
+
+    step = await lifecycle.approve_event(session, boss, event_id=event.id)
+    await session.commit()
+    assert step["status"] == LifecycleStatus.PENDING_APPROVAL.value
+    assert step["waiting_on"] == "HR team"
+    done = await lifecycle.approve_event(session, hr, event_id=event.id)
+    await session.commit()
+    assert done["status"] == LifecycleStatus.APPROVED.value

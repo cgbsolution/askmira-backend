@@ -22,6 +22,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
@@ -124,10 +125,17 @@ async def run_reads(
                     employee_id=flag["employee_id"],
                     employee_code=flag.get("employee_code", ""),
                     employee_name=flag.get("employee_name"),
-                    previous_net=str(flag.get("previous_net", "")),
+                    previous_net=(
+                        str(flag["previous_net"]) if flag.get("previous_net") is not None else None
+                    ),
                     current_net=str(flag.get("current_net", "")),
-                    change_percent=str(flag.get("change_percent", "")),
+                    change_percent=(
+                        str(flag["change_percent"])
+                        if flag.get("change_percent") is not None
+                        else None
+                    ),
                     not_employed_days=str(flag.get("not_employed_days") or "0"),
+                    deduction_ceiling=flag.get("deduction_ceiling"),
                     acknowledged=bool(flag.get("acknowledged")),
                     acknowledged_by_user_id=by,
                     acknowledged_by_name=names.get(uuid.UUID(by)) if by else None,
@@ -709,7 +717,69 @@ async def my_payslip_pdf(
     if row is None:
         raise not_found
     payslip, run, employee = row
-    return await _render_pdf(session, user, payslip, run, employee)
+    data, filename = await _render_pdf(session, user, payslip, run, employee)
+    if await payslip_protection(session, user):
+        data = protect_pdf(data, payslip_password(employee))
+    return data, filename
+
+
+PASSWORD_RULE = (
+    "Your PAN in capitals; without a PAN, your date of birth as DDMMYYYY; without either, "
+    "your employee code."
+)
+
+
+def payslip_password(employee: Employee) -> str:
+    """The password a protected payslip opens with, by the rule above."""
+    if employee.pan:
+        return employee.pan.strip().upper()
+    if employee.date_of_birth:
+        return employee.date_of_birth.strftime("%d%m%Y")
+    return employee.employee_code
+
+
+def protect_pdf(data: bytes, password: str) -> bytes:
+    """The same PDF, encrypted (AES-256) so it opens only with the password."""
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(data)))
+    writer.encrypt(user_password=password, algorithm="AES-256")
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+async def payslip_protection(session: AsyncSession, user: User) -> bool:
+    tenant = await session.get(Tenant, user.tenant_id)
+    return bool(((tenant.settings or {}) if tenant else {}).get("payslip_pdf_password"))
+
+
+async def set_payslip_protection(
+    session: AsyncSession, user: User, enabled: bool, *, request: Request | None = None
+) -> dict[str, Any]:
+    if not permissions.is_admin(user):
+        raise permissions.forbidden("Only an admin changes how payslips are protected.")
+    tenant = await session.get(Tenant, user.tenant_id)
+    tenant.settings = {**(tenant.settings or {}), "payslip_pdf_password": enabled}
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="payslip_settings",
+        entity_id=user.tenant_id,
+        actor=user,
+        changes={"payslip_pdf_password": enabled},
+        summary=(
+            "Payslip PDFs now open with a password"
+            if enabled
+            else "Payslip PDFs no longer need a password"
+        ),
+        request=request,
+    )
+    await session.commit()
+    return {"enabled": enabled, "rule": PASSWORD_RULE}
 
 
 async def my_salary_history(session: AsyncSession, user: User) -> list[SalaryRecordRead]:

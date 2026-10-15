@@ -44,20 +44,37 @@ __all__ = [
     "Facts",
     "ResolvedStep",
     "acting_for",
+    "attach",
     "cancel_delegation",
     "create_delegation",
     "create_rule",
+    "decide",
     "delegate_options",
     "delete_rule",
     "escalate_due",
     "list_delegations",
     "list_rules",
     "matches",
+    "may_decide",
+    "next_recipients",
     "resolve_steps",
     "update_rule",
 ]
 
 STEP_KINDS = ("line_manager", "skip_level", "user", "hr")
+
+#: The step a process falls back to when no rule matches. A lifecycle change
+#: has always been HR's to approve; everything else starts with the manager.
+DEFAULT_STEPS: dict[ApprovalProcess, list[dict[str, Any]]] = {
+    ApprovalProcess.LIFECYCLE: [{"kind": "hr"}],
+}
+
+#: What a rule's category condition holds, by process, for validation.
+CATEGORY_PROCESSES = (
+    ApprovalProcess.EXPENSE,
+    ApprovalProcess.REGULARISATION,
+    ApprovalProcess.LIFECYCLE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +172,11 @@ async def resolve_steps(
 ) -> tuple[list[ResolvedStep], str | None]:
     """The approvers, in order, and which rule chose them (None for the built-in step)."""
     rule = await _rule_for(session, user, facts)
-    specs = rule.steps if rule is not None and rule.steps else [{"kind": "line_manager"}]
+    specs = (
+        rule.steps
+        if rule is not None and rule.steps
+        else DEFAULT_STEPS.get(facts.process, [{"kind": "line_manager"}])
+    )
     escalate = rule.escalate_after_hours if rule is not None else None
     own_login = await session.scalar(
         tenant_scoped(
@@ -221,6 +242,123 @@ def chain_from(steps: list[ResolvedStep], rule_name: str | None) -> list[dict[st
         }
         for index, step in enumerate(steps)
     ]
+
+
+async def attach(
+    session: AsyncSession, user: User, employee: Employee, facts: Facts
+) -> list[dict[str, Any]]:
+    """The chain to snapshot on a request: the rule's steps, else the default,
+    else HR — a request routed to nobody waits forever."""
+    steps, rule_name = await resolve_steps(session, user, employee, facts)
+    if not steps:
+        steps = [ResolvedStep("hr", None, None, "HR team", None)]
+    return chain_from(steps, rule_name)
+
+
+async def may_decide(
+    session: AsyncSession,
+    user: User,
+    chain: list[dict[str, Any]],
+    *,
+    hr_may: bool | None = None,
+) -> bool:
+    """Whether this person decides the chain's current step.
+
+    The named approver or somebody they delegated to; an HR step is HR's; and
+    HR may stand in at any step. `hr_may` narrows "HR" where a process has
+    always been one role's (a lifecycle change is an admin's).
+    """
+    from app.services.leave import engine
+
+    index = engine.current_step(chain)
+    if index is None:
+        return False
+    is_hr = permissions.is_hr(user) if hr_may is None else hr_may
+    if is_hr:
+        return True
+    approver = chain[index].get("approver_user_id")
+    if approver is None:
+        return False
+    return approver in {str(a) for a in await acting_for(session, user)}
+
+
+async def decide(
+    session: AsyncSession,
+    user: User,
+    chain: list[dict[str, Any]],
+    *,
+    approve: bool,
+    note: str | None,
+    hr_may: bool | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Record this person's decision on the current step: (new chain, outcome).
+
+    The outcome is "advanced" (a later step waits), "approved" or "rejected".
+    """
+    from app.services.leave import engine
+
+    index = engine.current_step(chain)
+    if index is None:
+        raise HTTPException(status_code=409, detail="This request has already been decided.")
+    if not await may_decide(session, user, chain, hr_may=hr_may):
+        raise permissions.forbidden(
+            f"This is waiting on {chain[index].get('approver_name') or 'another approver'}. "
+            "Only they, somebody standing in for them, or HR can decide it."
+        )
+    return engine.apply_decision(
+        chain,
+        approve=approve,
+        actor_user_id=user.id,
+        actor_name=user.full_name,
+        note=note,
+        at=datetime.now(UTC),
+    )
+
+
+async def next_recipients(
+    session: AsyncSession, user: User, chain: list[dict[str, Any]]
+) -> list[uuid.UUID]:
+    """Who to tell that the chain's current step is waiting: its approver, or HR."""
+    from app.services.leave import engine
+
+    index = engine.current_step(chain)
+    if index is None:
+        return []
+    approver = chain[index].get("approver_user_id")
+    if approver:
+        return [uuid.UUID(approver)]
+    return list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.role.in_(permissions.HR_ROLES), User.is_active.is_(True)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+
+
+def chain_first_named(chain: list[dict[str, Any]]) -> uuid.UUID | None:
+    """The current step's named approver, or None for an HR step or a closed chain."""
+    from app.services.leave import engine
+
+    index = engine.current_step(chain)
+    if index is None:
+        return None
+    approver = chain[index].get("approver_user_id")
+    return uuid.UUID(approver) if approver else None
+
+
+def waiting_on(chain: list[dict[str, Any]], acting: set[str]) -> bool:
+    """Whether the chain's current step is with one of `acting` (user ids as text)."""
+    from app.services.leave import engine
+
+    index = engine.current_step(chain)
+    return index is not None and chain[index].get("approver_user_id") in acting
 
 
 # ── Delegation ──────────────────────────────────────────────────────────────
@@ -404,6 +542,32 @@ def _require_admin(user: User) -> None:
         raise permissions.forbidden("Only an admin changes who approves what.")
 
 
+def _validate_categories(process: ApprovalProcess, categories: list[Any] | None) -> None:
+    if not categories:
+        return
+    if process not in CATEGORY_PROCESSES:
+        raise HTTPException(
+            status_code=422, detail=f"A {process.value} rule has no category condition."
+        )
+    allowed: set[str] | None = None
+    if process is ApprovalProcess.REGULARISATION:
+        from app.models.attendance import RegularisationKind
+
+        allowed = {k.value for k in RegularisationKind}
+    elif process is ApprovalProcess.LIFECYCLE:
+        from app.models.lifecycle import LifecycleEventType
+
+        allowed = {k.value for k in LifecycleEventType}
+    if allowed is not None:
+        unknown = sorted({str(c) for c in categories} - allowed)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Not a {process.value} type: {', '.join(unknown)}. "
+                f"Choose from {', '.join(sorted(allowed))}.",
+            )
+
+
 def _validate_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not steps:
         raise HTTPException(status_code=422, detail="A rule needs at least one approver step.")
@@ -448,6 +612,7 @@ async def create_rule(
     session: AsyncSession, user: User, values: dict[str, Any], *, request: Request | None = None
 ) -> dict[str, Any]:
     _require_admin(user)
+    _validate_categories(ApprovalProcess(values["process"]), values.get("expense_categories"))
     rule = ApprovalRule(
         tenant_id=user.tenant_id,
         process=ApprovalProcess(values["process"]),
@@ -481,6 +646,8 @@ async def update_rule(
     )
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
+    if "expense_categories" in values:
+        _validate_categories(rule.process, values["expense_categories"])
     before = _rule_read(rule)
     for key in _FIELDS:
         if key in values:
@@ -569,8 +736,11 @@ async def _escalate_chain(
 
 async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | None = None) -> dict:
     """Move every step that has waited past its rule's limit up a level. Scheduler-callable."""
+    from app.models.attendance import AttendanceRegularisation, RegularisationStatus
     from app.models.expenses import ExpenseClaim, ExpenseClaimStatusEnum
     from app.models.leave import LeaveRequest, LeaveRequestStatus
+    from app.models.lifecycle import LifecycleEvent, LifecycleStatus
+    from app.models.timesheets import Timesheet, TimesheetStatus
     from app.services.notifications.dispatch import notify
 
     moment = now or datetime.now(UTC)
@@ -595,9 +765,28 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
             )
         )
     ).all()
+    async def pending(model, status_column, status_value):
+        return (
+            await session.scalars(
+                tenant_scoped(
+                    select(model).where(status_column == status_value), model, actor
+                )
+            )
+        ).all()
+
+    corrections = await pending(
+        AttendanceRegularisation, AttendanceRegularisation.status, RegularisationStatus.PENDING
+    )
+    sheets = await pending(Timesheet, Timesheet.status, TimesheetStatus.SUBMITTED)
+    events = await pending(
+        LifecycleEvent, LifecycleEvent.status, LifecycleStatus.PENDING_APPROVAL
+    )
     for row, submitted, kind in [
         *((leave, leave.created_at, "leave request") for leave in leaves),
         *((claim, claim.submitted_at or claim.created_at, "expense claim") for claim in claims),
+        *((reg, reg.created_at, "attendance correction") for reg in corrections),
+        *((sheet, sheet.submitted_at or sheet.created_at, "timesheet") for sheet in sheets),
+        *((event, event.created_at, "lifecycle event") for event in events),
     ]:
         chain = list(row.approval_chain or [])
         if not chain:
@@ -609,7 +798,8 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
         moved += 1
         await audit.record(
             session, tenant_id=actor.tenant_id, actor=actor, actor_type="system",
-            action=AuditAction.UPDATE, entity_type=kind.replace(" ", "_"), entity_id=row.id,
+            action=AuditAction.UPDATE, entity_type=row.__tablename__.rstrip("s"),
+            entity_id=row.id,
             summary=(
                 f"Escalated after {step['escalate_after_hours']} hours waiting on "
                 f"{step['escalated_from']}; now with {step['approver_name']}"

@@ -30,7 +30,9 @@ from app.models.notifications import (
     NotificationPolicy,
     NotificationStatus,
     NotificationTemplate,
+    PushDevice,
     TenantSmtpSettings,
+    TenantWhatsAppSettings,
 )
 from app.models.user import User
 from app.services import audit
@@ -43,13 +45,17 @@ __all__ = [
     "get_policy",
     "list_templates",
     "mark_all_read",
+    "register_device",
     "retry_notification",
     "save_smtp",
     "save_template",
+    "save_whatsapp",
     "smtp_settings",
     "test_smtp",
     "unread_count",
+    "unregister_device",
     "update_policy",
+    "whatsapp_settings",
 ]
 
 
@@ -134,7 +140,17 @@ async def channel_status(session: AsyncSession, user: User) -> list[dict[str, An
                 "not delivered. An admin can add one under Settings → Notifications."
             ),
         }
-    whatsapp_live = dispatch.get_adapter(Channel.WHATSAPP) is not None
+    whatsapp_live = await dispatch.whatsapp_adapter_for(session, user.tenant_id) is not None
+    devices = int(
+        await session.scalar(
+            tenant_scoped(
+                select(func.count(PushDevice.id)).where(PushDevice.revoked_at.is_(None)),
+                PushDevice,
+                user,
+            )
+        )
+        or 0
+    )
     return [
         {
             "channel": Channel.IN_APP.value,
@@ -144,10 +160,13 @@ async def channel_status(session: AsyncSession, user: User) -> list[dict[str, An
         {"channel": Channel.EMAIL.value, **email},
         {
             "channel": Channel.PUSH.value,
-            "state": "not_delivered",
+            "state": "live" if devices else "not_delivered",
             "summary": (
-                "Push is not connected: there is no mobile app registration and no FCM or "
-                "APNs account, so a push preference is saved but nothing is sent."
+                f"Sent through Expo's push service to the AskMira app, on {devices} phone(s) "
+                "signed in."
+                if devices
+                else "No phone has the AskMira app signed in yet, so nothing is pushed. "
+                "A push preference is saved for when one is."
             ),
         },
         {
@@ -524,3 +543,135 @@ async def test_smtp(
     )
     await session.commit()
     return {"ok": ok, "error": error, "sent_to": user.email if ok else None}
+
+
+# ── WhatsApp Business account ───────────────────────────────────────────────
+
+
+def _whatsapp_dict(row: TenantWhatsAppSettings | None) -> dict[str, Any]:
+    platform = dispatch.get_adapter(Channel.WHATSAPP) is not None
+    if row is None:
+        return {"configured": False, "platform_connected": platform}
+    return {
+        "configured": True,
+        "platform_connected": platform,
+        "enabled": row.enabled,
+        "phone_number_id": row.phone_number_id,
+        "has_token": bool(row.access_token_encrypted),
+    }
+
+
+async def whatsapp_settings(session: AsyncSession, user: User) -> dict[str, Any]:
+    row = await session.scalar(
+        tenant_scoped(select(TenantWhatsAppSettings), TenantWhatsAppSettings, user)
+    )
+    return _whatsapp_dict(row)
+
+
+async def save_whatsapp(
+    session: AsyncSession,
+    user: User,
+    *,
+    enabled: bool,
+    phone_number_id: str,
+    access_token: str | None,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Save the account. `access_token=None` keeps the stored token; "" clears it."""
+    phone_number_id = phone_number_id.strip()
+    if not phone_number_id.isdigit():
+        raise _bad_request("The phone number id is the number Meta shows for it, digits only.")
+    row = await session.scalar(
+        tenant_scoped(select(TenantWhatsAppSettings), TenantWhatsAppSettings, user)
+    )
+    if row is None:
+        row = TenantWhatsAppSettings(tenant_id=user.tenant_id, phone_number_id=phone_number_id)
+        session.add(row)
+    row.phone_number_id = phone_number_id
+    if access_token is not None:
+        row.access_token_encrypted = (
+            encrypt_secret(access_token.strip(), user.tenant_id) if access_token.strip() else None
+        )
+    if enabled and not row.access_token_encrypted:
+        raise _bad_request("Add the access token before turning WhatsApp on.")
+    row.enabled = enabled
+    row.configured_by_user_id = user.id
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="tenant_whatsapp_settings",
+        entity_id=row.id,
+        actor=user,
+        changes={
+            "enabled": enabled,
+            "phone_number_id": phone_number_id,
+            "token_changed": access_token is not None,
+        },
+        summary=f"WhatsApp business account {'turned on' if enabled else 'saved, off'}",
+        request=request,
+    )
+    await session.commit()
+    return _whatsapp_dict(row)
+
+
+# ── Phones with the app ─────────────────────────────────────────────────────
+
+
+def push_token_hash(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def register_device(
+    session: AsyncSession, user: User, *, push_token: str, platform: str
+) -> dict[str, Any]:
+    """The caller's phone, for push. A token already known moves to the caller."""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    token = push_token.strip()
+    if not (token.startswith("ExponentPushToken[") or token.startswith("ExpoPushToken[")):
+        raise _bad_request("That is not an Expo push token.")
+    digest = push_token_hash(token)
+    row = await session.scalar(
+        tenant_scoped(
+            select(PushDevice).where(PushDevice.push_token_hash == digest), PushDevice, user
+        )
+    )
+    now = _dt.now(UTC)
+    if row is None:
+        row = PushDevice(
+            tenant_id=user.tenant_id, user_id=user.id, push_token_hash=digest,
+            push_token_encrypted=token, platform=platform, last_registered_at=now,
+        )
+        session.add(row)
+    else:
+        row.user_id = user.id
+        row.platform = platform
+        row.last_registered_at = now
+        row.revoked_at = None
+    await session.commit()
+    return {"registered": True}
+
+
+async def unregister_device(session: AsyncSession, user: User, *, push_token: str) -> None:
+    """Sign-out on a phone: stop pushing to it."""
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    row = await session.scalar(
+        tenant_scoped(
+            select(PushDevice).where(
+                PushDevice.push_token_hash == push_token_hash(push_token.strip()),
+                PushDevice.user_id == user.id,
+            ),
+            PushDevice,
+            user,
+        )
+    )
+    if row is not None and row.revoked_at is None:
+        row.revoked_at = _dt.now(UTC)
+        await session.commit()

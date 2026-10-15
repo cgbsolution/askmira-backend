@@ -35,7 +35,7 @@ from app.services import audit
 #: Levied by a state; the jurisdiction is the state code.
 STATE_RULE_TYPES = frozenset({"professional_tax", "labour_welfare_fund"})
 #: Levied nationally; the jurisdiction is the country.
-NATIONAL_RULE_TYPES = frozenset({"pf", "esi", "tds", "tds_non_salary"})
+NATIONAL_RULE_TYPES = frozenset({"pf", "esi", "tds", "tds_non_salary", "wage_deductions"})
 NATIONAL_JURISDICTION = "IN"
 
 #: The keys each engine refuses to run without. Names only — no values.
@@ -51,6 +51,9 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "tds": ("regimes", "cess_percent"),
     #: TDS on payments to contractors and professionals (194C, 194J).
     "tds_non_salary": ("sections", "no_pan_rate"),
+    #: The legal ceiling on everything deducted from a wage period, as a
+    #: percentage of the wages (Payment of Wages Act s.7(3); Code on Wages s.18).
+    "wage_deductions": ("max_deduction_percent",),
     "bonus": ("eligibility_wage_ceiling", "calculation_wage_ceiling"),
 }
 

@@ -104,6 +104,7 @@ async def configure_sessions(
     max_concurrent_sessions: int = 0,
     enforce_ip_allowlist_for_privileged: bool = False,
     ip_allowlist: list[str] | None = None,
+    require_two_step: str = "off",
     request: Request | None = None,
 ) -> TenantSessionPolicy:
     """Set the tenant's session rules, validating the pair.
@@ -144,6 +145,9 @@ async def configure_sessions(
     row.max_concurrent_sessions = max_concurrent_sessions
     row.enforce_ip_allowlist_for_privileged = enforce_ip_allowlist_for_privileged
     row.ip_allowlist = list(entries)
+    if require_two_step not in ("off", "privileged", "everyone"):
+        raise _bad_request("Two-step sign-in is required of nobody, privileged roles or everyone.")
+    row.require_two_step = require_two_step
     row.configured_by_user_id = user.id
 
     await session.flush()
@@ -157,7 +161,7 @@ async def configure_sessions(
         summary=(
             f"Session policy set: {idle_timeout_minutes}m idle, "
             f"{absolute_lifetime_hours}h absolute, "
-            f"{len(entries)} allowlist entry(ies)."
+            f"{len(entries)} allowlist entry(ies), two-step sign-in: {require_two_step}."
         ),
         request=request,
     )
@@ -978,6 +982,7 @@ async def policy_settings(session: AsyncSession, user: User) -> dict[str, Any]:
             "max_concurrent_sessions": defaults.max_concurrent_sessions,
             "enforce_ip_allowlist_for_privileged": False,
             "ip_allowlist": [],
+            "require_two_step": "off",
         }
     return {
         "configured": True,
@@ -986,6 +991,7 @@ async def policy_settings(session: AsyncSession, user: User) -> dict[str, Any]:
         "max_concurrent_sessions": row.max_concurrent_sessions,
         "enforce_ip_allowlist_for_privileged": row.enforce_ip_allowlist_for_privileged,
         "ip_allowlist": list(row.ip_allowlist or []),
+        "require_two_step": row.require_two_step,
     }
 
 

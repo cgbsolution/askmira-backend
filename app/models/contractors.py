@@ -134,3 +134,12 @@ class ContractorInvoice(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     payment_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The 26Q challan this invoice's TDS was deposited under.
+    challan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "tds_challans.id", ondelete="SET NULL", name="fk_contractor_invoices_challan_id"
+        ),
+        nullable=True,
+        index=True,
+    )

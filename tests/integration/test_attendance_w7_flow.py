@@ -426,8 +426,10 @@ async def test_http_an_employee_cannot_backdate_a_punch_or_decide(session, team,
                     "employee_id": str(team["outsider"].id)},
         )
         assert other.status_code == 403
+        # Anybody may be named on an approval chain, so the queue is open to all
+        # and holds only what waits on the caller: nothing, here.
         queue = await client.get("/api/v1/attendance/regularisations/pending")
-        assert queue.status_code == 403
+        assert queue.status_code == 200 and queue.json() == []
         shifts = await client.get("/api/v1/attendance/shifts")
         assert shifts.status_code == 403
 

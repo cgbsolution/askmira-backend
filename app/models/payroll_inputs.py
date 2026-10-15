@@ -247,6 +247,14 @@ class OvertimePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     quarterly_cap_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Whether hours worked on a weekly off or a holiday count as overtime.
     count_rest_days: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Hours in a week beyond which work is overtime even when no single day
+    #: ran past its shift (Factories Act s.51 / s.59: 48 hours). Null: no weekly rule.
+    weekly_threshold_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The day a week begins, Monday = 0 … Sunday = 6. The Factories Act's week
+    #: begins at midnight on Saturday night, so Sunday is the default.
+    week_starts_on: Mapped[int] = mapped_column(
+        Integer, default=6, server_default="6", nullable=False
+    )
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -261,12 +269,17 @@ class OvertimeStatus(str, enum.Enum):
 
 
 class OvertimeEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """One employee-day of overtime, from attendance to payslip."""
+    """One employee-day of overtime, from attendance to payslip.
+
+    `kind` is `daily` (minutes past the day's shift) or `weekly` (hours past
+    the policy's weekly threshold not already counted day by day, dated the
+    week's last day).
+    """
 
     __tablename__ = "overtime_entries"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "employee_id", "attendance_date", name="uq_overtime_entry_day"
+            "tenant_id", "employee_id", "attendance_date", "kind", name="uq_overtime_entry_day"
         ),
         Index("ix_overtime_entry_status", "tenant_id", "status", "attendance_date"),
     )
@@ -276,11 +289,14 @@ class OvertimeEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
         index=True,
     )
     attendance_date: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(8), default="daily", server_default="daily", nullable=False
+    )
     policy_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("overtime_policies.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    #: Beyond the shift, as attendance recorded it.
+    #: Beyond the shift (daily) or beyond the weekly threshold (weekly).
     recorded_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     #: After the policy's minimum, rounding and daily cap.
     eligible_minutes: Mapped[int] = mapped_column(Integer, nullable=False)

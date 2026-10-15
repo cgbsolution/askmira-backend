@@ -66,7 +66,15 @@ __all__ = [
     "set_endpoint_active",
 ]
 
-SCOPES = ("employees:read", "leave:read", "attendance:read", "org:read")
+SCOPES = (
+    "employees:read",
+    "employees:write",
+    "leave:read",
+    "attendance:read",
+    "attendance:write",
+    "org:read",
+    "hiring:read",
+)
 MAX_ATTEMPTS = 8
 OVERLAP = timedelta(minutes=10)
 BATCH = 200
@@ -219,7 +227,7 @@ async def key_identity(session: AsyncSession, key: str) -> tuple[User, frozenset
 
 
 async def authenticate_key(session: AsyncSession, key: str, scope: str) -> User:
-    """The read-only identity a key acts as, or 401/403.
+    """The identity a key acts as, or 401/403. It can do only what its scopes name.
 
     Not tenant-scoped: the key establishes the tenant, looked up by its unique
     hash. The identity returned is never persisted.
@@ -240,7 +248,7 @@ async def authenticate_key(session: AsyncSession, key: str, scope: str) -> User:
         )
     row.last_used_at = now
     await session.commit()
-    return User(
+    acting = User(
         tenant_id=row.tenant_id,
         email="api-key@system.askmira.invalid",
         full_name=f"API key {row.name}",
@@ -249,6 +257,10 @@ async def authenticate_key(session: AsyncSession, key: str, scope: str) -> User:
         password_hash="!",
         employee_id=None,
     )
+    # Audited as the key, never as a person (see audit.record).
+    acting.api_key_name = row.name
+    acting.has_reports = False
+    return acting
 
 
 # ── Webhook endpoints ───────────────────────────────────────────────────────

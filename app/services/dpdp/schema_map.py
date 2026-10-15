@@ -167,6 +167,10 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
     ("legal_entities", "pan"): (
         "The employer's own PAN. A company's tax identifier, not a person's."
     ),
+    ("tenant_whatsapp_settings", "phone_number_id"): (
+        "Meta's id for the organisation's own business phone number. Belongs to a "
+        "company's WhatsApp account, not to a person."
+    ),
     ("tenant_smtp_settings", "password_encrypted"): (
         "The ciphertext of the organisation's own mail-relay password. A "
         "credential belonging to a company's mail server, not a person's data."
@@ -386,6 +390,7 @@ TABLES: dict[str, TableClassification] = {
         {"document_number": "statutory_identifier", "dependant_name": "dependent"},
         secondary_principal=THIRD,
     ),
+    "handbooks": _none("A handbook HR writes for everyone - about nobody in particular."),
     "company_documents": _none(
         "The company's own policies and handbooks - about nobody in particular."
     ),
@@ -446,6 +451,7 @@ TABLES: dict[str, TableClassification] = {
     "payslips": _p(EMP, "compensation"),
     "bonus_computations": _p(EMP, "compensation"),
     "arrear_lines": _p(EMP, "compensation"),
+    "flexi_declarations": _p(EMP, "compensation"),
     "reimbursement_claims": _p(EMP, "compensation"),
     "encashment_requests": _p(EMP, "leave"),
     "loan_accounts": _p(EMP, "compensation"),
@@ -528,6 +534,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     "contractor_invoices": _none("An invoice from a contractor and the TDS deducted on it."),
     "projects": _none("A project people log time against."),
+    "project_tasks": _none("A task within a project that people log time against."),
     "timesheets": _p(EMP, "attendance"),
     "timesheet_entries": _p(EMP, "attendance"),
     "hourly_rates": _p(EMP, "compensation"),
@@ -548,6 +555,7 @@ TABLES: dict[str, TableClassification] = {
     "poll_votes": _p(EMP, "culture_response"),
     "team_events": _none("A company event people answer: when, where, how many places."),
     "event_rsvps": _p(EMP, "culture_response"),
+    "employee_badges": _p(EMP, "attendance"),
     "kiosk_pins": _p(EMP, "account_security"),
     "device_punch_exceptions": _p(EMP, "attendance"),
     "leave_balances": _p(EMP, "leave"),
@@ -563,6 +571,7 @@ TABLES: dict[str, TableClassification] = {
     "shoutouts": _p(EMP, "culture_response"),
     "shoutout_reactions": _p(EMP, "culture_response"),
     "club_members": _p(EMP, "culture_response"),
+    "club_posts": _p(EMP, "culture_response"),
     # ── Lifecycle, org placement and exit ───────────────────────────────────
     "lifecycle_events": _p(EMP, "organisational", {"new_ctc_annual": "compensation"}),
     "probation_reviews": _p(EMP, "performance"),
@@ -633,6 +642,20 @@ TABLES: dict[str, TableClassification] = {
     "notification_digests": _p(EMP, "communication"),
     "notification_preferences": _p(EMP, "communication"),
     "whatsapp_consents": _p(EMP, "communication", {"phone_e164": "identity"}),
+    "oauth_clients": _none(
+        "MCP connectors that registered themselves: a name and redirect addresses."
+    ),
+    "oauth_authorization_codes": _p(USER, "account_security", {"code_hash": "account_security"}),
+    "oauth_grants": _p(
+        USER,
+        "account_security",
+        {"access_token_hash": "account_security", "refresh_token_hash": "account_security"},
+    ),
+    "push_devices": _p(
+        USER,
+        "communication",
+        {"push_token_hash": "account_security", "push_token_encrypted": "account_security"},
+    ),
     "report_deliveries": _p(
         EMP, "communication", {"recipient_email": "identity"}
     ),
@@ -1286,6 +1309,10 @@ TABLES: dict[str, TableClassification] = {
     "scheduler_job_runs": _none(
         "One background job run: which job, which tenant, when, the outcome and "
         "a tally. Handlers return counts, never people."
+    ),
+    "tenant_whatsapp_settings": _none(
+        "A tenant's own WhatsApp Business account: a phone number id and an "
+        "encrypted access token."
     ),
     "tenant_smtp_settings": _none(
         "A tenant's own mail relay: host, port, an encrypted credential and the "

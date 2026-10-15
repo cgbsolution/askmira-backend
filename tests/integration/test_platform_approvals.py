@@ -85,8 +85,12 @@ async def test_an_employee_has_nothing_to_decide(session, org):
     inbox = await approvals.inbox(session, org["report"])
     assert inbox.total == 0
     # Sources an employee cannot decide are not even listed. Anybody can be named
-    # on a leave chain, own an exit clearance item or be asked for 360 feedback.
-    assert {s.key for s in inbox.sources} <= {"leave", "clearance_task", "feedback_request"}
+    # on an approval chain (leave, corrections, timesheets, lifecycle), own an
+    # exit clearance item or be asked for 360 feedback.
+    assert {s.key for s in inbox.sources} <= {
+        "leave", "attendance_regularisation", "timesheet", "lifecycle_event",
+        "clearance_task", "feedback_request",
+    }
 
 
 async def test_a_manager_sees_only_their_reporting_line(session, org):

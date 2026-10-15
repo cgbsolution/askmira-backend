@@ -6,8 +6,11 @@ until `vesting_months`. Tranches are equal, with any remainder in the last one,
 so the schedule always adds up to the grant. A cancelled grant stops vesting
 on its cancellation date.
 
-A projection is vested and unvested units at the latest valuation — what the
-options would be worth at today's fair value, not a forecast.
+A valuation is vested and unvested units at the latest fair value. A
+**projection** is the same arithmetic at a price the person chooses — "if a
+share were worth ₹500" — as each tranche vests: a what-if they set, not a
+forecast AskMira makes. Tax is described, not computed: the perquisite on
+exercise depends on the fair value on that day.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ __all__ = [
     "create_plan",
     "list_plans",
     "portfolio",
+    "projection",
     "record_exercise",
     "vesting_schedule",
 ]
@@ -468,6 +472,76 @@ async def portfolio(
             plans[grant.plan_id] = await _plan(session, user, grant.plan_id)
         out.append(await _grant_read(session, user, grant, plans[grant.plan_id], day))
     return {"employee_id": str(employee_id), "as_of": day.isoformat(), "grants": out}
+
+
+async def projection(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    *,
+    price_per_unit: Decimal,
+    on: date | None = None,
+) -> dict[str, Any]:
+    """What the person's options would be worth at a price they choose, as they vest."""
+    if price_per_unit < 0:
+        raise HTTPException(status_code=422, detail="A price per share cannot be negative.")
+    held = await portfolio(session, user, employee_id, on=on)
+    day = on or date.today()
+    grants = []
+    timeline: dict[date, Decimal] = {}
+    total_now = total_all = Decimal(0)
+    for grant in held["grants"]:
+        if grant["status"] == "cancelled" and grant["vested"] == 0:
+            continue
+        spread = max(Decimal(0), price_per_unit - Decimal(grant["exercise_price"]))
+        exercised = grant["exercised"]
+        vested_open = max(0, grant["vested"] - exercised)
+        all_open = vested_open + grant["unvested"]
+        now_value = (spread * vested_open).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        all_value = (spread * all_open).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        total_now += now_value
+        total_all += all_value
+        # Each future tranche adds its units' worth on its vesting date.
+        for tranche in grant["schedule"]:
+            vests_on = date.fromisoformat(tranche["date"])
+            if vests_on > day and grant["status"] != "cancelled":
+                timeline[vests_on] = timeline.get(vests_on, Decimal(0)) + spread * tranche["units"]
+        grants.append(
+            {
+                "id": grant["id"],
+                "plan": grant["plan"],
+                "exercise_price": grant["exercise_price"],
+                "spread_per_unit": str(spread.quantize(Decimal("0.01"))),
+                "vested_unexercised": vested_open,
+                "unvested": grant["unvested"],
+                "value_now": str(now_value),
+                "value_when_fully_vested": str(all_value),
+            }
+        )
+    running = total_now
+    points = [{"date": day.isoformat(), "value": str(total_now)}]
+    for vests_on in sorted(timeline):
+        running += timeline[vests_on]
+        points.append(
+            {
+                "date": vests_on.isoformat(),
+                "value": str(running.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+            }
+        )
+    return {
+        "employee_id": str(employee_id),
+        "as_of": day.isoformat(),
+        "price_per_unit": str(price_per_unit),
+        "grants": grants,
+        "value_now": str(total_now.quantize(Decimal("0.01"))),
+        "value_when_fully_vested": str(total_all.quantize(Decimal("0.01"))),
+        "timeline": points,
+        "note": (
+            "Before tax, at the price you entered. On exercise, the difference between the "
+            "fair value that day and the exercise price is taxed as salary (a perquisite), and "
+            "a later sale is taxed as capital gains. This is a what-if, not advice."
+        ),
+    }
 
 
 async def record_exercise(

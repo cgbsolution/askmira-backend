@@ -116,3 +116,44 @@ def test_the_price_comes_entirely_from_the_policy() -> None:
 def test_a_different_multiplier_changes_the_price() -> None:
     _, amount, _ = price(policy(rate_multiplier=Decimal("1.50")), Decimal("26000"), 60)
     assert amount == Decimal("187.50")
+
+
+# ── The weekly threshold (Factories Act s.51: 48 hours) ─────────────────────
+
+
+def test_a_week_of_9_hour_days_within_the_shift_is_6_hours_of_overtime() -> None:
+    """Six 9-hour days never pass a 9-hour shift, but 54 hours pass 48."""
+    from app.services.attendance.overtime import weekly_excess
+
+    rule = policy(weekly_threshold_minutes=2880, rounding_minutes=0, minimum_minutes=0)
+    week = [(540, 0, False)] * 6 + [(0, 0, True)]
+    assert weekly_excess(rule, week) == 360
+
+
+def test_daily_overtime_is_not_counted_again_for_the_week() -> None:
+    from app.services.attendance.overtime import weekly_excess
+
+    rule = policy(weekly_threshold_minutes=2880, rounding_minutes=0, minimum_minutes=0)
+    # 8-hour shift, 10 hours worked each of six days: 12 h daily overtime,
+    # 60 h in the week, 12 h past 48 — all of it already counted daily.
+    week = [(600, 120, False)] * 6
+    assert weekly_excess(rule, week) == 0
+
+
+def test_without_a_weekly_threshold_there_is_no_weekly_overtime() -> None:
+    from app.services.attendance.overtime import weekly_excess
+
+    assert weekly_excess(policy(weekly_threshold_minutes=None), [(600, 0, False)] * 7) == 0
+
+
+def test_rest_day_work_counts_toward_the_week_only_where_rest_days_count() -> None:
+    from app.services.attendance.overtime import weekly_excess
+
+    week = [(480, 0, False)] * 6 + [(240, 240, True)]
+    counting = policy(weekly_threshold_minutes=2880, rounding_minutes=0, minimum_minutes=0,
+                      daily_cap_minutes=None)
+    # 52 h worked, 4 h of it rest-day overtime counted daily: nothing left over.
+    assert weekly_excess(counting, week) == 0
+    not_counting = policy(weekly_threshold_minutes=2880, rounding_minutes=0,
+                          minimum_minutes=0, count_rest_days=False)
+    assert weekly_excess(not_counting, week) == 0

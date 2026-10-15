@@ -8,6 +8,12 @@ The flow, and who decides what:
    and capped per day. Rest-day work counts only where the policy says it does.
    Sync never touches a decided entry; a pending one follows its attendance day
    if the day is recomputed.
+
+   Where the policy sets a weekly threshold (the Factories Act's 48 hours), a
+   finished week is assessed too: hours worked in it beyond the threshold, less
+   what was already counted day by day, become one `weekly` entry dated the
+   week's last day. A week is assessed only once it is over, so a day's entry a
+   manager has already decided is never revisited.
 2. **Decide.** The line manager or HR approves (fewer minutes if they choose,
    never more) or rejects with a reason. Nobody decides their own. The policy's
    quarterly cap is applied at approval: minutes past it are refused, and the
@@ -101,6 +107,35 @@ def price(
     return hourly, amount, basis
 
 
+def weekly_excess(
+    policy: OvertimePolicy, week: list[tuple[int, int, bool]]
+) -> int:
+    """Minutes of a week past the policy's weekly threshold, not counted daily.
+
+    `week` is (worked minutes, daily overtime minutes, is a rest day) for each
+    day. A rest day's work counts toward the week only where rest-day work
+    counts as overtime at all.
+    """
+    if not policy.weekly_threshold_minutes:
+        return 0
+    worked = counted = 0
+    for worked_minutes, overtime_minutes, is_rest in week:
+        if is_rest and not policy.count_rest_days:
+            continue
+        worked += max(0, worked_minutes)
+        counted += counted_minutes(policy, overtime_minutes)
+    excess = worked - policy.weekly_threshold_minutes - counted
+    if excess <= 0:
+        return 0
+    if policy.rounding_minutes:
+        excess = (excess // policy.rounding_minutes) * policy.rounding_minutes
+    return max(0, excess)
+
+
+def _is_week_end(policy: OvertimePolicy, day: date) -> bool:
+    return day.weekday() == (policy.week_starts_on + 6) % 7
+
+
 def _quarter_bounds(day: date) -> tuple[date, date]:
     first_month = ((day.month - 1) // 3) * 3 + 1
     start = date(day.year, first_month, 1)
@@ -141,6 +176,8 @@ def _policy_read(row: OvertimePolicy, locations: dict[uuid.UUID, str]) -> Overti
         quarterly_cap_minutes=row.quarterly_cap_minutes,
         count_rest_days=row.count_rest_days,
         requires_approval=row.requires_approval,
+        weekly_threshold_minutes=row.weekly_threshold_minutes,
+        week_starts_on=row.week_starts_on,
         effective_from=row.effective_from,
         effective_to=row.effective_to,
         is_active=row.is_active,
@@ -230,6 +267,7 @@ async def create_policy(
             "days_divisor": row.days_divisor,
             "hours_per_day": str(row.hours_per_day),
             "quarterly_cap_minutes": row.quarterly_cap_minutes,
+            "weekly_threshold_minutes": row.weekly_threshold_minutes,
             "effective_from": row.effective_from.isoformat(),
             "superseded": [str(o.id) for o in previous],
         },
@@ -394,6 +432,11 @@ async def _approve_entry(
             minutes = room
     wage = await _monthly_wage(session, user, entry.employee_id, policy, entry.attendance_date)
     hourly, amount, basis = price(policy, wage, minutes)
+    if entry.kind == "weekly":
+        basis = (
+            f"Week ending {entry.attendance_date:%d %b %Y}: hours past the weekly limit of "
+            f"{(policy.weekly_threshold_minutes or 0) // 60} h not counted day by day. {basis}"
+        )
     entry.approved_minutes = minutes
     entry.hourly_rate = hourly
     entry.rate_multiplier = Decimal(str(policy.rate_multiplier))
@@ -420,14 +463,16 @@ async def sync(
     if (end - start).days > 92:
         raise _unprocessable("Sync at most a quarter at a time.")
 
-    policies = await _policies_in_force(session, user, start, end)
-    days = (
+    # A week ending in the range may begin up to six days before it.
+    fetch_start = date.fromordinal(start.toordinal() - 6)
+    policies = await _policies_in_force(session, user, fetch_start, end)
+    fetched = (
         await session.execute(
             tenant_scoped(
                 select(AttendanceDay, Employee.location_id, Employee.employee_code)
                 .join(Employee, AttendanceDay.employee_id == Employee.id)
                 .where(
-                    AttendanceDay.attendance_date >= start,
+                    AttendanceDay.attendance_date >= fetch_start,
                     AttendanceDay.attendance_date <= end,
                 ),
                 AttendanceDay,
@@ -435,8 +480,9 @@ async def sync(
             )
         )
     ).all()
+    days = [row for row in fetched if row[0].attendance_date >= start]
     existing = {
-        (e.employee_id, e.attendance_date): e
+        (e.employee_id, e.attendance_date, e.kind): e
         for e in (
             await session.scalars(
                 tenant_scoped(
@@ -453,9 +499,9 @@ async def sync(
 
     created = updated = removed = auto = 0
     without_policy: list[str] = []
-    seen: set[tuple[uuid.UUID, date]] = set()
+    seen: set[tuple[uuid.UUID, date, str]] = set()
     for day, location_id, code in days:
-        key = (day.employee_id, day.attendance_date)
+        key = (day.employee_id, day.attendance_date, "daily")
         seen.add(key)
         entry = existing.get(key)
         recorded = int(day.overtime_minutes or 0)
@@ -511,8 +557,76 @@ async def sync(
             except HTTPException:
                 pass  # unpriceable or over the cap: left pending for a person to look at
 
-    # A pending entry whose attendance day no longer exists goes with it.
+    # ── Weekly: finished weeks past the policy's weekly threshold ───────────
+    from app.services.attendance.service import local_today
+
+    today = await local_today(session, user)
+    by_employee: dict[uuid.UUID, dict[date, AttendanceDay]] = {}
+    where: dict[uuid.UUID, uuid.UUID | None] = {}
+    for day, location_id, _code in fetched:
+        by_employee.setdefault(day.employee_id, {})[day.attendance_date] = day
+        where[day.employee_id] = location_id
+    last_assessable = min(end, date.fromordinal(today.toordinal() - 1))
+    for employee_id, calendar_days in by_employee.items():
+        for ordinal in range(start.toordinal(), last_assessable.toordinal() + 1):
+            week_end = date.fromordinal(ordinal)
+            policy = _policy_for(policies, where[employee_id], week_end)
+            if policy is None or not policy.weekly_threshold_minutes:
+                continue
+            if not _is_week_end(policy, week_end):
+                continue
+            week = [
+                (d.worked_minutes or 0, d.overtime_minutes or 0, d.status in _REST_DAYS)
+                for offset in range(7)
+                if (d := calendar_days.get(date.fromordinal(ordinal - offset))) is not None
+            ]
+            excess = weekly_excess(policy, week)
+            key = (employee_id, week_end, "weekly")
+            seen.add(key)
+            entry = existing.get(key)
+            if entry is not None and entry.status is not OvertimeStatus.PENDING:
+                continue
+            if excess <= 0:
+                if entry is not None:
+                    no_longer_due = entry
+                    await session.delete(no_longer_due)
+                    removed += 1
+                continue
+            if entry is None:
+                entry = OvertimeEntry(
+                    tenant_id=user.tenant_id,
+                    employee_id=employee_id,
+                    attendance_date=week_end,
+                    kind="weekly",
+                    policy_id=policy.id,
+                    recorded_minutes=excess,
+                    eligible_minutes=excess,
+                    is_rest_day=False,
+                    status=OvertimeStatus.PENDING,
+                )
+                session.add(entry)
+                created += 1
+            elif (entry.recorded_minutes, entry.policy_id) != (excess, policy.id):
+                entry.recorded_minutes = excess
+                entry.eligible_minutes = excess
+                entry.policy_id = policy.id
+                updated += 1
+            if not policy.requires_approval:
+                await session.flush()
+                try:
+                    await _approve_entry(
+                        session, user, entry, policy, excess,
+                        "Approved by policy: this overtime policy needs no approval.",
+                        decided_by=None,
+                    )
+                    auto += 1
+                except HTTPException:
+                    pass
+
+    # A pending daily entry whose attendance day no longer exists goes with it.
     for key, pending in existing.items():
+        if key[2] != "daily":
+            continue
         if key not in seen and pending.status is OvertimeStatus.PENDING:
             await session.delete(pending)
             removed += 1
@@ -619,6 +733,7 @@ async def _reads(
                 employee_code=employee.employee_code if employee else None,
                 employee_name=employee.full_name if employee else None,
                 attendance_date=row.attendance_date,
+                kind=row.kind,
                 policy_id=row.policy_id,
                 policy_name=policies.get(row.policy_id),
                 recorded_minutes=row.recorded_minutes,

@@ -187,6 +187,7 @@ async def respond(
         employee_id=me,
         answers=dict(payload.answers),
         free_text=(payload.free_text or "").strip() or None,
+        comment_ai_ok=bool(payload.comment_ai_ok and (payload.free_text or "").strip()),
         # The team is the manager's reporting group. Coarse by construction,
         # and suppressed below the floor like every other group.
         group_key=str(employee.manager_id) if employee and employee.manager_id else None,

@@ -1,11 +1,12 @@
 """Configurable approval chains, and approvers who are away.
 
-An `ApprovalRule` says who approves a leave request or an expense claim, in
-order, when its conditions hold — "claims over ₹50,000 in Sales: line manager,
-then the regional head, then finance". The first active rule that matches, by
-priority, decides; with none, the built-in single step (the line manager)
-stands. The chain is resolved and snapshotted at submission, so a reorg next
-week does not change who was asked.
+An `ApprovalRule` says who approves a leave request, an expense claim, an
+attendance correction, a timesheet or a lifecycle change (promotion, transfer,
+confirmation…), in order, when its conditions hold — "claims over ₹50,000 in
+Sales: line manager, then the regional head, then finance". The first active
+rule that matches, by priority, decides; with none, the built-in step stands:
+the line manager, or for a lifecycle change, HR. The chain is resolved and
+snapshotted at submission, so a reorg next week does not change who was asked.
 
 An `ApprovalDelegation` lets an approver hand their approvals to somebody else
 for a period — leave, travel — so a request does not wait on an empty desk.
@@ -30,6 +31,9 @@ __all__ = ["ApprovalDelegation", "ApprovalProcess", "ApprovalRule"]
 class ApprovalProcess(str, enum.Enum):
     LEAVE = "leave"
     EXPENSE = "expense"
+    REGULARISATION = "regularisation"
+    TIMESHEET = "timesheet"
+    LIFECYCLE = "lifecycle"
 
 
 class ApprovalRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -49,6 +53,8 @@ class ApprovalRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     max_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     min_days: Mapped[float | None] = mapped_column(Numeric(6, 1), nullable=True)
     leave_type_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    #: The category condition, by process: expense categories, regularisation
+    #: kinds (missed_punch, on_duty …) or lifecycle event types (promotion …).
     expense_categories: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     department_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     location_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

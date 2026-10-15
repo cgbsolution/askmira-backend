@@ -328,7 +328,13 @@ async def test_a_shoutout_draft_never_sends_the_colleagues_name(
 
 
 async def _survey_with_comments(
-    session: AsyncSession, tenant: Tenant, employee: Employee, comments: list[str]
+    session: AsyncSession,
+    tenant: Tenant,
+    employee: Employee,
+    comments: list[str],
+    *,
+    ai_ok: set[int] | None = None,
+    code_prefix: str = "S",
 ) -> tuple[Survey, list[Employee]]:
     survey = Survey(
         tenant_id=tenant.id,
@@ -345,9 +351,9 @@ async def _survey_with_comments(
     for index, text in enumerate(comments):
         person = Employee(
             tenant_id=tenant.id,
-            employee_code=f"S{index:03d}",
+            employee_code=f"{code_prefix}{index:03d}",
             first_name=f"P{index}",
-            work_email=f"p{index}@acme.test",
+            work_email=f"{code_prefix.lower()}{index}@acme.test",
             legal_entity_id=employee.legal_entity_id,
             status=EmploymentStatus.ACTIVE,
             date_of_joining=date(2025, 1, 1),
@@ -369,6 +375,7 @@ async def _survey_with_comments(
                 survey_id=survey.id,
                 answers={},
                 free_text=text,
+                comment_ai_ok=ai_ok is None or index in ai_ok,
                 submitted_on=date(2026, 10, 5),
             )
         )
@@ -376,21 +383,37 @@ async def _survey_with_comments(
     return survey, people
 
 
-async def test_survey_themes_need_every_respondent_to_have_agreed(
+async def test_only_comments_their_writers_opened_to_ai_are_read(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
-    comments = [f"The new shift timings make the commute very hard, comment {i}" for i in range(6)]
-    survey, people = await _survey_with_comments(session, tenant, employee, comments)
+    comments = [f"The new shift timings make the commute very hard, comment {i}" for i in range(7)]
+    # Four of seven ticked the box: below the floor of five, nothing is sent.
+    survey, _ = await _survey_with_comments(
+        session, tenant, employee, comments, ai_ok={0, 1, 2, 3}
+    )
     await _ai_on(session, hr_user)
-    for person in people[:-1]:
-        await _consent(session, tenant, person.id, "culture_analytics")
 
     model = FakeModel()
     with use_backend(model), pytest.raises(HTTPException) as blocked:
         await survey_topics.generate(session, hr_user, survey.id)
-    assert blocked.value.status_code == 409
-    assert "1 of the 6" in blocked.value.detail
+    assert blocked.value.status_code == 422
+    assert "4 of the survey's 7" in blocked.value.detail
     assert model.prompts == []
+
+    # Five ticked: those five are sent, and the two that did not tick are not.
+    other, _ = await _survey_with_comments(
+        session, tenant, employee, [f"Second survey comment number {i}" for i in range(7)],
+        ai_ok={0, 1, 2, 3, 4}, code_prefix="T",
+    )
+    model = FakeModel(
+        {"topics": [{"theme": "Comments", "summary": "People left comments.", "mentions": 5,
+                     "sentiment": "mixed"}], "confidence": 0.6}
+    )
+    with use_backend(model):
+        result = await survey_topics.generate(session, hr_user, other.id)
+    assert result["comment_count"] == 5
+    sent = model.prompts[-1]
+    assert "comment number 4" in sent and "comment number 5" not in sent
 
 
 async def test_survey_themes_are_counted_folded_and_never_quoted(

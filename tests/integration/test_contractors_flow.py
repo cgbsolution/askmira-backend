@@ -159,3 +159,69 @@ async def test_no_rule_set_refuses_rather_than_guessing(
             request=None,
         )
     assert refused.value.status_code == 409 and "tds_non_salary" in refused.value.detail
+
+
+async def test_26q_tds_is_tied_to_challans_and_stated_per_contractor(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity
+) -> None:
+    from app.models.filings import TdsChallan
+
+    await _rules(session, tenant, hr_user)
+    checker = await _checker(session, tenant)
+    firm = await contractors.create_contractor(
+        session, hr_user,
+        ContractorIn(name="Design Studio", kind=ContractorKind.INDIVIDUAL, pan="ABCPD1234K",
+                     default_section=TdsSection.S194J_PROFESSIONAL),
+        request=None,
+    )
+    invoice = await contractors.create_invoice(
+        session, hr_user, uuid.UUID(firm["id"]),
+        InvoiceIn(invoice_number="DS-1", invoice_date=date(2026, 8, 10), amount=Decimal("60000")),
+        request=None,
+    )
+    invoice_id = uuid.UUID(invoice["id"])
+    await contractors.approve_invoice(session, checker, invoice_id, request=None)
+    assert invoice["tds_amount"] == "6000.00"
+
+    def challan(form: str, quarter: int, amount: str, serial: str) -> TdsChallan:
+        return TdsChallan(
+            tenant_id=tenant.id, legal_entity_id=legal_entity.id, bsr_code="0510308",
+            deposit_date=date(2026, 9, 7), challan_serial=serial, financial_year="2026-2027",
+            quarter=quarter, tds_amount=Decimal(amount), total_amount=Decimal(amount), form=form,
+        )
+
+    salary = challan("24Q", 2, "6000", "00001")
+    wrong_quarter = challan("26Q", 1, "6000", "00002")
+    small = challan("26Q", 2, "5000", "00003")
+    right = challan("26Q", 2, "6000", "00004")
+    session.add_all([salary, wrong_quarter, small, right])
+    await session.commit()
+
+    position = await contractors.challan_position(
+        session, hr_user, financial_year="2026-27", quarter=2
+    )
+    assert position["untied_invoices"] == 1 and position["ready"] is False
+
+    for bad, why in ((salary, "24Q"), (wrong_quarter, "Q2"), (small, "does not fit")):
+        with pytest.raises(HTTPException) as refused:
+            await contractors.link_challan(session, hr_user, invoice_id, bad.id)
+        assert why in refused.value.detail
+
+    linked = await contractors.link_challan(session, hr_user, invoice_id, right.id)
+    assert linked["challan_id"] == str(right.id)
+    position = await contractors.challan_position(
+        session, hr_user, financial_year="2026-27", quarter=2
+    )
+    assert position["ready"] is True
+    assert {c["challan_serial"]: c["unused"] for c in position["challans"]}["00004"] == "0.00"
+
+    content = await contractors.form_26q_csv(
+        session, hr_user, financial_year="2026-27", quarter=2
+    )
+    [row] = list(csv.DictReader(io.StringIO(content)))
+    assert row["Challan BSR code"] == "0510308" and row["Challan serial"] == "00004"
+
+    data, filename = await contractors.tds_statement_pdf(
+        session, hr_user, uuid.UUID(firm["id"]), financial_year="2026-27", quarter=2
+    )
+    assert data.startswith(b"%PDF") and filename.endswith("Q2.pdf")

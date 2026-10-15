@@ -258,3 +258,57 @@ def test_transient_and_permanent_are_distinct_types() -> None:
     """The distinction is the point of having two exception classes."""
     assert not issubclass(TransientFailure, PermanentFailure)
     assert not issubclass(PermanentFailure, TransientFailure)
+
+
+async def test_the_expo_adapter_classifies_what_expo_says(monkeypatch) -> None:
+    import httpx
+
+    from app.services.notifications.adapters import (
+        ExpoPushAdapter,
+        OutboundMessage,
+        PermanentFailure,
+        TransientFailure,
+    )
+
+    replies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return replies.pop(0)
+
+    real = httpx.AsyncClient
+
+    class Client(real):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    message = OutboundMessage(
+        recipient_name="A", recipient_email=None, recipient_phone=None, subject="Hi",
+        body="Body", event_key="x", push_token="ExponentPushToken[abc]",
+    )
+    adapter = ExpoPushAdapter()
+
+    replies.append(httpx.Response(200, json={"data": {"status": "ok", "id": "t-1"}}))
+    assert (await adapter.send(message)).provider_message_id == "t-1"
+
+    replies.append(
+        httpx.Response(
+            200,
+            json={"data": {"status": "error", "details": {"error": "DeviceNotRegistered"}}},
+        )
+    )
+    with pytest.raises(PermanentFailure):
+        await adapter.send(message)
+
+    replies.append(httpx.Response(503))
+    with pytest.raises(TransientFailure):
+        await adapter.send(message)
+
+    with pytest.raises(PermanentFailure):
+        await adapter.send(
+            OutboundMessage(
+                recipient_name="A", recipient_email=None, recipient_phone=None, subject=None,
+                body="b", event_key="x",
+            )
+        )

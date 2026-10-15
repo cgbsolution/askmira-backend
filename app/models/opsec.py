@@ -113,6 +113,12 @@ class TenantSessionPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     enforce_ip_allowlist_for_privileged: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
+    #: Who must use two-step sign-in: "off", "privileged" (admins and
+    #: sub-admins) or "everyone". Somebody it applies to who has not set it up
+    #: can only reach sign-in and two-step set-up until they do.
+    require_two_step: Mapped[str] = mapped_column(
+        String(16), default="off", server_default="off", nullable=False
+    )
     #: CIDR ranges. **Empty means unconfigured, which permits everything** —
     #: see `services.opsec.access.check_allowlist` for why that is not the same
     #: as deny-all.

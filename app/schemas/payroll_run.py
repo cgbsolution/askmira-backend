@@ -63,16 +63,28 @@ class RunMarkPaid(BaseModel):
     payment_date: date | None = None
 
 
+class DeductionCeilingRead(BaseModel):
+    """Deductions that alone pass the legal ceiling (Payment of Wages / Code on Wages)."""
+
+    wages: str
+    deductions: str
+    share_percent: str
+    ceiling_percent: str
+    ceiling: str
+
+
 class VarianceFlagRead(BaseModel):
     employee_id: uuid.UUID
     employee_code: str
     employee_name: str | None = None
-    previous_net: str
+    #: Null when the flag is only about the deductions ceiling.
+    previous_net: str | None = None
     current_net: str
-    change_percent: str
+    change_percent: str | None = None
     #: Days of the period before joining or after leaving — the usual reason a
     #: joining or leaving month swings net pay.
     not_employed_days: str = "0"
+    deduction_ceiling: DeductionCeilingRead | None = None
     acknowledged: bool = False
     acknowledged_by_user_id: uuid.UUID | None = None
     acknowledged_by_name: str | None = None
@@ -293,7 +305,7 @@ class RegisterRead(BaseModel):
 
 RuleType = Literal[
     "pf", "esi", "professional_tax", "tds", "gratuity", "bonus", "labour_welfare_fund",
-    "tds_non_salary",
+    "tds_non_salary", "wage_deductions",
 ]
 
 

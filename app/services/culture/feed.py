@@ -38,6 +38,7 @@ from app.models.audit import AuditAction
 from app.models.culture import (
     Club,
     ClubMember,
+    ClubPost,
     Shoutout,
     ShoutoutReaction,
     ShoutoutVisibility,
@@ -985,3 +986,109 @@ async def list_values(
         stmt = stmt.where(CompanyValue.is_active.is_(True))
     rows = (await session.scalars(tenant_scoped(stmt, CompanyValue, user))).all()
     return [CompanyValueRead.model_validate(row) for row in rows]
+
+
+# ── Club posts ──────────────────────────────────────────────────────────────
+
+
+def _post_read(post: ClubPost, names: dict[uuid.UUID, str], me: uuid.UUID | None) -> dict:
+    return {
+        "id": str(post.id),
+        "club_id": str(post.club_id),
+        "author_employee_id": str(post.author_employee_id) if post.author_employee_id else None,
+        "author_name": names.get(post.author_employee_id, "A former member")
+        if post.author_employee_id
+        else "A former member",
+        "body": post.body,
+        "created_at": post.created_at.isoformat() if post.created_at else None,
+        "mine": post.author_employee_id is not None and post.author_employee_id == me,
+    }
+
+
+async def club_posts(
+    session: AsyncSession, user: User, club_id: uuid.UUID, *, limit: int = 100
+) -> list[dict]:
+    """A public club's posts for everybody; a private club's for its members only."""
+    club = await _visible_club(session, user, club_id)
+    if club.is_private and club.id not in await _my_memberships(session, user):
+        raise permissions.forbidden("A private club's posts are for its members.")
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(ClubPost)
+                .where(ClubPost.club_id == club.id)
+                .order_by(ClubPost.created_at.desc())
+                .limit(limit),
+                ClubPost,
+                user,
+            )
+        )
+    ).all()
+    authors = {r.author_employee_id for r in rows if r.author_employee_id}
+    names = (
+        {
+            e.id: e.full_name
+            for e in (
+                await session.scalars(
+                    tenant_scoped(select(Employee).where(Employee.id.in_(authors)), Employee, user)
+                )
+            ).all()
+        }
+        if authors
+        else {}
+    )
+    return [_post_read(r, names, user.employee_id) for r in rows]
+
+
+async def add_club_post(
+    session: AsyncSession, user: User, club_id: uuid.UUID, body: str, *, request: Request | None
+) -> dict:
+    """Members post; somebody who has not joined reads a public club but does not post in it."""
+    me = permissions.own_employee_id(user)
+    club = await _visible_club(session, user, club_id)
+    if club.id not in await _my_memberships(session, user):
+        raise permissions.forbidden("Join the club to post in it.")
+    text = body.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Write something to post.")
+    post = ClubPost(tenant_id=user.tenant_id, club_id=club.id, author_employee_id=me, body=text)
+    session.add(post)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="club_post",
+        entity_id=post.id,
+        actor=user,
+        summary="Posted in a club.",
+        request=request,
+    )
+    await session.commit()
+    employee = await session.get(Employee, me)
+    return _post_read(post, {me: employee.full_name if employee else ""}, me)
+
+
+async def delete_club_post(
+    session: AsyncSession, user: User, post_id: uuid.UUID, *, request: Request | None
+) -> None:
+    """The author removes their own post; HR removes anything that breaks the rules."""
+    post = await session.scalar(
+        tenant_scoped(select(ClubPost).where(ClubPost.id == post_id), ClubPost, user)
+    )
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if not (permissions.is_hr(user) or post.author_employee_id == user.employee_id):
+        raise permissions.forbidden("Only the author, or HR, removes a post.")
+    await session.delete(post)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="club_post",
+        entity_id=post.id,
+        actor=user,
+        summary="Removed a club post.",
+        request=request,
+    )
+    await session.commit()

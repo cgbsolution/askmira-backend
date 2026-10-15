@@ -44,7 +44,7 @@ class StepIn(BaseModel):
 
 
 class RuleIn(BaseModel):
-    process: str = Field(pattern="^(leave|expense)$")
+    process: str = Field(pattern="^(leave|expense|regularisation|timesheet|lifecycle)$")
     name: str = Field(min_length=1, max_length=120)
     priority: int = Field(default=100, ge=0, le=10_000)
     active: bool = True
@@ -87,7 +87,7 @@ class DelegationIn(BaseModel):
 
 @router.get("/rules", dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN))])
 async def list_rules(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
-    """Who approves leave and expenses, by condition, in priority order."""
+    """Who approves what, by condition, in priority order."""
     return await rules.list_rules(session, user)
 
 

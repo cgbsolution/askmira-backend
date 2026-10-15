@@ -12,6 +12,11 @@ the client sends it as a Bearer token. Claude Code, for example:
     claude mcp add --transport http askmira https://<host>/api/v1/mcp \\
         --header "Authorization: Bearer amk_..."
 
+Or a person adds AskMira as a connector (claude.ai, ChatGPT) by its URL alone:
+the client discovers the OAuth server, the person signs in and approves, and
+the tools then act as that person, within the read scopes their role allows
+(`app.services.oauth`).
+
 ═══════════════════════════════════════════════════════════════════════════════
 WHAT IT WILL NOT DO
 ═══════════════════════════════════════════════════════════════════════════════
@@ -409,6 +414,8 @@ async def handle(
             tenant_id=actor.tenant_id,
             action=AuditAction.AI_ACTION,
             entity_type="mcp_tool",
+            # A person connected through OAuth is named; an API key has no person.
+            actor_user_id=getattr(actor, "id", None),
             actor_type="mcp_agent",
             summary=f"MCP tool {name} called by {actor.full_name}",
             ai_context={"tool": name, "arguments": arguments},

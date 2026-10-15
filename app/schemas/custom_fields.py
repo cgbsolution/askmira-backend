@@ -24,6 +24,25 @@ def _options_fit(field_type: str | None, options: list[str] | None) -> None:
         raise ValueError("Only a choice field has options.")
 
 
+#: Tab names a custom field or table may not take: the profile's own tabs.
+RESERVED_TABS = frozenset(
+    {"overview", "personal", "family", "statutory", "employment", "compensation", "documents",
+     "lifecycle", "timeline", "attendance", "assets"}
+)
+
+
+def clean_tab(value: str | None) -> str | None:
+    """A tab name as stored: trimmed, single-spaced, or None for the Employment tab."""
+    if value is None:
+        return None
+    name = " ".join(value.split())
+    if not name:
+        return None
+    if name.lower() in RESERVED_TABS:
+        raise ValueError(f"'{name}' is one of the profile's own tabs; choose another name.")
+    return name
+
+
 class CustomFieldCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,9 +53,12 @@ class CustomFieldCreate(BaseModel):
     is_required: bool = False
     is_sensitive: bool = False
     display_order: int = Field(default=0, ge=0, le=10_000)
+    #: A profile tab of the admin's own, by name; empty for the Employment tab.
+    tab: str | None = Field(default=None, max_length=40)
 
     @model_validator(mode="after")
     def _options(self) -> CustomFieldCreate:
+        self.tab = clean_tab(self.tab)
         if self.options is not None:
             self.options = [o.strip() for o in self.options if o.strip()]
         _options_fit(self.field_type, self.options)
@@ -55,6 +77,8 @@ class CustomFieldUpdate(BaseModel):
     is_sensitive: bool | None = None
     display_order: int | None = Field(default=None, ge=0, le=10_000)
     is_active: bool | None = None
+    #: An empty string moves the field back to the Employment tab.
+    tab: str | None = Field(default=None, max_length=40)
 
 
 class CustomFieldRead(BaseModel):
@@ -69,4 +93,5 @@ class CustomFieldRead(BaseModel):
     is_sensitive: bool
     display_order: int
     is_active: bool
+    tab: str | None = None
     created_at: datetime | None = None

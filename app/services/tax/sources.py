@@ -39,7 +39,7 @@ from app.models.loans import (
 from app.models.payroll import PayrollRuleSet
 from app.models.user import User
 from app.services.attendance.service import local_today
-from app.services.loans import amortisation, reimbursements
+from app.services.loans import amortisation, flexi, reimbursements
 
 ZERO = Decimal(0)
 
@@ -411,7 +411,7 @@ async def _unclaimed_reimbursements(
         position = reimbursements.position(
             component_code=component.code,
             financial_year=year,
-            entitlement=_amount(component.annual_entitlement),
+            entitlement=await flexi.entitlement_for(session, user, employee_id, year, component),
             claims=[
                 {
                     "amount": _amount(claim.amount),

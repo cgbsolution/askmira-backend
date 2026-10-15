@@ -10,6 +10,24 @@ ENDPOINTS: dict[str, str] = {
     "POST /timesheets/me/submit": (
         "own: submits the caller's own week, by user.employee_id from the token."
     ),
+    "GET /timesheets/pending": (
+        "permissions: weeks whose approval chain's current step names the caller or someone "
+        "they stand in for, older weeks from their reporting line, everything for HR; never "
+        "the caller's own."
+    ),
+    "POST /timesheets/{timesheet_id}/decide": (
+        "permissions: the current step's approver, their delegate or HR (the line manager "
+        "or HR for a week from before chains); never the caller's own week."
+    ),
+    "GET /attendance/regularisations/pending": (
+        "permissions: corrections whose approval chain's current step names the caller or "
+        "someone they stand in for, older ones from their reporting line, everything for HR; "
+        "never the caller's own."
+    ),
+    "PATCH /attendance/regularisation/{regularisation_id}": (
+        "permissions: the current step's approver, their delegate or HR (the manager or HR "
+        "for a request from before chains); never the caller's own."
+    ),
     "GET /attendance/punches/{punch_id}/photo": (
         "scoped:require_manager_or_hr: the person's own punch photo, or their manager "
         "line and HR."

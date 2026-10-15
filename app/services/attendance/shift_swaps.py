@@ -43,6 +43,7 @@ from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
     "COVERAGE_MAX_DAYS",
+    "approved_leave_days",
     "cancel_swap",
     "coverage",
     "decide_swap",
@@ -541,6 +542,40 @@ async def pending_for_approver(session: AsyncSession, user: User) -> list[dict[s
 # ── Coverage ────────────────────────────────────────────────────────────────
 
 
+async def approved_leave_days(
+    session: AsyncSession,
+    user: User,
+    people: list[uuid.UUID],
+    start: date,
+    end: date,
+) -> dict[uuid.UUID, set[date]]:
+    """Each person's days of approved full-day leave in the range."""
+    out: dict[uuid.UUID, set[date]] = {}
+    if not people:
+        return out
+    leaves = (
+        await session.scalars(
+            tenant_scoped(
+                select(LeaveRequest).where(
+                    LeaveRequest.employee_id.in_(people),
+                    LeaveRequest.status == LeaveRequestStatus.APPROVED,
+                    LeaveRequest.start_date <= end,
+                    LeaveRequest.end_date >= start,
+                    LeaveRequest.is_half_day.is_(False),
+                ),
+                LeaveRequest,
+                user,
+            )
+        )
+    ).all()
+    for leave in leaves:
+        cursor = max(leave.start_date, start)
+        while cursor <= min(leave.end_date, end):
+            out.setdefault(leave.employee_id, set()).add(cursor)
+            cursor += timedelta(days=1)
+    return out
+
+
 async def coverage(
     session: AsyncSession,
     user: User,
@@ -549,8 +584,12 @@ async def coverage(
     end: date,
     location_id: uuid.UUID | None = None,
     department_id: uuid.UUID | None = None,
+    work_area: str | None = None,
 ) -> dict[str, Any]:
     """Per day and shift: who is scheduled, who of them is on leave, and the gap.
+
+    `location_id` narrows to people based at a site; `work_area` to the shifts
+    of one line or area. Each shift says which site and line it belongs to.
 
     HR sees everyone; a manager sees their reporting line. A shift with a
     minimum headcount is flagged on any working day where fewer than that are
@@ -581,27 +620,11 @@ async def coverage(
     people = list((await session.scalars(stmt)).all())
 
     on_leave: dict[date, set[uuid.UUID]] = {}
-    if people:
-        leaves = (
-            await session.scalars(
-                tenant_scoped(
-                    select(LeaveRequest).where(
-                        LeaveRequest.employee_id.in_(people),
-                        LeaveRequest.status == LeaveRequestStatus.APPROVED,
-                        LeaveRequest.start_date <= end,
-                        LeaveRequest.end_date >= start,
-                        LeaveRequest.is_half_day.is_(False),
-                    ),
-                    LeaveRequest,
-                    user,
-                )
-            )
-        ).all()
-        for leave in leaves:
-            cursor = max(leave.start_date, start)
-            while cursor <= min(leave.end_date, end):
-                on_leave.setdefault(cursor, set()).add(leave.employee_id)
-                cursor += timedelta(days=1)
+    for employee_id, leave_days in (
+        await approved_leave_days(session, user, people, start, end)
+    ).items():
+        for day in leave_days:
+            on_leave.setdefault(day, set()).add(employee_id)
 
     resolver = await ShiftResolver.load(session, user, people, start, end)
     shifts: dict[uuid.UUID, Shift] = {}
@@ -612,6 +635,8 @@ async def coverage(
         for employee_id in people:
             shift = resolver.resolve(employee_id, cursor).shift
             if shift is None or cursor.isoweekday() in (shift.weekly_off_days or []):
+                continue
+            if work_area and (shift.work_area or "").lower() != work_area.strip().lower():
                 continue
             shifts[shift.id] = shift
             entry = counts.setdefault(shift.id, {"scheduled": 0, "on_leave": 0})
@@ -637,6 +662,25 @@ async def coverage(
         days.append({"date": cursor.isoformat(), "shifts": rows})
         cursor += timedelta(days=1)
 
+    from app.models.org import Location
+
+    site_names = (
+        dict(
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(Location.id, Location.name).where(
+                            Location.id.in_({s.location_id for s in shifts.values()})
+                        ),
+                        Location,
+                        user,
+                    )
+                )
+            ).all()
+        )
+        if any(s.location_id for s in shifts.values())
+        else {}
+    )
     return {
         "from": start.isoformat(),
         "to": end.isoformat(),
@@ -649,8 +693,13 @@ async def coverage(
                 "start_time": s.start_time.isoformat(),
                 "end_time": s.end_time.isoformat(),
                 "min_headcount": s.min_headcount,
+                "location_id": str(s.location_id) if s.location_id else None,
+                "location_name": site_names.get(s.location_id) if s.location_id else None,
+                "work_area": s.work_area,
             }
-            for s in sorted(shifts.values(), key=lambda s: (s.start_time, s.code))
+            for s in sorted(
+                shifts.values(), key=lambda s: (s.work_area or "", s.start_time, s.code)
+            )
         ],
         "days": days,
         "note": (

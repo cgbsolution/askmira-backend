@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,7 +52,14 @@ class CandidateMessage(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
     )
     event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: email | whatsapp. A WhatsApp message goes to the phone in `to_address`.
+    channel: Mapped[str] = mapped_column(
+        String(16), default="email", server_default="email", nullable=False
+    )
     to_address: Mapped[str] = mapped_column(String(320), nullable=False)
+    #: WhatsApp only: the approved Meta template and its parameters, in order.
+    whatsapp_template_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    whatsapp_parameters: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     #: As the log shows it: a secret link appears as a placeholder, never itself.
     body: Mapped[str] = mapped_column(Text, nullable=False)

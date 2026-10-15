@@ -51,6 +51,7 @@ __all__ = [
     "client_address",
     "device_key",
     "enforce_session_policy",
+    "two_step_applies",
 ]
 
 logger = logging.getLogger("askmira.opsec")
@@ -102,7 +103,49 @@ async def enforce_session_policy(
     if policy_row is None:
         return
     await _enforce_allowlist(request, session, user, policy_row)
+    await _enforce_two_step(request, session, user, policy_row, token_payload)
     await _enforce_session(request, session, user, policy_row, datetime.now(UTC))
+
+
+#: Reachable while two-step sign-in is required but not yet set up: who am I,
+#: setting it up, changing a password and signing out.
+_TWO_STEP_SETUP_PREFIX = "/api/v1/auth/"
+
+
+def two_step_applies(row: TenantSessionPolicy | None, user: User) -> bool:
+    """Whether this workspace's policy requires two-step sign-in of this person."""
+    if row is None or row.require_two_step == "off":
+        return False
+    return row.require_two_step == "everyone" or user.role in PRIVILEGED_ROLES
+
+
+async def _enforce_two_step(
+    request: Request,
+    session: AsyncSession,
+    user: User,
+    row: TenantSessionPolicy,
+    token_payload: dict[str, Any],
+) -> None:
+    from app.services import mfa
+
+    user.two_step_required = False
+    # An operator works under their own workspace's rules, and the break-glass
+    # account exists for the day an authenticator is lost.
+    if token_payload.get("opg") or not two_step_applies(row, user):
+        return
+    if await mfa.is_enabled(session, user) or await _is_break_glass(session, user):
+        return
+    user.two_step_required = True
+    if request.url.path.startswith(_TWO_STEP_SETUP_PREFIX):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "This workspace requires two-step sign-in. Set it up with an authenticator app "
+            "first; until then only that set-up is open to you."
+        ),
+        headers={"X-Two-Step-Required": "1"},
+    )
 
 
 async def _is_break_glass(session: AsyncSession, user: User) -> bool:

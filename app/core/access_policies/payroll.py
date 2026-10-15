@@ -7,6 +7,9 @@ or is catalogue material about nobody in particular.
 
 ENDPOINTS: dict[str, str] = {
     "GET /esop/me": "own: the caller's own grants, by user.employee_id from the token.",
+    "GET /esop/me/projection": (
+        "own: the caller's own grants at a price they choose, by user.employee_id from the token."
+    ),
     # ── Earned wage access ──────────────────────────────────────────────────
     "GET /ewa/policy": "reference: whether advances are on and the share allowed; no person data.",
     "GET /ewa/me": "own: the caller's own earned pay and advances, by user.employee_id.",
@@ -78,6 +81,12 @@ ENDPOINTS: dict[str, str] = {
     "POST /loans/mine": "permissions: an application for the caller, from the token.",
     "GET /loans/{loan_id}": "permissions: the borrower's own loan unless payroll.",
     # ── Reimbursement components ────────────────────────────────────────────
+    "GET /reimbursements/flexi/me": (
+        "permissions: the caller's own flexi pot and split, by user.employee_id from the token."
+    ),
+    "PUT /reimbursements/flexi/me": (
+        "permissions: the caller declares their own split, by user.employee_id from the token."
+    ),
     "GET /reimbursements/components": (
         "reference: the reimbursement catalogue - entitlements, about nobody in particular."
     ),

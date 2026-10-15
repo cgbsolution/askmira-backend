@@ -39,6 +39,12 @@ from app.models.exit_workflow import (
     SettlementLine,
     SettlementStatus,
 )
+from app.models.expenses import (
+    AdvanceStatusEnum,
+    ExpenseClaim,
+    ExpenseClaimStatusEnum,
+    TravelAdvance,
+)
 from app.models.loans import ClaimStatus, LoanAccount, LoanStatus, ReimbursementClaim
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -693,6 +699,75 @@ async def settlement_for_exit(
     return row
 
 
+async def open_claims(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> tuple[list[ReimbursementClaim], list[ExpenseClaim]]:
+    """Claims owed to the leaver and not yet paid anywhere: what F&F must settle.
+
+    The same tests payroll applies before paying a claim, so a claim is due in
+    exactly one place. An expense claim on a trip whose travel advance is still
+    open is left out: settling that advance decides what is owed for the trip.
+    """
+    flexi = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(ReimbursementClaim).where(
+                        ReimbursementClaim.employee_id == employee_id,
+                        ReimbursementClaim.status.in_([ClaimStatus.VERIFIED, ClaimStatus.PARTIAL]),
+                        ReimbursementClaim.paid_in_run_id.is_(None),
+                        ReimbursementClaim.settled_in_settlement_id.is_(None),
+                    ),
+                    ReimbursementClaim,
+                    user,
+                )
+            )
+        ).all()
+    )
+    expenses = list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(ExpenseClaim).where(
+                        ExpenseClaim.employee_id == employee_id,
+                        ExpenseClaim.status == ExpenseClaimStatusEnum.APPROVED,
+                        ExpenseClaim.reimbursed_in_run_id.is_(None),
+                        ExpenseClaim.advance_settlement_id.is_(None),
+                        ExpenseClaim.settled_in_settlement_id.is_(None),
+                        ExpenseClaim.amount > 0,
+                    ),
+                    ExpenseClaim,
+                    user,
+                )
+            )
+        ).all()
+    )
+    trips = {claim.travel_request_id for claim in expenses if claim.travel_request_id}
+    if trips:
+        open_trips = set(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(TravelAdvance.travel_request_id).where(
+                            TravelAdvance.travel_request_id.in_(trips),
+                            TravelAdvance.status == AdvanceStatusEnum.ISSUED,
+                        ),
+                        TravelAdvance,
+                        user,
+                    )
+                )
+            ).all()
+        )
+        expenses = [claim for claim in expenses if claim.travel_request_id not in open_trips]
+    return flexi, expenses
+
+
+def _claims_total(flexi: list[ReimbursementClaim], expenses: list[ExpenseClaim]) -> Decimal:
+    return sum((_amount(row.accepted_amount) for row in flexi), ZERO) + sum(
+        (_amount(row.amount) for row in expenses), ZERO
+    )
+
+
 def _suggest(
     field: str, basis_field: str, label: str, amount: Decimal, basis: str, source: str,
     source_id: uuid.UUID | None,
@@ -785,31 +860,21 @@ async def settlement_sources(
 
     encashable = await exit_encashable(session, user, employee_id)
 
-    claims = (
-        await session.scalars(
-            tenant_scoped(
-                select(ReimbursementClaim).where(
-                    ReimbursementClaim.employee_id == employee_id,
-                    ReimbursementClaim.status.in_([ClaimStatus.VERIFIED, ClaimStatus.PARTIAL]),
-                    ReimbursementClaim.paid_in_run_id.is_(None),
-                ),
-                ReimbursementClaim,
-                user,
-            )
-        )
-    ).all()
-    if claims:
-        total = sum((_amount(row.accepted_amount) for row in claims), ZERO)
+    flexi, expenses = await open_claims(session, user, employee_id)
+    if flexi or expenses:
+        parts = [f"{row.component_code} {_amount(row.accepted_amount)}" for row in flexi] + [
+            f"{row.category_key} expense of {row.incurred_on:%d %b %Y} {_amount(row.amount)}"
+            for row in expenses
+        ]
         suggestions.append(
             _suggest(
                 "pending_reimbursements", "reimbursement_basis", "Pending reimbursements",
-                total,
-                f"{len(claims)} verified claim(s) not yet paid: "
-                + "; ".join(
-                    f"{row.component_code} {_amount(row.accepted_amount)}" for row in claims
-                )
-                + ".",
-                "reimbursements", claims[0].id,
+                _claims_total(flexi, expenses),
+                f"{len(parts)} approved claim(s) not yet paid: " + "; ".join(parts) + ". "
+                "Approving the settlement marks them paid here, so payroll does not pay "
+                "them again.",
+                "reimbursements" if flexi else "expenses",
+                (flexi[0].id if flexi else expenses[0].id),
             )
         )
 
@@ -988,6 +1053,47 @@ async def approve_settlement(
                 "before approving it."
             ),
         )
+    # Every claim still owed is settled here or nowhere: a leaver is not in the
+    # runs that would otherwise pay it. What the settlement pays for claims has
+    # to be exactly what is open, and approving it marks those claims paid.
+    flexi, expenses = await open_claims(session, user, settlement.employee_id)
+    owed = _claims_total(flexi, expenses)
+    paying = sum(
+        (
+            _amount(line.amount)
+            for line in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(SettlementLine).where(
+                            SettlementLine.settlement_id == settlement.id,
+                            SettlementLine.code == "REIMBURSEMENTS",
+                        ),
+                        SettlementLine,
+                        user,
+                    )
+                )
+            ).all()
+        ),
+        ZERO,
+    )
+    if paying != owed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The settlement pays {paying} in reimbursements, but {owed} is open in "
+                f"{len(flexi) + len(expenses)} approved claim(s). Compute the settlement "
+                "again with the suggested figure, or reject the claims that are not owed, "
+                "so that nothing is paid twice or left unpaid."
+            ),
+        )
+    now = datetime.now(UTC)
+    for claim in flexi:
+        claim.settled_in_settlement_id = settlement.id
+    for claim in expenses:
+        claim.settled_in_settlement_id = settlement.id
+        claim.status = ExpenseClaimStatusEnum.REIMBURSED
+        claim.reimbursed_at = now
+
     is_demand = _amount(settlement.net_amount) < ZERO
     settlement.status = SettlementStatus.DEMAND_RAISED if is_demand else SettlementStatus.APPROVED
     settlement.approved_by_user_id = user.id
@@ -1007,7 +1113,11 @@ async def approve_settlement(
             if is_demand
             else f"Approved a settlement of {settlement.net_amount} for payment"
         ),
-        changes={"net_amount": str(settlement.net_amount), "is_demand": is_demand},
+        changes={
+            "net_amount": str(settlement.net_amount),
+            "is_demand": is_demand,
+            "claims_settled": [str(c.id) for c in [*flexi, *expenses]],
+        },
         request=request,
     )
     await _tell_the_leaver(

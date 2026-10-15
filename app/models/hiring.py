@@ -196,6 +196,14 @@ class Candidate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: The candidate's own WhatsApp opt-in (on the application form or their portal).
+    #: Nobody else can set it: a recruiter ticking it would be consent nobody gave.
+    whatsapp_opt_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    whatsapp_opted_out_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     resume_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # Structured output of resume parsing: skills, roles, education, tenure.

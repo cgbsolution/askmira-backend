@@ -164,3 +164,36 @@ async def test_the_key_must_be_unique_and_the_type_needs_its_options(
 
     with pytest.raises(ValueError):
         CustomFieldCreate(key="team", label="Team", field_type="select", options=[])
+
+
+async def test_a_field_can_sit_on_a_tab_the_admin_names(
+    session: AsyncSession, tenant: Tenant, hr_user: User
+) -> None:
+    from pydantic import ValidationError
+
+    from app.services import custom_tables
+
+    field = await custom_fields.create_definition(
+        session, hr_user,
+        CustomFieldCreate(key="ppe_size", label="PPE size", field_type="text", tab="  Safety  "),
+        request=None,
+    )
+    assert field.tab == "Safety"
+    moved = await custom_fields.update_definition(
+        session, hr_user, field.id, CustomFieldUpdate(tab=""), request=None
+    )
+    assert moved.tab is None, "an empty name puts it back on the Employment tab"
+
+    # The profile's own tabs cannot be taken.
+    with pytest.raises(ValidationError):
+        CustomFieldCreate(key="x", label="X", field_type="text", tab="Documents")
+
+    table = await custom_tables.create_table(
+        session, hr_user,
+        custom_tables.TableIn(
+            key="certifications", label="Certifications", tab="Safety",
+            columns=[custom_tables.ColumnIn(key="name", label="Name", field_type="text")],
+        ),
+        request=None,
+    )
+    assert table["tab"] == "Safety"

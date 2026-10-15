@@ -190,3 +190,61 @@ async def test_coverage_counts_scheduled_and_on_leave_against_the_minimum(
 
     shifts = (await session.scalars(select(Shift))).all()
     assert any(s.min_headcount == 2 for s in shifts)
+
+
+async def test_the_schedule_agent_proposes_cover_and_an_approval_puts_them_on(
+    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
+) -> None:
+    from datetime import timedelta
+
+    from app.models.autonomy import AgentProposal
+    from app.services.autonomy import agents
+    from app.services.autonomy import service as autonomy
+
+    today = date.today()
+    horizon = [today + timedelta(days=n) for n in range(1, 8)]
+    monday = next(day for day in horizon if day.isoweekday() == 1)
+    morning = await _shift(session, hr_user, "MOR", 6, min_headcount=2)
+    # Not the workspace default, so people without an assignment are unscheduled.
+    shift_row = await session.get(Shift, morning.id)
+    shift_row.is_default = False
+    await session.commit()
+    asha, _ = await _person(session, tenant, legal_entity, "ASHA")
+    kiran, _ = await _person(session, tenant, legal_entity, "KIRAN")
+    ravi, _ = await _person(session, tenant, legal_entity, "RAVI")
+    await _assign(session, tenant, asha, morning)
+    leave_type = LeaveType(tenant_id=tenant.id, code="CL", name="Casual leave", is_paid=True)
+    session.add(leave_type)
+    await session.flush()
+    session.add(
+        LeaveRequest(
+            tenant_id=tenant.id, employee_id=kiran.id, leave_type_id=leave_type.id,
+            start_date=monday, end_date=monday, total_days=1, reason="Away",
+            status=LeaveRequestStatus.APPROVED,
+        )
+    )
+    await session.commit()
+
+    outcome = await agents.schedule_agent(session, hr_user, today=today)
+    # Six working days short by one each (Sunday is the shift's weekly off).
+    assert outcome["short_slots"] == 6 and outcome["proposed"] == 6
+    proposals = (await session.scalars(select(AgentProposal))).all()
+    by_day = {p.proposed_change["date"]: p for p in proposals}
+    assert by_day[monday.isoformat()].proposed_change["employee_id"] == str(ravi.id), (
+        "Kiran is on leave that Monday, so Ravi is asked"
+    )
+    assert "not on leave" in by_day[monday.isoformat()].reasoning
+
+    again = await agents.schedule_agent(session, hr_user, today=today)
+    assert again["proposed"] == 0, "a slot with a proposal is not proposed again"
+
+    await autonomy.decide_proposal(
+        session, hr_user, proposal_id=by_day[monday.isoformat()].id, approve=True
+    )
+    await session.commit()
+    cover = await session.scalar(
+        select(ShiftAssignment).where(ShiftAssignment.employee_id == ravi.id)
+    )
+    assert (cover.effective_from, cover.effective_to) == (monday, monday)
+    view = await shift_swaps.coverage(session, hr_user, start=monday, end=monday)
+    assert view["days"][0]["shifts"][0]["short_by"] == 0

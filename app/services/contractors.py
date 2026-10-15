@@ -47,7 +47,10 @@ from app.models.contractors import (
     InvoiceStatus,
     TdsSection,
 )
+from app.models.filings import TdsChallan
+from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
 
@@ -55,12 +58,15 @@ __all__ = [
     "ContractorIn",
     "InvoiceIn",
     "approve_invoice",
+    "challan_position",
     "create_contractor",
     "create_invoice",
     "form_26q_csv",
+    "link_challan",
     "list_contractors",
     "list_invoices",
     "mark_paid",
+    "tds_statement_pdf",
 ]
 
 RULE_TYPE = "tds_non_salary"
@@ -143,6 +149,7 @@ def _invoice_read(i: ContractorInvoice, contractor: Contractor | None = None) ->
         "status": i.status.value,
         "paid_on": i.paid_on.isoformat() if i.paid_on else None,
         "payment_reference": i.payment_reference,
+        "challan_id": str(i.challan_id) if i.challan_id else None,
     }
 
 
@@ -494,11 +501,8 @@ async def form_26q_csv(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Quarter 1 to 4."
         )
-    start_year = int(financial_year[:4])
-    first, last = _QUARTERS[quarter]
-    year = start_year + (1 if quarter == 4 else 0)
-    start = date(year, first, 1)
-    end = date(year, last, 30 if last in (6, 9) else 31)
+    start, end = _quarter_bounds(financial_year, quarter)
+    challans = await _challans_by_id(session, user, financial_year, quarter)
     rows = (
         await session.execute(
             tenant_scoped(
@@ -530,9 +534,13 @@ async def form_26q_csv(
             "Date of payment",
             "Invoice number",
             "Remark",
+            "Challan BSR code",
+            "Challan date",
+            "Challan serial",
         ]
     )
     for invoice, contractor in rows:
+        challan = challans.get(invoice.challan_id) if invoice.challan_id else None
         writer.writerow(
             [
                 contractor.pan or "PANNOTAVBL",
@@ -546,6 +554,9 @@ async def form_26q_csv(
                 invoice.paid_on.isoformat() if invoice.paid_on else "",
                 invoice.invoice_number,
                 "C" if not contractor.pan else "",
+                challan.bsr_code if challan else "",
+                challan.deposit_date.isoformat() if challan else "",
+                challan.challan_serial if challan else "",
             ]
         )
     await audit.record(
@@ -560,3 +571,298 @@ async def form_26q_csv(
     )
     await session.commit()
     return buffer.getvalue()
+
+
+# ── Challans and deduction statements ───────────────────────────────────────
+
+
+def _quarter_bounds(financial_year: str, quarter: int) -> tuple[date, date]:
+    """First and last day of a quarter of a financial year written 2026-27 or 2026-2027."""
+    if quarter not in _QUARTERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Quarter 1 to 4."
+        )
+    first, last = _QUARTERS[quarter]
+    year = int(financial_year[:4]) + (1 if quarter == 4 else 0)
+    return date(year, first, 1), date(year, last, 30 if last in (6, 9) else 31)
+
+
+def _quarter_of(day: date) -> tuple[int, int]:
+    """(financial year's first calendar year, quarter) for a date."""
+    start_year = day.year if day.month >= 4 else day.year - 1
+    quarter = {4: 1, 5: 1, 6: 1, 7: 2, 8: 2, 9: 2, 10: 3, 11: 3, 12: 3}.get(day.month, 4)
+    return start_year, quarter
+
+
+async def _challans_by_id(
+    session: AsyncSession, user: User, financial_year: str, quarter: int
+) -> dict[uuid.UUID, TdsChallan]:
+    rows = (
+        await session.scalars(
+            tenant_scoped(
+                select(TdsChallan).where(
+                    TdsChallan.form == "26Q",
+                    TdsChallan.quarter == quarter,
+                    TdsChallan.financial_year.like(f"{financial_year[:4]}-%"),
+                ),
+                TdsChallan,
+                user,
+            )
+        )
+    ).all()
+    return {row.id: row for row in rows}
+
+
+async def _linked_total(
+    session: AsyncSession, user: User, challan_id: uuid.UUID, *, excluding: uuid.UUID
+) -> Decimal:
+    amounts = (
+        await session.scalars(
+            tenant_scoped(
+                select(ContractorInvoice.tds_amount).where(
+                    ContractorInvoice.challan_id == challan_id,
+                    ContractorInvoice.id != excluding,
+                ),
+                ContractorInvoice,
+                user,
+            )
+        )
+    ).all()
+    return sum((_d(a) for a in amounts), Decimal(0))
+
+
+async def link_challan(
+    session: AsyncSession,
+    user: User,
+    invoice_id: uuid.UUID,
+    challan_id: uuid.UUID | None,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Say which 26Q challan an invoice's TDS was deposited under (None unlinks).
+
+    The challan must be a 26Q deposit for the quarter the TDS was deducted in,
+    and the invoices tied to it cannot add up to more TDS than it deposited.
+    """
+    permissions.require_hr(user, detail="Challans are recorded by HR or finance.")
+    row = await _invoice(session, user, invoice_id)
+    if challan_id is None:
+        row.challan_id = None
+        summary = f"Unlinked invoice {row.invoice_number} from its challan"
+    else:
+        if row.status not in (InvoiceStatus.APPROVED, InvoiceStatus.PAID):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only an approved or paid invoice has TDS to deposit.",
+            )
+        if _d(row.tds_amount) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No TDS was deducted on this invoice, so there is no deposit to link.",
+            )
+        challan = await session.scalar(
+            tenant_scoped(select(TdsChallan).where(TdsChallan.id == challan_id), TdsChallan, user)
+        )
+        if challan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challan not found")
+        if challan.form != "26Q":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="That is a 24Q (salary) challan. Contractor TDS goes under a 26Q one.",
+            )
+        start_year, quarter = _quarter_of(row.invoice_date)
+        if int(challan.financial_year[:4]) != start_year or challan.quarter != quarter:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"This TDS was deducted in Q{quarter} of {start_year}-{start_year + 1}; "
+                    f"the challan is for Q{challan.quarter} of {challan.financial_year}."
+                ),
+            )
+        linked = await _linked_total(session, user, challan.id, excluding=row.id)
+        if linked + _d(row.tds_amount) > _d(challan.tds_amount):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"The challan deposited {_money(challan.tds_amount)} of TDS and "
+                    f"{_money(linked)} is already tied to it; this invoice's "
+                    f"{_money(row.tds_amount)} does not fit."
+                ),
+            )
+        row.challan_id = challan.id
+        summary = f"Tied invoice {row.invoice_number} to challan {challan.challan_serial}"
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="contractor_invoice",
+        entity_id=row.id,
+        actor=user,
+        changes={"challan_id": str(challan_id) if challan_id else None},
+        summary=summary,
+        request=request,
+    )
+    await session.commit()
+    return _invoice_read(row)
+
+
+async def challan_position(
+    session: AsyncSession, user: User, *, financial_year: str, quarter: int
+) -> dict[str, Any]:
+    """For a quarter: each 26Q challan against what is tied to it, and TDS not yet tied."""
+    permissions.require_hr(user, detail="26Q is for HR and finance.")
+    start, end = _quarter_bounds(financial_year, quarter)
+    challans = await _challans_by_id(session, user, financial_year, quarter)
+    invoices = (
+        await session.scalars(
+            tenant_scoped(
+                select(ContractorInvoice).where(
+                    ContractorInvoice.invoice_date >= start,
+                    ContractorInvoice.invoice_date <= end,
+                    ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
+                    ContractorInvoice.tds_amount > 0,
+                ),
+                ContractorInvoice,
+                user,
+            )
+        )
+    ).all()
+    tied: dict[uuid.UUID, Decimal] = {}
+    untied = Decimal(0)
+    untied_count = 0
+    for invoice in invoices:
+        if invoice.challan_id in challans:
+            tied[invoice.challan_id] = tied.get(invoice.challan_id, Decimal(0)) + _d(
+                invoice.tds_amount
+            )
+        else:
+            untied += _d(invoice.tds_amount)
+            untied_count += 1
+    return {
+        "financial_year": financial_year,
+        "quarter": quarter,
+        "challans": [
+            {
+                "id": str(c.id),
+                "bsr_code": c.bsr_code,
+                "deposit_date": c.deposit_date.isoformat(),
+                "challan_serial": c.challan_serial,
+                "tds_amount": _money(c.tds_amount),
+                "tied": _money(tied.get(c.id, 0)),
+                "unused": _money(_d(c.tds_amount) - tied.get(c.id, Decimal(0))),
+            }
+            for c in sorted(challans.values(), key=lambda c: (c.deposit_date, c.challan_serial))
+        ],
+        "untied_invoices": untied_count,
+        "untied_tds": _money(untied),
+        "ready": untied_count == 0,
+    }
+
+
+async def tds_statement_pdf(
+    session: AsyncSession,
+    user: User,
+    contractor_id: uuid.UUID,
+    *,
+    financial_year: str,
+    quarter: int,
+    request: Request | None = None,
+) -> tuple[bytes, str]:
+    """A quarter's TDS deductions for one contractor, with the challans they went under.
+
+    Form 16A itself is downloaded from TRACES once the 26Q is processed; this
+    statement carries the same lines so the contractor can match them against
+    their Form 26AS before then.
+    """
+    from html import escape
+
+    from app.services.documents.pdf import Letterhead, render_pdf
+
+    permissions.require_hr(user, detail="TDS statements are issued by HR or finance.")
+    contractor = await _contractor(session, user, contractor_id)
+    start, end = _quarter_bounds(financial_year, quarter)
+    challans = await _challans_by_id(session, user, financial_year, quarter)
+    invoices = (
+        await session.scalars(
+            tenant_scoped(
+                select(ContractorInvoice)
+                .where(
+                    ContractorInvoice.contractor_id == contractor.id,
+                    ContractorInvoice.invoice_date >= start,
+                    ContractorInvoice.invoice_date <= end,
+                    ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
+                )
+                .order_by(ContractorInvoice.invoice_date),
+                ContractorInvoice,
+                user,
+            )
+        )
+    ).all()
+    if not invoices:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No approved invoices from this contractor in that quarter.",
+        )
+    tenant = await session.get(Tenant, user.tenant_id)
+    entity_ids = {c.legal_entity_id for c in challans.values()}
+    entity = (
+        await session.get(LegalEntity, next(iter(entity_ids))) if len(entity_ids) == 1 else None
+    )
+    deductor = entity.name if entity else (tenant.name if tenant else "Deductor")
+    tan = entity.tan if entity and entity.tan else "—"
+    pan = contractor.pan or "PANNOTAVBL"
+    lines = []
+    total_credit = total_tds = Decimal(0)
+    for invoice in invoices:
+        challan = challans.get(invoice.challan_id) if invoice.challan_id else None
+        total_credit += _d(invoice.amount)
+        total_tds += _d(invoice.tds_amount)
+        lines.append(
+            "<tr>"
+            f"<td>{escape(invoice.invoice_number)}</td>"
+            f"<td>{invoice.invoice_date.isoformat()}</td>"
+            f"<td>{_26Q_CODE[invoice.section]}</td>"
+            f"<td>{_money(invoice.amount)}</td>"
+            f"<td>{_d(invoice.tds_rate).quantize(Decimal('0.001'))}%</td>"
+            f"<td>{_money(invoice.tds_amount)}</td>"
+            f"<td>{escape(challan.bsr_code) if challan else 'Not yet deposited'}</td>"
+            f"<td>{challan.deposit_date.isoformat() if challan else ''}</td>"
+            f"<td>{escape(challan.challan_serial) if challan else ''}</td>"
+            "</tr>"
+        )
+    html = f"""
+<h2>TDS deduction statement</h2>
+<p>Financial year {escape(financial_year)}, quarter {quarter}
+({start.isoformat()} to {end.isoformat()})</p>
+<p><b>Deductor:</b> {escape(deductor)} &nbsp; <b>TAN:</b> {escape(tan)}<br/>
+<b>Deductee:</b> {escape(contractor.name)} &nbsp; <b>PAN:</b> {escape(pan)}</p>
+<table class="ctc-table">
+<thead><tr><th>Invoice</th><th>Date of credit</th><th>Section</th><th>Amount credited</th>
+<th>Rate</th><th>TDS</th><th>BSR code</th><th>Deposited on</th><th>Challan serial</th></tr></thead>
+<tbody>{"".join(lines)}</tbody>
+<tfoot><tr><td colspan="3">Total</td><td>{_money(total_credit)}</td><td></td>
+<td>{_money(total_tds)}</td><td colspan="3"></td></tr></tfoot>
+</table>
+<p style="font-size:8.5pt">Form 16A is issued from the TRACES portal after the quarter's 26Q
+is processed. This statement lists the same deductions and deposits so you can match them
+against your Form 26AS in the meantime.</p>
+"""
+    data = render_pdf(
+        merged_html=html,
+        reference_number=f"TDS-{financial_year}-Q{quarter}",
+        letterhead=Letterhead(company_name=escape(deductor)),
+    )
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.EXPORT,
+        entity_type="contractor_tds_statement",
+        entity_id=contractor.id,
+        actor=user,
+        changes={"financial_year": financial_year, "quarter": quarter},
+        summary=f"Issued the {financial_year} Q{quarter} TDS statement for {contractor.name}",
+        request=request,
+    )
+    await session.commit()
+    safe = "".join(ch for ch in contractor.name if ch.isalnum())[:40] or "contractor"
+    return data, f"TDS-{safe}-{financial_year}-Q{quarter}.pdf"

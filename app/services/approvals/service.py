@@ -140,6 +140,8 @@ async def _leave(session: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 async def _regularisations(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    from app.services.approvals import rules
+
     stmt = tenant_scoped(
         select(AttendanceRegularisation, Employee)
         .join(Employee, Employee.id == AttendanceRegularisation.employee_id)
@@ -147,13 +149,17 @@ async def _regularisations(session: AsyncSession, user: User) -> list[dict[str, 
         AttendanceRegularisation,
         user,
     )
-    if not permissions.is_hr(user):
-        line = await permissions.reporting_line(session, user)
-        if not line:
-            return []
-        stmt = stmt.where(AttendanceRegularisation.employee_id.in_(line))
     stmt = _not_own(stmt, AttendanceRegularisation.employee_id, user)
     rows = (await session.execute(stmt.order_by(AttendanceRegularisation.created_at))).all()
+    if not permissions.is_hr(user):
+        line = set(await permissions.reporting_line(session, user))
+        acting = {str(a) for a in await rules.acting_for(session, user)}
+        rows = [
+            (reg, emp)
+            for reg, emp in rows
+            if (reg.approval_chain and rules.waiting_on(reg.approval_chain, acting))
+            or (not reg.approval_chain and reg.employee_id in line)
+        ]
     return [
         {
             "id": reg.id,
@@ -402,6 +408,8 @@ async def _offers(session: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 async def _lifecycle(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    from app.services.approvals import rules
+
     stmt = tenant_scoped(
         select(LifecycleEvent, Employee)
         .join(Employee, Employee.id == LifecycleEvent.employee_id)
@@ -417,6 +425,14 @@ async def _lifecycle(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     )
     stmt = _not_own(stmt, LifecycleEvent.employee_id, user)
     rows = (await session.execute(stmt.order_by(LifecycleEvent.created_at))).all()
+    if not permissions.is_admin(user):
+        # Not an admin: only the steps a chain has put in front of the caller.
+        acting = {str(a) for a in await rules.acting_for(session, user)}
+        rows = [
+            (event, emp)
+            for event, emp in rows
+            if event.approval_chain and rules.waiting_on(event.approval_chain, acting)
+        ]
     return [
         {
             "id": event.id,
@@ -426,6 +442,9 @@ async def _lifecycle(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "detail": (event.reason or "")[:120],
             "submitted_at": event.created_at,
             "due_on": event.effective_from,
+            # An admin decides on the lifecycle screen; anybody a chain names
+            # decides on the event's own page.
+            "link": None if permissions.is_admin(user) else f"/approvals/lifecycle/{event.id}",
         }
         for event, emp in rows
     ]
@@ -560,14 +579,15 @@ SOURCES: tuple[Source, ...] = (
         "leave_comp_off", "Comp-off claims", "/time", permissions.HR_ROLES,
         comp_off_service.approval_items, module="leave", line_managers=True,
     ),
+    # A rule may name anybody as an approver, so these are open to everyone
+    # and each queue shows only what is waiting on the caller.
     Source(
         "attendance_regularisation",
         "Attendance corrections",
         "/time/attendance-review?tab=regularisations",
-        permissions.HR_ROLES,
+        EVERYONE,
         _regularisations,
         module="leave",
-        line_managers=True,
     ),
     Source(
         "overtime", "Overtime", "/time/overtime", permissions.HR_ROLES, _overtime,
@@ -577,10 +597,7 @@ SOURCES: tuple[Source, ...] = (
         "shift_swap", "Shift swaps", "/time/attendance-review?tab=swaps", permissions.HR_ROLES,
         _shift_swaps, module="leave", line_managers=True,
     ),
-    Source(
-        "timesheet", "Timesheets", "/time/timesheets/approvals", permissions.HR_ROLES,
-        _timesheets, line_managers=True,
-    ),
+    Source("timesheet", "Timesheets", "/time/timesheets/approvals", EVERYONE, _timesheets),
     Source(
         "payroll_adjustment", "Payroll adjustments", "/payroll/adjustments", ADMIN_ROLES,
         _payroll_adjustments, module="payroll",
@@ -604,7 +621,7 @@ SOURCES: tuple[Source, ...] = (
         module="hiring",
     ),
     Source("offer", "Offers", "/hiring/offers", permissions.HR_ROLES, _offers, module="hiring"),
-    Source("lifecycle_event", "Lifecycle events", "/people/lifecycle", ADMIN_ROLES, _lifecycle),
+    Source("lifecycle_event", "Lifecycle events", "/people/lifecycle", EVERYONE, _lifecycle),
     Source("loan", "Loans", "/payroll/loans", ADMIN_ROLES, _loans, module="payroll"),
     Source(
         "settlement", "Full & final settlements", "/payroll/settlements", ADMIN_ROLES,
@@ -699,9 +716,9 @@ async def inbox(session: AsyncSession, user: User) -> ApprovalInboxRead:
             )
             continue
         for entry in found:
+            link = entry.pop("link", None) or source.link
             items.append(
-                ApprovalItemRead(source=source.key, source_label=source.label, link=source.link,
-                                 **entry)
+                ApprovalItemRead(source=source.key, source_label=source.label, link=link, **entry)
             )
         sources.append(ApprovalSourceRead(key=source.key, label=source.label, count=len(found)))
 

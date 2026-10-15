@@ -784,6 +784,7 @@ async def generate_tds_24q(
                     TdsChallan.legal_entity_id == legal_entity_id,
                     TdsChallan.financial_year == financial_year,
                     TdsChallan.quarter == quarter,
+                    TdsChallan.form == "24Q",
                 )
                 .order_by(TdsChallan.deposit_date, TdsChallan.challan_serial),
                 TdsChallan,

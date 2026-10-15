@@ -50,6 +50,13 @@ ENDPOINTS: dict[str, str] = {
         "permissions: the caller joins; a private club is invisible to non-members."
     ),
     "POST /culture/clubs/{club_id}/leave": "permissions: the caller leaves.",
+    "GET /culture/clubs/{club_id}/posts": (
+        "permissions: a public club's posts for everybody; a private club's for its members."
+    ),
+    "POST /culture/clubs/{club_id}/posts": (
+        "permissions: members post, as themselves (user.employee_id from the token)."
+    ),
+    "DELETE /culture/club-posts/{post_id}": "permissions: the author, or HR.",
     "GET /culture/clubs/{club_id}/members": (
         "permissions: the club's members only - HR included in the refusal. HR "
         "sees participation in aggregate."

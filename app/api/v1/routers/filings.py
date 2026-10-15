@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -111,6 +111,8 @@ class ChallanCreate(BaseModel):
     late_fee: Decimal = Field(default=Decimal(0), ge=0)
     total_amount: Decimal = Field(ge=0)
     is_book_entry: bool = False
+    #: 24Q for salary TDS; 26Q for contractor and professional payments.
+    form: Literal["24Q", "26Q"] = "24Q"
 
     @model_validator(mode="after")
     def components_sum_to_total(self) -> ChallanCreate:
@@ -143,6 +145,7 @@ class ChallanRead(BaseModel):
     tds_amount: Decimal
     total_amount: Decimal
     is_book_entry: bool
+    form: str
 
 
 class MappingCreate(BaseModel):
@@ -428,8 +431,11 @@ async def list_challans(
     session: DbSession,
     financial_year: str | None = None,
     quarter: int | None = Query(default=None, ge=1, le=4),
+    form: Literal["24Q", "26Q"] | None = None,
 ) -> list[ChallanRead]:
     stmt = select(TdsChallan).order_by(TdsChallan.deposit_date.desc())
+    if form is not None:
+        stmt = stmt.where(TdsChallan.form == form)
     if financial_year is not None:
         stmt = stmt.where(TdsChallan.financial_year == financial_year)
     if quarter is not None:
@@ -470,6 +476,7 @@ async def create_challan(
         late_fee=payload.late_fee,
         total_amount=payload.total_amount,
         is_book_entry=payload.is_book_entry,
+        form=payload.form,
     )
     session.add(challan)
     await session.flush()
@@ -517,6 +524,11 @@ async def map_deduction(
     )
     if challan is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challan not found")
+    if challan.form != "24Q":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This is a 26Q challan. Salary TDS is deposited and mapped under a 24Q one.",
+        )
 
     payslip = await session.scalar(
         tenant_scoped(

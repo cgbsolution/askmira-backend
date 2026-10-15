@@ -6,12 +6,14 @@ a signal needs several facts about one person put side by side. These are
 computed here, from the same tables, and scoped the same way: HR sees the
 company, a line manager their reporting line, anybody else only themselves.
 
-**Signals, not predictions.** The absence and burnout signals are rules with
-their evidence attached — "no leave for 140 days, 42 hours of overtime in the
-last 30" — never a number out of 100. The one score here, the Bradford factor,
-is arithmetic on the attendance record, shown with both of its inputs. A manager
-can check every one of them against the record, and nothing here claims to
-predict anything (FS-ANL-02).
+**Signals, not predictions.** The absence, burnout and attrition signals are
+rules with their evidence attached — "no leave for 140 days, 42 hours of
+overtime in the last 30", "three people left this team in 90 days" — never a
+number out of 100. The one score here, the Bradford factor, is arithmetic on
+the attendance record, shown with both of its inputs. A manager can check every
+one of them against the record, and nothing here claims to predict anything
+(FS-ANL-02). Every threshold is the workspace's to set (`signal_rules`); the
+defaults below are where it starts.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import calendar
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -40,6 +42,7 @@ from app.models.user import User, UserRole
 from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
+    "SignalRules",
     "absence_scores",
     "absence_signals",
     "attrition",
@@ -50,6 +53,8 @@ __all__ = [
     "month_ends",
     "pin_report",
     "send_signal_digest",
+    "set_signal_rules",
+    "signal_rules",
     "unpin_report",
 ]
 
@@ -68,6 +73,113 @@ PAY_REVISION_MONTHS = 18
 
 UNPLANNED = (AttendanceStatus.ABSENT, AttendanceStatus.LOP)
 WORKED = (AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY)
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRules:
+    """The workspace's thresholds. Zero switches a signal off."""
+
+    no_leave_days: int = NO_LEAVE_DAYS
+    overtime_hours_30d: int = OVERTIME_HOURS_30D
+    bridge_absences_90d: int = BRIDGE_ABSENCES_90D
+    lop_days_90d: int = LOP_DAYS_90D
+    bradford_review: int = BRADFORD_REVIEW
+    pay_revision_months: int = PAY_REVISION_MONTHS
+    #: People who left the same manager's team within `team_exit_days`.
+    team_exits: int = 2
+    team_exit_days: int = 90
+    #: A new line manager within this many days.
+    manager_change_days: int = 90
+    #: A fall of at least this much in final score between the last two reviews.
+    rating_drop: Decimal = Decimal("1")
+    #: No promotion or new designation in this many months.
+    no_role_change_months: int = 36
+
+
+RULE_LIMITS: dict[str, tuple[int, int]] = {
+    "no_leave_days": (0, 730),
+    "overtime_hours_30d": (0, 300),
+    "bridge_absences_90d": (0, 60),
+    "lop_days_90d": (0, 90),
+    "bradford_review": (0, 10_000),
+    "pay_revision_months": (0, 120),
+    "team_exits": (0, 50),
+    "team_exit_days": (1, 365),
+    "manager_change_days": (0, 365),
+    "no_role_change_months": (0, 240),
+}
+
+
+async def signal_rules(session: AsyncSession, user: User) -> SignalRules:
+    from app.models.tenant import Tenant
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    saved = dict(((tenant.settings or {}) if tenant else {}).get("people_signals") or {})
+    values: dict[str, Any] = {}
+    for key, value in saved.items():
+        if key == "rating_drop":
+            values[key] = Decimal(str(value))
+        elif key in RULE_LIMITS:
+            values[key] = int(value)
+    return SignalRules(**values)
+
+
+def rules_read(rules: SignalRules) -> dict[str, Any]:
+    return {
+        **{key: getattr(rules, key) for key in RULE_LIMITS},
+        "rating_drop": str(rules.rating_drop),
+    }
+
+
+async def set_signal_rules(
+    session: AsyncSession, user: User, values: dict[str, Any], *, request: Any = None
+) -> dict[str, Any]:
+    """Change the thresholds. An admin's, audited; the signals change on the next read."""
+    from fastapi import HTTPException
+
+    from app.models.audit import AuditAction
+    from app.models.tenant import Tenant
+    from app.services import audit
+
+    if not permissions.is_admin(user):
+        raise permissions.forbidden("Only an admin sets the signal thresholds.")
+    current = rules_read(await signal_rules(session, user))
+    updated = dict(current)
+    for key, value in values.items():
+        if key == "rating_drop":
+            try:
+                drop = Decimal(str(value))
+            except (ArithmeticError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail="The rating drop is a number.") from exc
+            if not Decimal(0) <= drop <= Decimal(10):
+                raise HTTPException(status_code=422, detail="The rating drop is from 0 to 10.")
+            updated[key] = str(drop)
+        elif key in RULE_LIMITS:
+            low, high = RULE_LIMITS[key]
+            if not isinstance(value, int) or not low <= value <= high:
+                raise HTTPException(
+                    status_code=422, detail=f"{key.replace('_', ' ')} is from {low} to {high}."
+                )
+            updated[key] = value
+        else:
+            raise HTTPException(status_code=422, detail=f"'{key}' is not a signal threshold.")
+    tenant = await session.get(Tenant, user.tenant_id)
+    tenant.settings = {**(tenant.settings or {}), "people_signals": updated}
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="people_signal_rules",
+        entity_id=user.tenant_id,
+        actor=user,
+        changes={"from": current, "to": updated},
+        summary="Changed the people-signal thresholds",
+        request=request,
+    )
+    await session.commit()
+    return updated
+
+
 BRADFORD_METHOD = (
     "Bradford factor = spells squared times days, over unplanned absence (days marked absent or "
     "loss of pay) in the last 52 weeks. Approved leave never counts. A spell is a run of "
@@ -82,15 +194,17 @@ def _months_between(start: date, end: date) -> int:
 
 
 def _pay_revision_signal(
-    person: Employee, last_revision: date | None, today: date
+    person: Employee, last_revision: date | None, today: date, threshold: int = PAY_REVISION_MONTHS
 ) -> dict[str, Any] | None:
     """No salary change for a long time: a fact about pay, not a guess about intent."""
+    if threshold <= 0:
+        return None
     revised = last_revision is not None and last_revision != person.date_of_joining
     since = last_revision if revised else person.date_of_joining
     if since is None:
         return None
     months = _months_between(since, today)
-    if months < PAY_REVISION_MONTHS:
+    if months < threshold:
         return None
     lead = (
         f"Pay last revised effective {since:%d %b %Y}"
@@ -100,7 +214,7 @@ def _pay_revision_signal(
     return {
         "kind": "pay_revision",
         "label": "No pay revision in a long time",
-        "rule": f"No salary revision for {PAY_REVISION_MONTHS}+ months.",
+        "rule": f"No salary revision for {threshold}+ months.",
         "evidence": [f"{lead}, {months} months ago"],
     }
 
@@ -327,6 +441,9 @@ class _Facts:
     spells: int = 0
     absent_days: Decimal = Decimal(0)
     last_pay_revision: date | None = None
+    manager_changed_on: date | None = None
+    last_role_change: date | None = None
+    scores: list[tuple[datetime, Decimal]] = field(default_factory=list)
 
 
 def bradford_factor(spells: int, days: Decimal) -> Decimal:
@@ -450,13 +567,16 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
     """Explainable, rule-based signals per person: possible burnout, absence patterns.
 
     Each signal carries the rule it applied and the facts that triggered it.
-    A person appears only if at least one rule fires.
+    A person appears only if at least one rule fires. The thresholds are the
+    workspace's (`signal_rules`).
     """
+    rules = await signal_rules(session, user)
+    everyone = await _people(session, user)
     people = [
         p
-        for p in await _people(session, user)
+        for p in everyone
         if p.status != EmploymentStatus.EXITED and p.date_of_joining
-        and p.date_of_joining <= today - timedelta(days=NO_LEAVE_DAYS)
+        and p.date_of_joining <= today - timedelta(days=30)
     ]
     if not people:
         return []
@@ -528,6 +648,9 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
             if current is None or effective_from > current:
                 facts[employee_id].last_pay_revision = effective_from
 
+    await _attrition_facts(session, user, ids, facts, today)
+    team_exits = await _team_exits(session, user, people, rules, today)
+
     for day in days:
         f = facts[day.employee_id]
         if day.attendance_date >= today - timedelta(days=30):
@@ -546,14 +669,15 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
         reference = f.last_leave_end or person.date_of_joining
         days_without = (today - reference).days if reference else 0
         overtime_hours = round(f.overtime_minutes_30d / 60, 1)
-        if days_without >= NO_LEAVE_DAYS and overtime_hours >= OVERTIME_HOURS_30D:
+        no_leave = rules.no_leave_days > 0 and days_without >= rules.no_leave_days
+        if no_leave and rules.overtime_hours_30d > 0 and overtime_hours >= rules.overtime_hours_30d:
             signals.append(
                 {
                     "kind": "burnout_risk",
                     "label": "Long stretch without leave, with heavy overtime",
                     "rule": (
-                        f"No leave for {NO_LEAVE_DAYS}+ days and {OVERTIME_HOURS_30D}+ hours of "
-                        "overtime in the last 30 days."
+                        f"No leave for {rules.no_leave_days}+ days and "
+                        f"{rules.overtime_hours_30d}+ hours of overtime in the last 30 days."
                     ),
                     "evidence": [
                         f"No approved leave for {days_without} days"
@@ -562,43 +686,43 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
                     ],
                 }
             )
-        elif days_without >= NO_LEAVE_DAYS:
+        elif no_leave:
             signals.append(
                 {
                     "kind": "no_leave",
                     "label": "No leave in a long time",
-                    "rule": f"No approved leave for {NO_LEAVE_DAYS}+ days.",
+                    "rule": f"No approved leave for {rules.no_leave_days}+ days.",
                     "evidence": [f"No approved leave for {days_without} days"],
                 }
             )
-        if len(f.bridge_absences) >= BRIDGE_ABSENCES_90D:
+        if rules.bridge_absences_90d > 0 and len(f.bridge_absences) >= rules.bridge_absences_90d:
             signals.append(
                 {
                     "kind": "bridge_absences",
                     "label": "Absences next to weekends",
                     "rule": (
-                        f"{BRIDGE_ABSENCES_90D}+ days off on a Monday or Friday in the last "
-                        "90 days."
+                        f"{rules.bridge_absences_90d}+ days off on a Monday or Friday in the "
+                        "last 90 days."
                     ),
                     "evidence": [f"Off on {', '.join(sorted(f.bridge_absences)[-6:])}"],
                 }
             )
-        if f.lop_days_90d >= LOP_DAYS_90D:
+        if rules.lop_days_90d > 0 and f.lop_days_90d >= rules.lop_days_90d:
             signals.append(
                 {
                     "kind": "unpaid_absence",
                     "label": "Repeated unpaid absence",
-                    "rule": f"{LOP_DAYS_90D}+ days of loss of pay in the last 90 days.",
+                    "rule": f"{rules.lop_days_90d}+ days of loss of pay in the last 90 days.",
                     "evidence": [f"{f.lop_days_90d.normalize()} day(s) of loss of pay in 90 days"],
                 }
             )
         factor = bradford_factor(f.spells, f.absent_days)
-        if factor >= BRADFORD_REVIEW:
+        if rules.bradford_review > 0 and factor >= rules.bradford_review:
             signals.append(
                 {
                     "kind": "frequent_absence",
                     "label": "Frequent short absences",
-                    "rule": f"Bradford factor {BRADFORD_REVIEW}+. {BRADFORD_METHOD}",
+                    "rule": f"Bradford factor {rules.bradford_review}+. {BRADFORD_METHOD}",
                     "evidence": [
                         f"{f.spells} spell(s) of unplanned absence in 52 weeks",
                         f"{f.absent_days.normalize()} day(s) in total",
@@ -607,9 +731,12 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
                 }
             )
         if show_pay:
-            signal = _pay_revision_signal(person, f.last_pay_revision, today)
+            signal = _pay_revision_signal(
+                person, f.last_pay_revision, today, rules.pay_revision_months
+            )
             if signal is not None:
                 signals.append(signal)
+        signals.extend(_attrition_signals(person, f, rules, team_exits.get(person.id), today))
         if signals:
             out.append(
                 {
@@ -617,6 +744,179 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
                     "employee_code": person.employee_code,
                     "employee_name": person.full_name,
                     "signals": signals,
+                }
+            )
+    return out
+
+
+async def _attrition_facts(
+    session: AsyncSession,
+    user: User,
+    ids: list[uuid.UUID],
+    facts: dict[uuid.UUID, _Facts],
+    today: date,
+) -> None:
+    """Manager changes, role changes and review scores, read from their own records."""
+    from app.models.appraisal import Appraisal
+    from app.models.lifecycle import LifecycleEvent, LifecycleEventType, LifecycleStatus
+
+    events = (
+        await session.scalars(
+            tenant_scoped(
+                select(LifecycleEvent).where(
+                    LifecycleEvent.employee_id.in_(ids),
+                    LifecycleEvent.status == LifecycleStatus.EFFECTED,
+                    LifecycleEvent.effective_from <= today,
+                ),
+                LifecycleEvent,
+                user,
+            )
+        )
+    ).all()
+    for event in events:
+        f = facts[event.employee_id]
+        changed = set((event.new_values or {}).keys())
+        if "manager_id" in changed and (
+            f.manager_changed_on is None or event.effective_from > f.manager_changed_on
+        ):
+            f.manager_changed_on = event.effective_from
+        if (event.event_type is LifecycleEventType.PROMOTION or "designation" in changed) and (
+            f.last_role_change is None or event.effective_from > f.last_role_change
+        ):
+            f.last_role_change = event.effective_from
+
+    scores = (
+        await session.execute(
+            tenant_scoped(
+                select(Appraisal.employee_id, Appraisal.completed_at, Appraisal.final_score).where(
+                    Appraisal.employee_id.in_(ids),
+                    Appraisal.final_score.is_not(None),
+                    Appraisal.completed_at.is_not(None),
+                ),
+                Appraisal,
+                user,
+            )
+        )
+    ).all()
+    for employee_id, completed_at, score in scores:
+        facts[employee_id].scores.append((completed_at, Decimal(str(score))))
+
+
+async def _team_exits(
+    session: AsyncSession,
+    user: User,
+    people: list[Employee],
+    rules: SignalRules,
+    today: date,
+) -> dict[uuid.UUID, list[date]]:
+    """For each person, the resignations in the window from others under the same manager."""
+    if rules.team_exits <= 0:
+        return {}
+    from app.models.exit_workflow import ExitRecord, ExitStatus
+
+    since = today - timedelta(days=rules.team_exit_days)
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(ExitRecord.employee_id, ExitRecord.resignation_date, Employee.manager_id)
+                .join(Employee, Employee.id == ExitRecord.employee_id)
+                .where(
+                    ExitRecord.resignation_date >= since,
+                    ExitRecord.resignation_date <= today,
+                    ExitRecord.status != ExitStatus.CANCELLED,
+                    Employee.manager_id.is_not(None),
+                ),
+                ExitRecord,
+                user,
+            )
+        )
+    ).all()
+    by_manager: dict[uuid.UUID, list[tuple[uuid.UUID, date]]] = defaultdict(list)
+    for leaver_id, resigned_on, manager_id in rows:
+        by_manager[manager_id].append((leaver_id, resigned_on))
+    out: dict[uuid.UUID, list[date]] = {}
+    for person in people:
+        if person.manager_id is None:
+            continue
+        others = [d for leaver, d in by_manager.get(person.manager_id, []) if leaver != person.id]
+        if len(others) >= rules.team_exits:
+            out[person.id] = sorted(others)
+    return out
+
+
+def _attrition_signals(
+    person: Employee,
+    f: _Facts,
+    rules: SignalRules,
+    team_exits: list[date] | None,
+    today: date,
+) -> list[dict[str, Any]]:
+    """Facts that often come before a resignation. Each is a fact, not a forecast."""
+    out: list[dict[str, Any]] = []
+    if team_exits:
+        out.append(
+            {
+                "kind": "team_exits",
+                "label": "Colleagues leaving the same team",
+                "rule": (
+                    f"{rules.team_exits}+ others under the same manager resigned in the last "
+                    f"{rules.team_exit_days} days."
+                ),
+                "evidence": [
+                    f"{len(team_exits)} resignation(s) in the team, on "
+                    + ", ".join(f"{d:%d %b %Y}" for d in team_exits[-5:])
+                ],
+            }
+        )
+    if (
+        rules.manager_change_days > 0
+        and f.manager_changed_on is not None
+        and (today - f.manager_changed_on).days <= rules.manager_change_days
+    ):
+        out.append(
+            {
+                "kind": "manager_change",
+                "label": "New line manager",
+                "rule": f"The line manager changed in the last {rules.manager_change_days} days.",
+                "evidence": [f"Manager changed effective {f.manager_changed_on:%d %b %Y}"],
+            }
+        )
+    if rules.rating_drop > 0 and len(f.scores) >= 2:
+        (_, latest), (_, previous) = sorted(f.scores, reverse=True)[:2]
+        if previous - latest >= rules.rating_drop:
+            out.append(
+                {
+                    "kind": "rating_drop",
+                    "label": "Review score fell",
+                    "rule": (
+                        f"Final review score fell by {rules.rating_drop.normalize()} or more "
+                        "between the last two reviews."
+                    ),
+                    "evidence": [
+                        f"Final score {previous.normalize()} then {latest.normalize()}"
+                    ],
+                }
+            )
+    if rules.no_role_change_months > 0 and person.date_of_joining is not None:
+        since = f.last_role_change or person.date_of_joining
+        months = _months_between(since, today)
+        if months >= rules.no_role_change_months:
+            out.append(
+                {
+                    "kind": "no_role_change",
+                    "label": "Same role for a long time",
+                    "rule": (
+                        f"No promotion or new designation for {rules.no_role_change_months}+ "
+                        "months."
+                    ),
+                    "evidence": [
+                        (
+                            f"Last role change effective {since:%d %b %Y}"
+                            if f.last_role_change
+                            else f"Same role since joining on {since:%d %b %Y}"
+                        )
+                        + f", {months} months ago"
+                    ],
                 }
             )
     return out
@@ -709,7 +1009,8 @@ async def unpin_report(session: AsyncSession, user: User, widget_id: uuid.UUID) 
 
 #: Pay is payroll data; the digest goes to sub-admins and managers too.
 DIGEST_KINDS = frozenset({"burnout_risk", "no_leave", "bridge_absences", "unpaid_absence",
-                          "frequent_absence"})
+                          "frequent_absence", "team_exits", "manager_change", "rating_drop",
+                          "no_role_change"})
 DIGEST_WEEKDAY = 1  # Monday
 
 register_event(

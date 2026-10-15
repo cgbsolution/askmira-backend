@@ -314,3 +314,48 @@ async def test_performance_overview_shows_trend_goals_and_rater_spread(
     assert by_name["Generous"]["flagged"] and by_name["Generous"]["direction"] == "higher"
     assert by_name["Tough"]["flagged"] and by_name["Tough"]["direction"] == "lower"
     assert not by_name["Middle"]["flagged"]
+
+
+async def test_the_workspace_sets_the_thresholds_and_team_exits_show(
+    session, tenant, hr_user, legal_entity, location
+) -> None:
+    import pytest
+    from fastapi import HTTPException
+
+    lead = _person(tenant, legal_entity, location, "LEAD", joined=date(2020, 1, 1))
+    session.add(lead)
+    await session.flush()
+    stay = _person(tenant, legal_entity, location, "STAY", joined=date(2025, 1, 1), manager=lead.id)
+    gone = [
+        _person(tenant, legal_entity, location, f"GO{i}", joined=date(2025, 1, 1), manager=lead.id)
+        for i in range(2)
+    ]
+    session.add_all([stay, *gone])
+    await session.flush()
+    for i, person in enumerate(gone):
+        session.add(
+            ExitRecord(
+                tenant_id=tenant.id, employee_id=person.id, exit_type=ExitType.RESIGNATION,
+                status=ExitStatus.NOTICE_PERIOD, resignation_date=TODAY - timedelta(days=20 + i),
+            )
+        )
+    await session.commit()
+
+    flagged = {
+        s["employee_code"]: {x["kind"] for x in s["signals"]}
+        for s in await analytics.absence_signals(session, hr_user, today=TODAY)
+    }
+    assert "team_exits" in flagged["STAY"]
+    assert "no_leave" in flagged["STAY"]
+
+    await analytics.set_signal_rules(session, hr_user, {"no_leave_days": 0, "team_exits": 3})
+    flagged = {
+        s["employee_code"]: {x["kind"] for x in s["signals"]}
+        for s in await analytics.absence_signals(session, hr_user, today=TODAY)
+    }
+    assert "no_leave" not in flagged.get("STAY", set())
+    assert "team_exits" not in flagged.get("STAY", set())
+
+    with pytest.raises(HTTPException) as exc:
+        await analytics.set_signal_rules(session, hr_user, {"team_exit_days": 0})
+    assert exc.value.status_code == 422

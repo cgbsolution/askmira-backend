@@ -34,6 +34,8 @@ class CustomTableDefinition(Base, UUIDMixin, TenantMixin, TimestampMixin):
     employee_editable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: The profile tab the table is shown on. Null: the Employment tab.
+    tab: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class CustomTableRow(Base, UUIDMixin, TenantMixin, TimestampMixin):

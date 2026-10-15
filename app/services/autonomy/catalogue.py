@@ -301,6 +301,38 @@ ACTIONS: dict[str, AgentAction] = {
             impact=ImpactLevel.MEDIUM,
             threshold_unit="score",
         ),
+        _a(
+            agent_key="timesheets",
+            action_key="recommend_approval",
+            description=(
+                "Approve a submitted timesheet whose hours match recorded attendance, "
+                "day by day."
+            ),
+            default_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
+            max_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
+            reversible=False,
+            impact=ImpactLevel.MEDIUM,
+            ceiling_reason=(
+                "An approved timesheet becomes pay. The agent does the checking against "
+                "attendance; the timesheet's own approver still says yes."
+            ),
+        ),
+        _a(
+            agent_key="scheduling",
+            action_key="cover_short_shift",
+            description=(
+                "Put a qualified, available person on a shift that is short of its "
+                "minimum headcount, for one day."
+            ),
+            default_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
+            max_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
+            reversible=False,
+            impact=ImpactLevel.MEDIUM,
+            ceiling_reason=(
+                "It changes when somebody is expected at work, often on their day off. "
+                "The agent finds who could cover; a person asks them and approves."
+            ),
+        ),
         # ── Low impact and reversible: silent automation is defensible ───────
         _a(
             agent_key="attendance",
@@ -458,7 +490,8 @@ def catalogue_contradictions() -> list[str]:
     return problems
 
 
-#: The four the brief names, by key. Asserted directly by an invariant so the
+#: The four the brief names, and the timesheet agent (irreversible: approval is pay),
+#: by key. Asserted directly by an invariant so the
 #: protection cannot be lost by editing a `max_autonomy` field — the invariant
 #: names them rather than deriving them from the same data it is checking.
 PROTECTED_KEYS: frozenset[str] = frozenset(
@@ -467,5 +500,7 @@ PROTECTED_KEYS: frozenset[str] = frozenset(
         "disbursement.release_payment_file",
         "appraisal_assistant.change_rating",
         "your_voice.act_on_case",
+        "timesheets.recommend_approval",
+        "scheduling.cover_short_shift",
     }
 )

@@ -1098,6 +1098,25 @@ async def raise_regularisation(
     session.add(regularisation)
     await session.flush()
 
+    from app.models.approval_rules import ApprovalProcess
+    from app.services.approvals import rules
+
+    subject = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if subject is not None:
+        regularisation.approval_chain = await rules.attach(
+            session,
+            user,
+            subject,
+            rules.Facts(
+                process=ApprovalProcess.REGULARISATION,
+                department_id=subject.department_id,
+                location_id=subject.location_id,
+                category=kind.value,
+            ),
+        )
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1114,9 +1133,12 @@ async def raise_regularisation(
         summary=f"{KIND_LABELS[kind].capitalize()} raised for {attendance_date}",
         request=request,
     )
-    recipients = [
-        uid for uid in await _approver_user_ids(session, user, employee_id) if uid != user.id
-    ]
+    waiting_on = (
+        await rules.next_recipients(session, user, regularisation.approval_chain)
+        if regularisation.approval_chain
+        else await _approver_user_ids(session, user, employee_id)
+    )
+    recipients = [uid for uid in waiting_on if uid != user.id]
     if recipients:
         await notify(
             session,
@@ -1254,13 +1276,27 @@ async def decide_regularisation(
     for themselves. An approval inside a locked payroll period is refused: it
     would change a paid day, and that needs the audited unlock first.
     """
+    from app.services.approvals import rules
+    from app.services.leave import engine as chain_engine
+
     regularisation = await _regularisation(session, user, regularisation_id)
-    await permissions.require_manager_or_hr(
-        session,
-        user,
-        regularisation.employee_id,
-        detail="Only this person's manager or HR can decide their regularisation.",
-    )
+    chain = list(regularisation.approval_chain or [])
+    if user.employee_id is not None and user.employee_id == regularisation.employee_id:
+        raise permissions.forbidden("Somebody else decides your own regularisation.")
+    if not chain:
+        await permissions.require_manager_or_hr(
+            session,
+            user,
+            regularisation.employee_id,
+            detail="Only this person's manager or HR can decide their regularisation.",
+        )
+    elif not await rules.may_decide(session, user, chain):
+        index = chain_engine.current_step(chain)
+        raise permissions.forbidden(
+            f"This correction is waiting on "
+            f"{chain[index].get('approver_name') if index is not None else 'another approver'}. "
+            "Only they, somebody standing in for them, or HR can decide it."
+        )
     if regularisation.status is not RegularisationStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1271,7 +1307,8 @@ async def decide_regularisation(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Say why the regularisation is rejected.",
         )
-    if approve:
+    final_step = not chain or chain_engine.current_step(chain) == len(chain) - 1
+    if approve and final_step:
         lock = await active_lock_covering(
             session, user, regularisation.attendance_date, regularisation.attendance_date
         )
@@ -1284,6 +1321,49 @@ async def decide_regularisation(
                     "correction can change the day."
                 ),
             )
+
+    if chain:
+        chain, outcome = await rules.decide(
+            session, user, chain, approve=approve, note=(note or "").strip() or None
+        )
+        regularisation.approval_chain = chain
+        if outcome == "advanced":
+            await audit.record(
+                session,
+                tenant_id=user.tenant_id,
+                action=AuditAction.APPROVE,
+                entity_type="attendance_regularisation",
+                entity_id=regularisation.id,
+                actor=user,
+                changes={"step": "approved", "note": (note or "").strip() or None},
+                summary=(
+                    f"Regularisation for {regularisation.attendance_date}: step approved, "
+                    "passed to the next approver"
+                ),
+                request=request,
+            )
+            following = [
+                uid for uid in await rules.next_recipients(session, user, chain) if uid != user.id
+            ]
+            if following:
+                await notify(
+                    session,
+                    tenant_id=user.tenant_id,
+                    event_key="attendance.regularisation.requested",
+                    recipient_user_ids=following,
+                    payload={
+                        "employee_name": await _employee_name(
+                            session, user, regularisation.employee_id
+                        ),
+                        "kind_label": KIND_LABELS[regularisation.kind],
+                        "attendance_date": regularisation.attendance_date.strftime("%d %b %Y"),
+                        "reason": regularisation.reason,
+                    },
+                    commit=False,
+                )
+            await session.commit()
+            await session.refresh(regularisation)
+            return regularisation
 
     regularisation.status = (
         RegularisationStatus.APPROVED if approve else RegularisationStatus.REJECTED

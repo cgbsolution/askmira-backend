@@ -300,7 +300,8 @@ async def expire_points(
 ) -> dict[str, Any]:
     """Write EXPIRED rows for lots past the policy, as of today.
 
-    The same function a scheduler would call. No scheduler runs here.
+    The scheduler runs the same function daily ("Points expiry"); this is for
+    running it now.
     """
     return await portal.run_expiry(session, user.tenant_id)
 
@@ -313,7 +314,8 @@ async def expiry_warnings(
 ) -> ExpiryWarningRunRead:
     """Warn people whose points expire inside the notice window, once per date.
 
-    The same function a scheduler would call. No scheduler runs here.
+    The scheduler runs the same function daily ("Points expiry warnings"); this
+    is for running it now.
     """
     return await portal.send_expiry_warnings(session, user.tenant_id)
 
@@ -359,7 +361,7 @@ async def perquisites(
     allow_provisional: bool = False,
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
-    """What should flow into payroll and TDS. Nothing in payroll consumes it here."""
+    """What flows into payroll and TDS, and which runs have taken it."""
     return await rewards.perquisites(
         session,
         user,

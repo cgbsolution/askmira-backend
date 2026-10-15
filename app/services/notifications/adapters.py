@@ -29,6 +29,7 @@ __all__ = [
     "ChannelAdapter",
     "ConsoleEmailAdapter",
     "DeliveryResult",
+    "ExpoPushAdapter",
     "InAppAdapter",
     "NullPushAdapter",
     "PermanentFailure",
@@ -249,6 +250,55 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             raise TransientFailure("WhatsApp accepted the request but returned no message id")
 
         return DeliveryResult(provider_message_id=messages[0]["id"])
+
+
+class ExpoPushAdapter(ChannelAdapter):
+    """Push to the AskMira app through Expo's push service.
+
+    The app registers an Expo push token on sign-in; Expo relays to FCM or APNs
+    with the credentials uploaded to the Expo project. A token Expo calls
+    `DeviceNotRegistered` fails permanently, and the dispatcher revokes it.
+    """
+
+    name = "push"
+
+    URL = "https://exp.host/--/api/v2/push/send"
+
+    async def send(self, message: OutboundMessage) -> DeliveryResult:
+        import httpx
+
+        if not message.push_token:
+            raise PermanentFailure(
+                "The recipient has no phone with the app signed in, so there is nothing to "
+                "push to. Not retrying."
+            )
+        body = {
+            "to": message.push_token,
+            "title": (message.subject or "AskMira")[:120],
+            "body": message.body[:1000],
+            "data": {"event_key": message.event_key},
+            "sound": "default",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    self.URL, json=body, headers={"Accept": "application/json"}
+                )
+        except httpx.HTTPError as exc:
+            raise TransientFailure(f"Could not reach Expo's push service: {exc}") from exc
+        if response.status_code >= 500 or response.status_code == 429:
+            raise TransientFailure(f"Expo returned {response.status_code}; will retry")
+        if response.status_code >= 400:
+            raise PermanentFailure(f"Expo refused the push ({response.status_code})")
+        ticket = (response.json() or {}).get("data") or {}
+        if isinstance(ticket, list):
+            ticket = ticket[0] if ticket else {}
+        if ticket.get("status") == "error":
+            reason = (ticket.get("details") or {}).get("error") or ticket.get("message", "")
+            if reason == "DeviceNotRegistered":
+                raise PermanentFailure("DeviceNotRegistered: the app is gone from that phone")
+            raise TransientFailure(f"Expo could not send: {reason}")
+        return DeliveryResult(provider_message_id=str(ticket.get("id") or "expo"))
 
 
 def _under_test_suite() -> bool:

@@ -206,6 +206,7 @@ def _read(
         "scheduled_on": meeting.scheduled_on,
         "start_time": meeting.start_time,
         "duration_minutes": meeting.duration_minutes,
+        "repeat_every_weeks": meeting.repeat_every_weeks,
         "status": meeting.status,
         "summary": meeting.summary,
         "completed_at": meeting.completed_at,
@@ -289,6 +290,7 @@ async def schedule(
         scheduled_on=payload.scheduled_on,
         start_time=payload.start_time,
         duration_minutes=payload.duration_minutes,
+        repeat_every_weeks=payload.repeat_every_weeks,
         status=OneOnOneStatus.SCHEDULED,
         created_by_user_id=user.id,
     )
@@ -864,6 +866,42 @@ async def write_note(
     return await get_detail(session, user, meeting.id)
 
 
+async def _book_next(session: AsyncSession, user: User, meeting: OneOnOne) -> OneOnOne | None:
+    """A recurring 1:1, held or cancelled, books the next one — unless one is already booked."""
+    if not meeting.repeat_every_weeks:
+        return None
+    from datetime import timedelta
+
+    upcoming = await session.scalar(
+        tenant_scoped(
+            select(OneOnOne.id).where(
+                OneOnOne.manager_employee_id == meeting.manager_employee_id,
+                OneOnOne.report_employee_id == meeting.report_employee_id,
+                OneOnOne.status == OneOnOneStatus.SCHEDULED,
+                OneOnOne.scheduled_on > meeting.scheduled_on,
+                OneOnOne.id != meeting.id,
+            ),
+            OneOnOne,
+            user,
+        )
+    )
+    if upcoming is not None:
+        return None
+    following = OneOnOne(
+        tenant_id=user.tenant_id,
+        manager_employee_id=meeting.manager_employee_id,
+        report_employee_id=meeting.report_employee_id,
+        scheduled_on=meeting.scheduled_on + timedelta(weeks=meeting.repeat_every_weeks),
+        start_time=meeting.start_time,
+        duration_minutes=meeting.duration_minutes,
+        repeat_every_weeks=meeting.repeat_every_weeks,
+        status=OneOnOneStatus.SCHEDULED,
+        created_by_user_id=user.id,
+    )
+    session.add(following)
+    return following
+
+
 async def complete(
     session: AsyncSession,
     user: User,
@@ -879,6 +917,7 @@ async def complete(
     meeting.completed_at = datetime.now(UTC)
     meeting.completed_by_user_id = user.id
     meeting.summary = (payload.summary or "").strip() or None
+    await _book_next(session, user, meeting)
     await session.flush()
     await audit.record(
         session,
@@ -909,6 +948,7 @@ async def cancel(
     meeting.status = OneOnOneStatus.CANCELLED
     meeting.cancelled_at = datetime.now(UTC)
     meeting.cancel_reason = (payload.reason or "").strip() or None
+    await _book_next(session, user, meeting)
     await session.flush()
     await audit.record(
         session,

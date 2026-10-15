@@ -174,6 +174,17 @@ async def disable(
     row = await _row(session, user)
     if row is None or row.enabled_at is None:
         raise HTTPException(status_code=409, detail="Two-step sign-in is not on.")
+    from app.models.opsec import TenantSessionPolicy
+    from app.services.opsec.enforcement import two_step_applies
+
+    policy = await session.scalar(
+        tenant_scoped(select(TenantSessionPolicy), TenantSessionPolicy, user)
+    )
+    if two_step_applies(policy, user):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This workspace requires two-step sign-in of you, so it cannot be turned off.",
+        )
     if not verify_password(password, user.password_hash) or not await check_code(
         session, user, code
     ):

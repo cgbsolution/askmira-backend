@@ -18,20 +18,22 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.deps import CurrentUser, DbSession, tenant_scoped
+from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.employee import Employee, EmploymentStatus
 from app.models.filings import FilingRecord, ReturnType
 from app.models.leave import LeaveRequest, LeaveRequestStatus
 from app.models.payroll import PayrollRun
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.services import quick_links as quick_links_service
 from app.services.approvals import service as approvals_service
 from app.services.attendance.service import local_today
 from app.services.culture import feed
@@ -85,6 +87,26 @@ class DashboardSummary(BaseModel):
 
 def _previous_month(today: date) -> date:
     return today.replace(day=1) - timedelta(days=1)
+
+
+class QuickLinksIn(BaseModel):
+    #: Null goes back to the defaults.
+    links: list[quick_links_service.QuickLinkIn] | None = Field(default=None, max_length=12)
+
+
+@router.get("/quick-links")
+async def quick_links(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """The workspace's home-page links."""
+    return await quick_links_service.quick_links(session, user)
+
+
+@router.put("/quick-links", dependencies=[Depends(require_roles(UserRole.ADMIN))])
+async def set_quick_links(
+    payload: QuickLinksIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await quick_links_service.set_quick_links(
+        session, user, payload.links, request=request
+    )
 
 
 @router.get("/summary", response_model=DashboardSummary)

@@ -20,14 +20,15 @@ happened.
 
 **What is and is not wired**, stated once here:
 
-- `payroll_perquisites` produces the figure and `reward_events.payroll_reference`
-  stays null. **Nothing in payroll consumes it**, so a crossed threshold is
-  visible and unprocessed rather than silently applied.
-- Fulfilment and invoice rows are **imported by a caller**. There is no
-  connection to a merchandise partner, so a reconciliation runs against
-  whatever has been loaded.
-- Expiry is computed and returned. **Nothing schedules it**, and nothing sends
-  the warning; the notification engine is not called from here.
+- `payroll_perquisites` produces the figure; payroll's reward-perquisite source
+  (`payroll.inputs.RewardPerquisiteProvider`) adds the increase to the next run
+  and stamps `reward_events.payroll_reference` with it. A figure from a rule no
+  tax advisor has reviewed is refused, and the run says so.
+- Fulfilment and invoice rows from an outside merchandise partner are
+  **imported by a caller**; there is no live connection, so a reconciliation
+  runs against whatever has been loaded. The in-house catalogue is separate.
+- Expiry and its warning run daily from the scheduler ("Points expiry" and
+  "Points expiry warnings"); the same functions back the finance buttons.
 """
 
 from __future__ import annotations
@@ -937,8 +938,8 @@ async def perquisites(
     """What should flow into payroll and TDS for one person.
 
     Refuses a taxable figure from an unreviewed rule unless the caller asks for
-    a provisional one. **Nothing in payroll consumes this yet**, so a crossed
-    threshold is visible and unprocessed rather than silently applied.
+    a provisional one. Payroll takes the increase in this figure on each run;
+    `payroll` says which runs have taken this year's rewards so far.
     """
     events = await _reward_events(session, user, employee_id=employee_id)
     rules = await _tax_rules(session, user)
@@ -954,16 +955,36 @@ async def perquisites(
     except tax_engine.TaxError as exc:
         raise _bad_request(str(exc)) from exc
 
+    taken = (
+        await session.execute(
+            tenant_scoped(
+                select(RewardEvent.payroll_reference).where(
+                    RewardEvent.employee_id == employee_id,
+                    RewardEvent.financial_year == financial_year,
+                ),
+                RewardEvent,
+                user,
+            )
+        )
+    ).scalars().all()
+    runs = sorted({reference for reference in taken if reference})
+    waiting = sum(1 for reference in taken if not reference)
     return {
         "employee_id": str(employee_id),
         "financial_year": financial_year,
         "assessments": [a.as_dict() for a in assessments],
         "payroll": {
-            "handed_over": False,
+            "handed_over": bool(runs),
+            "runs": runs,
+            "events_waiting": waiting,
             "note": (
-                "Nothing in payroll consumes this yet. A crossed threshold is "
-                "visible and unprocessed rather than silently applied to a "
-                "payslip."
+                "Payroll adds the increase in taxable value to the next run as a "
+                "non-cash perquisite, and each reward records the run that took it. "
+                + (
+                    f"{waiting} reward(s) this year have not been taken by a run yet."
+                    if waiting
+                    else "Every reward this year has been taken by a run."
+                )
             ),
         },
     }
@@ -1174,6 +1195,12 @@ def rewards_posture() -> dict[str, Any]:
             "Budgets are checked across every applicable scope; a hard stop "
             "refuses and a soft warning records the overspend.",
             "A perquisite from an unreviewed tax rule is refused for payroll.",
+            "A reviewed perquisite is added to the next payroll run as a non-cash "
+            "line, and each reward records the run that took it.",
+            "Expiry runs daily and warns people before their points lapse, once "
+            "per expiry date.",
+            "Catalogue stock is taken under a row lock in the same transaction "
+            "as the redemption, so an item cannot be oversold.",
             "Reconciliation reports each kind of gap separately rather than "
             "netting them.",
         ],
@@ -1181,14 +1208,9 @@ def rewards_posture() -> dict[str, Any]:
             "**No tax advisor has reviewed the thresholds or treatments.** "
             "Every shipped rule is marked unreviewed and produces a provisional "
             "figure that says so. This is the gate on the whole tax section.",
-            "Nothing in payroll consumes a perquisite. The figure is produced "
-            "and reward_events.payroll_reference stays null, so a crossed "
-            "threshold is visible and unprocessed.",
-            "No connection to the merchandise partner. Fulfilment and invoice "
-            "rows are imported by a caller and a reconciliation runs against "
-            "whatever has been loaded.",
-            "Nothing schedules expiry and nothing sends the warning. The "
-            "notification engine is not called from here.",
+            "No live connection to an outside merchandise partner (Artbox, AIMS). "
+            "Partner fulfilment and invoice rows are imported and reconciled "
+            "against whatever has been loaded.",
             "No provisioning entry is posted to any accounting system. The "
             "liability and the expected redemption rate are reported; the "
             "journal is somebody else's.",

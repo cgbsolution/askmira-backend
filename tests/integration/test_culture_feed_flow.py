@@ -382,6 +382,20 @@ async def test_club_membership_and_member_list_privacy(session, org):
             await feed.club_members(session, outsider, club.id)
         assert exc.value.status_code == 403
 
+    post = await feed.add_club_post(
+        session, org["ben"], club.id, "Friday blitz at 5?", request=None
+    )
+    assert post["mine"] is True
+    assert [p["body"] for p in await feed.club_posts(session, org["asha"], club.id)] == [
+        "Friday blitz at 5?"
+    ]
+    with pytest.raises(HTTPException):
+        await feed.add_club_post(session, outsider, club.id, "Hello", request=None)
+    with pytest.raises(HTTPException):
+        await feed.delete_club_post(session, org["asha"], uuid.UUID(post["id"]), request=None)
+    await feed.delete_club_post(session, org["ben"], uuid.UUID(post["id"]), request=None)
+    assert await feed.club_posts(session, org["ben"], club.id) == []
+
     left = await feed.leave_club(session, org["ben"], club.id)
     assert left.member_count == 1 and not left.is_member
 

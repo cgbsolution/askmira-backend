@@ -6,6 +6,9 @@ open to every signed-in person.
 """
 
 ENDPOINTS: dict[str, str] = {
+    "GET /payroll/payslip-protection": (
+        "reference: whether the workspace's payslip PDFs open with a password, and the rule."
+    ),
     "GET /payroll/my-payslips": (
         "own: lists only the caller's own published payslips, found by user.employee_id "
         "from the token; takes no person id."
