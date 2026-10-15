@@ -147,11 +147,15 @@ async def create_user(
     _check_grant(payload.role)
 
     email = payload.email.lower()
-    clash = await session.scalar(
-        tenant_scoped(select(User.id).where(func.lower(User.email) == email), User, user)
-    )
-    if clash is not None:
-        raise _bad_request("A login with this email already exists in this workspace.")
+    # One person, one login across the platform: sign-in finds a person by
+    # email alone, so the same address in two workspaces would be ambiguous.
+    from app.services.auth import email_in_use
+
+    if await email_in_use(session, email):
+        raise _bad_request(
+            "That email already signs in to AskMira. Each person has one login; use "
+            "another address."
+        )
 
     emp = None
     if payload.employee_id is not None:

@@ -39,7 +39,6 @@ from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
     MfaChallengeRead,
-    SignupRequest,
     TenantRead,
     UserRead,
 )
@@ -104,24 +103,46 @@ async def issue_session(session: AsyncSession, user: User) -> AuthResponse:
     return await _build_response(session, user, tenant)
 
 
-async def signup(
-    session: AsyncSession, payload: SignupRequest, request: Request | None = None
-) -> AuthResponse:
-    """Create a tenant and its first ADMIN."""
-    existing = await session.scalar(
-        select(User.id).where(func.lower(User.email) == payload.email.lower())
+async def email_in_use(session: AsyncSession, email: str) -> bool:
+    """Whether any login on the platform already uses this address.
+
+    One person, one login: sign-in looks a person up by email alone, so the
+    same address in two workspaces would let it pick the wrong one.
+    """
+    found = await session.scalar(
+        select(User.id).where(func.lower(User.email) == email.strip().lower()).limit(1)
     )
-    if existing is not None:
-        # Signup creates a tenant, so an existing address anywhere is a
-        # conflict — there is no tenant context yet to disambiguate against.
+    return found is not None
+
+
+async def create_workspace(
+    session: AsyncSession,
+    *,
+    company_name: str,
+    admin_full_name: str,
+    admin_email: str,
+    admin_phone: str | None,
+    password_hash: str,
+    slug: str | None = None,
+    must_change_password: bool = True,
+) -> tuple[Tenant, User]:
+    """A new workspace and its first ADMIN. Flushed, not committed.
+
+    Only the platform console calls this; there is no public sign-up. The admin
+    is also an employee — without an employee record they could not punch,
+    apply for leave or see a payslip — and a general shift is the default so
+    attendance can judge a day from the first punch.
+    """
+    email = admin_email.strip().lower()
+    if await email_in_use(session, email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="An account with this email already exists",
+            detail="That email already signs in to AskMira. Each person has one login.",
         )
 
     tenant = Tenant(
-        name=payload.company_name,
-        slug=await _unique_slug(session, payload.company_name),
+        name=company_name.strip(),
+        slug=slug or await _unique_slug(session, company_name),
         enabled_modules=dict(DEFAULT_ENABLED_MODULES),
         settings={"fiscal_year_start_month": 4, "week_start": "monday", "currency": "INR"},
     )
@@ -130,30 +151,26 @@ async def signup(
 
     user = User(
         tenant_id=tenant.id,
-        email=payload.email.lower(),
-        password_hash=hash_password(payload.password),
-        full_name=payload.full_name,
-        phone=payload.phone,
+        email=email,
+        password_hash=password_hash,
+        full_name=admin_full_name.strip(),
+        phone=admin_phone,
         role=UserRole.ADMIN,
         is_active=True,
-        # Pilot-phase convenience. Wire real email verification before GA.
         is_email_verified=False,
-        last_login_at=datetime.now(UTC),
+        must_change_password=must_change_password,
     )
     session.add(user)
     await session.flush()
 
-    # The founder is a person in the company too: without an employee record
-    # they could not punch, apply for leave or see a payslip, and every
-    # self-service screen would tell them their login is not linked.
-    first, _, last = payload.full_name.strip().partition(" ")
+    first, _, last = admin_full_name.strip().partition(" ")
     employee = Employee(
         tenant_id=tenant.id,
         employee_code="EMP0001",
-        first_name=first or payload.full_name.strip(),
+        first_name=first or admin_full_name.strip(),
         last_name=last.strip() or None,
-        work_email=payload.email.lower(),
-        phone=payload.phone,
+        work_email=email,
+        phone=admin_phone,
         date_of_joining=datetime.now(ZoneInfo("Asia/Kolkata")).date(),
         status=EmploymentStatus.ACTIVE,
     )
@@ -161,8 +178,6 @@ async def signup(
     await session.flush()
     user.employee_id = employee.id
 
-    # A general shift as the default, so attendance can judge a day from the
-    # first punch. HR edits it, or adds others, under Shifts & rosters.
     session.add(
         Shift(
             tenant_id=tenant.id,
@@ -179,20 +194,8 @@ async def signup(
             is_default=True,
         )
     )
-
-    await audit.record(
-        session,
-        tenant_id=tenant.id,
-        action=AuditAction.CREATE,
-        entity_type="tenant",
-        entity_id=tenant.id,
-        actor=user,
-        summary=f"Tenant {tenant.name} created with admin {user.email}",
-        request=request,
-    )
-    await session.commit()
-    await session.refresh(user)
-    return await _build_response(session, user, tenant)
+    await session.flush()
+    return tenant, user
 
 
 async def login(

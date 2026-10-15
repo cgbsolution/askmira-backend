@@ -80,6 +80,19 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise CREDENTIALS_ERROR
 
+    # A suspended workspace loses access on its next request, not when its
+    # tokens happen to expire.
+    from app.models.tenant import Tenant  # local: models import deps indirectly
+
+    workspace_active = await session.scalar(
+        select(Tenant.is_active).where(Tenant.id == user.tenant_id)
+    )
+    if not workspace_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This workspace has been suspended. Contact AskMira support.",
+        )
+
     # A token minted before a forced logout or password change is dead.
     issued_at = payload.get("iat")
     # Whole seconds: `iat` has no fraction, so a sign-in in the same second as

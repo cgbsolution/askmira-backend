@@ -7,7 +7,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint, false
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    false,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +52,9 @@ class User(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
+        # One login per address across the platform. Sign-in finds a person by
+        # email alone, so the same address in two workspaces would be ambiguous.
+        Index("uq_users_email_lower", text("lower(email)"), unique=True),
     )
 
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)

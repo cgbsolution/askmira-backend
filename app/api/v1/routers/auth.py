@@ -30,7 +30,6 @@ from app.schemas.auth import (
     RefreshRequest,
     ResetPasswordRequest,
     SessionRead,
-    SignupRequest,
     TenantRead,
     UserRead,
 )
@@ -51,15 +50,6 @@ def _deliver(result: AuthResponse, request: Request, response: Response) -> Auth
     if cookies.wants_cookie_transport(request):
         return result.model_copy(update={"access_token": "", "refresh_token": ""})
     return result
-
-
-@router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(
-    payload: SignupRequest, session: DbSession, request: Request, response: Response
-) -> AuthResponse:
-    """Create a workspace and its first admin, and sign them straight in."""
-    result = await auth_service.signup(session, payload, request)
-    return _deliver(result, request, response)
 
 
 @router.post("/login", response_model=AuthResponse | MfaChallengeRead)

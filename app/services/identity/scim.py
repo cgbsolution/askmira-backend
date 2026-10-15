@@ -255,8 +255,10 @@ async def provision_user(
     if not email:
         raise ScimError(400, "userName is required", scim_type="invalidValue")
 
+    # One login per address across the platform, not per workspace: sign-in
+    # finds a person by email alone.
     existing = await session.scalar(
-        select(User).where(tenant_filter(User, tenant_id), func.lower(User.email) == email)
+        select(User.id).where(func.lower(User.email) == email).limit(1)
     )
     if existing is not None:
         raise ScimError(409, f"A user with userName {email} already exists", scim_type="uniqueness")

@@ -34,22 +34,6 @@ def _validate_password(value: str) -> str:
     return value
 
 
-class SignupRequest(BaseModel):
-    """Creates a tenant and its first admin in one call.
-
-    Self-serve tenant creation is a pilot-phase convenience. Before GA this
-    should move behind an invite so a stranger cannot mint tenants.
-    """
-
-    company_name: str = Field(min_length=2, max_length=255)
-    full_name: str = Field(min_length=2, max_length=255)
-    email: EmailStr
-    password: str
-    phone: str | None = Field(default=None, max_length=32)
-
-    _check_password = field_validator("password")(_validate_password)
-
-
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -145,7 +129,7 @@ class TokenPair(BaseModel):
 
 
 class AuthResponse(TokenPair):
-    """What the frontend gets on signup, login and refresh.
+    """What the frontend gets on login and refresh.
 
     User and tenant ship with the tokens so the client can render the shell
     without a second round-trip.

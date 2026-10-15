@@ -179,6 +179,15 @@ async def provision_user(
             "No account exists for this address and just-in-time provisioning is off "
             "for this workspace. Ask your admin to create the account."
         )
+    # The address may already sign in to another workspace; one login per person.
+    elsewhere = await session.scalar(
+        select(User.id).where(func.lower(User.email) == email).limit(1)
+    )
+    if elsewhere is not None:
+        raise SsoError(
+            "This email already signs in to another AskMira workspace, so an account "
+            "cannot be created for it here. Contact your admin."
+        )
 
     full_name = " ".join(part for part in (first_name, last_name) if part) or email
     user = User(
