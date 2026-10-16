@@ -28,7 +28,15 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import func, select
 
 from app.core import permissions
@@ -52,13 +60,18 @@ from app.services.identity.directory import logo_url, normalise_mobile
 
 __all__ = [
     "AdminIn",
+    "CompanyDetails",
     "WorkspaceIn",
+    "WorkspaceUpdate",
     "add_admin",
     "create",
     "list_workspaces",
+    "remove_logo",
     "reset_admin_password",
     "set_active",
+    "update",
     "upload_logo",
+    "workspace_detail",
 ]
 
 _SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
@@ -96,13 +109,14 @@ def _blank_to_none(value: object) -> object:
     return value
 
 
-class WorkspaceIn(BaseModel):
-    """Everything about a company the platform needs to set it up properly.
+class CompanyDetails(BaseModel):
+    """Everything about a company the platform keeps, checked as a whole.
 
-    Its legal identity (PAN, TAN, GSTIN, CIN, PF and ESI) goes on its first legal
-    entity, its registered office becomes its first location, and the rest is
-    its profile. Payroll, statutory filings and Professional Tax read these, so
-    collecting them here means the company's admin starts with them in place.
+    Its legal identity (PAN, TAN, GSTIN, CIN, PF and ESI) lives on its first
+    legal entity, its registered office is its first location, and the rest is
+    its profile. Payroll, statutory filings and Professional Tax read these.
+    Creating and editing both pass through this model, so an edit is held to
+    the same rules as the form that made the company.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -110,8 +124,6 @@ class WorkspaceIn(BaseModel):
     # ── The company ─────────────────────────────────────────────────────────
     company_name: str = Field(min_length=2, max_length=255)
     legal_name: str = Field(min_length=2, max_length=255)
-    #: Optional; made from the company name when left out.
-    workspace: str | None = Field(default=None, max_length=64)
     company_type: CompanyType = "private_limited"
     industry: str | None = Field(default=None, max_length=120)
     company_size: CompanySize | None = None
@@ -135,19 +147,14 @@ class WorkspaceIn(BaseModel):
     state_code: str
     pincode: str
 
-    # ── The first admin ─────────────────────────────────────────────────────
-    admin_full_name: str = Field(min_length=2, max_length=255)
-    admin_email: EmailStr
-    admin_phone: str
-    admin_designation: str | None = Field(default=None, max_length=120)
-
     #: Modules to switch on; the rest keep their defaults.
     modules: dict[str, bool] = Field(default_factory=dict)
 
     _blanks = field_validator(
-        "workspace",
         "industry",
+        "company_size",
         "website",
+        "contact_email",
         "contact_phone",
         "tan",
         "gstin",
@@ -155,7 +162,6 @@ class WorkspaceIn(BaseModel):
         "pf_registration_no",
         "esi_registration_no",
         "address_line2",
-        "admin_designation",
         mode="before",
     )(_blank_to_none)
     _caps = field_validator("pan", "tan", "gstin", "cin", "state_code", mode="before")(_upper)
@@ -196,14 +202,6 @@ class WorkspaceIn(BaseModel):
             raise ValueError("A PIN code is six digits and does not start with 0.")
         return value
 
-    @field_validator("admin_phone")
-    @classmethod
-    def _admin_phone(cls, value: str) -> str:
-        national = normalise_mobile(value)
-        if national is None or not _MOBILE.match(national[-10:]):
-            raise ValueError("Give the admin's 10-digit Indian mobile number.")
-        return national[-10:]
-
     @field_validator("website")
     @classmethod
     def _website(cls, value: str | None) -> str | None:
@@ -223,7 +221,7 @@ class WorkspaceIn(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _gstin_matches(self) -> WorkspaceIn:
+    def _gstin_matches(self) -> CompanyDetails:
         if self.gstin is None:
             return self
         verdict = validate_gstin(self.gstin)
@@ -244,6 +242,93 @@ class WorkspaceIn(BaseModel):
     def registered_address(self) -> str:
         parts = [self.address_line1, self.address_line2, self.city]
         return ", ".join(p.strip() for p in parts if p) + f", {self.state_code} {self.pincode}"
+
+    def profile(self) -> dict[str, Any]:
+        """What is kept on the workspace itself rather than on its legal entity."""
+        return {
+            "legal_name": self.legal_name.strip(),
+            "company_type": self.company_type,
+            "industry": self.industry,
+            "company_size": self.company_size,
+            "website": self.website,
+            "contact_email": str(self.contact_email) if self.contact_email else None,
+            "contact_phone": self.contact_phone,
+            "cin": self.cin,
+            "address_line1": self.address_line1.strip(),
+            "address_line2": self.address_line2.strip() if self.address_line2 else None,
+        }
+
+    def legal_entity(self) -> dict[str, Any]:
+        return {
+            "name": self.legal_name.strip(),
+            "pan": self.pan,
+            "tan": self.tan,
+            "gstin": self.gstin,
+            "pf_registration_no": self.pf_registration_no,
+            "esi_registration_no": self.esi_registration_no,
+            "registered_address": self.registered_address()[:512],
+        }
+
+    def head_office(self) -> dict[str, Any]:
+        return {
+            "name": f"{self.city.strip()} — Head office",
+            "city": self.city.strip(),
+            "state_code": self.state_code,
+            "pincode": self.pincode,
+        }
+
+
+class WorkspaceIn(CompanyDetails):
+    """A new company: its details, its workspace address and its first admin."""
+
+    #: Optional; made from the company name when left out.
+    workspace: str | None = Field(default=None, max_length=64)
+
+    # ── The first admin ─────────────────────────────────────────────────────
+    admin_full_name: str = Field(min_length=2, max_length=255)
+    admin_email: EmailStr
+    admin_phone: str
+    admin_designation: str | None = Field(default=None, max_length=120)
+
+    _admin_blanks = field_validator("workspace", "admin_designation", mode="before")(_blank_to_none)
+
+    @field_validator("admin_phone")
+    @classmethod
+    def _admin_phone(cls, value: str) -> str:
+        national = normalise_mobile(value)
+        if national is None or not _MOBILE.match(national[-10:]):
+            raise ValueError("Give the admin's 10-digit Indian mobile number.")
+        return national[-10:]
+
+
+class WorkspaceUpdate(BaseModel):
+    """An edit: any of the company's details. Merged with what is stored, then
+    checked as a whole by `CompanyDetails` — so a new GSTIN is checked against
+    the PAN already on file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace: str | None = Field(default=None, max_length=64)
+    company_name: str | None = None
+    legal_name: str | None = None
+    company_type: CompanyType | None = None
+    industry: str | None = None
+    company_size: CompanySize | None = None
+    website: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    pan: str | None = None
+    tan: str | None = None
+    gstin: str | None = None
+    cin: str | None = None
+    pf_registration_no: str | None = None
+    esi_registration_no: str | None = None
+    address_line1: str | None = None
+    address_line2: str | None = None
+    city: str | None = None
+    state_code: str | None = None
+    pincode: str | None = None
+    modules: dict[str, bool] | None = None
 
 
 class AdminIn(BaseModel):
@@ -378,31 +463,9 @@ async def create(
         slug=slug,
         must_change_password=True,
         modules=payload.modules,
-        profile={
-            "legal_name": payload.legal_name.strip(),
-            "company_type": payload.company_type,
-            "industry": payload.industry,
-            "company_size": payload.company_size,
-            "website": payload.website,
-            "contact_email": str(payload.contact_email) if payload.contact_email else None,
-            "contact_phone": payload.contact_phone,
-            "cin": payload.cin,
-        },
-        legal_entity={
-            "name": payload.legal_name.strip(),
-            "pan": payload.pan,
-            "tan": payload.tan,
-            "gstin": payload.gstin,
-            "pf_registration_no": payload.pf_registration_no,
-            "esi_registration_no": payload.esi_registration_no,
-            "registered_address": payload.registered_address()[:512],
-        },
-        head_office={
-            "name": f"{payload.city.strip()} — Head office",
-            "city": payload.city.strip(),
-            "state_code": payload.state_code,
-            "pincode": payload.pincode,
-        },
+        profile=payload.profile(),
+        legal_entity=payload.legal_entity(),
+        head_office=payload.head_office(),
     )
     if payload.admin_designation:
         employee = await session.get(Employee, admin.employee_id)
@@ -449,6 +512,214 @@ async def upload_logo(
     from app.services import branding
 
     return await branding.save_logo(session, user, tenant, data, request=request)
+
+
+async def _first_entity_and_office(
+    session: Any, tenant_id: uuid.UUID
+) -> tuple[LegalEntity | None, Location | None]:
+    entity = await session.scalar(
+        select(LegalEntity)
+        .where(tenant_filter(LegalEntity, tenant_id))
+        .order_by(LegalEntity.created_at)
+        .limit(1)
+    )
+    office = await session.scalar(
+        select(Location)
+        .where(tenant_filter(Location, tenant_id))
+        .order_by(Location.created_at)
+        .limit(1)
+    )
+    return entity, office
+
+
+def _details_of(tenant: Tenant, entity: LegalEntity | None, office: Location | None) -> dict:
+    """What is on file for a company, in the shape the form edits."""
+    profile = (tenant.settings or {}).get("profile") or {}
+    return {
+        "company_name": tenant.name,
+        "legal_name": (entity.name if entity else None) or profile.get("legal_name") or tenant.name,
+        "company_type": profile.get("company_type") or "private_limited",
+        "industry": profile.get("industry"),
+        "company_size": profile.get("company_size"),
+        "website": profile.get("website"),
+        "contact_email": profile.get("contact_email"),
+        "contact_phone": profile.get("contact_phone"),
+        "pan": entity.pan if entity else None,
+        "tan": entity.tan if entity else None,
+        "gstin": entity.gstin if entity else None,
+        "cin": profile.get("cin"),
+        "pf_registration_no": entity.pf_registration_no if entity else None,
+        "esi_registration_no": entity.esi_registration_no if entity else None,
+        "registered_address": entity.registered_address if entity else None,
+        "address_line1": profile.get("address_line1"),
+        "address_line2": profile.get("address_line2"),
+        "city": office.city if office else None,
+        "state_code": office.state_code if office else None,
+        "pincode": office.pincode if office else None,
+        "modules": dict(tenant.enabled_modules or {}),
+    }
+
+
+async def workspace_detail(session: Any, user: User, tenant_id: uuid.UUID) -> dict[str, Any]:
+    """One company's full profile, its admins and its size. Nothing from inside it."""
+    _require_super(user)
+    tenant = await _workspace(session, tenant_id)
+    entity, office = await _first_entity_and_office(session, tenant.id)
+    admins = (
+        await session.scalars(
+            select(User)
+            .where(tenant_filter(User, tenant.id), User.role == UserRole.ADMIN)
+            .order_by(User.created_at)
+        )
+    ).all()
+    logins = await session.scalar(
+        select(func.count(User.id)).where(tenant_filter(User, tenant.id), User.is_active.is_(True))
+    )
+    employees = await session.scalar(
+        select(func.count(Employee.id)).where(
+            tenant_filter(Employee, tenant.id), Employee.deleted_at.is_(None)
+        )
+    )
+    last_sign_in = await session.scalar(
+        select(func.max(User.last_login_at)).where(tenant_filter(User, tenant.id))
+    )
+    return {
+        "id": str(tenant.id),
+        "name": tenant.name,
+        "workspace": tenant.slug,
+        "is_active": tenant.is_active,
+        "is_own": tenant.id == user.tenant_id,
+        "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
+        "logo_url": logo_url(tenant),
+        "sign_in_path": f"/signin/{tenant.slug}",
+        "details": _details_of(tenant, entity, office),
+        "admins": [_admin_read(a) for a in admins],
+        "active_logins": int(logins or 0),
+        "employees": int(employees or 0),
+        "last_sign_in": last_sign_in.isoformat() if last_sign_in else None,
+    }
+
+
+def _first_problem(exc: ValidationError) -> str:
+    error = exc.errors()[0]
+    field = ".".join(str(part) for part in error.get("loc", ()) if part != "__root__")
+    message = str(error.get("msg", "is not valid")).removeprefix("Value error, ")
+    if error.get("type") == "missing":
+        return f"{field.replace('_', ' ')} is required."
+    return f"{field.replace('_', ' ')}: {message}" if field else message
+
+
+async def update(
+    session: Any,
+    user: User,
+    tenant_id: uuid.UUID,
+    payload: WorkspaceUpdate,
+    *,
+    request: Request | None,
+) -> dict[str, Any]:
+    """Change a company's details. The whole record is checked again, as on creation."""
+    _require_super(user)
+    tenant = await _workspace(session, tenant_id)
+    entity, office = await _first_entity_and_office(session, tenant.id)
+    current = _details_of(tenant, entity, office)
+    current.pop("registered_address")
+
+    changes = payload.model_dump(exclude_unset=True)
+    new_slug = changes.pop("workspace", None)
+    if changes.get("modules") is not None:
+        changes["modules"] = {**current["modules"], **changes["modules"]}
+    merged = {**current, **changes}
+    merged["modules"] = {
+        key: on
+        for key, on in (merged.get("modules") or {}).items()
+        if key in DEFAULT_ENABLED_MODULES
+    }
+    try:
+        details = CompanyDetails.model_validate(merged)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_first_problem(exc)
+        ) from exc
+
+    before = {key: current.get(key) for key in changes}
+
+    if new_slug is not None and new_slug.strip().lower() != tenant.slug:
+        slug = new_slug.strip().lower()
+        if not _SLUG.match(slug):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="A workspace address uses lowercase letters, digits and hyphens.",
+            )
+        taken = await session.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if taken is not None or slug in RESERVED_SLUGS:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Another workspace already has that address.",
+            )
+        before["workspace"] = tenant.slug
+        changes["workspace"] = slug
+        tenant.slug = slug
+
+    tenant.name = details.company_name.strip()
+    tenant.enabled_modules = {**(tenant.enabled_modules or {}), **details.modules}
+    settings = dict(tenant.settings or {})
+    settings["profile"] = {**(settings.get("profile") or {}), **details.profile()}
+    tenant.settings = settings
+
+    if entity is None:
+        entity = LegalEntity(tenant_id=tenant.id, code="LE01", **details.legal_entity())
+        session.add(entity)
+        await session.flush()
+    else:
+        for key, value in details.legal_entity().items():
+            setattr(entity, key, value)
+    if office is None:
+        office = Location(
+            tenant_id=tenant.id, legal_entity_id=entity.id, code="HO", **details.head_office()
+        )
+        session.add(office)
+    else:
+        for key, value in details.head_office().items():
+            if key == "name" and office.name and "Head office" not in office.name:
+                continue  # A location the company renamed keeps its name.
+            setattr(office, key, value)
+
+    await audit.record(
+        session,
+        tenant_id=tenant.id,
+        action=AuditAction.UPDATE,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        actor_user_id=user.id,
+        actor_type="platform",
+        changes={"before": before, "after": changes},
+        summary=f"Company details changed by the platform: {', '.join(sorted(changes)) or 'none'}",
+        request=request,
+    )
+    await session.commit()
+    return await workspace_detail(session, user, tenant.id)
+
+
+async def remove_logo(
+    session: Any, user: User, tenant_id: uuid.UUID, *, request: Request | None
+) -> None:
+    _require_super(user)
+    tenant = await _workspace(session, tenant_id)
+    if not tenant.logo_key:
+        return
+    tenant.logo_key = None
+    await audit.record(
+        session,
+        tenant_id=tenant.id,
+        action=AuditAction.UPDATE,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        actor_user_id=user.id,
+        actor_type="platform",
+        summary="Company logo removed by the platform",
+        request=request,
+    )
+    await session.commit()
 
 
 async def add_admin(

@@ -31,6 +31,25 @@ async def list_workspaces(user: CurrentUser, session: DbSession) -> list[dict[st
     return await platform.list_workspaces(session, user)
 
 
+@router.get("/workspaces/{tenant_id}", dependencies=SUPER_ONLY)
+async def get_workspace(
+    tenant_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """One company's full profile, its admins and its size."""
+    return await platform.workspace_detail(session, user, tenant_id)
+
+
+@router.patch("/workspaces/{tenant_id}", dependencies=SUPER_ONLY)
+async def update_workspace(
+    tenant_id: uuid.UUID,
+    payload: platform.WorkspaceUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    return await platform.update(session, user, tenant_id, payload, request=request)
+
+
 @router.post("/workspaces", status_code=status.HTTP_201_CREATED, dependencies=SUPER_ONLY)
 async def create_workspace(
     payload: platform.WorkspaceIn, user: CurrentUser, session: DbSession, request: Request
@@ -89,3 +108,15 @@ async def upload_logo(
 
     data = await file.read(LOGO_MAX_BYTES + 1)
     return await platform.upload_logo(session, user, tenant_id, data, request=request)
+
+
+@router.delete(
+    "/workspaces/{tenant_id}/logo",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=SUPER_ONLY,
+)
+async def delete_logo(
+    tenant_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await platform.remove_logo(session, user, tenant_id, request=request)

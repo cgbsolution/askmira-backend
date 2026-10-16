@@ -313,3 +313,129 @@ def test_a_gstin_must_belong_to_the_company_and_its_state() -> None:
         platform.WorkspaceIn(**_fields(modules={"teleportation": True}))
     # No GSTIN at all is allowed — not every company is registered.
     assert platform.WorkspaceIn(**_fields(gstin=None)).gstin is None
+
+
+async def test_the_super_admin_views_a_company_s_full_details(
+    session: AsyncSession, hr_user: User, super_admin: User
+) -> None:
+    created = await platform.create(session, super_admin, _new(), request=None)
+    tenant_id = uuid.UUID(created["workspace"]["id"])
+    detail = await platform.workspace_detail(session, super_admin, tenant_id)
+    details = detail["details"]
+    assert (details["pan"], details["gstin"], details["tan"]) == (
+        "AAACN1234F",
+        GSTIN_KA,
+        "BLRN12345C",
+    )
+    assert details["address_line1"] == "12, 4th Cross, Indiranagar"
+    assert (details["city"], details["state_code"], details["pincode"]) == (
+        "Bengaluru",
+        "KA",
+        "560038",
+    )
+    assert details["company_size"] == "51-200"
+    assert detail["admins"][0]["email"] == "founder@newco-demo.com"
+    assert detail["sign_in_path"] == f"/signin/{detail['workspace']}"
+
+    with pytest.raises(HTTPException) as refused:
+        await platform.workspace_detail(session, hr_user, tenant_id)
+    assert refused.value.status_code == 403
+
+
+async def test_an_edit_is_checked_as_a_whole_like_the_form_that_made_it(
+    session: AsyncSession, super_admin: User
+) -> None:
+    created = await platform.create(session, super_admin, _new(), request=None)
+    tenant_id = uuid.UUID(created["workspace"]["id"])
+
+    # Moving the office to Maharashtra while the GSTIN is Karnataka's is refused.
+    with pytest.raises(HTTPException) as wrong_state:
+        await platform.update(
+            session,
+            super_admin,
+            tenant_id,
+            platform.WorkspaceUpdate(state_code="MH", city="Mumbai", pincode="400001"),
+            request=None,
+        )
+    assert wrong_state.value.status_code == 422
+    assert "registered in" in wrong_state.value.detail
+
+    # Moving it together with Maharashtra's GSTIN is fine.
+    updated = await platform.update(
+        session,
+        super_admin,
+        tenant_id,
+        platform.WorkspaceUpdate(
+            state_code="MH",
+            city="Mumbai",
+            pincode="400001",
+            address_line1="Plot 7, BKC",
+            gstin=GSTIN_MH,
+            legal_name="NewCo Technologies Pvt Ltd",
+            company_name="NewCo India",
+            modules={"rewards": True},
+            workspace="newco-india",
+        ),
+        request=None,
+    )
+    assert updated["name"] == "NewCo India"
+    assert updated["workspace"] == "newco-india"
+    assert updated["details"]["gstin"] == GSTIN_MH
+    assert updated["details"]["legal_name"] == "NewCo Technologies Pvt Ltd"
+    assert updated["details"]["modules"]["rewards"] is True
+    assert updated["details"]["registered_address"].endswith("Mumbai, MH 400001")
+
+    audit_rows = (
+        await session.scalars(
+            select(AuditLog).where(
+                AuditLog.tenant_id == tenant_id, AuditLog.summary.like("Company details changed%")
+            )
+        )
+    ).all()
+    assert audit_rows and audit_rows[0].actor_type == "platform"
+
+    with pytest.raises(HTTPException) as clash:
+        await platform.update(
+            session,
+            super_admin,
+            tenant_id,
+            platform.WorkspaceUpdate(workspace="sso"),
+            request=None,
+        )
+    assert clash.value.status_code == 409
+
+
+async def test_an_older_workspace_without_details_can_be_completed(
+    session: AsyncSession, tenant: Tenant, super_admin: User
+) -> None:
+    from app.models.org import LegalEntity, Location
+
+    # The demo tenant from conftest has a legal entity but no profile or PAN.
+    with pytest.raises(HTTPException) as incomplete:
+        await platform.update(
+            session,
+            super_admin,
+            tenant.id,
+            platform.WorkspaceUpdate(industry="Manufacturing"),
+            request=None,
+        )
+    assert incomplete.value.status_code == 422
+
+    done = await platform.update(
+        session,
+        super_admin,
+        tenant.id,
+        platform.WorkspaceUpdate(
+            legal_name="Acme Technologies Pvt Ltd",
+            pan="AAACN1234F",
+            address_line1="1 MG Road",
+            city="Bengaluru",
+            state_code="KA",
+            pincode="560001",
+            industry="Manufacturing",
+        ),
+        request=None,
+    )
+    assert done["details"]["pan"] == "AAACN1234F"
+    assert await session.scalar(select(LegalEntity.id).where(LegalEntity.tenant_id == tenant.id))
+    assert await session.scalar(select(Location.id).where(Location.tenant_id == tenant.id))
