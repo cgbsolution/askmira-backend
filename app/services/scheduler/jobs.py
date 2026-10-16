@@ -278,6 +278,12 @@ async def _retention_sweep(session: AsyncSession, ctx: JobContext) -> dict[str, 
     return _tally(await retention.scheduled_sweep(session, ctx.actor, today=ctx.today))
 
 
+async def _product_people_sync(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.products import service as products
+
+    return await products.sync_workspace(session, ctx.actor)
+
+
 async def _proposal_expiry(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.autonomy import service as autonomy
 
@@ -840,6 +846,18 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=4),
         handler=_retention_sweep,
         source="app.services.retention.service.scheduled_sweep",
+    ),
+    Job(
+        key="products.people_sync",
+        name="People sync to linked products",
+        description=(
+            "Sends each linked product (the interview tool, the expense tool) the workspace's "
+            "current people, so joiners get access and leavers lose it. Does nothing for a "
+            "workspace with no linked product."
+        ),
+        cadence=Cadence.daily(hour=3),
+        handler=_product_people_sync,
+        source="app.services.products.service.sync_workspace",
     ),
     Job(
         key="autonomy.expire_proposals",

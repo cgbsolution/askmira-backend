@@ -64,6 +64,7 @@ from app.api.v1.routers import (
     performance_flow,
     platform,
     positions,
+    products,
     public_workspaces,
     recruiting,
     reports,
@@ -161,4 +162,5 @@ api_router.include_router(mcp.router)
 api_router.include_router(oauth.router)
 api_router.include_router(operators.router)
 api_router.include_router(platform.router)
+api_router.include_router(products.router)
 api_router.include_router(public_workspaces.router)

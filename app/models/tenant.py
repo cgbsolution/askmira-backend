@@ -55,5 +55,15 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
         back_populates="tenant", cascade="all, delete-orphan"
     )
 
+    @property
+    def linked_products(self) -> dict[str, bool]:
+        """Our separate products that replace a module here, e.g. {"interview": True}.
+
+        A mirror of the active `product_links`, kept in settings so the session
+        payload needs no extra query. Only linking and unlinking write it.
+        """
+        linked = (self.settings or {}).get("linked_products") or {}
+        return {key: bool(on) for key, on in linked.items() if on}
+
     def __repr__(self) -> str:
         return f"<Tenant {self.slug}>"

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.services import platform
+from app.services.products import service as products
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -120,3 +121,35 @@ async def delete_logo(
     tenant_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> None:
     await platform.remove_logo(session, user, tenant_id, request=request)
+
+
+# ── Linked products (the interview tool, the expense tool) ──────────────────
+
+
+@router.get("/workspaces/{tenant_id}/products", dependencies=SUPER_ONLY)
+async def list_products(
+    tenant_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[dict[str, Any]]:
+    return await products.list_for_workspace(session, user, tenant_id)
+
+
+@router.post("/workspaces/{tenant_id}/products/{product}", dependencies=SUPER_ONLY)
+async def link_product(
+    tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Link the workspace to the product: it replaces the built-in module there."""
+    return await products.link(session, user, tenant_id, product, request=request)
+
+
+@router.delete("/workspaces/{tenant_id}/products/{product}", dependencies=SUPER_ONLY)
+async def unlink_product(
+    tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await products.unlink(session, user, tenant_id, product, request=request)
+
+
+@router.post("/workspaces/{tenant_id}/products/{product}/sync", dependencies=SUPER_ONLY)
+async def sync_product(
+    tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await products.sync_now(session, user, tenant_id, product, request=request)

@@ -546,6 +546,11 @@ TABLES: dict[str, TableClassification] = {
     "benefit_member_changes": _p(EMP, "dependent", {"member": "dependent"}),
     "reward_catalogue_items": _none("What recognition points can be spent on."),
     "operator_grants": _p(USER, "account_security", {"operator_email": "identity"}),
+    "product_links": _none(
+        "Which organisation in our interview or expense product is this workspace, and how "
+        "the last people sync went.",
+        {"last_sync": "identity"},
+    ),
     "social_login_attempts": _none(
         "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
     ),

@@ -138,6 +138,8 @@ class TenantRead(BaseModel):
     plan: str
     data_region: str
     enabled_modules: dict
+    #: Separate products that replace a module for this workspace, e.g. {"interview": true}.
+    linked_products: dict = {}
 
 
 class TokenPair(BaseModel):
