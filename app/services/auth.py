@@ -11,6 +11,7 @@ import re
 import secrets
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import jwt
@@ -33,6 +34,7 @@ from app.models.attendance import Shift
 from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee, EmploymentStatus
 from app.models.notifications import Channel, DigestMode
+from app.models.org import LegalEntity, Location
 from app.models.tenant import Tenant
 from app.models.user import PasswordResetToken, User, UserRole
 from app.schemas.auth import (
@@ -72,11 +74,19 @@ def _slugify(value: str) -> str:
     return slug[:48] or "tenant"
 
 
+#: Workspace addresses the sign-in pages use for themselves (`/signin/sso`,
+#: `/signin/social/…`); a company with one of these would be unreachable.
+RESERVED_SLUGS = frozenset({"sso", "social", "platform", "operator", "api", "admin"})
+
+
 async def _unique_slug(session: AsyncSession, base: str) -> str:
     slug = _slugify(base)
     candidate = slug
     suffix = 1
-    while await session.scalar(select(Tenant.id).where(Tenant.slug == candidate)) is not None:
+    while (
+        candidate in RESERVED_SLUGS
+        or await session.scalar(select(Tenant.id).where(Tenant.slug == candidate)) is not None
+    ):
         suffix += 1
         candidate = f"{slug}-{suffix}"
     return candidate
@@ -125,6 +135,10 @@ async def create_workspace(
     password_hash: str,
     slug: str | None = None,
     must_change_password: bool = True,
+    modules: dict[str, bool] | None = None,
+    profile: dict[str, Any] | None = None,
+    legal_entity: dict[str, Any] | None = None,
+    head_office: dict[str, Any] | None = None,
 ) -> tuple[Tenant, User]:
     """A new workspace and its first ADMIN. Flushed, not committed.
 
@@ -143,11 +157,32 @@ async def create_workspace(
     tenant = Tenant(
         name=company_name.strip(),
         slug=slug or await _unique_slug(session, company_name),
-        enabled_modules=dict(DEFAULT_ENABLED_MODULES),
-        settings={"fiscal_year_start_month": 4, "week_start": "monday", "currency": "INR"},
+        enabled_modules={**DEFAULT_ENABLED_MODULES, **(modules or {})},
+        settings={
+            "fiscal_year_start_month": 4,
+            "week_start": "monday",
+            "currency": "INR",
+            **({"profile": profile} if profile else {}),
+        },
     )
     session.add(tenant)
     await session.flush()
+
+    # The company as a legal person (PAN, TAN, GSTIN, PF, ESI) and its first
+    # office. Payroll, filings and PT all read these; collecting them when the
+    # workspace is made means the admin starts with them in place.
+    entity = None
+    office = None
+    if legal_entity:
+        entity = LegalEntity(tenant_id=tenant.id, code="LE01", **legal_entity)
+        session.add(entity)
+        await session.flush()
+        if head_office:
+            office = Location(
+                tenant_id=tenant.id, legal_entity_id=entity.id, code="HO", **head_office
+            )
+            session.add(office)
+            await session.flush()
 
     user = User(
         tenant_id=tenant.id,
@@ -173,6 +208,8 @@ async def create_workspace(
         phone=admin_phone,
         date_of_joining=datetime.now(ZoneInfo("Asia/Kolkata")).date(),
         status=EmploymentStatus.ACTIVE,
+        legal_entity_id=entity.id if entity else None,
+        location_id=office.id if office else None,
     )
     session.add(employee)
     await session.flush()
@@ -201,9 +238,20 @@ async def create_workspace(
 async def login(
     session: AsyncSession, payload: LoginRequest, request: Request | None = None
 ) -> AuthResponse | MfaChallengeRead:
-    user = await session.scalar(
-        select(User).where(func.lower(User.email) == payload.email.lower())
-    )
+    from app.services.identity import directory
+
+    try:
+        user = await directory.find_login(
+            session, payload.identifier, workspace=payload.workspace
+        )
+    except directory.AmbiguousLoginError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This mobile number belongs to more than one login. Sign in with your "
+                "work email instead."
+            ),
+        ) from exc
 
     # Verify even when the user is absent, against a throwaway hash, so a
     # missing account and a wrong password take the same time to answer.
@@ -259,6 +307,15 @@ async def login(
             detail="This workspace is not active",
         )
 
+    # A workspace that enforces single sign-on takes no passwords, except the
+    # break-glass account's, which is audited.
+    from app.services.identity import sso as sso_service
+
+    try:
+        await sso_service.assert_password_login_allowed(session, user, request)
+    except sso_service.SsoError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
     # Migrate the hash forward if the cost parameters have since been raised.
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(payload.password)
@@ -283,6 +340,57 @@ async def login(
         entity_id=user.id,
         actor=user,
         summary="Signed in",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(user)
+    return await _build_response(session, user, tenant)
+
+
+async def finish_external_login(
+    session: AsyncSession, user: User, *, method: str, request: Request | None = None
+) -> AuthResponse | MfaChallengeRead:
+    """Sign in somebody another provider has vouched for ("Continue with Google").
+
+    Everything a password sign-in checks after the password, in the same order:
+    the login and its workspace are active, the workspace's own single sign-on
+    is not bypassed, and two-step sign-in still asks for its code.
+    """
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been deactivated. Contact your admin.",
+        )
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="This workspace is not active"
+        )
+    from app.services.identity import sso as sso_service
+
+    try:
+        await sso_service.assert_password_login_allowed(session, user, request)
+    except sso_service.SsoError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    from app.services import mfa
+
+    if await mfa.is_enabled(session, user):
+        await session.commit()
+        return MfaChallengeRead(
+            mfa_token=create_mfa_token(user_id=str(user.id), tenant_id=str(user.tenant_id)),
+            expires_in=300,
+        )
+
+    user.last_login_at = datetime.now(UTC)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.LOGIN,
+        entity_type="user",
+        entity_id=user.id,
+        actor=user,
+        summary=f"Signed in with {method}",
         request=request,
     )
     await session.commit()

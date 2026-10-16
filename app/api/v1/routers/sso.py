@@ -11,10 +11,11 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
 
+from app.core import cookies
 from app.core.config import settings
 from app.core.crypto import encrypt_secret
 from app.core.deps import (
@@ -293,7 +294,11 @@ async def start_login(
 
 @router.post("/oidc/callback", response_model=AuthResponse)
 async def oidc_callback(
-    session: DbSession, request: Request, code: str = Form(...), state: str = Form(...)
+    session: DbSession,
+    request: Request,
+    response: Response,
+    code: str = Form(...),
+    state: str = Form(...),
 ) -> AuthResponse:
     """Complete an OIDC login and mint our own tokens.
 
@@ -332,7 +337,7 @@ async def oidc_callback(
     except oidc_service.OidcError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
-    return await _complete_login(
+    result = await _complete_login(
         session,
         request,
         provider=provider,
@@ -345,6 +350,16 @@ async def oidc_callback(
             else None
         ),
     )
+    # The web portal signs in with session cookies, like a password sign-in.
+    cookies.set_session_cookies(
+        response,
+        access_token=result.access_token,
+        refresh_token=result.refresh_token,
+        access_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    if cookies.wants_cookie_transport(request):
+        return result.model_copy(update={"access_token": "", "refresh_token": ""})
+    return result
 
 
 # ── SAML ────────────────────────────────────────────────────────────────────

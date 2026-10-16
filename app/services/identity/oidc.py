@@ -251,6 +251,20 @@ def verify_id_token(
     except Exception as exc:
         raise OidcError(f"Could not fetch the provider's signing key: {exc}") from exc
 
+    # Microsoft's multi-tenant endpoint publishes its issuer as a template,
+    # `https://login.microsoftonline.com/{tenantid}/v2.0`. The token's own `tid`
+    # fills it in; the signature is still verified against Microsoft's keys, so
+    # an issuer that does not match its own tenant id is refused.
+    if "{tenantid}" in issuer:
+        try:
+            unverified = jwt.decode(id_token, options={"verify_signature": False})
+        except jwt.InvalidTokenError as exc:
+            raise OidcError(f"The id token is not valid: {exc}") from exc
+        tenant_id = str(unverified.get("tid") or "")
+        if not tenant_id:
+            raise OidcError("The id token carries no tenant id to check its issuer against.")
+        issuer = issuer.replace("{tenantid}", tenant_id)
+
     try:
         claims = jwt.decode(
             id_token,

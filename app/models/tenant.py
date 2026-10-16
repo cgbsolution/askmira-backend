@@ -46,6 +46,10 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
     # Tenant-level defaults: fiscal year start, week start, currency, and so on.
     settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
+    # The company's logo in file storage, shown on its own sign-in page and in
+    # the portal. Public by design: it is on the company's website already.
+    logo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     users: Mapped[list[User]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     legal_entities: Mapped[list[LegalEntity]] = relationship(
         back_populates="tenant", cascade="all, delete-orphan"

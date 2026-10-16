@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str | None = None
     SUPABASE_STORAGE_BUCKET: str = "askmira-files"
 
+    # "Continue with …" sign-in providers read their own settings in
+    # app/services/identity/social.py, the one module that knows them.
+
     # ── AI (V2+) ────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str | None = None
     AI_MODEL: str = "claude-opus-5-5"

@@ -57,13 +57,39 @@ async def super_admin(session: AsyncSession, tenant: Tenant) -> User:
     return user
 
 
+GSTIN_KA = "29AAACN1234F1ZT"
+GSTIN_MH = "27AAACN1234F1ZX"
+
+
+def _fields(email: str = "founder@newco-demo.com", **extra) -> dict:
+    fields = {
+        "company_name": "NewCo",
+        "legal_name": "NewCo Technologies Private Limited",
+        "company_type": "private_limited",
+        "industry": "Software",
+        "company_size": "51-200",
+        "website": "newco-demo.com",
+        "pan": "aaacn1234f",
+        "tan": "BLRN12345C",
+        "gstin": GSTIN_KA,
+        "cin": "U72200KA2019PTC123456",
+        "pf_registration_no": "KNBNG0012345000",
+        "esi_registration_no": "53000123450001001",
+        "address_line1": "12, 4th Cross, Indiranagar",
+        "city": "Bengaluru",
+        "state_code": "ka",
+        "pincode": "560038",
+        "admin_full_name": "Asha Rao",
+        "admin_email": email,
+        "admin_phone": "+91 98450 12345",
+        "admin_designation": "HR Head",
+    }
+    fields.update(extra)
+    return fields
+
+
 def _new(email: str = "founder@newco-demo.com", **extra) -> platform.WorkspaceIn:
-    return platform.WorkspaceIn(
-        company_name="NewCo Pvt Ltd",
-        admin_full_name="Asha Rao",
-        admin_email=email,
-        **extra,
-    )
+    return platform.WorkspaceIn(**_fields(email, **extra))
 
 
 def _bearer(user: User) -> dict[str, str]:
@@ -118,8 +144,10 @@ async def test_only_the_super_admin_creates_a_workspace(
 
     listed = await platform.list_workspaces(session, super_admin)
     names = {row["name"]: row for row in listed}
-    assert names["NewCo Pvt Ltd"]["admins"][0]["email"] == "founder@newco-demo.com"
-    assert names["NewCo Pvt Ltd"]["employees"] == 1
+    assert names["NewCo"]["admins"][0]["email"] == "founder@newco-demo.com"
+    assert names["NewCo"]["employees"] == 1
+    assert names["NewCo"]["gstin"] == GSTIN_KA
+    assert names["NewCo"]["city"] == "Bengaluru"
 
 
 async def test_one_email_is_one_login_across_every_workspace(
@@ -241,3 +269,47 @@ async def test_a_workspace_admin_cannot_reuse_an_email_from_another_workspace(
         )
     assert refused.value.status_code == 400
     assert "one login" in refused.value.detail
+
+
+async def test_the_company_s_legal_identity_and_office_are_set_up_with_it(
+    session: AsyncSession, super_admin: User
+) -> None:
+    from app.models.org import LegalEntity, Location
+
+    created = await platform.create(
+        session, super_admin, _new(modules={"benefits": True}), request=None
+    )
+    tenant_id = uuid.UUID(created["workspace"]["id"])
+    entity = await session.scalar(select(LegalEntity).where(LegalEntity.tenant_id == tenant_id))
+    assert entity.name == "NewCo Technologies Private Limited"
+    assert (entity.pan, entity.tan, entity.gstin) == ("AAACN1234F", "BLRN12345C", GSTIN_KA)
+    assert entity.registered_address.endswith("Bengaluru, KA 560038")
+    office = await session.scalar(select(Location).where(Location.tenant_id == tenant_id))
+    assert (office.state_code, office.pincode) == ("KA", "560038")
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant.enabled_modules["benefits"] is True
+    assert tenant.settings["profile"]["cin"] == "U72200KA2019PTC123456"
+    admin = await session.scalar(select(User).where(User.tenant_id == tenant_id))
+    assert admin.phone == "9845012345"
+    employee = await session.get(Employee, admin.employee_id)
+    assert (employee.legal_entity_id, employee.location_id) == (entity.id, office.id)
+    assert employee.designation == "HR Head"
+
+
+def test_a_gstin_must_belong_to_the_company_and_its_state() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="PAN"):
+        platform.WorkspaceIn(**_fields(pan="AAACZ9999Z"))
+    with pytest.raises(ValidationError, match="registered in"):
+        platform.WorkspaceIn(**_fields(gstin=GSTIN_MH))
+    with pytest.raises(ValidationError):
+        platform.WorkspaceIn(**_fields(gstin="29AAACN1234F1ZA"))
+    with pytest.raises(ValidationError, match="PIN"):
+        platform.WorkspaceIn(**_fields(pincode="060038"))
+    with pytest.raises(ValidationError, match="mobile"):
+        platform.WorkspaceIn(**_fields(admin_phone="12345"))
+    with pytest.raises(ValidationError, match="module"):
+        platform.WorkspaceIn(**_fields(modules={"teleportation": True}))
+    # No GSTIN at all is allowed — not every company is registered.
+    assert platform.WorkspaceIn(**_fields(gstin=None)).gstin is None

@@ -7,8 +7,9 @@ and audited; nothing is deleted — a closed office is deactivated.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
@@ -150,9 +151,7 @@ async def list_custom_fields(
     user: CurrentUser, session: DbSession, include_inactive: bool = False
 ) -> list[CustomFieldRead]:
     """The fields the profile draws. Sensitive ones are listed for HR only."""
-    rows = await custom_fields.list_definitions(
-        session, user, include_inactive=include_inactive
-    )
+    rows = await custom_fields.list_definitions(session, user, include_inactive=include_inactive)
     return [CustomFieldRead.model_validate(row) for row in rows]
 
 
@@ -186,7 +185,6 @@ async def update_custom_field(
     return CustomFieldRead.model_validate(row)
 
 
-
 # ── Custom tables on the employee record ────────────────────────────────────
 
 
@@ -214,3 +212,30 @@ async def update_custom_table(
     request: Request,
 ) -> dict:
     return await custom_tables.update_table(session, user, table_id, payload, request=request)
+
+
+# ── Company logo ────────────────────────────────────────────────────────────
+
+
+@router.post("/logo", dependencies=ADMIN_ONLY)
+async def upload_logo(
+    user: CurrentUser, session: DbSession, request: Request, file: UploadFile = File(...)
+) -> dict[str, Any]:
+    """The logo on the company's sign-in page and in the portal. PNG or JPEG, 1 MB."""
+    from app.models.tenant import Tenant
+    from app.services import branding
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    data = await file.read(branding.LOGO_MAX_BYTES + 1)
+    return await branding.save_logo(session, user, tenant, data, request=request)
+
+
+@router.delete(
+    "/logo", status_code=status.HTTP_204_NO_CONTENT, response_model=None, dependencies=ADMIN_ONLY
+)
+async def delete_logo(user: CurrentUser, session: DbSession, request: Request) -> None:
+    from app.models.tenant import Tenant
+    from app.services import branding
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    await branding.remove_logo(session, user, tenant, request=request)

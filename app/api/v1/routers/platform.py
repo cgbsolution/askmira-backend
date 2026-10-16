@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -75,3 +75,17 @@ async def set_status(
     return await platform.set_active(
         session, user, tenant_id, active=payload.active, reason=payload.reason, request=request
     )
+
+
+@router.post("/workspaces/{tenant_id}/logo", dependencies=SUPER_ONLY)
+async def upload_logo(
+    tenant_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    from app.services.branding import LOGO_MAX_BYTES
+
+    data = await file.read(LOGO_MAX_BYTES + 1)
+    return await platform.upload_logo(session, user, tenant_id, data, request=request)

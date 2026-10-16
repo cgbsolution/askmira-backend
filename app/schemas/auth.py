@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.user import UserRole
 
@@ -35,8 +35,27 @@ def _validate_password(value: str) -> str:
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    """Sign in with a work email or a mobile number, and a password.
+
+    `email` is the older field the mobile app still sends; `login` takes either.
+    `workspace` is the company the sign-in page was opened for, which narrows a
+    mobile number to that company's people.
+    """
+
+    login: str | None = Field(default=None, max_length=320)
+    email: str | None = Field(default=None, max_length=320)
+    workspace: str | None = Field(default=None, max_length=63)
     password: str
+
+    @model_validator(mode="after")
+    def _has_identifier(self) -> LoginRequest:
+        if not (self.login or self.email or "").strip():
+            raise ValueError("Enter your work email or mobile number.")
+        return self
+
+    @property
+    def identifier(self) -> str:
+        return (self.login or self.email or "").strip()
 
 
 class MfaChallengeRead(BaseModel):

@@ -546,6 +546,9 @@ TABLES: dict[str, TableClassification] = {
     "benefit_member_changes": _p(EMP, "dependent", {"member": "dependent"}),
     "reward_catalogue_items": _none("What recognition points can be spent on."),
     "operator_grants": _p(USER, "account_security", {"operator_email": "identity"}),
+    "social_login_attempts": _none(
+        "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
+    ),
     "assistant_articles": _none("Company policy text HR wrote for the assistant to cite."),
     "survey_topic_summaries": _none(
         "Paraphrased themes counted across anonymous survey comments; no respondent link."

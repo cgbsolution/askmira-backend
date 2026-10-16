@@ -35,6 +35,7 @@ from typing import Any
 
 __all__ = [
     "CHARSET",
+    "GST_CODES_BY_STATE",
     "STATE_CODES",
     "GstinVerdict",
     "PortalStatus",
@@ -141,6 +142,27 @@ def checksum_char(first_fourteen: str) -> str:
         product = value * weight
         total += product // 36 + product % 36
     return CHARSET[(36 - total % 36) % 36]
+
+
+#: The GSTIN state codes a location's ISO state code may appear under. Old and
+#: new codes both count where a state was split or merged (Andhra Pradesh,
+#: Dadra and Nagar Haveli and Daman and Diu).
+GST_CODES_BY_STATE: dict[str, frozenset[str]] = {
+    "JK": frozenset({"01"}), "HP": frozenset({"02"}), "PB": frozenset({"03"}),
+    "CH": frozenset({"04"}), "UK": frozenset({"05"}), "UT": frozenset({"05"}),
+    "HR": frozenset({"06"}), "DL": frozenset({"07"}), "RJ": frozenset({"08"}),
+    "UP": frozenset({"09"}), "BR": frozenset({"10"}), "SK": frozenset({"11"}),
+    "AR": frozenset({"12"}), "NL": frozenset({"13"}), "MN": frozenset({"14"}),
+    "MZ": frozenset({"15"}), "TR": frozenset({"16"}), "ML": frozenset({"17"}),
+    "AS": frozenset({"18"}), "WB": frozenset({"19"}), "JH": frozenset({"20"}),
+    "OD": frozenset({"21"}), "OR": frozenset({"21"}), "CG": frozenset({"22"}),
+    "CT": frozenset({"22"}), "MP": frozenset({"23"}), "GJ": frozenset({"24"}),
+    "DD": frozenset({"25", "26"}), "DN": frozenset({"26"}), "DH": frozenset({"25", "26"}),
+    "MH": frozenset({"27"}), "AP": frozenset({"28", "37"}), "KA": frozenset({"29"}),
+    "GA": frozenset({"30"}), "LD": frozenset({"31"}), "KL": frozenset({"32"}),
+    "TN": frozenset({"33"}), "PY": frozenset({"34"}), "AN": frozenset({"35"}),
+    "TG": frozenset({"36"}), "TS": frozenset({"36"}), "LA": frozenset({"38"}),
+}
 
 
 def state_of(gstin: str) -> str | None:

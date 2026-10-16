@@ -173,6 +173,14 @@ _UNSCOPED_BY_DESIGN = {
     # Resolving which workspace an email address belongs to is the whole job,
     # and it runs on the sign-in screen before anyone is authenticated.
     "sso.py",
+    # Same job for the two-step sign-in page: an email or a mobile number is
+    # what establishes the workspace, so finding it cannot be scoped to one.
+    # Rate-limited per connection; returns the company's name, logo and SSO only.
+    "directory.py",
+    # "Continue with Google / Microsoft": the provider vouches for an email, and
+    # that one-login-per-address lookup is what establishes the tenant. The
+    # attempt rows carry no tenant; nothing else is read.
+    "social.py",
     # `benchmark_datasets` is the published market cell and has no tenant
     # column at all - every contributing client sees the same row, which is
     # what makes it a benchmark rather than a report. There is nothing to
@@ -2752,6 +2760,9 @@ def test_no_calendar_provider_code_lives_outside_its_own_adapter() -> None:
     """
     allowed = {
         APP / "models" / "interview.py",
+        # Sign-in with Google or Microsoft accounts — identity, not calendars.
+        # The one module that knows those providers as sign-in providers.
+        APP / "services" / "identity" / "social.py",
         _CALENDAR_DIR / "registry.py",
         _CALENDAR_DIR / "google.py",
         _CALENDAR_DIR / "microsoft.py",

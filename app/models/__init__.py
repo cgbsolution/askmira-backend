@@ -601,6 +601,7 @@ from app.models.rewards import (
 )
 from app.models.scheduler import SchedulerJobRun, SchedulerRunStatus
 from app.models.shift_swaps import ShiftSwapRequest, ShiftSwapStatus
+from app.models.social_login import SocialLoginAttempt
 from app.models.statutory_watch import StatutoryNotice, StatutoryNoticeAlert
 from app.models.talent_pools import TalentPool, TalentPoolMember
 from app.models.tax import (
@@ -1114,6 +1115,7 @@ __all__ = [
     "SiemDestination",
     "SiemVendorEnum",
     "SilencePolicy",
+    "SocialLoginAttempt",
     "SoftDeleteMixin",
     "SsoLoginAttempt",
     "StageDelegation",

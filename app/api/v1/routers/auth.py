@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import cookies
 from app.core.config import settings
@@ -35,6 +36,8 @@ from app.schemas.auth import (
 )
 from app.services import auth as auth_service
 from app.services import mfa as mfa_service
+from app.services.hiring.public_guard import Limit, throttle
+from app.services.identity import directory, social
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -50,6 +53,101 @@ def _deliver(result: AuthResponse, request: Request, response: Response) -> Auth
     if cookies.wants_cookie_transport(request):
         return result.model_copy(update={"access_token": "", "refresh_token": ""})
     return result
+
+
+class IdentifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    login: str = Field(min_length=3, max_length=320)
+
+
+class SocialStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    redirect_uri: str = Field(min_length=10, max_length=1024)
+
+
+class SocialCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=4096)
+    state: str = Field(min_length=1, max_length=256)
+
+
+#: Finding a workspace from an email or number. Generous for a person, too
+#: tight to sweep a list of addresses with.
+IDENTIFY_LIMIT = Limit("identify", 20, 600)
+SOCIAL_LIMIT = Limit("social_signin", 20, 600)
+
+
+@router.post("/identify")
+async def identify(
+    payload: IdentifyRequest, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Step one of sign-in: which company an email or mobile number belongs to.
+
+    Answers with that company's sign-in page — its name, logo and single
+    sign-on — and nothing about the person. See `services/identity/directory.py`.
+    """
+    throttle(request, IDENTIFY_LIMIT)
+    try:
+        user = await directory.find_login(session, payload.login)
+    except directory.AmbiguousLoginError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This mobile number belongs to more than one login. Use your work "
+                "email instead."
+            ),
+        ) from exc
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "We could not find an AskMira login for that email or mobile number. "
+                "Check it, or ask your HR team."
+            ),
+        )
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:
+        raise directory.suspended()
+    brand = await directory.branding(session, tenant)
+    return {
+        **brand.as_dict(),
+        "login_kind": "email" if directory.looks_like_email(payload.login) else "mobile",
+    }
+
+
+@router.get("/social/providers")
+async def social_providers() -> dict[str, Any]:
+    """Which 'Continue with …' buttons this AskMira offers."""
+    return {"providers": directory.social_providers()}
+
+
+@router.post("/social/{provider}/start")
+async def social_start(
+    provider: str, payload: SocialStartRequest, session: DbSession, request: Request
+) -> dict[str, str]:
+    throttle(request, SOCIAL_LIMIT)
+    url = await social.start(session, provider, payload.redirect_uri)
+    return {"authorization_url": url}
+
+
+@router.post("/social/{provider}/callback", response_model=AuthResponse | MfaChallengeRead)
+async def social_callback(
+    provider: str,
+    payload: SocialCallbackRequest,
+    session: DbSession,
+    request: Request,
+    response: Response,
+) -> AuthResponse | MfaChallengeRead:
+    throttle(request, SOCIAL_LIMIT)
+    result = await social.complete(
+        session, provider, code=payload.code, state=payload.state, request=request
+    )
+    if isinstance(result, MfaChallengeRead):
+        return result
+    return _deliver(result, request, response)
 
 
 @router.post("/login", response_model=AuthResponse | MfaChallengeRead)
