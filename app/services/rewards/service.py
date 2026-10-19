@@ -365,6 +365,7 @@ async def _ledger_entries(
             department_key=row.department_key or "",
             cost_centre=row.cost_centre or "",
             rate_per_point=_d(row.rate_per_point),
+            recorded_at=row.created_at,
         )
         for row in (await session.execute(stmt)).scalars()
     ]

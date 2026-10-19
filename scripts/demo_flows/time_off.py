@@ -86,7 +86,7 @@ HISTORY = (
 #: Requests made around today. Pending ones wait in the manager's queue.
 CURRENT = (
     ("pooja", "CL", "2026-10-09", "2026-10-09", None, "Housewarming at home", "pending"),
-    ("nikhil", "EL", "2026-10-19", "2026-10-23", None, "Dussehra with family in Pune", "pending"),
+    ("nikhil", "EL", "2026-10-26", "2026-10-28", None, "Family trip to Pune", "pending"),
     ("meera", "CL", "2026-10-23", "2026-10-23", None, "Parent-teacher meeting", "pending"),
     ("sneha", "EL", "2026-10-26", "2026-10-30", None, "Trip to Kerala", "approve"),
     ("arjun", "EL", "2026-11-09", "2026-11-13", None, "Diwali at home in Ahmedabad", "pending"),

@@ -228,7 +228,7 @@ async def run(demo: Demo) -> None:
          "joining_location_id": demo.ids["location"]["BLR"],
          "department_id": demo.ids["department"]["ENG"],
          "legal_entity_id": demo.ids["entity"], "probation_months": 6,
-         "notice_period_days": 60, "valid_until": "2026-10-10",
+         "notice_period_days": 60, "valid_until": "2026-10-24",
          "components": [{"kind": "joining_bonus", "label": "Joining bonus",
                          "amount": "100000", "payable_terms": "With the first salary"}]},
     )
@@ -240,7 +240,7 @@ async def run(demo: Demo) -> None:
         raise SeedError(f"Sana's offer is {current['status']} after the hiring manager approved")
     await anjali.post(f"/offers/{offer['id']}/release",
                       {"template_id": demo.ids["letter_template"]["OFFER_STD"],
-                       "valid_until": "2026-10-10"})
+                       "valid_until": "2026-10-24"})
     await anjali.post(f"/offers/{offer['id']}/accept",
                       {"signature_reference": "Signed copy received by email, 2 Oct 2026"})
     converted = await priya.post(f"/offers/{offer['id']}/convert",
@@ -275,13 +275,13 @@ async def run(demo: Demo) -> None:
          "joining_date": "2026-12-01", "designation": "Enterprise Account Executive",
          "grade": "P3", "joining_location_id": demo.ids["location"]["MUM"],
          "department_id": demo.ids["department"]["SAL"], "legal_entity_id": demo.ids["entity"],
-         "valid_until": "2026-10-15"},
+         "valid_until": "2026-10-24"},
     )
     await anjali.post(f"/offers/{offer['id']}/submit")
     await demo["rahul"].post(f"/offers/{offer['id']}/decide", {"approve": True})
     await anjali.post(f"/offers/{offer['id']}/release",
                       {"template_id": demo.ids["letter_template"]["OFFER_STD"],
-                       "valid_until": "2026-10-15"})
+                       "valid_until": "2026-10-24"})
     # Applications through the public careers page, and a referral.
     for name, email, years in (("Deepak Rawat", "deepak.rawat@example.com", "3"),
                                ("Nandini Rao", "nandini.rao@example.com", "5")):

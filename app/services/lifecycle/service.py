@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -684,13 +684,18 @@ async def _letter_template_for(
 
 
 async def _letter_manual_values(
-    session: AsyncSession, user: User, row: LifecycleEvent
+    session: AsyncSession,
+    user: User,
+    row: LifecycleEvent,
+    *,
+    previous_ctc: Decimal | None = None,
 ) -> dict[str, Any]:
     """What an event's letter can say beyond the employee record.
 
     Offered as `manual.*` tokens: `effective_date`, `reason`, `new_ctc_annual`,
-    every changed field by name, and the readable `new_department_name`,
-    `new_location_name` and `new_manager_name`.
+    and for a pay change `previous_ctc` and `increase_percentage` (the standard
+    increment letter requires both), every changed field by name, and the
+    readable `new_department_name`, `new_location_name` and `new_manager_name`.
     """
     values: dict[str, Any] = {
         key: value for key, value in (row.new_values or {}).items() if value is not None
@@ -698,7 +703,17 @@ async def _letter_manual_values(
     values["effective_date"] = row.effective_from
     values["reason"] = row.reason
     if row.new_ctc_annual is not None:
-        values["new_ctc_annual"] = Decimal(str(row.new_ctc_annual))
+        new_ctc = Decimal(str(row.new_ctc_annual))
+        values["new_ctc_annual"] = new_ctc
+        if previous_ctc is not None:
+            values["previous_ctc"] = (
+                f"{previous_ctc.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f}"
+            )
+            values["increase_percentage"] = str(
+                ((new_ctc - previous_ctc) / previous_ctc * Decimal(100)).quantize(Decimal("0.01"))
+                if previous_ctc
+                else Decimal(0)
+            )
     for key, model, label in (
         ("department_id", Department, "new_department_name"),
         ("location_id", Location, "new_location_name"),
@@ -792,8 +807,9 @@ async def effect_event(
                     applied.append(f"reassigned {moved} pending approval(s)")
 
             # ── Salary revision (slice 01, arrears in slice 12) ─────────────
+            previous_ctc: Decimal | None = None
             if row.new_ctc_annual is not None:
-                salary = await _revise_salary(
+                salary, previous_ctc = await _revise_salary(
                     session, user, employee=employee,
                     ctc_annual=Decimal(str(row.new_ctc_annual)),
                     effective_from=row.effective_from,
@@ -822,7 +838,9 @@ async def effect_event(
                         user,
                         employee_id=employee.id,
                         template_id=template.id,
-                        manual_values=await _letter_manual_values(session, user, row),
+                        manual_values=await _letter_manual_values(
+                            session, user, row, previous_ctc=previous_ctc
+                        ),
                         as_of=row.effective_from,
                         request=request,
                         commit=False,
@@ -905,6 +923,8 @@ async def _revise_salary(
     Not a copy of it. The offer/payslip identity argument from slice 19 applies
     here too: a promotion letter quoting one breakup and a payslip paying another
     is the same trust incident, arriving eighteen months later.
+
+    Returns the new salary and the annual CTC it replaces, which the letter quotes.
     """
     from app.models.payroll import EmployeeSalary
 
@@ -926,7 +946,8 @@ async def _revise_salary(
             "Assign a salary structure first."
         )
 
-    return await payroll_service.assign_salary(
+    previous_ctc = Decimal(str(current.ctc_annual))
+    salary = await payroll_service.assign_salary(
         session,
         user,
         employee.id,
@@ -942,6 +963,7 @@ async def _revise_salary(
         # would quietly stop holding.
         commit=False,
     )
+    return salary, previous_ctc
 
 
 async def _reassign_pending_approvals(

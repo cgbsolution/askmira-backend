@@ -119,6 +119,9 @@ class LedgerEntry:
     #: The valuation rate this row was written at, kept so a statement can show
     #: why two awards of the same size are worth different amounts.
     rate_per_point: Decimal = Decimal("0")
+    #: When the row was written. Rows of one day share an `occurred_at`, so this
+    #: is what keeps an award ahead of the redemption that spent it.
+    recorded_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.transaction_type is not TransactionType.ADJUSTED and self.points < 0:
@@ -137,6 +140,13 @@ class LedgerEntry:
         return self.points * self.transaction_type.sign
 
 
+def chronological(entries: list[LedgerEntry]) -> list[LedgerEntry]:
+    """Rows in the order they happened, then the order they were written."""
+    return sorted(
+        entries, key=lambda e: (e.occurred_at, e.recorded_at or e.occurred_at, e.entry_id)
+    )
+
+
 def derive_balance(entries: list[LedgerEntry]) -> int:
     """The balance, summed from the transactions.
 
@@ -149,30 +159,36 @@ def derive_balance(entries: list[LedgerEntry]) -> int:
 def verify_chain(entries: list[LedgerEntry]) -> dict[str, Any]:
     """Compare the derived running balance against the stored checkpoints.
 
+    Each row's checkpoint is its employee's balance after it, so the running
+    balance is kept per employee: a tenant-wide report mixes everyone's rows,
+    and one shared total would call every second person's first award a break.
+
     A divergence means a row was inserted out of order or the table was written
     to directly. Both are worth being told about; neither should be silently
     reconciled by preferring one number.
     """
-    ordered = sorted(entries, key=lambda e: (e.occurred_at, e.entry_id))
-    running = 0
+    ordered = chronological(entries)
+    running: dict[str, int] = {}
     breaks: list[dict[str, Any]] = []
 
     for entry in ordered:
-        running += entry.signed_points
-        if entry.balance_after != running:
+        balance = running.get(entry.employee_id, 0) + entry.signed_points
+        running[entry.employee_id] = balance
+        if entry.balance_after != balance:
             breaks.append(
                 {
                     "entry_id": entry.entry_id,
+                    "employee_id": entry.employee_id,
                     "occurred_at": entry.occurred_at.isoformat(),
                     "stored_balance_after": entry.balance_after,
-                    "derived_balance_after": running,
-                    "difference": entry.balance_after - running,
+                    "derived_balance_after": balance,
+                    "difference": entry.balance_after - balance,
                 }
             )
 
     return {
         "entries": len(ordered),
-        "derived_balance": running,
+        "derived_balance": sum(running.values()),
         "intact": not breaks,
         "breaks": breaks,
         "note": (
@@ -230,7 +246,7 @@ def liability(entries: list[LedgerEntry]) -> Liability:
     awards on record means the ledger is incomplete, and reporting a tidy zero
     would hide it.
     """
-    ordered = sorted(entries, key=lambda e: (e.occurred_at, e.entry_id))
+    ordered = chronological(entries)
     lots: list[_Lot] = []
     unmatched = 0
 

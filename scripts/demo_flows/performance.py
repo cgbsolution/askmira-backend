@@ -359,8 +359,8 @@ async def conversations(demo: Demo) -> None:
                              {"body": "Meera is ready to lead the cut-over. Nominate for JSFoo."})
     await demo["vikram"].post(f"/one-on-ones/{meeting['id']}/complete",
                               {"summary": "Cut-over on 12 Oct; Vikram to approve JSFoo travel."})
-    for manager, report, on in (("vikram", "meera", "2026-10-15"), ("rahul", "imran", "2026-10-08"),
-                                ("rahul", "pooja", "2026-10-09"), ("arjun", "rohan", "2026-10-12")):
+    for manager, report, on in (("vikram", "meera", "2026-10-22"), ("rahul", "imran", "2026-10-20"),
+                                ("rahul", "pooja", "2026-10-21"), ("arjun", "rohan", "2026-10-23")):
         await demo[manager].post(
             "/one-on-ones",
             {"with_employee_id": demo.emp(report), "scheduled_on": on, "start_time": "11:00",
@@ -371,7 +371,7 @@ async def conversations(demo: Demo) -> None:
         "/feedback/requests",
         {"subject_employee_id": demo.emp("meera"),
          "reviewer_employee_ids": [demo.emp(k) for k in ("arjun", "sneha", "kavya")],
-         "appraisal_cycle_id": demo.ids["cycle_h1"], "due_on": "2026-10-16",
+         "appraisal_cycle_id": demo.ids["cycle_h1"], "due_on": "2026-10-24",
          "message": "Feedback for Meera's mid-year review, please.",
          "employee_visibility": "anonymised"},
     )

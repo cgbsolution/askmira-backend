@@ -835,11 +835,15 @@ async def increment_candidates(
         view = await performance.budget_view(
             session, user, cycle_id=cycle.id, department_id=department_id
         )
+        # The name has its own key: `view` carries `department` (that scope's
+        # budget state), which would otherwise overwrite it.
         department_budgets.append(
             {
-                "department_id": str(department_id) if department_id else None,
-                "department": departments.get(department_id) if department_id else "No department",
                 **view,
+                "department_id": str(department_id) if department_id else None,
+                "department_name": (
+                    departments.get(department_id) if department_id else "No department"
+                ),
             }
         )
     return {"rows": rows, "departments": department_budgets}

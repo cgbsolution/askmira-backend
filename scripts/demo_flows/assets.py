@@ -149,7 +149,7 @@ async def current(demo: Demo) -> None:
     request = await demo["meera"].post(
         "/assets/requests",
         {"category_id": cat["MON"], "reason": "A second monitor for code reviews",
-         "needed_by": "2026-10-14"},
+         "needed_by": "2026-10-21"},
     )
     await demo["vikram"].post(f"/assets/requests/{request['id']}/approve",
                               {"note": "Approved - use one of the spares."})

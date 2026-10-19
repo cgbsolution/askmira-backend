@@ -84,6 +84,39 @@ def test_the_stored_checkpoint_is_compared_not_trusted():
     assert "written to outside the service" in report["note"]
 
 
+def test_each_employee_keeps_their_own_running_balance():
+    """The admin report verifies the whole tenant's rows at once; each row's
+    checkpoint is its own employee's balance, so interleaved people agree."""
+    rows = [
+        entry("1", T.AWARDED, 3000, "1.00", date(2026, 3, 1), 3000, employee_id="meera"),
+        entry("2", T.AWARDED, 2000, "1.00", date(2026, 3, 2), 2000, employee_id="aditya"),
+        entry("3", T.REDEEMED, 2000, "1.00", date(2026, 3, 3), 1000, employee_id="meera"),
+        entry("4", T.AWARDED, 500, "1.00", date(2026, 3, 4), 2500, employee_id="aditya"),
+    ]
+    report = ledger.verify_chain(rows)
+    assert report["intact"], report["breaks"]
+    assert report["derived_balance"] == 3500
+
+    forged = entry("4", T.AWARDED, 500, "1.00", date(2026, 3, 4), 9999, employee_id="aditya")
+    tampered = [*rows[:3], forged]
+    report = ledger.verify_chain(tampered)
+    assert [b["entry_id"] for b in report["breaks"]] == ["4"]
+    assert report["breaks"][0]["employee_id"] == "aditya"
+
+
+def test_a_same_day_redemption_is_checked_after_the_award_it_spent():
+    """Rows of one day share an occurred_at; the entry id is random, so only the
+    time each row was written keeps the award ahead of its redemption."""
+    day = date(2026, 10, 17)
+    award = entry("ffff", T.AWARDED, 2500, "1.00", day, 2500, employee_id="pooja",
+                  recorded_at=datetime(2026, 10, 17, 9, 0, tzinfo=UTC))
+    spend = entry("0000", T.REDEEMED, 1500, "1.00", day, 1000, employee_id="pooja",
+                  recorded_at=datetime(2026, 10, 17, 9, 5, tzinfo=UTC))
+    report = ledger.verify_chain([spend, award])
+    assert report["intact"], report["breaks"]
+    assert [e.entry_id for e in ledger.chronological([spend, award])] == ["ffff", "0000"]
+
+
 def test_an_adjustment_carries_its_own_sign():
     """Forcing it positive would make every correction an award."""
     down = entry("1", T.ADJUSTED, -200, "1.00", date(2026, 1, 1), -200)
