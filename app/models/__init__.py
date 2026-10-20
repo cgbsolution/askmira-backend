@@ -106,6 +106,7 @@ from app.models.calibration import (
     SessionStatus,
 )
 from app.models.candidate_comms import CandidateMessage, CandidateMessageStatus
+from app.models.companion import CompanionConversation, CompanionMessage
 from app.models.company_documents import (
     CompanyDocument,
     CompanyDocumentAcknowledgement,
@@ -748,6 +749,8 @@ __all__ = [
     "ClubPost",
     "CompOffRequest",
     "CompOffStatus",
+    "CompanionConversation",
+    "CompanionMessage",
     "CompanyDocument",
     "CompanyDocumentAcknowledgement",
     "CompanyEvent",

@@ -58,6 +58,10 @@ SUB_PROCESSOR = "anthropic"
 
 #: Each feature an admin can switch off on its own, and what it does.
 FEATURES: dict[str, str] = {
+    "companion": (
+        "Ask Mira: a chat that answers from policy, the people directory, leave and the "
+        "asker's own record, as the asker."
+    ),
     "assistant": "Employees ask policy questions and get cited answers.",
     "recognition_drafts": "Help writing a shoutout from a few notes.",
     "survey_topics": "Themes in survey comments, never quotes.",
@@ -70,6 +74,7 @@ class AiSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    companion: bool = True
     assistant: bool = True
     recognition_drafts: bool = True
     survey_topics: bool = True

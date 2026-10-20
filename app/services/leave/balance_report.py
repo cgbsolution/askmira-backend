@@ -101,6 +101,8 @@ def _people(
         stmt = stmt.where(
             or_(
                 Employee.first_name.ilike(term),
+                # A full name ("Meera Nair") spans both columns.
+                func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(term),
                 Employee.last_name.ilike(term),
                 Employee.display_name.ilike(term),
                 Employee.employee_code.ilike(term),

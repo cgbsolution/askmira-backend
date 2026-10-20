@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal
 
-__all__ = ["amount_in_words", "group_indian", "number_in_words"]
+__all__ = ["amount_in_words", "format_inr", "group_indian", "number_in_words"]
 
 _ONES = (
     "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
@@ -49,6 +49,19 @@ def group_indian(value: Decimal | int | str) -> str:
         grouped = ",".join([*pairs, last3])
 
     return f"{sign}{grouped}" + (f".{fraction}" if fraction else "")
+
+
+def format_inr(value: Decimal | int | float | str | None) -> str:
+    """An amount as people read it in a message: "₹1,25,000.50".
+
+    Rupee sign, Indian grouping, always two decimals. Every user-facing sentence
+    that names an amount uses this, so ₹1500.00 and ₹1,500.00 never sit side
+    by side on one screen.
+    """
+    amount = Decimal(str(value if value is not None else 0)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return f"₹{group_indian(amount)}"
 
 
 def _below_hundred(number: int) -> str:

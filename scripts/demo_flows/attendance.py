@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .api import Demo, SeedError
-from .time_off import CURRENT, HISTORY, daterange, ist
+from .time_off import HISTORY, current_rows, daterange, ist
 
 FLOW = "attendance"
 IST = ZoneInfo("Asia/Kolkata")
@@ -81,7 +81,7 @@ CURRENT_REGULARISATIONS = (
 def _leave_days() -> dict[tuple[str, date], str]:
     """Approved leave from the time-off flow: full days, or the half taken."""
     out: dict[tuple[str, date], str] = {}
-    for who, _code, start, end, session, _reason, decision in HISTORY + CURRENT:
+    for who, _code, start, end, session, _reason, decision in HISTORY + current_rows():
         if decision != "approve":
             continue
         for day in daterange(date.fromisoformat(start), date.fromisoformat(end)):

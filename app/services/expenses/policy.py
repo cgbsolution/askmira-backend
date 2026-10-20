@@ -39,6 +39,8 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from app.services.documents.indian_numbers import format_inr
+
 __all__ = [
     "CityTier",
     "ClaimFacts",
@@ -357,8 +359,8 @@ def evaluate(
             this_claim=amount,
             overage=Decimal("0"),
             message=(
-                f"A receipt is required above ₹{money(rule.receipt_threshold)} "
-                f"for {claim.category_key}. This claim is ₹{amount}."
+                f"A receipt is required above {format_inr(money(rule.receipt_threshold))} "
+                f"for {claim.category_key}. This claim is {format_inr(amount)}."
             ),
         )
 
@@ -376,21 +378,23 @@ def evaluate(
             overage=Decimal("0"),
             message=(
                 f"Within policy. The {_window_words(rule.limit_type)} limit is "
-                f"₹{limit}"
-                + (f", of which ₹{already} is already claimed." if already else ".")
+                f"{format_inr(limit)}"
+                + (f", of which {format_inr(already)} is already claimed." if already else ".")
             ),
         )
 
     overage = money(total - limit)
     window = _window_words(rule.limit_type)
     context = (
-        f"₹{already} is already claimed against this {window} limit of ₹{limit}, "
-        f"and this claim of ₹{amount} takes the total to ₹{total} — ₹{overage} "
+        f"{format_inr(already)} is already claimed against this {window} limit of "
+        f"{format_inr(limit)}, and this claim of {format_inr(amount)} takes the total to "
+        f"{format_inr(total)} — {format_inr(overage)} "
         "over."
         if already
         else (
-            f"This claim of ₹{amount} is ₹{overage} over the {window} limit of "
-            f"₹{limit}."
+            f"This claim of {format_inr(amount)} is {format_inr(overage)} over the {window} "
+            "limit of "
+            f"{format_inr(limit)}."
         )
     )
 

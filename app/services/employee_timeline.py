@@ -42,6 +42,7 @@ from app.models.loans import LoanAccount
 from app.models.onboarding import OnboardingPlan
 from app.models.payroll import EmployeeSalary
 from app.models.user import User
+from app.services.documents.indian_numbers import format_inr
 
 __all__ = ["MANAGER_MODULES", "MODULES", "timeline"]
 
@@ -320,7 +321,7 @@ async def timeline(
                 claim.incurred_on,
                 "expenses",
                 f"Expense: {_human(claim.category_key)}",
-                f"₹{claim.amount}",
+                f"{format_inr(claim.amount)}",
                 claim.status,
                 "/expenses",
             )
@@ -332,7 +333,13 @@ async def timeline(
                 select(LoanAccount).where(LoanAccount.employee_id == employee_id), LoanAccount, user
             ),
         ):
-            add(loan.created_at, "loans", "Loan", f"Principal ₹{loan.principal}", loan.status)
+            add(
+                loan.created_at,
+                "loans",
+                "Loan",
+                f"Principal {format_inr(loan.principal)}",
+                loan.status,
+            )
 
     if "helpdesk" in wanted:
         for (ticket,) in await _rows(

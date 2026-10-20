@@ -35,6 +35,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from app.services.documents.indian_numbers import format_inr
 from app.services.expenses.policy import money
 
 __all__ = [
@@ -172,7 +173,7 @@ def settle(
             outcome=SettlementOutcome.SQUARE,
             recovery_amount=Decimal("0.00"),
             refund_amount=Decimal("0.00"),
-            message=f"Claims of ₹{total} exactly match the advance. Nothing to do.",
+            message=f"Claims of {format_inr(total)} exactly match the advance. Nothing to do.",
         )
 
     if total > amount:
@@ -186,7 +187,8 @@ def settle(
             recovery_amount=Decimal("0.00"),
             refund_amount=refund,
             message=(
-                f"Claims of ₹{total} exceed the ₹{amount} advance. ₹{refund} is "
+                f"Claims of {format_inr(total)} exceed the {format_inr(amount)} advance. "
+                f"{format_inr(refund)} is "
                 "due to the employee — they spent their own money on the "
                 "company's trip and should not have to ask twice."
             ),
@@ -202,7 +204,8 @@ def settle(
         recovery_amount=recovery,
         refund_amount=Decimal("0.00"),
         message=(
-            f"Claims of ₹{total} fall ₹{recovery} short of the ₹{amount} "
+            f"Claims of {format_inr(total)} fall {format_inr(recovery)} short of the "
+            f"{format_inr(amount)} "
             "advance. The balance is recovered through payroll unless the "
             "employee repays it directly first."
         ),
@@ -285,7 +288,7 @@ def advance_block(
             message=(
                 "No advance is unsettled past the threshold."
                 + (
-                    f" ₹{outstanding_now} is outstanding but still within "
+                    f" {format_inr(outstanding_now)} is outstanding but still within "
                     f"{block_after_days} days."
                     if outstanding_now
                     else ""
@@ -301,7 +304,7 @@ def advance_block(
         blocking=blocking,
         total_outstanding=total,
         message=(
-            f"₹{total} is unsettled across {len(blocking)} advance(s), the "
+            f"{format_inr(total)} is unsettled across {len(blocking)} advance(s), the "
             f"oldest issued on {oldest.issued_on.isoformat()} for trip "
             f"{oldest.trip_id} and now {oldest.age_days(today)} days old. "
             "Submit the claims for that trip, or repay the balance, and a new "

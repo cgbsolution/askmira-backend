@@ -201,13 +201,13 @@ class MilestoneRulesIn(BaseModel):
     rules: list[MilestoneRuleIn] = Field(default_factory=list, max_length=30)
 
 
-@router.get("/culture/milestones", dependencies=HR_ONLY)
+@router.get("/milestones", dependencies=HR_ONLY)
 async def list_milestone_rules(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     """Which work anniversaries the company marks, with what message and points."""
     return await milestones.list_rules(session, user)
 
 
-@router.put("/culture/milestones", dependencies=HR_ONLY)
+@router.put("/milestones", dependencies=HR_ONLY)
 async def save_milestone_rules(
     payload: MilestoneRulesIn, user: CurrentUser, session: DbSession, request: Request
 ) -> list[dict[str, Any]]:

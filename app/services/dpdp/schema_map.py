@@ -555,6 +555,14 @@ TABLES: dict[str, TableClassification] = {
         "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
     ),
     "assistant_articles": _none("Company policy text HR wrote for the assistant to cite."),
+    # Ask Mira: a person's own conversations. The model only ever sees `text`;
+    # `cards` are what AskMira looked up and showed, and may name colleagues.
+    "companion_conversations": _p(USER, "ai_interaction", {"title": "ai_interaction"}),
+    "companion_messages": _p(
+        USER,
+        "ai_interaction",
+        {"text": "ai_interaction", "arguments": "ai_interaction", "cards": "identity"},
+    ),
     "survey_topic_summaries": _none(
         "Paraphrased themes counted across anonymous survey comments; no respondent link."
     ),

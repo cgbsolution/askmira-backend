@@ -64,6 +64,7 @@ from app.schemas.approvals import ApprovalInboxRead, ApprovalItemRead, ApprovalS
 from app.services import employee_profile as profile_service
 from app.services.assets import service as assets_service
 from app.services.documents import vault as documents_vault
+from app.services.documents.indian_numbers import format_inr
 from app.services.exit_workflow import clearance_tasks
 from app.services.exit_workflow import resignation as resignation_service
 from app.services.expenses import inbox as expense_inbox
@@ -95,7 +96,7 @@ def _person(emp: Employee | None) -> str | None:
 
 
 def _money(value: Any) -> str:
-    return f"₹{Decimal(str(value)):,.2f}"
+    return format_inr(value)
 
 
 def _days(value: Decimal) -> str:

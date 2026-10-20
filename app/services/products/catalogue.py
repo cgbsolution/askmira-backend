@@ -20,6 +20,8 @@ class Product:
     name: str
     #: The AskMira nav section the product stands in for.
     replaces: str
+    #: The product's own name, shown wherever its data appears in AskMira.
+    brand: str
 
     def role_for(self, role: UserRole, *, is_manager: bool) -> str | None:
         """The person's role in the product, or None when they may not use it."""
@@ -35,8 +37,10 @@ class Product:
 
 
 PRODUCTS: dict[str, Product] = {
-    "interview": Product(key="interview", name="Interviews", replaces="hiring"),
-    "expense": Product(key="expense", name="Expenses", replaces="expenses"),
+    "interview": Product(
+        key="interview", name="Interviews", replaces="hiring", brand="AnytimeHire"
+    ),
+    "expense": Product(key="expense", name="Expenses", replaces="expenses", brand="ExpenseGenie"),
 }
 
 

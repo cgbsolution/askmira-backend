@@ -17,6 +17,7 @@ from app.api.v1.routers import (
     bi,
     calibration,
     careers,
+    companion,
     company_documents,
     competency,
     contractors,
@@ -158,6 +159,7 @@ api_router.include_router(ewa.router, dependencies=_module("payroll"))
 api_router.include_router(contractors.router, dependencies=_module("payroll"))
 api_router.include_router(benefits.router, dependencies=_module("payroll"))
 api_router.include_router(ai.router)
+api_router.include_router(companion.router)
 api_router.include_router(mcp.router)
 api_router.include_router(oauth.router)
 api_router.include_router(operators.router)

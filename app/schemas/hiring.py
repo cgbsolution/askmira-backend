@@ -106,6 +106,8 @@ class RequisitionSummary(BaseModel):
     location_id: uuid.UUID | None
     hiring_manager_id: uuid.UUID | None
     recruiter_id: uuid.UUID | None
+    #: Who raised it; with the two above, who may open its detail outside HR.
+    raised_by_user_id: uuid.UUID | None = None
     openings: int
     open_vacancies: int
     employment_type: str

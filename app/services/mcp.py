@@ -36,7 +36,7 @@ import uuid
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -48,7 +48,7 @@ from app.models.org import Department, Location
 from app.models.user import User
 from app.services import audit
 
-__all__ = ["PROTOCOL_VERSIONS", "handle"]
+__all__ = ["PROTOCOL_VERSIONS", "TOOLS", "ToolError", "handle", "run_tool"]
 
 #: Newest first. A client asking for one of these gets it; anything else gets
 #: the newest, which is what the protocol's negotiation asks for.
@@ -162,6 +162,8 @@ async def _search_employees(
         stmt = stmt.where(
             or_(
                 Employee.first_name.ilike(like),
+                # A full name ("Meera Nair") spans both columns.
+                func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(like),
                 Employee.last_name.ilike(like),
                 Employee.display_name.ilike(like),
                 Employee.employee_code.ilike(like),
@@ -336,6 +338,21 @@ _HANDLERS = {
     "who_is_out": _who_is_out,
     "attendance_summary": _attendance_summary,
 }
+
+
+async def run_tool(
+    session: AsyncSession, actor: User, name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """One read tool, run as `actor`. Ask Mira calls the same tools through here.
+
+    The FRD's single gateway (5.10, 7.1): the in-app companion and outside agents
+    read through the same handlers, so neither has a wider view than the other.
+    Which tools a caller may use is decided by the caller's scopes, not here.
+    """
+    handler = _HANDLERS.get(name)
+    if handler is None:
+        raise ToolError(f"No tool named {name!r}.")
+    return await handler(session, actor, arguments)
 
 
 def _result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:

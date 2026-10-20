@@ -9,7 +9,6 @@ claims; finance items reach HR through the finance-stage sources.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -25,12 +24,13 @@ from app.models.expenses import (
     TravelRequestStatusEnum,
 )
 from app.models.user import User
+from app.services.documents.indian_numbers import format_inr
 
 __all__ = ["manager_claim_items", "manager_travel_items"]
 
 
 def _money(value: Any) -> str:
-    return f"₹{Decimal(str(value)):,.2f}"
+    return format_inr(value)
 
 
 def _span(start, end) -> str:

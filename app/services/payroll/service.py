@@ -406,6 +406,8 @@ async def salary_overview(
         pattern = f"%{search.strip()}%"
         condition = or_(
             Employee.first_name.ilike(pattern),
+            # A full name ("Meera Nair") spans both columns.
+            func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(pattern),
             Employee.last_name.ilike(pattern),
             Employee.employee_code.ilike(pattern),
         )

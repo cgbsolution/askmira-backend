@@ -14,6 +14,25 @@ ENDPOINTS: dict[str, str] = {
     "POST /culture/shoutouts/draft": (
         "own: a draft for the caller to edit (user.employee_id); nothing is posted."
     ),
+    # ── Ask Mira (the AI companion) ─────────────────────────────────────────
+    "GET /companion/status": (
+        "own: the caller's own availability and messages sent today (user.id); the "
+        "workspace's companion name and greeting are the same for everyone."
+    ),
+    "GET /companion/conversations": (
+        "own: only conversations whose user_id is the caller's (user.id from the token)."
+    ),
+    "GET /companion/conversations/{conversation_id}": (
+        "own: found only among the caller's own conversations (user.id); anyone else's is 404."
+    ),
+    "DELETE /companion/conversations/{conversation_id}": (
+        "own: only the caller's own conversation (user.id) can be deleted."
+    ),
+    "POST /companion/messages": (
+        "own: the caller's own conversation (user.id); each tool runs as the caller, offered "
+        "only within oauth.allowed_scopes for their role, and its result is never sent to "
+        "the model."
+    ),
     "POST /analytics/ask": (
         "permissions: the definition runs through the report compiler, which refuses "
         "restricted fields and scopes rows by permissions.scope_role."

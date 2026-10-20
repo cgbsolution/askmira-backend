@@ -9,7 +9,6 @@ and nobody is shown a proof or a bill of their own.
 from __future__ import annotations
 
 import calendar
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -22,12 +21,13 @@ from app.models.org import LegalEntity
 from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.tax import ProofStatus, TaxDeclaration, TaxProof
 from app.models.user import User
+from app.services.documents.indian_numbers import format_inr
 
 __all__ = ["reimbursement_claim_items", "run_approval_items", "tax_proof_items"]
 
 
 def _money(value: Any) -> str:
-    return f"₹{Decimal(str(value or 0)):,.2f}"
+    return format_inr(value)
 
 
 async def run_approval_items(session: AsyncSession, user: User) -> list[dict[str, Any]]:

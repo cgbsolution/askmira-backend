@@ -44,6 +44,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from app.services.documents.indian_numbers import format_inr
 from app.services.expenses.policy import CityTier, money
 
 __all__ = [
@@ -247,7 +248,7 @@ def per_diem_claim(*, days: int, rate: PerDiemRate) -> PerDiemClaim:
         covers=covers,
         requires_receipt=False,
         note=(
-            f"{days} day(s) at ₹{money(rate.amount)}. No receipt is needed — "
+            f"{days} day(s) at {format_inr(money(rate.amount))}. No receipt is needed — "
             f"that is what a per-diem is. {also}"
         ),
     )

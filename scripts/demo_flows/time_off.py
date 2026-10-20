@@ -83,16 +83,42 @@ HISTORY = (
     ("divya", "SL", "2026-10-07", "2026-10-07", None, "Unwell, resting today", "approve"),
 )
 
-#: Requests made around today. Pending ones wait in the manager's queue.
-CURRENT = (
-    ("pooja", "CL", "2026-10-09", "2026-10-09", None, "Housewarming at home", "pending"),
-    ("nikhil", "EL", "2026-10-26", "2026-10-28", None, "Family trip to Pune", "pending"),
-    ("meera", "CL", "2026-10-23", "2026-10-23", None, "Parent-teacher meeting", "pending"),
-    ("sneha", "EL", "2026-10-26", "2026-10-30", None, "Trip to Kerala", "approve"),
-    ("arjun", "EL", "2026-11-09", "2026-11-13", None, "Diwali at home in Ahmedabad", "pending"),
-    ("karthik", "EL", "2026-12-21", "2026-12-24", None, "Year-end break", "pending"),
-    ("aditya", "EL", "2026-11-02", "2026-11-03", None, "Wedding in the family", "cancel"),
-)
+def _weekday(day: date, step: int) -> date:
+    """The nearest weekday from `day` going in `step`'s direction (+1 or -1)."""
+    while day.weekday() >= 5:
+        day += timedelta(days=step)
+    return day
+
+
+def current_rows(today: date | None = None) -> tuple:
+    """Requests made around today. Pending ones wait in the manager's queue.
+
+    Relative to today, so the seed keeps working on any day: earned leave
+    needs a week's notice, so those start at least two weeks out.
+    """
+    today = today or date.today()
+    monday = today + timedelta(days=7 - today.weekday())  # next week's Monday
+
+    def iso(day: date) -> str:
+        return day.isoformat()
+
+    past = _weekday(today - timedelta(days=4), -1)
+    soon = _weekday(today + timedelta(days=3), 1)
+    in2, in3, in4, in8 = (monday + timedelta(weeks=n) for n in (1, 2, 3, 7))
+    return (
+        ("pooja", "CL", iso(past), iso(past), None, "Housewarming at home", "pending"),
+        ("nikhil", "EL", iso(in2), iso(in2 + timedelta(days=2)), None, "Family trip to Pune",
+         "pending"),
+        ("meera", "CL", iso(soon), iso(soon), None, "Parent-teacher meeting", "pending"),
+        ("sneha", "EL", iso(in2), iso(in2 + timedelta(days=4)), None, "Trip to Kerala",
+         "approve"),
+        ("arjun", "EL", iso(in3), iso(in3 + timedelta(days=4)), None,
+         "Diwali at home in Ahmedabad", "pending"),
+        ("karthik", "EL", iso(in8), iso(in8 + timedelta(days=3)), None, "Year-end break",
+         "pending"),
+        ("aditya", "EL", iso(in4), iso(in4 + timedelta(days=1)), None, "Wedding in the family",
+         "cancel"),
+    )
 
 
 async def setup(demo: Demo) -> None:
@@ -271,7 +297,7 @@ async def history(demo: Demo) -> None:
 
 async def current(demo: Demo) -> None:
     """What is in flight today: pending requests, optional holidays, comp-offs."""
-    counts = await _apply(demo, CURRENT)
+    counts = await _apply(demo, current_rows())
 
     holidays = await demo["meera"].get("/leave/optional-holidays", year=2026)
     guru_nanak = next(h for h in holidays["holidays"] if h["name"] == "Guru Nanak Jayanti")

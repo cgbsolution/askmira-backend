@@ -260,5 +260,5 @@ async def rewards(demo: Demo) -> None:
     statement = await demo["meera"].get("/rewards/me/statement")
     demo.note(FLOW, f"rewards: valuation, expiry policy, reviewed tax rule, company and 3 "
                     f"manager budgets, {awarded} points to 10 people, 2 redemptions "
-                    f"(Meera's balance {statement.get('balance', '?')}; "
+                    f"(Meera's balance {statement.get('balance_points', '?')} points; "
                     f"redemption {redemption.get('status', 'requested')})")

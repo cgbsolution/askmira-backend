@@ -1,10 +1,12 @@
 """AskMira's calls to a product's backend.
 
-Both endpoints are idempotent on the product side, so a retry after a timeout
-does no harm:
-
     POST /integrations/askmira/organizations   create or adopt this company's organisation
     POST /integrations/askmira/users/sync      the full list of people who should have access
+    POST /integrations/askmira/query           a read-only question for one person (Ask Mira)
+
+The first two are idempotent on the product side, so a retry after a timeout
+does no harm; the third changes nothing. Each carries a token whose `use` names
+the endpoint's kind (tokens.py) and whose `bh` binds it to the exact body.
 """
 
 from __future__ import annotations
@@ -16,22 +18,41 @@ from typing import Any
 import httpx
 
 from app.services.products.settings import Endpoint
-from app.services.products.tokens import provision_token
+from app.services.products.tokens import provision_token, query_token
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+#: A person is waiting in a chat: a question gets less time than provisioning.
+QUERY_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
 class ProductError(Exception):
-    """The product refused, failed or could not be reached. The message is safe to show."""
+    """The product refused, failed or could not be reached. The message is safe to show.
+
+    `status` is the product's HTTP status when it answered (None when it could
+    not be reached), and `detail` its own message, when it gave one.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, detail: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
 
 
 async def _post(
-    endpoint: Endpoint, product: str, tenant_id: uuid.UUID, path: str, payload: dict[str, Any]
+    endpoint: Endpoint,
+    product: str,
+    tenant_id: uuid.UUID,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    use: str = "provision",
+    timeout: httpx.Timeout = TIMEOUT,
 ) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    token = provision_token(endpoint.secret, product, tenant_id, body)
+    sign = query_token if use == "query" else provision_token
+    token = sign(endpoint.secret, product, tenant_id, body)
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{endpoint.api_url}{path}",
                 content=body,
@@ -49,7 +70,11 @@ async def _post(
         message = (
             detail if isinstance(detail, str) else response.text[:200] or response.reason_phrase
         )
-        raise ProductError(f"The product answered {response.status_code}: {message}")
+        raise ProductError(
+            f"The product answered {response.status_code}: {message}",
+            status=response.status_code,
+            detail=detail if isinstance(detail, str) else None,
+        )
     try:
         data = response.json()
     except ValueError as exc:
@@ -80,4 +105,25 @@ async def sync_people(
         tenant_id,
         "/integrations/askmira/users/sync",
         {"tenant_id": str(tenant_id), "complete": True, "users": people},
+    )
+
+
+async def query(
+    endpoint: Endpoint,
+    product: str,
+    tenant_id: uuid.UUID,
+    *,
+    actor: dict[str, str],
+    kind: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Ask the product one read-only question as `actor` (their id, email and role there)."""
+    return await _post(
+        endpoint,
+        product,
+        tenant_id,
+        "/integrations/askmira/query",
+        {"tenant_id": str(tenant_id), "actor": actor, "kind": kind, "params": params},
+        use="query",
+        timeout=QUERY_TIMEOUT,
     )

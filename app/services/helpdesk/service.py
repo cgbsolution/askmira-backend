@@ -1518,6 +1518,8 @@ async def list_queue(
                 HelpdeskTicket.subject.ilike(like),
                 HelpdeskTicket.ticket_number.ilike(like),
                 Employee.first_name.ilike(like),
+                # A full name ("Meera Nair") spans both columns.
+                func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(like),
                 Employee.last_name.ilike(like),
                 Employee.display_name.ilike(like),
                 Employee.employee_code.ilike(like),

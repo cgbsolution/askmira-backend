@@ -68,7 +68,7 @@ def test_the_verdict_carries_the_limit_the_overage_and_what_to_do():
     assert v.limit_amount == D("8000.00")
     assert v.this_claim == D("9500.00")
     assert v.overage == D("1500.00")
-    assert "8000" in v.message and "1500" in v.message
+    assert "₹8,000.00" in v.message and "₹1,500.00" in v.message
 
 
 def test_no_rule_permits_the_claim_and_says_so():

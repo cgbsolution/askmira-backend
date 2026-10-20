@@ -42,6 +42,7 @@ from app.models.leave import Holiday, LeavePolicy, LeaveType
 from app.models.user import User
 from app.services import audit
 from app.services.ai import client, governance
+from app.services.documents.indian_numbers import format_inr
 from app.services.dpdp import service as dpdp_service
 from app.services.grounding import service as grounding
 from app.services.grounding.refusals import RefusalReason
@@ -53,6 +54,7 @@ __all__ = [
     "create_article",
     "delete_article",
     "list_articles",
+    "lookup_own_record",
     "report",
     "update_article",
 ]
@@ -377,7 +379,8 @@ async def _lookup(
         latest = max(slips, key=lambda s: (s.period_year, s.period_month))
         return (
             f"Your latest payslip is for {date(latest.period_year, latest.period_month, 1):%B %Y}: "
-            f"net pay ₹{latest.net_pay}. Open it for the full breakdown.",
+            f"net pay {format_inr(latest.net_pay)}. "
+            "Open it for the full breakdown.",
             [],
             "/pay/payslips",
         )
@@ -424,6 +427,19 @@ async def _lookup(
         )
 
     return ("That is not something I can look up.", [], "/profile")
+
+
+async def lookup_own_record(
+    session: AsyncSession, user: User, lookup: str
+) -> tuple[str, list[str], str]:
+    """The caller's own record, by the employee id in their token; never sent to a model.
+
+    Returns the sentence, the records it read and the page to open. Ask Mira uses
+    this for "how many leaves do I have", as this assistant does.
+    """
+    if lookup not in LOOKUPS or lookup == "none":
+        return ("That is not something I can look up.", [], "/profile")
+    return await _lookup(session, user, lookup, employee_id=user.employee_id)
 
 
 async def ask(session: AsyncSession, user: User, question: str) -> dict[str, Any]:
