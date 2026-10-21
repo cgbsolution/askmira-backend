@@ -28,6 +28,7 @@ from app.core.config import settings
 
 __all__ = [
     "EncryptionError",
+    "can_encrypt",
     "decrypt_field",
     "decrypt_secret",
     "encrypt_field",
@@ -75,6 +76,15 @@ def _tenant_key(tenant_id: uuid.UUID) -> bytes:
         dklen=32,
     )
     return base64.urlsafe_b64encode(derived)
+
+
+def can_encrypt() -> bool:
+    """Whether this server can encrypt secrets at rest (a master key is configured)."""
+    try:
+        _master_key()
+    except EncryptionError:
+        return False
+    return True
 
 
 def is_encrypted(value: str | None) -> bool:

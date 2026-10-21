@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.crypto import EncryptionError, decrypt_field, encrypt_field
+from app.core.crypto import EncryptionError, can_encrypt, decrypt_field, encrypt_field
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.product_link import ProductLink
@@ -101,7 +101,16 @@ def _read(product: Product, row: ProductLink | None) -> dict[str, Any]:
         "name": product.name,
         "brand": product.brand,
         "description": DESCRIPTIONS.get(product.key, ""),
-        "available": addresses(product.key) is not None,
+        "available": addresses(product.key) is not None and can_encrypt(),
+        # Why Connect is off, when it is: "address" (where the product is) or
+        # "server_key" (no SECRET_ENCRYPTION_KEY to keep its key safe with).
+        "unavailable_reason": (
+            "address"
+            if addresses(product.key) is None
+            else "server_key"
+            if not can_encrypt()
+            else None
+        ),
         "connected": connected,
         "via": via,
         "organization": row.organization_name if connected else None,
@@ -128,6 +137,16 @@ async def start(session: AsyncSession, user: User, product_key: str) -> dict[str
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This AskMira server does not know where {product.brand} is yet.",
+        )
+    if not can_encrypt():
+        # The key the product issues must be stored encrypted; without a server
+        # key there is nothing safe to store it with, so don't start.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "This AskMira server cannot store connection keys safely yet: its "
+                "SECRET_ENCRYPTION_KEY is not set. Ask your AskMira provider to set it."
+            ),
         )
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is None or not tenant.is_active:

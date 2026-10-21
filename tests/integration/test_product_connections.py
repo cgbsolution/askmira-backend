@@ -231,3 +231,16 @@ async def test_only_the_workspace_admin_connects(
     with pytest.raises(HTTPException) as refused:
         await connectors.start(session, person, "interview")
     assert refused.value.status_code == 403
+
+
+async def test_without_a_server_encryption_key_connect_says_why_instead_of_failing(
+    session: AsyncSession, admin: User, product: FakeProduct, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Production with no SECRET_ENCRYPTION_KEY: the product's key could not be stored safely.
+    monkeypatch.setattr(connectors, "can_encrypt", lambda: False)
+    row = {r["key"]: r for r in await connectors.overview(session, admin)}["interview"]
+    assert row["available"] is False and row["unavailable_reason"] == "server_key"
+    with pytest.raises(HTTPException) as refused:
+        await connectors.start(session, admin, "interview")
+    assert refused.value.status_code == 503
+    assert "SECRET_ENCRYPTION_KEY" in refused.value.detail
