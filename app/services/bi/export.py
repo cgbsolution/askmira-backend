@@ -172,11 +172,7 @@ def plan_export(
         selected = tuple(allowed)
         withheld: tuple[str, ...] = ()
     else:
-        unknown = [
-            name
-            for name in requested_fields
-            if name not in {f.name for f in entity.fields}
-        ]
+        unknown = [name for name in requested_fields if name not in {f.name for f in entity.fields}]
         if unknown:
             raise ExportError(
                 f"{unknown} are not columns of {entity_name}. The connector "
@@ -184,9 +180,7 @@ def plan_export(
                 "never becomes part of a query."
             )
         selected = tuple(f for f in allowed if f.name in set(requested_fields))
-        withheld = tuple(
-            sorted(set(requested_fields) - allowed_names)
-        )
+        withheld = tuple(sorted(set(requested_fields) - allowed_names))
 
     if not selected:
         raise ExportError(
@@ -222,9 +216,7 @@ class ExtractResult:
         return {
             "plan": self.plan.as_dict(),
             "row_count": self.row_count,
-            "next_watermark": (
-                self.next_watermark.isoformat() if self.next_watermark else None
-            ),
+            "next_watermark": (self.next_watermark.isoformat() if self.next_watermark else None),
             "note": self.note,
         }
 
@@ -255,18 +247,15 @@ def extract_rows(
         row
         for row in source_rows
         if plan.kind is ExportKind.FULL
-        or (plan.since is not None and row.get(change_key) is not None
-            and row[change_key] > plan.since)
+        or (
+            plan.since is not None
+            and row.get(change_key) is not None
+            and row[change_key] > plan.since
+        )
     ]
 
-    projected = tuple(
-        {name: row.get(name) for name in plan.field_names} for row in selected
-    )
-    seen = [
-        row[change_key]
-        for row in selected
-        if row.get(change_key) is not None
-    ]
+    projected = tuple({name: row.get(name) for name in plan.field_names} for row in selected)
+    seen = [row[change_key] for row in selected if row.get(change_key) is not None]
     watermark = max(seen) if seen else plan.since
 
     return ExtractResult(
@@ -302,9 +291,7 @@ def audit_payload(result: ExtractResult, *, at: datetime) -> dict[str, Any]:
         "role": plan.role,
         "schema_version": plan.schema_version,
         "since": plan.since.isoformat() if plan.since else None,
-        "next_watermark": (
-            result.next_watermark.isoformat() if result.next_watermark else None
-        ),
+        "next_watermark": (result.next_watermark.isoformat() if result.next_watermark else None),
         "row_count": result.row_count,
         "fields": list(plan.field_names),
         "field_count": len(plan.fields),

@@ -116,8 +116,9 @@ async def list_candidates(
         detail="Candidates are visible to HR and to the hiring manager on the requisition.",
     )
     stmt = tenant_scoped(
-        select(Candidate, Requisition.code)
-        .join(Requisition, Requisition.id == Candidate.requisition_id),
+        select(Candidate, Requisition.code).join(
+            Requisition, Requisition.id == Candidate.requisition_id
+        ),
         Candidate,
         user,
     )
@@ -310,7 +311,11 @@ async def create_candidate(
     candidate = outcome.candidate
     if outcome.created_candidate:
         await _record_event(
-            session, user, candidate, from_stage=None, to_stage=CandidateStage.APPLIED,
+            session,
+            user,
+            candidate,
+            from_stage=None,
+            to_stage=CandidateStage.APPLIED,
             reason=f"Added by hand{f': {payload.source_note}' if payload.source_note else ''}",
         )
     await session.flush()
@@ -330,8 +335,7 @@ async def create_candidate(
         ),
         "matched_on": outcome.application.matched_on,
         "possible_duplicates": [
-            {"id": str(d.id), "full_name": d.full_name, "stage": d.stage.value}
-            for d in duplicates
+            {"id": str(d.id), "full_name": d.full_name, "stage": d.stage.value} for d in duplicates
         ],
     }
 
@@ -411,18 +415,22 @@ async def candidate_profile(
         )
     ).all()
     stage_ids = {i.stage_id for i in interviews}
-    stages = {
-        s.id: s
-        for s in (
-            await session.scalars(
-                tenant_scoped(
-                    select(InterviewStage).where(InterviewStage.id.in_(stage_ids)),
-                    InterviewStage,
-                    user,
+    stages = (
+        {
+            s.id: s
+            for s in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(InterviewStage).where(InterviewStage.id.in_(stage_ids)),
+                        InterviewStage,
+                        user,
+                    )
                 )
-            )
-        ).all()
-    } if stage_ids else {}
+            ).all()
+        }
+        if stage_ids
+        else {}
+    )
     interview_ids = [i.id for i in interviews]
     panel_counts: dict[uuid.UUID, int] = {}
     feedback_counts: dict[uuid.UUID, int] = {}
@@ -521,7 +529,8 @@ async def candidate_profile(
         ]
         referral_row = await session.scalar(
             tenant_scoped(
-                select(Referral).where(Referral.candidate_id == candidate.id)
+                select(Referral)
+                .where(Referral.candidate_id == candidate.id)
                 .order_by(Referral.submitted_at),
                 Referral,
                 user,
@@ -539,8 +548,9 @@ async def candidate_profile(
                 "referral_id": str(referral_row.id),
                 "status": referral_row.status.value,
                 "referrer": (
-                    (referrer.display_name or f"{referrer.first_name} {referrer.last_name or ''}")
-                    .strip()
+                    (
+                        referrer.display_name or f"{referrer.first_name} {referrer.last_name or ''}"
+                    ).strip()
                     if referrer
                     else None
                 ),
@@ -709,9 +719,7 @@ async def candidate_profile(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def _interview_blockers(
-    session: AsyncSession, user: User, candidate: Candidate
-) -> list[str]:
+async def _interview_blockers(session: AsyncSession, user: User, candidate: Candidate) -> list[str]:
     """What stops this candidate advancing: past interviews unmarked or missing feedback."""
     now = datetime.now(UTC)
     interviews = (
@@ -752,9 +760,7 @@ async def move_stage(
     """
     candidate, requisition = await visibility.load_candidate(session, user, candidate_id)
     try:
-        transition = pipeline.check_transition(
-            candidate.stage.value, to_stage.value, reason=reason
-        )
+        transition = pipeline.check_transition(candidate.stage.value, to_stage.value, reason=reason)
     except pipeline.PipelineError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -770,7 +776,11 @@ async def move_stage(
 
     previous = candidate.stage
     await _record_event(
-        session, user, candidate, from_stage=previous, to_stage=to_stage,
+        session,
+        user,
+        candidate,
+        from_stage=previous,
+        to_stage=to_stage,
         reason=(reason or "").strip() or None,
     )
     candidate.stage = to_stage

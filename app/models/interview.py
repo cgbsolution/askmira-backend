@@ -105,8 +105,10 @@ class InterviewStage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     requisition_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -116,27 +118,25 @@ class InterviewStage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     duration_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     mode: Mapped[InterviewMode] = mapped_column(
         Enum(InterviewMode, name="interview_mode"),
-        default=InterviewMode.VIDEO, nullable=False,
+        default=InterviewMode.VIDEO,
+        nullable=False,
     )
 
     # The competency template (slice 16) this stage's feedback is structured
     # against. Structured rather than free text is what makes two interviewers
     # comparable instead of two essays.
     feedback_template_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competency_templates.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competency_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
     # Competency codes every panelist must rate.
-    required_competencies: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    required_competencies: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     # A failure here ends the process rather than moving to the next round.
     is_eliminating: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Whether feedback blocks advancement. Defaults to True: unrecorded verbal
     # feedback is how a hiring decision becomes undefendable.
-    feedback_required: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    feedback_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     preparation_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -146,18 +146,20 @@ class Interview(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "interviews"
     __table_args__ = (
         Index("ix_interviews_schedule", "tenant_id", "scheduled_start", "status"),
-        CheckConstraint(
-            "scheduled_end > scheduled_start", name="ck_interview_window"
-        ),
+        CheckConstraint("scheduled_end > scheduled_start", name="ck_interview_window"),
     )
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     stage_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interview_stages.id", ondelete="RESTRICT"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("interview_stages.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
 
     # Always UTC. Timezones exist at the edges — an interview stored in somebody's
@@ -165,9 +167,7 @@ class Interview(Base, UUIDMixin, TenantMixin, TimestampMixin):
     scheduled_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
-    scheduled_end: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    scheduled_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # The candidate's own zone, for rendering. Stored so a confirmation sent
     # three weeks later still shows the time they agreed to.
     candidate_timezone: Mapped[str] = mapped_column(
@@ -176,13 +176,16 @@ class Interview(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     mode: Mapped[InterviewMode] = mapped_column(
         Enum(InterviewMode, name="interview_mode", create_type=False),
-        default=InterviewMode.VIDEO, nullable=False,
+        default=InterviewMode.VIDEO,
+        nullable=False,
     )
     location_or_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     status: Mapped[InterviewStatus] = mapped_column(
         Enum(InterviewStatus, name="interview_status"),
-        default=InterviewStatus.SCHEDULED, nullable=False, index=True,
+        default=InterviewStatus.SCHEDULED,
+        nullable=False,
+        index=True,
     )
     reschedule_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -200,9 +203,7 @@ class Interview(Base, UUIDMixin, TenantMixin, TimestampMixin):
     calendar_warnings: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     cancelled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scheduled_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -223,24 +224,27 @@ class InterviewPanelist(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     interview_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interviews.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[PanelistRole] = mapped_column(
         Enum(PanelistRole, name="panelist_role"),
-        default=PanelistRole.INTERVIEWER, nullable=False,
+        default=PanelistRole.INTERVIEWER,
+        nullable=False,
     )
 
     response_status: Mapped[ResponseStatus] = mapped_column(
         Enum(ResponseStatus, name="panelist_response_status"),
-        default=ResponseStatus.NEEDS_ACTION, nullable=False, index=True,
+        default=ResponseStatus.NEEDS_ACTION,
+        nullable=False,
+        index=True,
     )
-    responded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Set when the recruiter has been told about a decline. A decline nobody was
     # told about is a decline discovered at the interview.
     decline_notified_at: Mapped[datetime | None] = mapped_column(
@@ -264,18 +268,20 @@ class InterviewFeedback(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "interview_feedback"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "interview_id", "panelist_id", name="uq_feedback_once"
-        ),
+        UniqueConstraint("tenant_id", "interview_id", "panelist_id", name="uq_feedback_once"),
     )
 
     interview_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interviews.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     panelist_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interview_panelists.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("interview_panelists.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
 
     recommendation: Mapped[Recommendation] = mapped_column(
@@ -305,11 +311,14 @@ class SelfScheduleLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (UniqueConstraint("token_hash", name="uq_self_schedule_token"),)
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     stage_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interview_stages.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("interview_stages.id", ondelete="CASCADE"),
         nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -326,15 +335,12 @@ class SelfScheduleLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
         DateTime(timezone=True), nullable=False, index=True
     )
     booked_interview_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("interviews.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="SET NULL"),
         nullable=True,
     )
-    booked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CalendarConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -347,14 +353,14 @@ class CalendarConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "calendar_connections"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "user_id", "provider", name="uq_calendar_connection_once"
-        ),
+        UniqueConstraint("tenant_id", "user_id", "provider", name="uq_calendar_connection_once"),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     provider: Mapped[CalendarProviderKind] = mapped_column(
         Enum(CalendarProviderKind, name="calendar_provider", create_type=False),
@@ -366,12 +372,8 @@ class CalendarConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # registry. This token reads somebody's entire diary.
     access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scopes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)

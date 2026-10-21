@@ -273,17 +273,13 @@ class TierDrillStatus:
     def is_evidenced(self) -> bool:
         """Whether the published number currently rests on a passing drill."""
         return (
-            self.last_outcome is not None
-            and self.last_outcome.is_credible
-            and not self.is_overdue
+            self.last_outcome is not None and self.last_outcome.is_credible and not self.is_overdue
         )
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "tier": self.tier.value,
-            "last_drill_on": (
-                self.last_drill_on.isoformat() if self.last_drill_on else None
-            ),
+            "last_drill_on": (self.last_drill_on.isoformat() if self.last_drill_on else None),
             "last_outcome": self.last_outcome.value if self.last_outcome else None,
             "days_since": self.days_since,
             "drill_interval_days": self.interval_days,
@@ -303,9 +299,7 @@ class TierDrillStatus:
         }
 
 
-def drill_status(
-    drills: list[DrillResult], *, today: date
-) -> list[TierDrillStatus]:
+def drill_status(drills: list[DrillResult], *, today: date) -> list[TierDrillStatus]:
     """Per tier, whether the published numbers are currently evidenced.
 
     Uses the last drill of each tier, not the last *passing* one. A tier whose
@@ -496,9 +490,7 @@ RUNBOOKS: dict[str, Runbook] = {
                 "provider. Say so on the status page — clients assume AI "
                 "features and core HR share a fate and they do not.",
             ),
-            degraded_mode=(
-                "AI features are unavailable. Every other module is unaffected."
-            ),
+            degraded_mode=("AI features are unavailable. Every other module is unaffected."),
             manual_fallback="The work is done the way it was done before the agent existed.",
             reviewed=False,
         ),
@@ -506,9 +498,7 @@ RUNBOOKS: dict[str, Runbook] = {
 }
 
 
-def published_posture(
-    drills: list[DrillResult], *, today: date
-) -> dict[str, Any]:
+def published_posture(drills: list[DrillResult], *, today: date) -> dict[str, Any]:
     """What we publish to a procurement questionnaire.
 
     Every objective is shown alongside whether it is currently evidenced by a

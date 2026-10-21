@@ -145,11 +145,7 @@ def funnel(
         for stage in Stage:
             count = sum(1 for j in rows if j.reached(stage))
             dropped = None if previous is None else previous - count
-            rate = (
-                None
-                if previous is None or previous == 0
-                else round(dropped / previous, 3)
-            )
+            rate = None if previous is None or previous == 0 else round(dropped / previous, 3)
             out.append(
                 {
                     "stage": stage.value,
@@ -190,9 +186,7 @@ def funnel(
     if group_by is not None:
         groups: dict[str, list[CandidateJourney]] = {}
         for journey in journeys:
-            groups.setdefault(getattr(journey, group_by) or "unassigned", []).append(
-                journey
-            )
+            groups.setdefault(getattr(journey, group_by) or "unassigned", []).append(journey)
         result["grouped_by"] = group_by
         result["groups"] = [
             {"key": key, "total": len(rows), "stages": counts(rows)}
@@ -214,16 +208,12 @@ def reconcile(
     Both report rather than raise, so a dashboard can render the discrepancy
     instead of a number nobody should trust.
     """
-    computed = {
-        stage.value: sum(1 for j in journeys if j.reached(stage)) for stage in Stage
-    }
+    computed = {stage.value: sum(1 for j in journeys if j.reached(stage)) for stage in Stage}
 
     monotonic_breaks = []
     previous_stage = None
     for stage in Stage:
-        if previous_stage is not None and computed[stage.value] > computed[
-            previous_stage.value
-        ]:
+        if previous_stage is not None and computed[stage.value] > computed[previous_stage.value]:
             monotonic_breaks.append(
                 {
                     "stage": stage.value,
@@ -303,9 +293,7 @@ def stage_timings(
                 "to_stage": later.value,
                 "sample": len(usable),
                 "median_days": (
-                    round(statistics.median(usable), 1)
-                    if len(usable) >= minimum
-                    else None
+                    round(statistics.median(usable), 1) if len(usable) >= minimum else None
                 ),
                 "note": (
                     ""
@@ -335,9 +323,7 @@ def stage_timings(
                 "from_stage": worst["from_stage"],
                 "to_stage": worst["to_stage"],
                 "median_days": worst["median_days"],
-                "share_of_total": (
-                    round(worst["median_days"] / total, 3) if total else None
-                ),
+                "share_of_total": (round(worst["median_days"] / total, 3) if total else None),
                 "reading": (
                     f"Candidates sit {worst['median_days']} days between "
                     f"{worst['from_stage']} and {worst['to_stage']}"
@@ -471,13 +457,9 @@ def source_effectiveness(
                 "offered": offered,
                 "joined": joined,
                 "interview_pass_rate": (
-                    round(offered / interviewed, 3)
-                    if interviewed >= minimum
-                    else None
+                    round(offered / interviewed, 3) if interviewed >= minimum else None
                 ),
-                "conversion_to_hire": (
-                    round(joined / applied, 3) if applied >= minimum else None
-                ),
+                "conversion_to_hire": (round(joined / applied, 3) if applied >= minimum else None),
                 "spend": str(source_spend) if source_spend is not None else None,
                 "cost_per_hire": (
                     str(money(source_spend / Decimal(joined)))
@@ -485,9 +467,7 @@ def source_effectiveness(
                     else None
                 ),
                 "note": (
-                    ""
-                    if applied >= minimum
-                    else f"{applied} candidate(s) - too few for a rate."
+                    "" if applied >= minimum else f"{applied} candidate(s) - too few for a rate."
                 ),
             }
         )

@@ -166,9 +166,7 @@ async def create_programme(
         user,
         name=body.name,
         bonus_by_grade=body.bonus_by_grade,
-        milestones=(
-            [m.model_dump() for m in body.milestones] if body.milestones else None
-        ),
+        milestones=([m.model_dump() for m in body.milestones] if body.milestones else None),
         eligible_roles=body.eligible_roles,
         description=body.description,
         request=request,
@@ -356,9 +354,7 @@ async def cost_per_hire(
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
     """Cost per hire from what has been recorded, with the hire count supplied."""
-    return await recruiting.cost_report(
-        session, user, period_label=period_label, hires=hires
-    )
+    return await recruiting.cost_report(session, user, period_label=period_label, hires=hires)
 
 
 # ── Analytics, derived from the records ─────────────────────────────────────
@@ -460,14 +456,9 @@ def _journeys(rows: list[JourneyIn]) -> list[funnel_engine.CandidateJourney]:
     for row in rows:
         try:
             stage_dates = {
-                funnel_engine.Stage(name): value
-                for name, value in row.stage_dates.items()
+                funnel_engine.Stage(name): value for name, value in row.stage_dates.items()
             }
-            rejected = (
-                funnel_engine.Stage(row.rejected_at_stage)
-                if row.rejected_at_stage
-                else None
-            )
+            rejected = funnel_engine.Stage(row.rejected_at_stage) if row.rejected_at_stage else None
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,

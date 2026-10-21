@@ -138,14 +138,10 @@ class MileageClaim:
             "rate_per_km": str(self.rate_per_km),
             "amount": str(self.amount),
             "declared_route_km": (
-                str(self.declared_route_km)
-                if self.declared_route_km is not None
-                else None
+                str(self.declared_route_km) if self.declared_route_km is not None else None
             ),
             "variance_percent": (
-                str(self.variance_percent)
-                if self.variance_percent is not None
-                else None
+                str(self.variance_percent) if self.variance_percent is not None else None
             ),
             "exceeds_tolerance": self.exceeds_tolerance,
             "note": self.note,
@@ -181,9 +177,9 @@ def mileage_claim(
             note="No route distance to compare against.",
         )
 
-    variance = (
-        (Decimal(str(distance_km)) - route_km) / route_km * Decimal("100")
-    ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    variance = ((Decimal(str(distance_km)) - route_km) / route_km * Decimal("100")).quantize(
+        Decimal("0.1"), rounding=ROUND_HALF_UP
+    )
     exceeds = variance > rate.tolerance_percent
 
     return MileageClaim(

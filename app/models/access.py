@@ -25,7 +25,9 @@ class UserAreaRights(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (UniqueConstraint("user_id", "area", name="uq_user_area_rights"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     area: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -43,7 +45,9 @@ class AdminScope(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "admin_scopes"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         unique=True,
     )
     department_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

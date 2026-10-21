@@ -187,9 +187,7 @@ def year_projection_input(base: ProjectionInput, pay: YearPay) -> ProjectionInpu
     )
 
 
-def part_b(
-    *, pay: YearPay, inputs: ProjectionInput, computation: TaxComputation
-) -> dict[str, Any]:
+def part_b(*, pay: YearPay, inputs: ProjectionInput, computation: TaxComputation) -> dict[str, Any]:
     """The Part B lines, in the form's order, and the TDS reconciliation. Pure.
 
     Checks its own arithmetic: income chargeable less Chapter VI-A must be the
@@ -253,15 +251,21 @@ def part_b(
         row("1b", "Value of perquisites under section 17(2)", perquisites),
         row("1c", "Profits in lieu of salary under section 17(3)", profits_in_lieu),
         row("1d", "Total", total_current),
-        row("1e", "Reported total amount of salary received from other employer(s)",
-            previous_reported),
+        row(
+            "1e",
+            "Reported total amount of salary received from other employer(s)",
+            previous_reported,
+        ),
         row("2", "Less: allowances to the extent exempt under section 10", current_exempt),
-        row("3", "Total amount of salary received from current employer [1(d) - 2]",
-            salary_after_exemptions),
+        row(
+            "3",
+            "Total amount of salary received from current employer [1(d) - 2]",
+            salary_after_exemptions,
+        ),
         row("4a", "Standard deduction under section 16(ia)", section_16["standard_deduction"]),
         row("4c", "Tax on employment under section 16(iii)", section_16["professional_tax"]),
         row("5", "Total amount of deductions under section 16", total_16),
-        row("6", "Income chargeable under the head \"Salaries\" [3 + 1(e) - 5]", chargeable),
+        row("6", 'Income chargeable under the head "Salaries" [3 + 1(e) - 5]', chargeable),
         row("9", "Gross total income", chargeable),
         row("11", "Aggregate of deductible amount under Chapter VI-A", via_total),
         row("12", "Total taxable income [9 - 11]", taxable),
@@ -341,9 +345,7 @@ async def _closed_slips(
     )
 
 
-async def _tds_rules_at(
-    session: AsyncSession, user: User, on: date
-) -> PayrollRuleSet | None:
+async def _tds_rules_at(session: AsyncSession, user: User, on: date) -> PayrollRuleSet | None:
     return await session.scalar(
         tenant_scoped(
             select(PayrollRuleSet)
@@ -558,12 +560,15 @@ def form16_html(statement: dict[str, Any]) -> str:
         f'<td class="amount">{_e(group_indian(line["amount"]))}</td></tr>'
         for line in statement["lines"]
     )
-    via = "".join(
-        f'<tr><td>{_e(item["section"])}</td><td class="amount">'
-        f'{_e(group_indian(item["gross"]))}</td><td class="amount">'
-        f'{_e(group_indian(item["deductible"]))}</td></tr>'
-        for item in statement["chapter_via"]
-    ) or '<tr><td colspan="3">No deductions under Chapter VI-A.</td></tr>'
+    via = (
+        "".join(
+            f'<tr><td>{_e(item["section"])}</td><td class="amount">'
+            f'{_e(group_indian(item["gross"]))}</td><td class="amount">'
+            f"{_e(group_indian(item['deductible']))}</td></tr>"
+            for item in statement["chapter_via"]
+        )
+        or '<tr><td colspan="3">No deductions under Chapter VI-A.</td></tr>'
+    )
     tds = statement["tds"]
     notes = "".join(f"<li>{_e(note)}</li>" for note in statement["notes"])
     return f"""<style>
@@ -612,9 +617,7 @@ the person responsible for deducting tax on behalf of the employer.</p>
 
 def render_form16_pdf(statement: dict[str, Any]) -> bytes:
     employer = statement["employer"]
-    reference = (
-        f"FORM16-PARTB/{statement['employee']['code']}/{statement['financial_year']}"
-    )
+    reference = f"FORM16-PARTB/{statement['employee']['code']}/{statement['financial_year']}"
     return render_pdf(
         merged_html=form16_html(statement),
         reference_number=_e(reference),

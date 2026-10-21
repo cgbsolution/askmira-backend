@@ -91,9 +91,7 @@ def can_decide_step(
     return StepAuthority(
         allowed=False,
         on_behalf_of=None,
-        message=(
-            f"This step needs {needed}. Your role cannot sign it, so nothing was recorded."
-        ),
+        message=(f"This step needs {needed}. Your role cannot sign it, so nothing was recorded."),
     )
 
 

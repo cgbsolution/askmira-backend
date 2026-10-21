@@ -104,9 +104,7 @@ async def quick_links(user: CurrentUser, session: DbSession) -> dict[str, Any]:
 async def set_quick_links(
     payload: QuickLinksIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    return await quick_links_service.set_quick_links(
-        session, user, payload.links, request=request
-    )
+    return await quick_links_service.set_quick_links(session, user, payload.links, request=request)
 
 
 @router.get("/summary", response_model=DashboardSummary)

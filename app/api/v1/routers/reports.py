@@ -161,9 +161,7 @@ async def starters(user: CurrentUser) -> list[dict[str, Any]]:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_roles(*ALL_ROLES))],
 )
-async def clone_starter(
-    payload: CloneRequest, user: CurrentUser, session: DbSession
-) -> ReportRead:
+async def clone_starter(payload: CloneRequest, user: CurrentUser, session: DbSession) -> ReportRead:
     report = await report_service.clone_starter(
         session, user, starter_key=payload.starter_key, name=payload.name
     )
@@ -183,9 +181,7 @@ async def clone_starter(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_roles(*ALL_ROLES))],
 )
-async def create_report(
-    payload: ReportCreate, user: CurrentUser, session: DbSession
-) -> ReportRead:
+async def create_report(payload: ReportCreate, user: CurrentUser, session: DbSession) -> ReportRead:
     """Save a report, validating the definition before it is stored.
 
     Validated on save *and* on every run. Saving an unrunnable definition would
@@ -226,13 +222,17 @@ async def create_report(
 async def list_reports(user: CurrentUser, session: DbSession) -> list[ReportRead]:
     """Reports this user can open: their own, tenant-wide ones, and ones shared
     with them by name."""
-    stmt = select(Report).where(
-        or_(
-            Report.owner_user_id == user.id,
-            Report.visibility == ReportVisibility.TENANT,
-            Report.shared_with_user_ids.contains([str(user.id)]),
+    stmt = (
+        select(Report)
+        .where(
+            or_(
+                Report.owner_user_id == user.id,
+                Report.visibility == ReportVisibility.TENANT,
+                Report.shared_with_user_ids.contains([str(user.id)]),
+            )
         )
-    ).order_by(Report.name)
+        .order_by(Report.name)
+    )
     rows = await session.scalars(tenant_scoped(stmt, Report, user))
     return [ReportRead.model_validate(r) for r in rows.all()]
 
@@ -270,9 +270,7 @@ async def run_saved(
     return result
 
 
-@router.get(
-    "/reports/{report_id}/export", dependencies=[Depends(require_roles(*ALL_ROLES))]
-)
+@router.get("/reports/{report_id}/export", dependencies=[Depends(require_roles(*ALL_ROLES))])
 async def export(
     report_id: uuid.UUID,
     user: CurrentUser,
@@ -310,9 +308,7 @@ async def export(
     response_model=None,
     dependencies=[Depends(require_roles(*ALL_ROLES))],
 )
-async def delete_report(
-    report_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> None:
+async def delete_report(report_id: uuid.UUID, user: CurrentUser, session: DbSession) -> None:
     report = await session.scalar(
         tenant_scoped(select(Report).where(Report.id == report_id), Report, user)
     )
@@ -345,9 +341,7 @@ async def create_schedule(
     return.
     """
     report = await session.scalar(
-        tenant_scoped(
-            select(Report).where(Report.id == payload.report_id), Report, user
-        )
+        tenant_scoped(select(Report).where(Report.id == payload.report_id), Report, user)
     )
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
@@ -367,9 +361,7 @@ async def create_schedule(
         on_empty=payload.on_empty,
         created_by_user_id=user.id,
     )
-    schedule.next_run_at = report_service.next_run_after(
-        schedule, after=datetime.now(UTC)
-    )
+    schedule.next_run_at = report_service.next_run_after(schedule, after=datetime.now(UTC))
     session.add(schedule)
     await session.commit()
     await session.refresh(schedule)
@@ -469,14 +461,10 @@ async def activity(
         run_stmt = run_stmt.where(ReportRun.max_sensitivity == sensitivity)
     runs = await session.scalars(tenant_scoped(run_stmt, ReportRun, user))
 
-    delivery_stmt = (
-        select(ReportDelivery).order_by(ReportDelivery.sent_at.desc()).limit(limit)
-    )
+    delivery_stmt = select(ReportDelivery).order_by(ReportDelivery.sent_at.desc()).limit(limit)
     if sensitivity:
         delivery_stmt = delivery_stmt.where(ReportDelivery.max_sensitivity == sensitivity)
-    deliveries = await session.scalars(
-        tenant_scoped(delivery_stmt, ReportDelivery, user)
-    )
+    deliveries = await session.scalars(tenant_scoped(delivery_stmt, ReportDelivery, user))
 
     return {
         "runs": [
@@ -573,9 +561,7 @@ async def get_signal_rules(user: CurrentUser, session: DbSession) -> dict[str, A
     return analytics.rules_read(await analytics.signal_rules(session, user))
 
 
-@router.put(
-    "/reports/analytics/signal-rules", dependencies=[Depends(require_roles(*ADMIN_ROLES))]
-)
+@router.put("/reports/analytics/signal-rules", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def put_signal_rules(
     payload: dict[str, Any], user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:

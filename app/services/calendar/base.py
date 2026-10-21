@@ -140,9 +140,7 @@ class CalendarAdapter(ABC):
     async def cancel_event(self, external_event_id: str, *, token: str) -> None: ...
 
     @abstractmethod
-    async def responses(
-        self, external_event_id: str, *, token: str
-    ) -> dict[str, str]:
+    async def responses(self, external_event_id: str, *, token: str) -> dict[str, str]:
         """Attendee response status, keyed by email.
 
         Values are `accepted`, `declined`, `tentative` or `needsAction`. Polled

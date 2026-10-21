@@ -97,9 +97,7 @@ REJECTION_HOLD = timedelta(hours=24)
 MAX_ATTEMPTS = 5
 BATCH = 200
 
-_PRIVATE = (
-    "Keep this link to yourself: it opens your application without a password."
-)
+_PRIVATE = "Keep this link to yourself: it opens your application without a password."
 
 register_event(
     APPLICATION_RECEIVED,
@@ -390,7 +388,12 @@ async def on_rejected(
 
 
 async def on_portal_link(
-    session: AsyncSession, user: Any, *, candidate: Candidate, token: str, event_key: str,
+    session: AsyncSession,
+    user: Any,
+    *,
+    candidate: Candidate,
+    token: str,
+    event_key: str,
     payload: dict[str, Any] | None = None,
 ) -> CandidateMessage | None:
     """Any email whose point is the candidate's portal link."""
@@ -617,14 +620,18 @@ async def list_messages(
         )
     ).all()
     author_ids = {r.sent_by_user_id for r in rows if r.sent_by_user_id}
-    names = {
-        u.id: u.full_name
-        for u in (
-            await session.scalars(
-                tenant_scoped(select(User).where(User.id.in_(author_ids)), User, user)
-            )
-        ).all()
-    } if author_ids else {}
+    names = (
+        {
+            u.id: u.full_name
+            for u in (
+                await session.scalars(
+                    tenant_scoped(select(User).where(User.id.in_(author_ids)), User, user)
+                )
+            ).all()
+        }
+        if author_ids
+        else {}
+    )
     return [_read(row, names) for row in rows]
 
 

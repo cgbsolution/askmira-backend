@@ -84,8 +84,7 @@ class FilingBlockedError(Exception):
         self.record = record
         self.result = result
         super().__init__(
-            f"{len(result.blocking)} blocking exception(s) prevent this return being "
-            "generated."
+            f"{len(result.blocking)} blocking exception(s) prevent this return being generated."
         )
 
 
@@ -105,9 +104,7 @@ class GeneratedFile:
 
 async def _entity(session: AsyncSession, user: User, entity_id: uuid.UUID) -> LegalEntity:
     entity = await session.scalar(
-        tenant_scoped(
-            select(LegalEntity).where(LegalEntity.id == entity_id), LegalEntity, user
-        )
+        tenant_scoped(select(LegalEntity).where(LegalEntity.id == entity_id), LegalEntity, user)
     )
     if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Legal entity not found")
@@ -424,9 +421,18 @@ async def generate_ecr(
     result = validation.validate_ecr_lines(to_validate)
     if result.is_blocked:
         record = await _record(
-            session, user, return_type=ReturnType.PF_ECR, entity_id=legal_entity_id,
-            period=period, jurisdiction=None, result=result, content=None, file_name=None,
-            record_count=0, total_amount=Decimal(0), request=request,
+            session,
+            user,
+            return_type=ReturnType.PF_ECR,
+            entity_id=legal_entity_id,
+            period=period,
+            jurisdiction=None,
+            result=result,
+            content=None,
+            file_name=None,
+            record_count=0,
+            total_amount=Decimal(0),
+            request=request,
         )
         raise FilingBlockedError(record, result)
 
@@ -452,10 +458,18 @@ async def generate_ecr(
 
     content = serialisers.serialise_ecr(ecr)
     record = await _record(
-        session, user, return_type=ReturnType.PF_ECR, entity_id=legal_entity_id,
-        period=period, jurisdiction=None, result=result, content=content,
+        session,
+        user,
+        return_type=ReturnType.PF_ECR,
+        entity_id=legal_entity_id,
+        period=period,
+        jurisdiction=None,
+        result=result,
+        content=content,
         file_name=f"ECR_{entity.code}_{month:02d}{year}.txt",
-        record_count=len(ecr.lines), total_amount=ecr.total_contributions, request=request,
+        record_count=len(ecr.lines),
+        total_amount=ecr.total_contributions,
+        request=request,
     )
     return GeneratedFile(content, record, result)
 
@@ -547,9 +561,18 @@ async def generate_esic(
     result = validation.validate_esic_lines(to_validate)
     if result.is_blocked:
         record = await _record(
-            session, user, return_type=ReturnType.ESIC, entity_id=legal_entity_id,
-            period=period, jurisdiction=None, result=result, content=None, file_name=None,
-            record_count=0, total_amount=Decimal(0), request=request,
+            session,
+            user,
+            return_type=ReturnType.ESIC,
+            entity_id=legal_entity_id,
+            period=period,
+            jurisdiction=None,
+            result=result,
+            content=None,
+            file_name=None,
+            record_count=0,
+            total_amount=Decimal(0),
+            request=request,
         )
         raise FilingBlockedError(record, result)
 
@@ -561,10 +584,18 @@ async def generate_esic(
     )
     content = serialisers.serialise_esic(esic)
     record = await _record(
-        session, user, return_type=ReturnType.ESIC, entity_id=legal_entity_id,
-        period=period, jurisdiction=None, result=result, content=content,
+        session,
+        user,
+        return_type=ReturnType.ESIC,
+        entity_id=legal_entity_id,
+        period=period,
+        jurisdiction=None,
+        result=result,
+        content=content,
         file_name=f"ESIC_{entity.code}_{month:02d}{year}.csv",
-        record_count=len(lines), total_amount=esic.total_contributions, request=request,
+        record_count=len(lines),
+        total_amount=esic.total_contributions,
+        request=request,
     )
     return GeneratedFile(content, record, result)
 
@@ -639,8 +670,7 @@ async def generate_pt_challans(
             for payslip, employee in state_rows
         ]
         to_validate = [
-            {"subject": line.employee_code, "tax_deducted": line.tax_deducted}
-            for line in lines
+            {"subject": line.employee_code, "tax_deducted": line.tax_deducted} for line in lines
         ]
         result = validation.validate_pt_challan(
             state_code=state, registration_number=registration, rows=to_validate
@@ -648,10 +678,18 @@ async def generate_pt_challans(
 
         if result.is_blocked:
             record = await _record(
-                session, user, return_type=ReturnType.PROFESSIONAL_TAX,
-                entity_id=legal_entity_id, period=period, jurisdiction=state,
-                result=result, content=None, file_name=None, record_count=0,
-                total_amount=Decimal(0), request=request,
+                session,
+                user,
+                return_type=ReturnType.PROFESSIONAL_TAX,
+                entity_id=legal_entity_id,
+                period=period,
+                jurisdiction=state,
+                result=result,
+                content=None,
+                file_name=None,
+                record_count=0,
+                total_amount=Decimal(0),
+                request=request,
             )
             raise FilingBlockedError(record, result)
 
@@ -664,19 +702,25 @@ async def generate_pt_challans(
         )
         content = serialisers.serialise_pt_challan(challan)
         record = await _record(
-            session, user, return_type=ReturnType.PROFESSIONAL_TAX,
-            entity_id=legal_entity_id, period=period, jurisdiction=state, result=result,
-            content=content, file_name=f"PT_{state}_{entity.code}_{month:02d}{year}.csv",
-            record_count=len(lines), total_amount=challan.total_tax, request=request,
+            session,
+            user,
+            return_type=ReturnType.PROFESSIONAL_TAX,
+            entity_id=legal_entity_id,
+            period=period,
+            jurisdiction=state,
+            result=result,
+            content=content,
+            file_name=f"PT_{state}_{entity.code}_{month:02d}{year}.csv",
+            record_count=len(lines),
+            total_amount=challan.total_tax,
+            request=request,
         )
         produced.append(GeneratedFile(content, record, result))
 
     return produced
 
 
-def _slab_counts(
-    pt_rules: PayrollRuleSet | None, lines: list[PtLine]
-) -> dict[str, int]:
+def _slab_counts(pt_rules: PayrollRuleSet | None, lines: list[PtLine]) -> dict[str, int]:
     """How many employees fall in each of the state's own slabs.
 
     Several states want a count per slab rather than a per-employee list. The
@@ -694,23 +738,17 @@ def _slab_counts(
         for slab in slabs:
             upper = slab.get("up_to")
             if upper is None or line.gross_wages <= Decimal(str(upper)):
-                label = slab.get("label") or (
-                    f"up to {upper}" if upper is not None else "above"
-                )
+                label = slab.get("label") or (f"up to {upper}" if upper is not None else "above")
                 counts[label] = counts.get(label, 0) + 1
                 break
     return counts
 
 
-async def _state_of(
-    session: AsyncSession, user: User, location_id: uuid.UUID | None
-) -> str | None:
+async def _state_of(session: AsyncSession, user: User, location_id: uuid.UUID | None) -> str | None:
     if location_id is None:
         return None
     return await session.scalar(
-        tenant_scoped(
-            select(Location.state_code).where(Location.id == location_id), Location, user
-        )
+        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
     )
 
 
@@ -764,9 +802,7 @@ async def generate_tds_24q(
                     PayrollRun.period_month.in_(months),
                     PayrollRun.effective_date >= year_start,
                     PayrollRun.effective_date <= year_end,
-                    PayrollRun.status.in_(
-                        [PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]
-                    ),
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
                 )
                 .order_by(Employee.employee_code, PayrollRun.period_month),
                 Payslip,
@@ -846,9 +882,7 @@ async def generate_tds_24q(
                 tds_deposited=deposited,
                 deduction_date=mapping.deduction_date,
                 rate=(
-                    (tds / gross * Decimal(100)).quantize(Decimal("0.01"))
-                    if gross
-                    else Decimal(0)
+                    (tds / gross * Decimal(100)).quantize(Decimal("0.01")) if gross else Decimal(0)
                 ),
             )
         )
@@ -877,9 +911,18 @@ async def generate_tds_24q(
     period = f"{financial_year}-Q{quarter}"
     if result.is_blocked:
         record = await _record(
-            session, user, return_type=ReturnType.TDS_24Q, entity_id=legal_entity_id,
-            period=period, jurisdiction=None, result=result, content=None, file_name=None,
-            record_count=0, total_amount=Decimal(0), request=request,
+            session,
+            user,
+            return_type=ReturnType.TDS_24Q,
+            entity_id=legal_entity_id,
+            period=period,
+            jurisdiction=None,
+            result=result,
+            content=None,
+            file_name=None,
+            record_count=0,
+            total_amount=Decimal(0),
+            request=request,
         )
         raise FilingBlockedError(record, result)
 
@@ -911,10 +954,18 @@ async def generate_tds_24q(
 
     content = serialisers.serialise_tds_24q(return_)
     record = await _record(
-        session, user, return_type=ReturnType.TDS_24Q, entity_id=legal_entity_id,
-        period=period, jurisdiction=None, result=result, content=content,
+        session,
+        user,
+        return_type=ReturnType.TDS_24Q,
+        entity_id=legal_entity_id,
+        period=period,
+        jurisdiction=None,
+        result=result,
+        content=content,
         file_name=f"24Q_{entity.tan or entity.code}_{financial_year}_Q{quarter}.txt",
-        record_count=len(deductees), total_amount=return_.total_tds, request=request,
+        record_count=len(deductees),
+        total_amount=return_.total_tds,
+        request=request,
     )
     return GeneratedFile(content, record, result)
 
@@ -997,9 +1048,7 @@ async def record_acknowledgement(
     first thing an inspection asks for. It is typed in.
     """
     record = await session.scalar(
-        tenant_scoped(
-            select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user
-        )
+        tenant_scoped(select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user)
     )
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")

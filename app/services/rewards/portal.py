@@ -145,9 +145,7 @@ async def list_valuations(session: AsyncSession, user: User) -> list[ValuationRe
 
 
 async def get_expiry_policy(session: AsyncSession, user: User) -> ExpiryPolicyRead:
-    row = await session.scalar(
-        tenant_scoped(select(PointsExpiryPolicy), PointsExpiryPolicy, user)
-    )
+    row = await session.scalar(tenant_scoped(select(PointsExpiryPolicy), PointsExpiryPolicy, user))
     if row is None:
         return ExpiryPolicyRead(
             configured=False,
@@ -278,9 +276,7 @@ async def create_budget(
     }
 
 
-async def budget_report(
-    session: AsyncSession, user: User, *, as_of: date
-) -> dict[str, Any]:
+async def budget_report(session: AsyncSession, user: User, *, as_of: date) -> dict[str, Any]:
     """Utilisation per budget, with each scope named."""
     report = await rewards.budget_utilisation(session, user, as_of=as_of)
     keys: set[uuid.UUID] = set()
@@ -503,9 +499,7 @@ async def import_partner_records(
     )
 
 
-async def list_reconciliations(
-    session: AsyncSession, user: User
-) -> list[ReconciliationRunRead]:
+async def list_reconciliations(session: AsyncSession, user: User) -> list[ReconciliationRunRead]:
     permissions.require_hr(user, detail="Reconciliations are for HR and finance.")
     rows = (
         await session.scalars(

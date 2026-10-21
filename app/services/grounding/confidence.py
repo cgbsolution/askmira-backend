@@ -186,8 +186,7 @@ def present(
             confidence=confidence,
             score=None,
             signals=signals,
-            missing=missing
-            or ("more history than the record currently holds",),
+            missing=missing or ("more history than the record currently holds",),
         )
 
     return ScoredOutput(

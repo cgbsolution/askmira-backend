@@ -141,7 +141,5 @@ def decode_token(token: str, *, expected_type: TokenType) -> dict[str, Any]:
         issuer=settings.APP_NAME,
     )
     if payload.get("typ") != expected_type:
-        raise jwt.InvalidTokenError(
-            f"expected a {expected_type} token, got {payload.get('typ')!r}"
-        )
+        raise jwt.InvalidTokenError(f"expected a {expected_type} token, got {payload.get('typ')!r}")
     return payload

@@ -129,15 +129,11 @@ class SalaryBreakdown:
 
     @property
     def annual_total_in_ctc(self) -> Decimal:
-        return sum(
-            (c.annual_amount for c in self.components if c.part_of_ctc), start=Decimal(0)
-        )
+        return sum((c.annual_amount for c in self.components if c.part_of_ctc), start=Decimal(0))
 
     @property
     def monthly_total_in_ctc(self) -> Decimal:
-        return sum(
-            (c.monthly_amount for c in self.components if c.part_of_ctc), start=Decimal(0)
-        )
+        return sum((c.monthly_amount for c in self.components if c.part_of_ctc), start=Decimal(0))
 
     def by_code(self, code: str) -> ResolvedComponent | None:
         return next((c for c in self.components if c.code == code), None)
@@ -393,9 +389,7 @@ def resolve_ctc(structure: SalaryStructure, ctc_annual: Decimal) -> SalaryBreakd
 
         elif spec.calculation_type is CalculationType.PERCENTAGE_OF:
             base_code = spec.base_component_code or ""
-            base = (
-                ctc_annual if base_code.upper() == CTC_TOKEN else exact.get(base_code)
-            )
+            base = ctc_annual if base_code.upper() == CTC_TOKEN else exact.get(base_code)
             if base is None:
                 raise SalaryStructureError(
                     f"Component '{spec.code}' resolves before its base '{base_code}'. "

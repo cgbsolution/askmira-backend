@@ -207,8 +207,7 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "CFO'. A policy threshold; no person is attached to it."
     ),
     ("approval_chain_rules", "ctc_max"): (
-        "The upper bound of the same approval band. A policy threshold, not "
-        "anybody's pay."
+        "The upper bound of the same approval band. A policy threshold, not anybody's pay."
     ),
     ("positions", "budgeted_ctc_min"): (
         "What a seat is budgeted at, which exists whether or not anybody sits "
@@ -222,8 +221,7 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "The approved hiring budget for a role, set before a candidate exists."
     ),
     ("requisitions", "budget_ctc_max"): (
-        "The top of the same approved hiring budget, fixed before any "
-        "candidate applies."
+        "The top of the same approved hiring budget, fixed before any candidate applies."
     ),
     ("work_locations", "latitude"): (
         "The office's coordinates, used as the centre of a geofence. A "
@@ -231,8 +229,7 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "attendance_punches and is classified as attendance data."
     ),
     ("work_locations", "longitude"): (
-        "The same office building's coordinates. A place, not a person's "
-        "whereabouts."
+        "The same office building's coordinates. A place, not a person's whereabouts."
     ),
     ("device_integrations", "push_token_hash"): (
         "A shared secret for a biometric device's callbacks. Belongs to a piece "
@@ -323,8 +320,7 @@ TABLES: dict[str, TableClassification] = {
     "arrear_batches": _none("The header of an arrears computation run."),
     "disbursement_batches": _none("The header of a payment file."),
     "payroll_runs": _none(
-        "A run's header: period, status, totals. The per-person amounts are in "
-        "payslips."
+        "A run's header: period, status, totals. The per-person amounts are in payslips."
     ),
     "attendance_period_locks": _none("Which attendance periods are frozen."),
     "ledger_mappings": _none(
@@ -444,9 +440,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     # ── Compensation ────────────────────────────────────────────────────────
     "employee_salaries": _p(EMP, "compensation", {"ctc_annual": "compensation"}),
-    "employee_salary_components": _p(
-        EMP, "compensation", {"part_of_ctc": "compensation"}
-    ),
+    "employee_salary_components": _p(EMP, "compensation", {"part_of_ctc": "compensation"}),
     "salary_revisions": _p(EMP, "compensation"),
     "payslips": _p(EMP, "compensation"),
     "bonus_computations": _p(EMP, "compensation"),
@@ -612,9 +606,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     "candidate_documents": _p(CAND, "documents"),
     "candidate_consents": _p(CAND, "recruitment"),
-    "candidate_portal_tokens": _p(
-        CAND, "account_security", {"token_hash": "account_security"}
-    ),
+    "candidate_portal_tokens": _p(CAND, "account_security", {"token_hash": "account_security"}),
     "background_checks": _p(
         CAND,
         "background_check",
@@ -642,14 +634,10 @@ TABLES: dict[str, TableClassification] = {
     "interview_panelists": _p(EMP, "recruitment"),
     "interview_scores": _p(CAND, "recruitment"),
     "interview_feedback": _p(CAND, "recruitment", secondary_principal=EMP),
-    "self_schedule_links": _p(
-        CAND, "account_security", {"token_hash": "account_security"}
-    ),
+    "self_schedule_links": _p(CAND, "account_security", {"token_hash": "account_security"}),
     "offers": _p(CAND, "recruitment", {"ctc_annual": "compensation"}),
     "offer_components": _p(CAND, "compensation"),
-    "offer_salary_components": _p(
-        CAND, "compensation", {"part_of_ctc": "compensation"}
-    ),
+    "offer_salary_components": _p(CAND, "compensation", {"part_of_ctc": "compensation"}),
     "offer_approvals": _p(CAND, "recruitment", secondary_principal=EMP),
     "offer_events": _p(CAND, "recruitment"),
     "requisition_approvals": _p(EMP, "organisational"),
@@ -672,14 +660,10 @@ TABLES: dict[str, TableClassification] = {
         "communication",
         {"push_token_hash": "account_security", "push_token_encrypted": "account_security"},
     ),
-    "report_deliveries": _p(
-        EMP, "communication", {"recipient_email": "identity"}
-    ),
+    "report_deliveries": _p(EMP, "communication", {"recipient_email": "identity"}),
     # ── DPDP governance (this slice's own tables) ───────────────────────────
     "consent_records": _p(EMP, "governance_record", secondary_principal=CAND),
-    "data_principal_requests": _p(
-        EMP, "governance_record", secondary_principal=CAND
-    ),
+    "data_principal_requests": _p(EMP, "governance_record", secondary_principal=CAND),
     "breach_incidents": _none(
         "An incident record: what happened, which categories were involved, how "
         "many people, and what was done. It counts principals; it names none. "
@@ -732,9 +716,7 @@ TABLES: dict[str, TableClassification] = {
         # was used — the trail an account-takeover investigation starts from.
     ),
     "exit_interviews": _p(EMP, "organisational", {"comments": "organisational"}),
-    "milestone_rules": _none(
-        "Which work anniversaries the company marks, and how. Configuration."
-    ),
+    "milestone_rules": _none("Which work anniversaries the company marks, and how. Configuration."),
     "approval_rules": _none(
         "Who approves leave and expenses under which conditions. Workflow configuration."
     ),
@@ -760,8 +742,7 @@ TABLES: dict[str, TableClassification] = {
         {"ip_address": "account_security"},
     ),
     "siem_destinations": _none(
-        "The client's own SIEM endpoint and its credential. Their "
-        "infrastructure, not a person."
+        "The client's own SIEM endpoint and its credential. Their infrastructure, not a person."
     ),
     "siem_deliveries": _none(
         "One delivery attempt: how many events, whether it worked, how long it "
@@ -833,9 +814,7 @@ TABLES: dict[str, TableClassification] = {
         "before it reaches here, and nothing in this table is written from a "
         "live record by any code path in this slice."
     ),
-    "eval_runs": _none(
-        "One execution: counts, metrics, cost, the gate outcome. Aggregates."
-    ),
+    "eval_runs": _none("One execution: counts, metrics, cost, the gate outcome. Aggregates."),
     "eval_results": _none(
         "One case's outcome, including what the agent returned for a fixture "
         "input. The output is about the fixture, not about a person."
@@ -882,8 +861,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     # ── Expense policy and travel advances (slice 31) ───────────────────────
     "expense_policies": _none(
-        "A named policy: which grades and locations it applies to, from when. "
-        "Limits, not claims."
+        "A named policy: which grades and locations it applies to, from when. Limits, not claims."
     ),
     "expense_policy_rules": _none(
         "One limit for one category in one city tier. A rate card for what may "
@@ -893,8 +871,7 @@ TABLES: dict[str, TableClassification] = {
         "Which travel tier a company location sits in. A property of a place."
     ),
     "mileage_rates": _none(
-        "What a kilometre is worth in one vehicle, from one date. Effective-"
-        "dated rate card."
+        "What a kilometre is worth in one vehicle, from one date. Effective-dated rate card."
     ),
     "per_diem_rates": _none(
         "A daily allowance for a grade in a tier, from one date. A rate for a "
@@ -942,8 +919,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     # ── Culture depth: awards, values, surveys, comms (slice 32) ────────────
     "company_values": _none(
-        "A company value: its name, description and colour. A statement about "
-        "the organisation."
+        "A company value: its name, description and colour. A statement about the organisation."
     ),
     "value_tags": _p(
         EMP,
@@ -977,8 +953,7 @@ TABLES: dict[str, TableClassification] = {
     ),
     "award_results": _p(EMP, "performance"),
     "surveys": _none(
-        "A survey definition: instrument, window, anonymity threshold. No "
-        "answers and no people."
+        "A survey definition: instrument, window, anonymity threshold. No answers and no people."
     ),
     "survey_participants": _p(
         EMP,
@@ -1032,12 +1007,9 @@ TABLES: dict[str, TableClassification] = {
         # reason on a reversal is about the person and belongs to them.
         {"reason": "compensation", "monetary_value": "compensation"},
     ),
-    "points_valuations": _none(
-        "How many points one rupee buys, from one date. A rate card."
-    ),
+    "points_valuations": _none("How many points one rupee buys, from one date. A rate card."),
     "points_expiry_policies": _none(
-        "One tenant's expiry period and the disclosure shown at award time. "
-        "Configuration."
+        "One tenant's expiry period and the disclosure shown at award time. Configuration."
     ),
     "points_budgets": _none(
         "An allocation for a scope and a period. A manager-scoped budget names "
@@ -1272,9 +1244,7 @@ TABLES: dict[str, TableClassification] = {
     "audit_logs": _p(USER, "audit_trail"),
     "sso_login_attempts": _p(USER, "account_security"),
     "scim_tokens": _p(USER, "account_security", {"token_hash": "account_security"}),
-    "calendar_connections": _p(
-        USER, "account_security", {"account_email": "identity"}
-    ),
+    "calendar_connections": _p(USER, "account_security", {"account_email": "identity"}),
     "report_runs": _p(USER, "audit_trail"),
     # ── Added by later slices (classified by the DPDP owner) ─────────────────
     "candidate_stage_events": _p(CAND, "recruitment"),
@@ -1327,8 +1297,7 @@ TABLES: dict[str, TableClassification] = {
         "a tally. Handlers return counts, never people."
     ),
     "tenant_whatsapp_settings": _none(
-        "A tenant's own WhatsApp Business account: a phone number id and an "
-        "encrypted access token."
+        "A tenant's own WhatsApp Business account: a phone number id and an encrypted access token."
     ),
     "tenant_smtp_settings": _none(
         "A tenant's own mail relay: host, port, an encrypted credential and the "
@@ -1373,8 +1342,6 @@ def classification_summary() -> dict[str, Any]:
         "tables_total": len(TABLES),
         "tables_holding_personal_data": len(personal),
         "tables_not_personal": len(TABLES) - len(personal),
-        "explicit_column_classifications": sum(
-            len(v.columns) for v in TABLES.values()
-        ),
+        "explicit_column_classifications": sum(len(v.columns) for v in TABLES.values()),
         "declared_exemptions": len(EXEMPT_COLUMNS),
     }

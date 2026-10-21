@@ -125,12 +125,16 @@ def postings_for(payslip: Payslip, cost_centre: str | None) -> list[PostingLine]
         amount = _d(line.get("amount"))
         if nature is None or amount == 0:
             continue
-        out.append(PostingLine(str(line["code"]), str(line.get("name", "")), nature, amount,
-                               cost_centre))
+        out.append(
+            PostingLine(str(line["code"]), str(line.get("name", "")), nature, amount, cost_centre)
+        )
     tds = _d(payslip.tds)
     if tds:
-        out.append(PostingLine(TDS, "Income tax deducted at source", LedgerNature.DEDUCTION, tds,
-                               cost_centre))
+        out.append(
+            PostingLine(
+                TDS, "Income tax deducted at source", LedgerNature.DEDUCTION, tds, cost_centre
+            )
+        )
     for line in payslip.input_lines or []:
         if line.get("skipped"):
             continue
@@ -138,12 +142,14 @@ def postings_for(payslip: Payslip, cost_centre: str | None) -> list[PostingLine]
         amount = _d(line.get("amount"))
         if nature is None or amount == 0:
             continue
-        out.append(PostingLine(str(line["code"]), str(line.get("name", "")), nature, amount,
-                               cost_centre))
+        out.append(
+            PostingLine(str(line["code"]), str(line.get("name", "")), nature, amount, cost_centre)
+        )
     net = _d(payslip.net_pay)
     if net:
-        out.append(PostingLine(NET_PAY, "Net salary payable", LedgerNature.NET_PAY, net,
-                               cost_centre))
+        out.append(
+            PostingLine(NET_PAY, "Net salary payable", LedgerNature.NET_PAY, net, cost_centre)
+        )
     return out
 
 
@@ -160,7 +166,9 @@ def _missing(mapping: LedgerMapping | None, nature: LedgerNature) -> bool:
         return True
     needs_debit = nature in (LedgerNature.EARNING, LedgerNature.EMPLOYER_CONTRIBUTION)
     needs_credit = nature in (
-        LedgerNature.DEDUCTION, LedgerNature.EMPLOYER_CONTRIBUTION, LedgerNature.NET_PAY
+        LedgerNature.DEDUCTION,
+        LedgerNature.EMPLOYER_CONTRIBUTION,
+        LedgerNature.NET_PAY,
     )
     return (needs_debit and not mapping.debit_ledger) or (
         needs_credit and not mapping.credit_ledger
@@ -266,8 +274,16 @@ def _zoho(lines: list[JournalLine], meta: VoucherMeta) -> str:
     writer = csv.writer(buffer)
     writer.writerow(
         [
-            "Journal Date", "Journal Number", "Reference Number", "Notes", "Journal Type",
-            "Currency", "Account", "Description", "Debit", "Credit",
+            "Journal Date",
+            "Journal Number",
+            "Reference Number",
+            "Notes",
+            "Journal Type",
+            "Currency",
+            "Account",
+            "Description",
+            "Debit",
+            "Credit",
         ]
     )
     for line in lines:

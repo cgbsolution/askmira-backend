@@ -167,9 +167,7 @@ async def list_sessions(
             status_code=403,
             detail="Only an admin can list another person's sessions.",
         )
-    return await opsec.list_sessions(
-        session, user, target_user_id=target_user_id
-    )
+    return await opsec.list_sessions(session, user, target_user_id=target_user_id)
 
 
 @router.get("/opsec/sessions/policy")
@@ -221,9 +219,7 @@ async def set_session_policy(
         idle_timeout_minutes=payload.idle_timeout_minutes,
         absolute_lifetime_hours=payload.absolute_lifetime_hours,
         max_concurrent_sessions=payload.max_concurrent_sessions,
-        enforce_ip_allowlist_for_privileged=(
-            payload.enforce_ip_allowlist_for_privileged
-        ),
+        enforce_ip_allowlist_for_privileged=(payload.enforce_ip_allowlist_for_privileged),
         ip_allowlist=payload.ip_allowlist,
         require_two_step=payload.require_two_step,
         request=request,
@@ -316,9 +312,7 @@ async def satisfy_step_up(
         succeeded=password_ok and code_ok,
         request=request,
     )
-    result["checked"] = (
-        ["password", "authenticator code"] if second_factor else ["password"]
-    )
+    result["checked"] = ["password", "authenticator code"] if second_factor else ["password"]
     if not second_factor:
         result["note"] = (
             "Only your password was re-checked. Turn on two-step sign-in under your "
@@ -358,9 +352,7 @@ async def check_allowlist(
     from app.models.opsec import TenantSessionPolicy
 
     row = (
-        await session.execute(
-            tenant_scoped(select(TenantSessionPolicy), TenantSessionPolicy, user)
-        )
+        await session.execute(tenant_scoped(select(TenantSessionPolicy), TenantSessionPolicy, user))
     ).scalar_one_or_none()
     entries = tuple(row.ip_allowlist or []) if row else ()
 
@@ -525,9 +517,7 @@ async def record_finding(
         "id": str(row.id),
         "reference": row.reference,
         "due_on": row.due_on.isoformat(),
-        "sla_days": pentest.REMEDIATION_SLA_DAYS[
-            pentest.FindingSeverity(row.severity.value)
-        ],
+        "sla_days": pentest.REMEDIATION_SLA_DAYS[pentest.FindingSeverity(row.severity.value)],
     }
 
 
@@ -543,8 +533,7 @@ async def pentest_scope(user: CurrentUser) -> dict[str, Any]:
         "required_scope": sorted(a.value for a in pentest.REQUIRED_SCOPE),
         "all_areas": sorted(a.value for a in pentest.ScopeArea),
         "remediation_slas": {
-            severity.value: days
-            for severity, days in pentest.REMEDIATION_SLA_DAYS.items()
+            severity.value: days for severity, days in pentest.REMEDIATION_SLA_DAYS.items()
         },
         "sla_statement": (
             "Remediation clocks run from discovery, not from triage. An SLA "

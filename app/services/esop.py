@@ -120,9 +120,7 @@ def vesting_schedule(grant: EsopGrant) -> list[dict[str, Any]]:
         months = min(n * grant.frequency_months, grant.vesting_months)
         cumulative = grant.units * n // tranches
         when = (
-            cliff_date
-            if months < grant.cliff_months
-            else _add_months(grant.vesting_start, months)
+            cliff_date if months < grant.cliff_months else _add_months(grant.vesting_start, months)
         )
         by_date[when] = by_date.get(when, 0) + cumulative - previous
         previous = cumulative

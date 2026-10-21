@@ -202,9 +202,7 @@ def _extract(output: Any, path: str | None) -> Any:
                 )
             current = current[part]
         else:
-            raise MalformedAssertionError(
-                f"Cannot read {path!r} from a {type(current).__name__}."
-            )
+            raise MalformedAssertionError(f"Cannot read {path!r} from a {type(current).__name__}.")
     return current
 
 
@@ -258,16 +256,13 @@ def _structural(spec: AssertionSpec, output: Any) -> Verdict:
         expected_type = _TYPES.get(type_name)
         if expected_type is None:
             raise MalformedAssertionError(
-                f"{type_name!r} is not a known type. Use one of "
-                f"{', '.join(sorted(_TYPES))}."
+                f"{type_name!r} is not a known type. Use one of {', '.join(sorted(_TYPES))}."
             )
         value = actual[key]
         if type_name == "number" and isinstance(value, bool):
             problems.append(f"{key!r} is a boolean, not a number")
         elif not isinstance(value, expected_type):
-            problems.append(
-                f"{key!r} is {type(value).__name__}, expected {type_name}"
-            )
+            problems.append(f"{key!r} is {type(value).__name__}, expected {type_name}")
 
     return Verdict(
         kind=spec.kind,
@@ -304,9 +299,7 @@ def _contains(spec: AssertionSpec, output: Any, *, negate: bool) -> Verdict:
 
 
 def _numeric_range(spec: AssertionSpec, output: Any) -> Verdict:
-    actual = _as_float(
-        _extract(output, spec.config.get("path")), where="the output"
-    )
+    actual = _as_float(_extract(output, spec.config.get("path")), where="the output")
     low = spec.config.get("min")
     high = spec.config.get("max")
     if low is None and high is None:
@@ -371,11 +364,7 @@ def _refusal(spec: AssertionSpec, output: Any) -> Verdict:
     else:
         declined = any(marker in text for marker in _REFUSAL_MARKERS)
 
-    leaked = [
-        str(v)
-        for v in spec.config.get("must_not_contain", [])
-        if str(v).lower() in text
-    ]
+    leaked = [str(v) for v in spec.config.get("must_not_contain", []) if str(v).lower() in text]
 
     problems = []
     if not declined:
@@ -465,9 +454,7 @@ def _llm_judge(spec: AssertionSpec, output: Any) -> Verdict:
     stays deterministic and testable, and it makes visible that the judge is an
     input to the eval rather than part of it.
     """
-    threshold = _as_float(
-        _require(spec.config, "min_score", spec.kind), where="min_score"
-    )
+    threshold = _as_float(_require(spec.config, "min_score", spec.kind), where="min_score")
     rubric = spec.config.get("rubric", "")
     if not rubric:
         raise MalformedAssertionError(
@@ -515,15 +502,10 @@ def _discrimination(spec: AssertionSpec, outputs: Sequence[Any]) -> Verdict:
     are identical and one is an outlier passes a spread check and is still an
     agent that cannot tell four candidates apart.
     """
-    min_spread = _as_float(
-        _require(spec.config, "min_spread", spec.kind), where="min_spread"
-    )
+    min_spread = _as_float(_require(spec.config, "min_spread", spec.kind), where="min_spread")
     path = spec.config.get("path")
 
-    values = [
-        _as_float(_extract(o, path), where=f"output {i}")
-        for i, o in enumerate(outputs)
-    ]
+    values = [_as_float(_extract(o, path), where=f"output {i}") for i, o in enumerate(outputs)]
     if len(values) < 2:
         raise MalformedAssertionError(
             "A discrimination assertion needs at least two outputs. With one "
@@ -581,14 +563,10 @@ def _monotonicity(spec: AssertionSpec, outputs: Sequence[Any]) -> Verdict:
     path = spec.config.get("path")
     tolerance = _as_float(spec.config.get("tolerance", 0), where="tolerance")
 
-    values = [
-        _as_float(_extract(o, path), where=f"output {i}")
-        for i, o in enumerate(outputs)
-    ]
+    values = [_as_float(_extract(o, path), where=f"output {i}") for i, o in enumerate(outputs)]
     if len(values) < 2:
         raise MalformedAssertionError(
-            "A monotonicity assertion needs at least two outputs, ordered from "
-            "worst input to best."
+            "A monotonicity assertion needs at least two outputs, ordered from worst input to best."
         )
 
     violations = [
@@ -628,10 +606,7 @@ def _consistency(spec: AssertionSpec, outputs: Sequence[Any]) -> Verdict:
     )
     path = spec.config.get("path")
 
-    values = [
-        _as_float(_extract(o, path), where=f"run {i}")
-        for i, o in enumerate(outputs)
-    ]
+    values = [_as_float(_extract(o, path), where=f"run {i}") for i, o in enumerate(outputs)]
     if len(values) < 3:
         raise MalformedAssertionError(
             "A consistency assertion needs at least three runs. Two samples "
@@ -706,9 +681,7 @@ def check(spec: AssertionSpec, outputs: Sequence[Any]) -> Verdict:
     if spec.kind in _MULTI:
         return _MULTI[spec.kind](spec, outputs)
     if spec.kind in (AssertionKind.CONTAINS, AssertionKind.NOT_CONTAINS):
-        return _contains(
-            spec, outputs[0], negate=spec.kind is AssertionKind.NOT_CONTAINS
-        )
+        return _contains(spec, outputs[0], negate=spec.kind is AssertionKind.NOT_CONTAINS)
     handler = _SINGLE.get(spec.kind)
     if handler is None:
         raise MalformedAssertionError(
@@ -724,9 +697,5 @@ def kinds_without_handlers() -> set[AssertionKind]:
     A kind added to the enum with no handler would raise at run time on
     whichever suite first used it, which is a bad moment to find out.
     """
-    handled = (
-        set(_SINGLE)
-        | set(_MULTI)
-        | {AssertionKind.CONTAINS, AssertionKind.NOT_CONTAINS}
-    )
+    handled = set(_SINGLE) | set(_MULTI) | {AssertionKind.CONTAINS, AssertionKind.NOT_CONTAINS}
     return set(AssertionKind) - handled

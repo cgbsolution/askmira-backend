@@ -26,8 +26,19 @@ def _options_fit(field_type: str | None, options: list[str] | None) -> None:
 
 #: Tab names a custom field or table may not take: the profile's own tabs.
 RESERVED_TABS = frozenset(
-    {"overview", "personal", "family", "statutory", "employment", "compensation", "documents",
-     "lifecycle", "timeline", "attendance", "assets"}
+    {
+        "overview",
+        "personal",
+        "family",
+        "statutory",
+        "employment",
+        "compensation",
+        "documents",
+        "lifecycle",
+        "timeline",
+        "attendance",
+        "assets",
+    }
 )
 
 

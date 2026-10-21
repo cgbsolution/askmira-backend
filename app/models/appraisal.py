@@ -139,7 +139,8 @@ class AppraisalStage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -174,9 +175,7 @@ class AppraisalStage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Whether this stage's owner sees what earlier stages wrote. A manager
     # usually sees the self-appraisal before rating; a reviewer usually sees
     # both. These are defaults a tenant overrides, not rules.
-    sees_previous_entries: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    sees_previous_entries: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Whether the employee can see this stage's comments before release.
     # Usually false — manager comments visible mid-cycle change what managers
     # write, which is not the same as changing what they think.
@@ -196,7 +195,8 @@ class Appraisal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -204,7 +204,8 @@ class Appraisal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     current_stage_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_stages.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_stages.id", ondelete="SET NULL"),
         nullable=True,
     )
     status: Mapped[AppraisalStatus] = mapped_column(
@@ -232,17 +233,13 @@ class Appraisal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Set once, when the current stage went past its due date plus the cycle's
     # escalation window. The person named here may then act on the stage, and
     # the entry they write is marked escalated.
-    escalated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     escalated_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     # ── Acknowledgement ─────────────────────────────────────────────────────
-    acknowledged_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledgement_type: Mapped[AcknowledgementType | None] = mapped_column(
         Enum(AcknowledgementType, name="acknowledgement_type"), nullable=True
     )
@@ -282,7 +279,8 @@ class AppraisalStageEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("appraisals.id", ondelete="CASCADE"), nullable=False
     )
     stage_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_stages.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_stages.id", ondelete="CASCADE"),
         nullable=False,
     )
     # Who actually filled it in.
@@ -309,7 +307,8 @@ class AppraisalStageEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # reason, because "returned" without a reason tells the recipient nothing
     # about what to change.
     returned_to_stage_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_stages.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_stages.id", ondelete="SET NULL"),
         nullable=True,
     )
     returned_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -328,7 +327,8 @@ class StageDelegation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "stage_delegations"
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     from_user_id: Mapped[uuid.UUID] = mapped_column(

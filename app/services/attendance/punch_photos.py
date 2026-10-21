@@ -84,9 +84,7 @@ async def store_photo_for(tenant_id: uuid.UUID, encoded: str) -> str:
     return key
 
 
-async def photo_for(
-    session: AsyncSession, user: User, punch_id: uuid.UUID
-) -> tuple[bytes, str]:
+async def photo_for(session: AsyncSession, user: User, punch_id: uuid.UUID) -> tuple[bytes, str]:
     """The photo, for the person, their reporting line or HR."""
     punch = await session.scalar(
         tenant_scoped(
@@ -97,7 +95,9 @@ async def photo_for(
         raise HTTPException(status_code=404, detail="No photo with this punch.")
     if user.employee_id != punch.employee_id:
         await permissions.require_manager_or_hr(
-            session, user, punch.employee_id,
+            session,
+            user,
+            punch.employee_id,
             detail="A punch photo is for the person, their manager and HR.",
         )
     data = await get_storage().get(punch.photo_key)

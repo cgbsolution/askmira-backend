@@ -372,8 +372,7 @@ async def _over_rate_limit(
             Notification.channel == channel,
             Notification.created_at >= since,
             Notification.status.in_(
-                [NotificationStatus.SENT, NotificationStatus.DELIVERED,
-                 NotificationStatus.QUEUED]
+                [NotificationStatus.SENT, NotificationStatus.DELIVERED, NotificationStatus.QUEUED]
             ),
         )
     )
@@ -450,17 +449,13 @@ async def _preferences_for(
     ).all()
 
     if rows:
-        return {
-            row.channel: (row.digest_mode if row.enabled else DigestMode.OFF)
-            for row in rows
-        }
+        return {row.channel: (row.digest_mode if row.enabled else DigestMode.OFF) for row in rows}
 
-    return dict(
-        DEFAULT_PREFERENCES.get(event_key, {Channel.IN_APP: DigestMode.IMMEDIATE})
-    )
+    return dict(DEFAULT_PREFERENCES.get(event_key, {Channel.IN_APP: DigestMode.IMMEDIATE}))
 
 
 # ── Adapters ────────────────────────────────────────────────────────────────
+
 
 # One instance per channel. Replaced wholesale in tests, which is why the
 # registry is a plain dict rather than a container framework.
@@ -609,8 +604,7 @@ async def notify(
             if template is None:
                 outcome.suppressed += 1
                 outcome.errors.append(
-                    f"No {channel.value} template for '{event_key}'; nothing sent on that "
-                    "channel."
+                    f"No {channel.value} template for '{event_key}'; nothing sent on that channel."
                 )
                 continue
 
@@ -625,9 +619,7 @@ async def notify(
             meta_template: WhatsAppTemplate | None = None
             if channel is Channel.WHATSAPP:
                 try:
-                    _, meta_template = await _whatsapp_gate(
-                        session, tenant_id, user_id, template
-                    )
+                    _, meta_template = await _whatsapp_gate(session, tenant_id, user_id, template)
                 except NotificationError as exc:
                     outcome.suppressed += 1
                     outcome.errors.append(str(exc))
@@ -657,8 +649,7 @@ async def notify(
                     notification.status = NotificationStatus.DEFERRED
                     notification.next_attempt_at = now + timedelta(hours=1)
                     notification.failure_reason = (
-                        "Held: this recipient has reached their hourly limit on this "
-                        "channel."
+                        "Held: this recipient has reached their hourly limit on this channel."
                     )
                     session.add(notification)
                     outcome.deferred += 1
@@ -671,9 +662,7 @@ async def notify(
             # Each channel dispatches on its own. A failure here is recorded on
             # the row and does not touch the next channel or the next
             # recipient.
-            delivered = await _dispatch_one(
-                session, notification, user, policy, meta_template
-            )
+            delivered = await _dispatch_one(session, notification, user, policy, meta_template)
             if delivered:
                 outcome.sent += 1
             else:
@@ -715,9 +704,7 @@ async def _dispatch_one(
             return False
     if adapter is None:
         notification.status = NotificationStatus.FAILED
-        notification.failure_reason = (
-            f"No adapter is configured for {notification.channel.value}."
-        )
+        notification.failure_reason = f"No adapter is configured for {notification.channel.value}."
         return False
 
     phone = None
@@ -780,9 +767,7 @@ async def _dispatch_one(
         else:
             notification.status = NotificationStatus.QUEUED
             notification.failure_reason = f"Transient: {exc}"
-            notification.next_attempt_at = datetime.now(UTC) + _backoff(
-                notification.attempt_count
-            )
+            notification.next_attempt_at = datetime.now(UTC) + _backoff(notification.attempt_count)
         return False
     except Exception as exc:
         notification.status = NotificationStatus.FAILED
@@ -942,9 +927,7 @@ async def process_due_notifications(session: AsyncSession, tenant_id: uuid.UUID)
         await session.scalars(
             select(Notification).where(
                 tenant_filter(Notification, tenant_id),
-                Notification.status.in_(
-                    [NotificationStatus.QUEUED, NotificationStatus.DEFERRED]
-                ),
+                Notification.status.in_([NotificationStatus.QUEUED, NotificationStatus.DEFERRED]),
                 Notification.next_attempt_at.isnot(None),
                 Notification.next_attempt_at <= now,
             )
@@ -965,9 +948,7 @@ async def process_due_notifications(session: AsyncSession, tenant_id: uuid.UUID)
                 session, tenant_id, notification.event_key, Channel.WHATSAPP
             )
             if template and template.whatsapp_template_id:
-                meta_template = await session.get(
-                    WhatsAppTemplate, template.whatsapp_template_id
-                )
+                meta_template = await session.get(WhatsAppTemplate, template.whatsapp_template_id)
 
         if await _dispatch_one(session, notification, user, policy, meta_template):
             processed += 1

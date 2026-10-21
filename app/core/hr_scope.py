@@ -65,9 +65,7 @@ def _narrow(state: ORMExecuteState) -> None:
 
     allowed = scope.employee_ids
     options = [
-        with_loader_criteria(
-            Employee, lambda cls: cls.id.in_(allowed), include_aliases=True
-        )
+        with_loader_criteria(Employee, lambda cls: cls.id.in_(allowed), include_aliases=True)
     ]
     for model in _employee_keyed():
         options.append(

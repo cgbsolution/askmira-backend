@@ -73,9 +73,7 @@ async def access_overview(session: AsyncSession, admin: User) -> dict[str, Any]:
     role_rows = (
         await session.scalars(
             tenant_scoped(
-                select(RoleModulePermission).where(
-                    RoleModulePermission.role == NARROWABLE_ROLE
-                ),
+                select(RoleModulePermission).where(RoleModulePermission.role == NARROWABLE_ROLE),
                 RoleModulePermission,
                 admin,
             )
@@ -148,8 +146,13 @@ async def access_overview(session: AsyncSession, admin: User) -> dict[str, Any]:
 
 
 async def set_role_rights(
-    session: AsyncSession, admin: User, area: str, rights: dict[str, bool], *,
-    confirm: Confirm | None = None, request: Request | None = None,
+    session: AsyncSession,
+    admin: User,
+    area: str,
+    rights: dict[str, bool],
+    *,
+    confirm: Confirm | None = None,
+    request: Request | None = None,
 ) -> dict[str, bool]:
     _require_admin(admin)
     _check_area(area)
@@ -172,17 +175,26 @@ async def set_role_rights(
         setattr(row, right, bool(rights.get(right, False)))
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.PERMISSION_CHANGE,
-        entity_type="role_permission", entity_id=row.id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="role_permission",
+        entity_id=row.id,
         summary=f"Sub-admin rights in {area} set",
-        changes={"from": before, "to": _flags(row)}, request=request,
+        changes={"from": before, "to": _flags(row)},
+        request=request,
     )
     return _flags(row)
 
 
 async def clear_role_rights(
-    session: AsyncSession, admin: User, area: str, *,
-    confirm: Confirm | None = None, request: Request | None = None,
+    session: AsyncSession,
+    admin: User,
+    area: str,
+    *,
+    confirm: Confirm | None = None,
+    request: Request | None = None,
 ) -> None:
     _require_admin(admin)
     _check_area(area)
@@ -204,16 +216,26 @@ async def clear_role_rights(
     await session.delete(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.PERMISSION_CHANGE,
-        entity_type="role_permission", entity_id=row_id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="role_permission",
+        entity_id=row_id,
         summary=f"Sub-admin rights in {area} back to full",
-        changes={"from": before, "to": None}, request=request,
+        changes={"from": before, "to": None},
+        request=request,
     )
 
 
 async def set_user_rights(
-    session: AsyncSession, admin: User, user_id: uuid.UUID, area: str,
-    rights: dict[str, bool], *, confirm: Confirm | None = None,
+    session: AsyncSession,
+    admin: User,
+    user_id: uuid.UUID,
+    area: str,
+    rights: dict[str, bool],
+    *,
+    confirm: Confirm | None = None,
     request: Request | None = None,
 ) -> dict[str, bool]:
     _require_admin(admin)
@@ -238,17 +260,27 @@ async def set_user_rights(
         setattr(row, right, bool(rights.get(right, False)))
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.PERMISSION_CHANGE,
-        entity_type="user", entity_id=target.id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=target.id,
         summary=f"{target.full_name}'s rights in {area} set",
-        changes={"from": before, "to": _flags(row)}, request=request,
+        changes={"from": before, "to": _flags(row)},
+        request=request,
     )
     return _flags(row)
 
 
 async def clear_user_rights(
-    session: AsyncSession, admin: User, user_id: uuid.UUID, area: str, *,
-    confirm: Confirm | None = None, request: Request | None = None,
+    session: AsyncSession,
+    admin: User,
+    user_id: uuid.UUID,
+    area: str,
+    *,
+    confirm: Confirm | None = None,
+    request: Request | None = None,
 ) -> None:
     _require_admin(admin)
     _check_area(area)
@@ -270,17 +302,27 @@ async def clear_user_rights(
     await session.delete(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.PERMISSION_CHANGE,
-        entity_type="user", entity_id=target.id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=target.id,
         summary=f"{target.full_name}'s rights in {area} back to the role's",
-        changes={"from": before, "to": None}, request=request,
+        changes={"from": before, "to": None},
+        request=request,
     )
 
 
 async def set_scope(
-    session: AsyncSession, admin: User, user_id: uuid.UUID, *,
-    department_ids: list[uuid.UUID], location_ids: list[uuid.UUID],
-    confirm: Confirm | None = None, request: Request | None = None,
+    session: AsyncSession,
+    admin: User,
+    user_id: uuid.UUID,
+    *,
+    department_ids: list[uuid.UUID],
+    location_ids: list[uuid.UUID],
+    confirm: Confirm | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any] | None:
     """Limit whose records a sub-admin acts on. Both lists empty removes the limit."""
     _require_admin(admin)
@@ -333,12 +375,17 @@ async def set_scope(
         after = {"department_ids": row.department_ids, "location_ids": row.location_ids}
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.PERMISSION_CHANGE,
-        entity_type="user", entity_id=target.id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=target.id,
         summary=(
             f"{target.full_name}'s HR scope "
             + ("removed: covers everybody" if after is None else "limited")
         ),
-        changes={"from": before, "to": after}, request=request,
+        changes={"from": before, "to": after},
+        request=request,
     )
     return after

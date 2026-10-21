@@ -626,8 +626,7 @@ async def decide_life_event(
         actor=user,
         changes={"status": event.status.value},
         summary=(
-            f"{'Approved' if approve else 'Rejected'} a {event.kind.value} change to "
-            f"{plan.name}"
+            f"{'Approved' if approve else 'Rejected'} a {event.kind.value} change to {plan.name}"
         ),
         request=request,
     )

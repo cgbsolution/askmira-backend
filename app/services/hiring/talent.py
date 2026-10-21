@@ -207,7 +207,11 @@ async def list_pools(session: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 async def create_pool(
-    session: AsyncSession, user: User, *, name: str, description: str | None,
+    session: AsyncSession,
+    user: User,
+    *,
+    name: str,
+    description: str | None,
     request: Request | None = None,
 ) -> dict[str, Any]:
     _require_hr(user)
@@ -216,23 +220,40 @@ async def create_pool(
         raise HTTPException(status_code=422, detail="A pool needs a name.")
     await _name_free(session, user, name)
     pool = TalentPool(
-        tenant_id=user.tenant_id, name=name, description=(description or "").strip() or None,
+        tenant_id=user.tenant_id,
+        name=name,
+        description=(description or "").strip() or None,
         created_by_user_id=user.id,
     )
     session.add(pool)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.CREATE,
-        entity_type="talent_pool", entity_id=pool.id, summary=f"Talent pool '{name}' created",
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="talent_pool",
+        entity_id=pool.id,
+        summary=f"Talent pool '{name}' created",
         request=request,
     )
-    return {"id": str(pool.id), "name": pool.name, "description": pool.description, "members": 0,
-            "created_at": pool.created_at.isoformat()}
+    return {
+        "id": str(pool.id),
+        "name": pool.name,
+        "description": pool.description,
+        "members": 0,
+        "created_at": pool.created_at.isoformat(),
+    }
 
 
 async def update_pool(
-    session: AsyncSession, user: User, pool_id: uuid.UUID, *, name: str | None,
-    description: str | None, request: Request | None = None,
+    session: AsyncSession,
+    user: User,
+    pool_id: uuid.UUID,
+    *,
+    name: str | None,
+    description: str | None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     _require_hr(user)
     pool = await _pool(session, user, pool_id)
@@ -244,8 +265,13 @@ async def update_pool(
         pool.description = description.strip() or None
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="talent_pool", entity_id=pool.id, summary=f"Talent pool '{pool.name}' edited",
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="talent_pool",
+        entity_id=pool.id,
+        summary=f"Talent pool '{pool.name}' edited",
         changes={"from": before, "to": {"name": pool.name, "description": pool.description}},
         request=request,
     )
@@ -262,8 +288,12 @@ async def delete_pool(
     await session.delete(pool)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.DELETE,
-        entity_type="talent_pool", entity_id=pool_id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.DELETE,
+        entity_type="talent_pool",
+        entity_id=pool_id,
         summary=f"Talent pool '{name}' deleted; its candidates are unaffected",
         request=request,
     )
@@ -376,25 +406,37 @@ async def add_members(
         else:
             session.add(
                 TalentPoolMember(
-                    tenant_id=user.tenant_id, pool_id=pool.id, candidate_id=candidate_id,
-                    note=(note or "").strip() or None, added_by_user_id=user.id,
+                    tenant_id=user.tenant_id,
+                    pool_id=pool.id,
+                    candidate_id=candidate_id,
+                    note=(note or "").strip() or None,
+                    added_by_user_id=user.id,
                 )
             )
             added.append(str(candidate_id))
     await session.flush()
     if added:
         await audit.record(
-            session, tenant_id=user.tenant_id, actor=user, action=AuditAction.CREATE,
-            entity_type="talent_pool", entity_id=pool.id,
+            session,
+            tenant_id=user.tenant_id,
+            actor=user,
+            action=AuditAction.CREATE,
+            entity_type="talent_pool",
+            entity_id=pool.id,
             summary=f"{len(added)} candidate(s) added to talent pool '{pool.name}'",
-            changes={"candidate_ids": added}, request=request,
+            changes={"candidate_ids": added},
+            request=request,
         )
     return {"added": added, "refused": refused}
 
 
 async def remove_member(
-    session: AsyncSession, user: User, pool_id: uuid.UUID, candidate_id: uuid.UUID,
-    *, request: Request | None = None,
+    session: AsyncSession,
+    user: User,
+    pool_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    *,
+    request: Request | None = None,
 ) -> None:
     _require_hr(user)
     pool = await _pool(session, user, pool_id)
@@ -412,8 +454,13 @@ async def remove_member(
     await session.delete(member)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.DELETE,
-        entity_type="talent_pool", entity_id=pool.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.DELETE,
+        entity_type="talent_pool",
+        entity_id=pool.id,
         summary=f"Candidate removed from talent pool '{pool.name}'",
-        changes={"candidate_id": str(candidate_id)}, request=request,
+        changes={"candidate_id": str(candidate_id)},
+        request=request,
     )

@@ -213,9 +213,7 @@ ACTIONS: dict[str, AgentAction] = {
             max_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
             reversible=False,
             impact=ImpactLevel.CRITICAL,
-            ceiling_reason=(
-                "Money leaves and there is no revert. A person releases it."
-            ),
+            ceiling_reason=("Money leaves and there is no revert. A person releases it."),
         ),
         _a(
             agent_key="appraisal_assistant",
@@ -305,8 +303,7 @@ ACTIONS: dict[str, AgentAction] = {
             agent_key="timesheets",
             action_key="recommend_approval",
             description=(
-                "Approve a submitted timesheet whose hours match recorded attendance, "
-                "day by day."
+                "Approve a submitted timesheet whose hours match recorded attendance, day by day."
             ),
             default_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
             max_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
@@ -381,8 +378,7 @@ def action(key: str) -> AgentAction:
         return ACTIONS[key]
     except KeyError:
         raise AutonomyError(
-            f"No agent action {key!r}. Known actions: "
-            f"{', '.join(sorted(ACTIONS))}."
+            f"No agent action {key!r}. Known actions: {', '.join(sorted(ACTIONS))}."
         ) from None
 
 
@@ -466,10 +462,7 @@ def catalogue_contradictions() -> list[str]:
     """
     problems: list[str] = []
     for key, spec in ACTIONS.items():
-        if (
-            not spec.reversible
-            and spec.max_autonomy.rank > AutonomyLevel.PROPOSE_FOR_APPROVAL.rank
-        ):
+        if not spec.reversible and spec.max_autonomy.rank > AutonomyLevel.PROPOSE_FOR_APPROVAL.rank:
             problems.append(
                 f"{key} is irreversible and declares a ceiling of "
                 f"{spec.max_autonomy.value}. An action nobody can undo, applied "

@@ -65,9 +65,7 @@ class Assignment:
             "candidate_id": self.candidate_id,
             "start_utc": self.start.isoformat(),
             "end_utc": self.end.isoformat(),
-            "local_label": render_for(self.start, timezone_name).strftime(
-                "%a %d %b, %I:%M %p"
-            ),
+            "local_label": render_for(self.start, timezone_name).strftime("%a %d %b, %I:%M %p"),
             "interviewer_ids": list(self.interviewer_ids),
         }
 
@@ -187,11 +185,7 @@ def allocate(
 
     unplaced = remaining
     if unplaced:
-        exhausted = [
-            by_id[i].label or i
-            for i in load
-            if load[i] >= by_id[i].max_interviews
-        ]
+        exhausted = [by_id[i].label or i for i in load if load[i] >= by_id[i].max_interviews]
         notes.append(
             f"{len(unplaced)} candidate(s) could not be seated. "
             + (
@@ -254,8 +248,7 @@ def verify_no_overlap(assignments: list[Assignment]) -> list[str]:
         key = (assignment.candidate_id, assignment.start)
         if key in seen:
             problems.append(
-                f"{assignment.candidate_id} is scheduled twice at "
-                f"{assignment.start.isoformat()}."
+                f"{assignment.candidate_id} is scheduled twice at {assignment.start.isoformat()}."
             )
         seen[key] = assignment.candidate_id
     return problems

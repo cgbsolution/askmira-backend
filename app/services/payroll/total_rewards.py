@@ -171,8 +171,7 @@ async def statement(
             "lives": 1 + len(enrolment.members or []),
             "sum_insured": _money(plan.sum_insured),
             "employer_premium": _money(
-                Decimal(str(plan.employer_premium_per_member))
-                * (1 + len(enrolment.members or []))
+                Decimal(str(plan.employer_premium_per_member)) * (1 + len(enrolment.members or []))
             ),
             "your_premium": _money(enrolment.employee_premium_annual),
         }

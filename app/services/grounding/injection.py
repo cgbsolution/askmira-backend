@@ -190,11 +190,7 @@ def wrap(text: str, *, label: str) -> str:
     everything after it would read as instructions.
     """
     cleaned = _FENCE_PATTERN.sub("", text)
-    return (
-        f"{_OPEN} source=\"{label}\"\n"
-        f"{cleaned}\n"
-        f"{_CLOSE}"
-    )
+    return f'{_OPEN} source="{label}"\n{cleaned}\n{_CLOSE}'
 
 
 #: Restated **after** the untrusted content. A model that reads a rule, then a

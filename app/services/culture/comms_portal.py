@@ -245,9 +245,7 @@ async def acknowledgement_register(
 ) -> dict[str, Any]:
     """The register, with names - what a POSH or IT-policy audit asks for."""
     permissions.require_hr(user, detail="The acknowledgement register is for HR.")
-    report = await culture.acknowledgement_register(
-        session, user, announcement_id=announcement_id
-    )
+    report = await culture.acknowledgement_register(session, user, announcement_id=announcement_id)
     acks = list(
         (
             await session.scalars(

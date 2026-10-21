@@ -148,9 +148,7 @@ def distribution_collapse(
     if ratio > collapse_ratio:
         return None
 
-    severity = (
-        DriftSeverity.CRITICAL if ratio <= 0.25 else DriftSeverity.WARNING
-    )
+    severity = DriftSeverity.CRITICAL if ratio <= 0.25 else DriftSeverity.WARNING
     return DriftAlert(
         signal=DriftSignal.DISTRIBUTION_COLLAPSE,
         severity=severity,
@@ -218,9 +216,7 @@ def _rate_alert(
     if not rising and delta > -0.15:
         return None
 
-    severity = (
-        DriftSeverity.CRITICAL if abs(delta) >= 0.30 else DriftSeverity.WARNING
-    )
+    severity = DriftSeverity.CRITICAL if abs(delta) >= 0.30 else DriftSeverity.WARNING
     return DriftAlert(
         signal=signal,
         severity=severity,
@@ -303,10 +299,7 @@ def detect_drift(
         if collapse is not None:
             alerts.append(collapse)
 
-    if (
-        baseline_grounding_failure_rate is not None
-        and current_grounding_failure_rate is not None
-    ):
+    if baseline_grounding_failure_rate is not None and current_grounding_failure_rate is not None:
         rise = _rate_alert(
             DriftSignal.GROUNDING_FAILURE_RISE,
             baseline_rate=baseline_grounding_failure_rate,

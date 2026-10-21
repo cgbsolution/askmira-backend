@@ -158,9 +158,7 @@ async def verify(payload: VerifyIn, user: CurrentUser) -> dict[str, Any]:
 
 
 @router.post("/grounding/classify-refusal")
-async def classify_refusal(
-    payload: ClassifyIn, user: CurrentUser
-) -> dict[str, Any]:
+async def classify_refusal(payload: ClassifyIn, user: CurrentUser) -> dict[str, Any]:
     """Which refusals apply to a question, and what is still answerable.
 
     The advisory case is the interesting one: a tax question gets its factual
@@ -250,9 +248,7 @@ async def injection_attempts(
     limit: int = 100,
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
-    stmt = tenant_scoped(
-        select(PromptInjectionAttempt), PromptInjectionAttempt, user
-    )
+    stmt = tenant_scoped(select(PromptInjectionAttempt), PromptInjectionAttempt, user)
     if unreviewed_only:
         stmt = stmt.where(PromptInjectionAttempt.reviewed_at.is_(None))
     rows = (
@@ -270,15 +266,11 @@ async def injection_attempts(
                 "id": str(row.id),
                 "source_field": row.source_field,
                 "source_table": row.source_table,
-                "source_record_id": (
-                    str(row.source_record_id) if row.source_record_id else None
-                ),
+                "source_record_id": (str(row.source_record_id) if row.source_record_id else None),
                 "severity": row.severity,
                 "matched_text": row.matched_text,
                 "intent": row.intent,
-                "reviewed_at": (
-                    row.reviewed_at.isoformat() if row.reviewed_at else None
-                ),
+                "reviewed_at": (row.reviewed_at.isoformat() if row.reviewed_at else None),
                 "created_at": row.created_at.isoformat(),
             }
             for row in rows
@@ -301,9 +293,7 @@ async def review_attempt(
     from fastapi import HTTPException
 
     stmt = tenant_scoped(
-        select(PromptInjectionAttempt).where(
-            PromptInjectionAttempt.id == attempt_id
-        ),
+        select(PromptInjectionAttempt).where(PromptInjectionAttempt.id == attempt_id),
         PromptInjectionAttempt,
         user,
     )
@@ -320,9 +310,7 @@ async def review_attempt(
 
 
 @router.post("/grounding/check-inference", status_code=status.HTTP_200_OK)
-async def check_inference(
-    payload: VerifyIn, user: CurrentUser
-) -> dict[str, Any]:
+async def check_inference(payload: VerifyIn, user: CurrentUser) -> dict[str, Any]:
     """Whether a piece of text draws a conclusion across sensitive topics.
 
     Reading is not the same as inferring. An HR admin may read a sick-leave
@@ -363,6 +351,4 @@ async def invocations(
     "the model fabricated a record and the system caught it" is visible rather
     than being an absence of a log line.
     """
-    return await grounding.invocation_log(
-        session, user, agent_key=agent_key, limit=limit
-    )
+    return await grounding.invocation_log(session, user, agent_key=agent_key, limit=limit)

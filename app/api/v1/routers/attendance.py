@@ -154,7 +154,8 @@ async def punch_photo(punch_id: uuid.UUID, user: CurrentUser, session: DbSession
     """The photo taken with a punch: for the person, their manager line and HR."""
     data, media = await punch_photos.photo_for(session, user, punch_id)
     return Response(
-        content=data, media_type=media,
+        content=data,
+        media_type=media,
         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
 
@@ -439,9 +440,7 @@ async def pending_regularisations(
     return await review.pending_regularisations(session, user)
 
 
-@router.post(
-    "/regularisations/{regularisation_id}/cancel", response_model=RegularisationRead
-)
+@router.post("/regularisations/{regularisation_id}/cancel", response_model=RegularisationRead)
 async def cancel_regularisation(
     regularisation_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> RegularisationRead:
@@ -588,9 +587,7 @@ async def make_default_shift(
     shift_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> ShiftRead:
     """The shift that applies to anyone with no shift or roster assignment."""
-    return ShiftRead.model_validate(
-        await setup.set_default_shift(session, user, shift_id, request)
-    )
+    return ShiftRead.model_validate(await setup.set_default_shift(session, user, shift_id, request))
 
 
 # ── Rosters ─────────────────────────────────────────────────────────────────
@@ -723,7 +720,6 @@ async def create_work_location(
     )
 
 
-
 # ── Shift swaps and coverage ────────────────────────────────────────────────
 
 
@@ -809,10 +805,14 @@ async def shift_coverage(
 ) -> dict:
     """Per day and shift: scheduled, on leave, available, and any shortfall, by site and line."""
     return await shift_swaps.coverage(
-        session, user, start=start, end=end, location_id=location_id,
-        department_id=department_id, work_area=work_area,
+        session,
+        user,
+        start=start,
+        end=end,
+        location_id=location_id,
+        department_id=department_id,
+        work_area=work_area,
     )
-
 
 
 # ── Kiosk PIN ───────────────────────────────────────────────────────────────

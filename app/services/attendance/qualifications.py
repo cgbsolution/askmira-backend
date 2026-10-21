@@ -114,9 +114,7 @@ async def require_qualified(
                         await session.execute(
                             tenant_scoped(
                                 select(Location.id, Location.name).where(
-                                    Location.id.in_(
-                                        [x for x in (shift.location_id, based_at) if x]
-                                    )
+                                    Location.id.in_([x for x in (shift.location_id, based_at) if x])
                                 ),
                                 Location,
                                 user,

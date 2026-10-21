@@ -270,9 +270,7 @@ async def build_claims_table(
         )
 
     if not rows:
-        rows.append(
-            "<tr><td colspan='4'>No claims declared for this financial year.</td></tr>"
-        )
+        rows.append("<tr><td colspan='4'>No claims declared for this financial year.</td></tr>")
 
     return (
         '<table class="ctc-table" cellspacing="0" cellpadding="6">'
@@ -336,9 +334,8 @@ async def claim_values(
         "hra_rent_paid": _money(rent.annual_rent) if has_rent else _money(0),
         "landlord_name": (rent.landlord_name if has_rent else None) or NOT_CLAIMED,
         "landlord_address": (rent.property_address if has_rent else None) or NOT_CLAIMED,
-        "landlord_pan": (rent.landlord_pan if has_rent else None) or (
-            "Not supplied" if has_rent else NOT_CLAIMED
-        ),
+        "landlord_pan": (rent.landlord_pan if has_rent else None)
+        or ("Not supplied" if has_rent else NOT_CLAIMED),
         "lta_amount": lta_amount,
         "lta_particulars": lta_text,
         "home_loan_interest": loan_amount,

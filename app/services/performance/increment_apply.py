@@ -56,9 +56,9 @@ async def _template(session: AsyncSession, user: User) -> LetterTemplate:
     from app.services.documents import service as letters
 
     query = tenant_scoped(
-        select(LetterTemplate).where(
-            LetterTemplate.code == INCREMENT_TEMPLATE_CODE, LetterTemplate.active.is_(True)
-        ).order_by(LetterTemplate.version.desc()),
+        select(LetterTemplate)
+        .where(LetterTemplate.code == INCREMENT_TEMPLATE_CODE, LetterTemplate.active.is_(True))
+        .order_by(LetterTemplate.version.desc()),
         LetterTemplate,
         user,
     )

@@ -270,8 +270,7 @@ async def _fetch(
                 content={
                     key: str(value)
                     for key, value in row.items()
-                    if key not in ("tenant_id", "created_at", "updated_at")
-                    and value is not None
+                    if key not in ("tenant_id", "created_at", "updated_at") and value is not None
                 },
                 subject_employee_id=str(subject) if subject else None,
             )
@@ -346,9 +345,7 @@ async def prepare(
     started = now or datetime.now(UTC)
 
     try:
-        retrieved = await retrieve(
-            session, user, sources=sources, employee_ids=employee_ids
-        )
+        retrieved = await retrieve(session, user, sources=sources, employee_ids=employee_ids)
     except RetrievalError as exc:
         return await _log_and_return(
             session,
@@ -371,8 +368,7 @@ async def prepare(
         question,
         requested_employee_id=requested_employee_id,
         scope_covers=(
-            requested_employee_id is None
-            or retrieved.scope.covers(requested_employee_id)
+            requested_employee_id is None or retrieved.scope.covers(requested_employee_id)
         ),
         data_available=bool(retrieved.records) or not sources,
         touches_forbidden_topic=False,
@@ -444,9 +440,7 @@ async def conclude(
         InvocationOutcome.WITHHELD
         if not verified.may_render
         else (
-            InvocationOutcome.PARTIALLY_ANSWERED
-            if refusal.reasons
-            else InvocationOutcome.ANSWERED
+            InvocationOutcome.PARTIALLY_ANSWERED if refusal.reasons else InvocationOutcome.ANSWERED
         )
     )
 
@@ -455,14 +449,9 @@ async def conclude(
             sensitive_engine.assert_no_cross_topic_inference(rendered)
         except ValueError as exc:
             outcome = InvocationOutcome.WITHHELD
-            rendered = (
-                f"{sensitive_engine.safe_summary_note()}\n\n"
-                f"(Withheld: {exc})"
-            )
+            rendered = f"{sensitive_engine.safe_summary_note()}\n\n(Withheld: {exc})"
         else:
-            rendered = refusal_engine.split_response(
-                factual_answer=rendered, outcome=refusal
-            )
+            rendered = refusal_engine.split_response(factual_answer=rendered, outcome=refusal)
 
     band = None
     if confidence is not None:
@@ -656,9 +645,7 @@ async def _log_and_return(
         if local_citations is not None
         else (list(verified.citations) if verified else [])
     )
-    citations_verified = local_citations is not None or bool(
-        verified and verified.may_render
-    )
+    citations_verified = local_citations is not None or bool(verified and verified.may_render)
     row = AgentInvocation(
         tenant_id=user.tenant_id,
         agent_key=agent_key,
@@ -668,17 +655,13 @@ async def _log_and_return(
         scope_kind=scope.kind.value,
         scope_employee_count=len(scope.employee_ids),
         question=question,
-        retrieved_record_ids=(
-            sorted(retrieved.citation_ids) if retrieved else []
-        ),
+        retrieved_record_ids=(sorted(retrieved.citation_ids) if retrieved else []),
         refused_sources=list(retrieved.refused_sources) if retrieved else [],
         outcome=outcome,
         raw_output=raw_output,
         rendered_output=rendered,
         citations=citations,
-        citation_failures=(
-            [f.as_dict() for f in verified.failures] if verified else []
-        ),
+        citation_failures=([f.as_dict() for f in verified.failures] if verified else []),
         citations_verified=citations_verified,
         refusal_reasons=refusal_reasons,
         confidence=confidence,
@@ -711,9 +694,7 @@ async def _log_and_return(
         # offered both would eventually have a call site pick the wrong one.
         "answer": rendered,
         "citations": citations,
-        "citation_failures": (
-            [f.as_dict() for f in verified.failures] if verified else []
-        ),
+        "citation_failures": ([f.as_dict() for f in verified.failures] if verified else []),
         "refusal_reasons": refusal_reasons,
         "confidence": confidence,
         "confidence_band": confidence_band,
@@ -739,11 +720,7 @@ async def invocation_log(
     if agent_key:
         stmt = stmt.where(AgentInvocation.agent_key == agent_key)
     rows = (
-        (
-            await session.execute(
-                stmt.order_by(AgentInvocation.created_at.desc()).limit(limit)
-            )
-        )
+        (await session.execute(stmt.order_by(AgentInvocation.created_at.desc()).limit(limit)))
         .scalars()
         .all()
     )

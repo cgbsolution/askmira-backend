@@ -113,9 +113,7 @@ async def list_exceptions(
     user: CurrentUser, session: DbSession, include_resolved: bool = False
 ) -> list[PunchExceptionRead]:
     """Punches that could not be attributed. They did not fail the batch."""
-    rows = await device_service.list_exceptions(
-        session, user, include_resolved=include_resolved
-    )
+    rows = await device_service.list_exceptions(session, user, include_resolved=include_resolved)
     return [PunchExceptionRead.model_validate(row) for row in rows]
 
 
@@ -201,7 +199,6 @@ async def push_punches(token: str, payload: PunchBatch, session: DbSession) -> I
         exceptions=result.exceptions,
         unmapped_employee_codes=result.unmapped_codes or [],
     )
-
 
 
 # ── ADMS / iclock push (eSSL, ZKTeco) ───────────────────────────────────────
@@ -318,7 +315,6 @@ async def adms_command_reply_serial(
     return await _adms_poll(session, None, serial)
 
 
-
 # ── Shared kiosk ────────────────────────────────────────────────────────────
 #
 # No user session: the kiosk's device token in the path establishes the
@@ -336,6 +332,10 @@ async def kiosk_punch(token: str, payload: KioskPunchIn, session: DbSession) -> 
     """Punch in or out with an employee code and PIN, or a badge; the direction follows
     the last punch."""
     return await kiosk.kiosk_punch(
-        session, token, employee_code=payload.employee_code, pin=payload.pin,
-        badge=payload.badge, photo=payload.photo,
+        session,
+        token,
+        employee_code=payload.employee_code,
+        pin=payload.pin,
+        badge=payload.badge,
+        photo=payload.photo,
     )

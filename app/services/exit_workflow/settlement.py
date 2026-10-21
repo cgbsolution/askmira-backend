@@ -167,8 +167,7 @@ _EARNINGS = (
     ("SALARY_FINAL", "Salary for the final month", "final_month_salary", "final_month_basis"),
     ("LEAVE_ENCASHMENT", "Leave encashment", "leave_encashment", "leave_encashment_basis"),
     ("GRATUITY", "Gratuity", "gratuity", "gratuity_basis"),
-    ("REIMBURSEMENTS", "Pending reimbursements", "pending_reimbursements",
-     "reimbursement_basis"),
+    ("REIMBURSEMENTS", "Pending reimbursements", "pending_reimbursements", "reimbursement_basis"),
     ("BONUS", "Statutory bonus (pro rata)", "pro_rata_bonus", "bonus_basis"),
     ("ARREARS", "Pending arrears", "pending_arrears", "arrears_basis"),
 )
@@ -177,8 +176,7 @@ _RECOVERIES = (
     ("NOTICE_SHORTFALL", "Notice period shortfall", "notice_shortfall", "notice_basis"),
     ("LOAN", "Outstanding loan and advances", "loan_outstanding", "loan_basis"),
     ("ASSETS", "Unreturned assets", "asset_recovery", "asset_basis"),
-    ("EXCESS_LEAVE", "Leave taken beyond accrual", "excess_leave_taken",
-     "excess_leave_basis"),
+    ("EXCESS_LEAVE", "Leave taken beyond accrual", "excess_leave_taken", "excess_leave_basis"),
     ("OTHER_RECOVERY", "Other recoveries", "other_recoveries", "other_recovery_basis"),
 )
 
@@ -233,9 +231,7 @@ def compute_settlement(data: SettlementInput) -> SettlementResult:
         )
 
     total_earnings = sum((line.amount for line in lines if line.line_type == "earning"), ZERO)
-    total_recoveries = sum(
-        (line.amount for line in lines if line.line_type == "recovery"), ZERO
-    )
+    total_recoveries = sum((line.amount for line in lines if line.line_type == "recovery"), ZERO)
 
     # ── Tax, signed ─────────────────────────────────────────────────────────
     tax = _check("Final TDS", data.final_tds, allow_negative=True)

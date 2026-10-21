@@ -80,8 +80,7 @@ BONUS_FORM_C = RegisterSpec(
         RegisterColumn("Name of the employee", "employee_name"),
         RegisterColumn("Father / Husband name", "guardian_name"),
         RegisterColumn(
-            "Whether he has completed 15 years of age at the beginning of the "
-            "accounting year",
+            "Whether he has completed 15 years of age at the beginning of the accounting year",
             "completed_fifteen",
         ),
         RegisterColumn("Designation", "designation"),
@@ -91,8 +90,7 @@ BONUS_FORM_C = RegisterSpec(
         ),
         RegisterColumn("Amount of bonus payable", "bonus_payable", "right"),
         RegisterColumn(
-            "Deductions - Puja bonus or other customary bonus paid during the "
-            "accounting year",
+            "Deductions - Puja bonus or other customary bonus paid during the accounting year",
             "customary_bonus",
             "right",
         ),
@@ -158,9 +156,7 @@ PF_CONTRIBUTION_REGISTER = RegisterSpec(
 ESI_CONTRIBUTION_REGISTER = RegisterSpec(
     code="ESI_REGISTER",
     title="Register of Employees State Insurance contributions",
-    prescribed_by=(
-        "Employees State Insurance (General) Regulations, 1950 - Register of Employees"
-    ),
+    prescribed_by=("Employees State Insurance (General) Regulations, 1950 - Register of Employees"),
     columns=(
         RegisterColumn("S. No.", "serial"),
         RegisterColumn("Insurance number", "esi_number"),
@@ -308,8 +304,7 @@ def _as_decimal(value: Any, heading: str) -> Decimal:
         return Decimal(str(value))
     except (ArithmeticError, ValueError) as exc:
         raise RegisterError(
-            f"The column '{heading}' is totalled but carries a non-numeric value "
-            f"{value!r}."
+            f"The column '{heading}' is totalled but carries a non-numeric value {value!r}."
         ) from exc
 
 

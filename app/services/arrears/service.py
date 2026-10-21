@@ -104,18 +104,14 @@ async def _historical_rule_sets(
     return resolved
 
 
-async def _state_of(
-    session: AsyncSession, user: User, location_id: uuid.UUID | None
-) -> str | None:
+async def _state_of(session: AsyncSession, user: User, location_id: uuid.UUID | None) -> str | None:
     """The employee's work state, for resolving state levies."""
     if location_id is None:
         return None
     from app.models.org import Location
 
     return await session.scalar(
-        tenant_scoped(
-            select(Location.state_code).where(Location.id == location_id), Location, user
-        )
+        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
     )
 
 
@@ -135,9 +131,7 @@ async def _closed_runs(
                     select(PayrollRun)
                     .where(
                         PayrollRun.legal_entity_id == legal_entity_id,
-                        PayrollRun.status.in_(
-                            [PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]
-                        ),
+                        PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
                         PayrollRun.effective_date >= from_date,
                         PayrollRun.effective_date <= to_date,
                     )
@@ -362,9 +356,7 @@ async def revise_salary(
         effective_from=effective_from,
     )
 
-    periods = sorted(
-        {arrear.period for arrears in per_employee.values() for arrear in arrears}
-    )
+    periods = sorted({arrear.period for arrears in per_employee.values() for arrear in arrears})
     limit = threshold or DEFAULT_ADDITIONAL_APPROVAL_THRESHOLD
 
     batch = ArrearBatch(
@@ -485,9 +477,7 @@ async def approve_batch(
       recorded and the batch waits for the second.
     """
     batch = await session.scalar(
-        tenant_scoped(
-            select(ArrearBatch).where(ArrearBatch.id == batch_id), ArrearBatch, user
-        )
+        tenant_scoped(select(ArrearBatch).where(ArrearBatch.id == batch_id), ArrearBatch, user)
     )
     if batch is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Arrear batch not found")
@@ -606,8 +596,11 @@ async def preview_guardrails(
         )
         if employee is None:
             problems.append(
-                {"employee_id": str(employee_id), "employee_code": None,
-                 "message": "Employee not found."}
+                {
+                    "employee_id": str(employee_id),
+                    "employee_code": None,
+                    "message": "Employee not found.",
+                }
             )
             continue
         try:
@@ -711,9 +704,7 @@ async def payable_arrears(
             bucket[key] = bucket.get(key, ZERO) + Decimal(str(line.difference))
         labels = await employee_labels(session, user, set(per_employee))
         for employee_id, components in per_employee.items():
-            earnings = sum(
-                (v for (_, _, kind), v in components.items() if kind == "earning"), ZERO
-            )
+            earnings = sum((v for (_, _, kind), v in components.items() if kind == "earning"), ZERO)
             deductions = sum(
                 (v for (_, _, kind), v in components.items() if kind == "deduction"), ZERO
             )

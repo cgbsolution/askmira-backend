@@ -583,9 +583,7 @@ class BackgroundConsentIn(BaseModel):
     typed_name: str | None = Field(default=None, max_length=255)
 
 
-@router.get(
-    "/careers/background-check-vendors", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.get("/careers/background-check-vendors", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def background_check_vendors() -> dict[str, Any]:
     """The connectors a check can go through, and the checks there are."""
     return {
@@ -672,7 +670,11 @@ async def upload_background_report(
     if data is None:
         raise HTTPException(status_code=422, detail="The file is empty.")
     result = await background_checks.upload_report(
-        session, user, check_id, data=data, filename=file.filename or "report.pdf",
+        session,
+        user,
+        check_id,
+        data=data,
+        filename=file.filename or "report.pdf",
         request=request,
     )
     await session.commit()

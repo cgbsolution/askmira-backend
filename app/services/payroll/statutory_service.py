@@ -315,9 +315,7 @@ async def compute_bonus_for_year(
     existing_rows = (
         await session.scalars(
             tenant_scoped(
-                select(BonusComputation).where(
-                    BonusComputation.financial_year == financial_year
-                ),
+                select(BonusComputation).where(BonusComputation.financial_year == financial_year),
                 BonusComputation,
                 user,
             )
@@ -427,7 +425,9 @@ async def _bonus_inputs(
                     Payslip.paid_days,
                     Payslip.working_days,
                     Payslip.line_items,
-                ).join(PayrollRun, Payslip.run_id == PayrollRun.id).where(
+                )
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .where(
                     Payslip.employee_id == employee_id,
                     PayrollRun.effective_date >= year_start,
                     PayrollRun.effective_date <= year_end,
@@ -441,9 +441,7 @@ async def _bonus_inputs(
     if not rows:
         return Decimal(0), Decimal(0), Decimal(0)
 
-    wages = sum(
-        (_bonus_wage(row[0], row[3], wage_components) for row in rows), start=Decimal(0)
-    )
+    wages = sum((_bonus_wage(row[0], row[3], wage_components) for row in rows), start=Decimal(0))
     paid_days = sum((Decimal(str(row[1])) for row in rows), start=Decimal(0))
     working_days = sum((Decimal(str(row[2])) for row in rows), start=Decimal(0))
 
@@ -497,9 +495,7 @@ async def approve_bonus(
         row.approved_at = now
     await session.flush()
 
-    total = sum(
-        (Decimal(str(row.amount)) for row in draft if row.is_eligible), start=Decimal(0)
-    )
+    total = sum((Decimal(str(row.amount)) for row in draft if row.is_eligible), start=Decimal(0))
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -507,8 +503,7 @@ async def approve_bonus(
         action=AuditAction.APPROVE,
         entity_type="bonus_computation",
         summary=(
-            f"Approved statutory bonus for {financial_year}: {total} across "
-            f"{len(draft)} employees"
+            f"Approved statutory bonus for {financial_year}: {total} across {len(draft)} employees"
         ),
         changes={"financial_year": financial_year, "total_amount": str(total)},
         request=request,
@@ -644,9 +639,7 @@ async def _bonus_rows(
     rows = (
         await session.scalars(
             tenant_scoped(
-                select(BonusComputation).where(
-                    BonusComputation.financial_year == financial_year
-                ),
+                select(BonusComputation).where(BonusComputation.financial_year == financial_year),
                 BonusComputation,
                 user,
             )
@@ -881,7 +874,5 @@ async def _employee_state(
     if location_id is None:
         return None
     return await session.scalar(
-        tenant_scoped(
-            select(Location.state_code).where(Location.id == location_id), Location, user
-        )
+        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
     )

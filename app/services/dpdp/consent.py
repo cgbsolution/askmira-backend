@@ -404,8 +404,7 @@ def purpose(key: str) -> Purpose:
         return PURPOSES[key]
     except KeyError:
         raise KeyError(
-            f"No processing purpose {key!r}. Known purposes: "
-            f"{', '.join(sorted(PURPOSES))}."
+            f"No processing purpose {key!r}. Known purposes: {', '.join(sorted(PURPOSES))}."
         ) from None
 
 

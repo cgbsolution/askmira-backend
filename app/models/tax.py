@@ -204,8 +204,7 @@ class TaxDeclaration(Base, UUIDMixin, TenantMixin, TimestampMixin):
             (
                 Decimal(str(proof.accepted_amount or 0))
                 for proof in self.proofs
-                if proof.status
-                in {ProofStatus.VERIFIED, ProofStatus.PARTIALLY_ACCEPTED}
+                if proof.status in {ProofStatus.VERIFIED, ProofStatus.PARTIALLY_ACCEPTED}
             ),
             start=Decimal(0),
         )
@@ -296,9 +295,7 @@ class HouseRentDeclaration(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "house_rent_declarations"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "employee_id", "financial_year", name="uq_house_rent_year"
-        ),
+        UniqueConstraint("tenant_id", "employee_id", "financial_year", name="uq_house_rent_year"),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -345,8 +342,10 @@ class TaxComputationSnapshot(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "tax_computation_snapshots"
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     financial_year: Mapped[str] = mapped_column(String(9), nullable=False, index=True)
     regime: Mapped[TaxRegime] = mapped_column(Enum(TaxRegime, name="tax_regime"), nullable=False)
@@ -366,7 +365,8 @@ class TaxComputationSnapshot(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # explainable rather than asserted.
     working: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     rule_set_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("payroll_rule_sets.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("payroll_rule_sets.id", ondelete="SET NULL"),
         nullable=True,
     )
 

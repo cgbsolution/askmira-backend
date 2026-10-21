@@ -175,9 +175,7 @@ class BreachClock:
         }
         if now is not None:
             payload |= {
-                "hours_remaining_for_board": round(
-                    self.hours_remaining_for_board(now), 1
-                ),
+                "hours_remaining_for_board": round(self.hours_remaining_for_board(now), 1),
                 "board_report_overdue": self.board_report_overdue(now),
                 "intimation_overdue": self.intimation_overdue(now),
             }
@@ -193,10 +191,8 @@ def clock_from(became_aware_at: datetime) -> BreachClock:
     """
     return BreachClock(
         became_aware_at=became_aware_at,
-        intimation_target_at=became_aware_at
-        + timedelta(hours=INTIMATION_TARGET_HOURS),
-        board_report_due_at=became_aware_at
-        + timedelta(hours=BOARD_DETAILED_REPORT_HOURS),
+        intimation_target_at=became_aware_at + timedelta(hours=INTIMATION_TARGET_HOURS),
+        board_report_due_at=became_aware_at + timedelta(hours=BOARD_DETAILED_REPORT_HOURS),
     )
 
 
@@ -236,8 +232,7 @@ _ADVICE: dict[str, tuple[str, ...]] = {
     "statutory_identifier": (
         "You can lock your Aadhaar biometrics at myaadhaar.uidai.gov.in, which "
         "prevents it being used for authentication until you unlock it.",
-        "If your PAN was involved, check your Form 26AS for entries you do not "
-        "recognise.",
+        "If your PAN was involved, check your Form 26AS for entries you do not recognise.",
     ),
     "account_security": (
         "Change your AskMira password now.",
@@ -313,8 +308,7 @@ def notification_to_principals(
     if not advice:
         advice.extend(_DEFAULT_ADVICE)
     advice.append(
-        f"If you have questions or this causes you a problem, contact "
-        f"{grievance_contact}."
+        f"If you have questions or this causes you a problem, contact {grievance_contact}."
     )
 
     listed = "\n".join(f"  - {name}" for name in names)
@@ -400,9 +394,7 @@ def outstanding_obligations(
                 ),
                 due_at=clock.intimation_target_at,
                 is_done=principals_notified_at is not None,
-                is_overdue=(
-                    principals_notified_at is None and clock.intimation_overdue(now)
-                ),
+                is_overdue=(principals_notified_at is None and clock.intimation_overdue(now)),
             )
         )
 

@@ -129,9 +129,7 @@ class RunReport:
 
     @property
     def failed_regressions(self) -> tuple[CaseResult, ...]:
-        return tuple(
-            r for r in self.results if not r.passed and r.is_regression_case
-        )
+        return tuple(r for r in self.results if not r.passed and r.is_regression_case)
 
     def measurements(self) -> dict[str, float]:
         """Every numeric measurement in the run, keyed by case and metric.
@@ -144,13 +142,9 @@ class RunReport:
         for result in self.results:
             for verdict in result.verdicts:
                 for key, value in verdict.measured.items():
-                    if isinstance(value, bool) or not isinstance(
-                        value, int | float
-                    ):
+                    if isinstance(value, bool) or not isinstance(value, int | float):
                         continue
-                    out[f"{result.case_name}.{verdict.kind.value}.{key}"] = float(
-                        value
-                    )
+                    out[f"{result.case_name}.{verdict.kind.value}.{key}"] = float(value)
         return out
 
     def as_dict(self) -> dict[str, Any]:
@@ -264,17 +258,10 @@ def run_suite(
     cases = suite.cases
     if only_tags:
         wanted = set(only_tags)
-        cases = tuple(
-            c
-            for c in suite.cases
-            if c.is_regression_case or (set(c.tags) & wanted)
-        )
+        cases = tuple(c for c in suite.cases if c.is_regression_case or (set(c.tags) & wanted))
 
     results = [
-        _run_case(
-            case, agent, cost_fn=cost_fn, judge_scores=judge_scores or {}
-        )
-        for case in cases
+        _run_case(case, agent, cost_fn=cost_fn, judge_scores=judge_scores or {}) for case in cases
     ]
 
     return RunReport(
@@ -346,9 +333,7 @@ class RunDiff:
         }
 
 
-def compare(
-    previous: RunReport, current: RunReport, *, move_threshold: float = 0.10
-) -> RunDiff:
+def compare(previous: RunReport, current: RunReport, *, move_threshold: float = 0.10) -> RunDiff:
     """Diff two runs, including the measurements that moved.
 
     `move_threshold` is relative, so a 10% move is 10% whether the metric is a
@@ -358,15 +343,9 @@ def compare(
     before = {r.case_name: r.passed for r in previous.results}
     after = {r.case_name: r.passed for r in current.results}
 
-    newly_failing = tuple(
-        sorted(name for name, ok in after.items() if not ok and before.get(name))
-    )
+    newly_failing = tuple(sorted(name for name, ok in after.items() if not ok and before.get(name)))
     newly_passing = tuple(
-        sorted(
-            name
-            for name, ok in after.items()
-            if ok and name in before and not before[name]
-        )
+        sorted(name for name, ok in after.items() if ok and name in before and not before[name])
     )
 
     before_metrics = previous.measurements()
@@ -377,8 +356,7 @@ def compare(
                 MetricMove(key=key, before=before_metrics[key], after=value)
                 for key, value in after_metrics.items()
                 if key in before_metrics
-                and abs(value - before_metrics[key])
-                > abs(before_metrics[key]) * move_threshold
+                and abs(value - before_metrics[key]) > abs(before_metrics[key]) * move_threshold
             ),
             key=lambda m: -abs(m.relative),
         )

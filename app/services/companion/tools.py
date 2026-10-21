@@ -256,9 +256,11 @@ def _launchable(user: User, linked: dict[str, bool]) -> list[str]:
     ]
 
 
-async def offered(session: AsyncSession, user: User, config: CompanionConfig) -> list[Tool]:
-    """The tools this person may use here, now."""
-    ai = await governance.get_settings(session, user)
+async def offered(
+    session: AsyncSession, user: User, config: CompanionConfig, *, ai: bool = True
+) -> list[Tool]:
+    """The tools this person may use here, now. Without `ai`, none that needs a model."""
+    settings = await governance.get_settings(session, user)
     scopes = oauth.allowed_scopes(user)
     tenant = await session.get(Tenant, user.tenant_id)
     launchable = _launchable(user, tenant.linked_products if tenant else {})
@@ -269,7 +271,7 @@ async def offered(session: AsyncSession, user: User, config: CompanionConfig) ->
             continue
         if tool.scope and tool.scope not in scopes:
             continue
-        if tool.feature and not getattr(ai, tool.feature, False):
+        if tool.feature and not (ai and getattr(settings, tool.feature, False)):
             continue
         if tool.product and not product_roles.get(tool.product):
             continue

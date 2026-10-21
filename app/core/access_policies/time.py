@@ -29,8 +29,7 @@ ENDPOINTS: dict[str, str] = {
         "for a request from before chains); never the caller's own."
     ),
     "GET /attendance/punches/{punch_id}/photo": (
-        "scoped:require_manager_or_hr: the person's own punch photo, or their manager "
-        "line and HR."
+        "scoped:require_manager_or_hr: the person's own punch photo, or their manager line and HR."
     ),
     "GET /attendance/kiosk-pin": (
         "own: whether the caller has a kiosk PIN, by user.employee_id from the token; "
@@ -56,8 +55,7 @@ ENDPOINTS: dict[str, str] = {
         "employee id with the swap."
     ),
     "GET /attendance/overtime/mine": (
-        "own: the caller's own overtime, by user.employee_id from the token; takes no "
-        "person id."
+        "own: the caller's own overtime, by user.employee_id from the token; takes no person id."
     ),
     "GET /leave/types": "reference: the leave catalogue.",
     "GET /leave/holidays": "reference: the holiday calendar.",
@@ -115,8 +113,7 @@ ENDPOINTS: dict[str, str] = {
         "permissions: a manager's reporting line, or everybody for HR; recorded as an export."
     ),
     "GET /leave/balances/history": (
-        "permissions: your own balance history, a manager's reporting line, or anybody's "
-        "for HR."
+        "permissions: your own balance history, a manager's reporting line, or anybody's for HR."
     ),
     "POST /leave/attachments": (
         "permissions: a signed-in employee (or HR) stores a file under their own tenant; "

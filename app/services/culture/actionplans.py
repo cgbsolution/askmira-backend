@@ -159,9 +159,7 @@ class ActionPlan:
             "item_count": len(self.items),
             "done_count": self.done_count,
             "completion": self.completion,
-            "overdue_items": [
-                i.item_id for i in self.items if i.is_overdue(today)
-            ],
+            "overdue_items": [i.item_id for i in self.items if i.is_overdue(today)],
             "progress_notes": list(self.progress_notes),
         }
 
@@ -253,10 +251,7 @@ def loop_closure(
                 "flat result."
             )
         elif acted and delta > 0:
-            reading = (
-                f"{done} action(s) completed and the theme moved +{delta}. The "
-                "loop closed."
-            )
+            reading = f"{done} action(s) completed and the theme moved +{delta}. The loop closed."
         elif acted and delta <= 0:
             reading = (
                 f"{done} action(s) completed and the theme moved {delta}. Effort "

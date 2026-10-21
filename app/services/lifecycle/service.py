@@ -146,9 +146,7 @@ async def _location_facts(
     )
 
 
-async def _pending_approvals_held(
-    session: AsyncSession, user: User, employee_id: uuid.UUID
-) -> int:
+async def _pending_approvals_held(session: AsyncSession, user: User, employee_id: uuid.UUID) -> int:
     """How many decisions the outgoing manager is holding for this person."""
     rows = await session.scalars(
         tenant_scoped(
@@ -209,16 +207,12 @@ async def _facts(
     new_ctc_annual: Decimal | None,
 ) -> event_engine.EventFacts:
     allowed = event_engine.CHANGED_FIELDS[event_engine.EventType(event_type.value)]
-    previous = {
-        key: _plain(getattr(employee, key, None)) for key in allowed
-    }
+    previous = {key: _plain(getattr(employee, key, None)) for key in allowed}
 
     previous_location = await _location_facts(session, user, employee.location_id)
     new_location_id = new_values.get("location_id")
     new_location = (
-        await _location_facts(session, user, _as_uuid(new_location_id))
-        if new_location_id
-        else None
+        await _location_facts(session, user, _as_uuid(new_location_id)) if new_location_id else None
     )
 
     return event_engine.EventFacts(
@@ -270,9 +264,14 @@ async def raise_event(
     await _check_new_references(session, user, employee.id, new_values)
 
     facts = await _facts(
-        session, user, employee,
-        event_type=event_type, effective_from=effective_from,
-        new_values=new_values, reason=reason, new_ctc_annual=new_ctc_annual,
+        session,
+        user,
+        employee,
+        event_type=event_type,
+        effective_from=effective_from,
+        new_values=new_values,
+        reason=reason,
+        new_ctc_annual=new_ctc_annual,
     )
     try:
         event_engine.validate_event(facts, today=resolution_day)
@@ -382,9 +381,14 @@ async def preview_event(
     employee = await _employee(session, user, employee_id)
     await _check_new_references(session, user, employee.id, new_values)
     facts = await _facts(
-        session, user, employee,
-        event_type=event_type, effective_from=effective_from,
-        new_values=new_values, reason=reason, new_ctc_annual=new_ctc_annual,
+        session,
+        user,
+        employee,
+        event_type=event_type,
+        effective_from=effective_from,
+        new_values=new_values,
+        reason=reason,
+        new_ctc_annual=new_ctc_annual,
     )
     described = event_engine.describe(facts, today=today or date.today())
     try:
@@ -398,9 +402,7 @@ async def preview_event(
         else None
     )
     described["letter_template"] = (
-        {"id": str(template.id), "code": template.code, "name": template.name}
-        if template
-        else None
+        {"id": str(template.id), "code": template.code, "name": template.name} if template else None
     )
     return described
 
@@ -435,7 +437,11 @@ async def approve_event(
             raise permissions.forbidden("Only an admin approves this lifecycle event.")
     else:
         chain, outcome = await rules.decide(
-            session, user, chain, approve=approve, note=note or None,
+            session,
+            user,
+            chain,
+            approve=approve,
+            note=note or None,
             hr_may=permissions.is_admin(user),
         )
         row.approval_chain = chain
@@ -511,9 +517,7 @@ async def approve_event(
         action=AuditAction.APPROVE,
         entity_type="lifecycle_event",
         entity_id=row.id,
-        summary=(
-            f"{row.event_type.value} approved for effect on {row.effective_from}"
-        ),
+        summary=(f"{row.event_type.value} approved for effect on {row.effective_from}"),
         changes={"note": note, "consequences_shown": row.consequences_shown},
         request=request,
     )
@@ -762,10 +766,7 @@ async def effect_event(
     if row.status is not LifecycleStatus.APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"This event is {row.status.value}. Only an approved event can be "
-                "effected."
-            ),
+            detail=(f"This event is {row.status.value}. Only an approved event can be effected."),
         )
     if row.effective_from > today:
         raise HTTPException(
@@ -800,7 +801,9 @@ async def effect_event(
             # ── Position assignment (slice 23) ──────────────────────────────
             if "manager_id" in (row.new_values or {}):
                 moved = await _reassign_pending_approvals(
-                    session, user, employee_id=employee.id,
+                    session,
+                    user,
+                    employee_id=employee.id,
                     new_manager_id=_as_uuid(row.new_values["manager_id"]),
                 )
                 if moved:
@@ -810,7 +813,9 @@ async def effect_event(
             previous_ctc: Decimal | None = None
             if row.new_ctc_annual is not None:
                 salary, previous_ctc = await _revise_salary(
-                    session, user, employee=employee,
+                    session,
+                    user,
+                    employee=employee,
                     ctc_annual=Decimal(str(row.new_ctc_annual)),
                     effective_from=row.effective_from,
                     reason=f"{row.event_type.value}: {row.reason}",
@@ -870,8 +875,7 @@ async def effect_event(
             entity_type="lifecycle_event",
             entity_id=row.id,
             summary=(
-                f"Effecting {row.event_type.value} failed and was rolled back "
-                f"entirely: {detail}"
+                f"Effecting {row.event_type.value} failed and was rolled back entirely: {detail}"
             ),
             request=request,
         )
@@ -997,9 +1001,7 @@ async def _reassign_pending_approvals(
             (
                 {
                     **step,
-                    "approver_employee_id": (
-                        str(new_manager_id) if new_manager_id else None
-                    ),
+                    "approver_employee_id": (str(new_manager_id) if new_manager_id else None),
                     "reassigned_reason": "The employee's manager changed.",
                 }
                 if isinstance(step, dict) and step.get("decision") in (None, "pending")
@@ -1232,9 +1234,7 @@ async def list_events(
     ]
 
 
-async def event_for_decision(
-    session: AsyncSession, user: User, event_id: uuid.UUID
-) -> EventRead:
+async def event_for_decision(session: AsyncSession, user: User, event_id: uuid.UUID) -> EventRead:
     """One event, for an admin or for whoever its approval chain is waiting on.
 
     A rule may name somebody outside HR — a regional head, a finance controller —
@@ -1378,8 +1378,16 @@ async def state_on(
         )
     ).all()
 
-    tracked = {"grade", "designation", "department_id", "location_id", "manager_id",
-               "employment_type", "status", "notice_period_days"}
+    tracked = {
+        "grade",
+        "designation",
+        "department_id",
+        "location_id",
+        "manager_id",
+        "employment_type",
+        "status",
+        "notice_period_days",
+    }
     state = {key: _plain(getattr(employee, key, None)) for key in tracked}
 
     # Newest first: each event undone puts the record back one step.
@@ -1414,9 +1422,7 @@ async def state_on(
 
 
 async def _policy(session: AsyncSession, user: User) -> ProbationPolicy:
-    policy = await session.scalar(
-        tenant_scoped(select(ProbationPolicy), ProbationPolicy, user)
-    )
+    policy = await session.scalar(tenant_scoped(select(ProbationPolicy), ProbationPolicy, user))
     if policy is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1438,9 +1444,7 @@ _SILENCE_NOTE = {
 
 async def get_probation_policy(session: AsyncSession, user: User) -> ProbationPolicyRead:
     """The configured policy, or a plain statement that there is none — never a default."""
-    policy = await session.scalar(
-        tenant_scoped(select(ProbationPolicy), ProbationPolicy, user)
-    )
+    policy = await session.scalar(tenant_scoped(select(ProbationPolicy), ProbationPolicy, user))
     if policy is None:
         return ProbationPolicyRead(
             configured=False,
@@ -1487,9 +1491,7 @@ async def set_probation_policy(
                 detail="The escalation contact must be an active HR user in this workspace.",
             )
 
-    existing = await session.scalar(
-        tenant_scoped(select(ProbationPolicy), ProbationPolicy, user)
-    )
+    existing = await session.scalar(tenant_scoped(select(ProbationPolicy), ProbationPolicy, user))
     before = (
         {"silence_policy": existing.silence_policy.value, "grace_days": existing.grace_days}
         if existing
@@ -1523,21 +1525,15 @@ async def set_probation_policy(
     }
 
 
-async def _review_facts(
-    session: AsyncSession, user: User
-) -> list[probation_engine.ReviewFacts]:
+async def _review_facts(session: AsyncSession, user: User) -> list[probation_engine.ReviewFacts]:
     from app.models.cycle_config import ProbationReview
 
     reviews = (
-        await session.scalars(
-            tenant_scoped(select(ProbationReview), ProbationReview, user)
-        )
+        await session.scalars(tenant_scoped(select(ProbationReview), ProbationReview, user))
     ).all()
 
     sent = (
-        await session.scalars(
-            tenant_scoped(select(ProbationReminder), ProbationReminder, user)
-        )
+        await session.scalars(tenant_scoped(select(ProbationReminder), ProbationReminder, user))
     ).all()
     by_review: dict[uuid.UUID, set[probation_engine.ReminderStep]] = {}
     for reminder in sent:
@@ -1609,11 +1605,7 @@ async def send_probation_reminders(
     for reminder in reminders:
         recipient = reminder.recipient_user_id
         if reminder.step is probation_engine.ReminderStep.HR:
-            recipient = (
-                str(policy.hr_escalation_user_id)
-                if policy.hr_escalation_user_id
-                else None
-            )
+            recipient = str(policy.hr_escalation_user_id) if policy.hr_escalation_user_id else None
 
         session.add(
             ProbationReminder(

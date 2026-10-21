@@ -37,9 +37,7 @@ class PunchCreate(BaseModel):
         default=None,
         description="Omit to punch for yourself. Only HR may punch for someone else.",
     )
-    punched_at: datetime | None = Field(
-        default=None, description="HR only. Defaults to now."
-    )
+    punched_at: datetime | None = Field(default=None, description="HR only. Defaults to now.")
     direction: PunchDirection
     source: PunchSource | None = Field(
         default=None, description="Defaults to web, or mobile_geo when coordinates are sent."

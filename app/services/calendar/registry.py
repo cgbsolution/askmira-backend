@@ -63,9 +63,7 @@ def adapter_class(provider: CalendarProvider) -> type | None:
     return _BUILDERS.get(provider)
 
 
-def get_adapter(
-    provider: CalendarProvider, transport: Transport | None = None
-) -> CalendarAdapter:
+def get_adapter(provider: CalendarProvider, transport: Transport | None = None) -> CalendarAdapter:
     if provider in _OVERRIDES:
         return _OVERRIDES[provider]
     builder = _BUILDERS.get(provider)

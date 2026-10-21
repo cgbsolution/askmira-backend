@@ -87,9 +87,7 @@ def coverage(
     presenting them identically is how a company convinces itself of something
     untrue.
     """
-    disclosed = {
-        d.candidate_id for d in disclosures if d.dimension == dimension
-    }
+    disclosed = {d.candidate_id for d in disclosures if d.dimension == dimension}
     total = len(journeys)
     known = sum(1 for j in journeys if j.candidate_id in disclosed)
     rate = round(known / total, 3) if total else None
@@ -127,32 +125,20 @@ def stage_representation(
     drop-off overall: every group shrinks through a funnel, and the finding is
     the stage where one shrinks faster than the rest.
     """
-    by_candidate = {
-        d.candidate_id: d.value for d in disclosures if d.dimension == dimension
-    }
+    by_candidate = {d.candidate_id: d.value for d in disclosures if d.dimension == dimension}
     known = [j for j in journeys if j.candidate_id in by_candidate]
 
     rows: list[dict[str, Any]] = []
     for stage in Stage:
         at_stage = [j for j in known if j.reached(stage)]
-        focus = [
-            j for j in at_stage if by_candidate[j.candidate_id] == focus_value
-        ]
+        focus = [j for j in at_stage if by_candidate[j.candidate_id] == focus_value]
         others = len(at_stage) - len(focus)
-        suppressed = (
-            len(at_stage) < min_group
-            or len(focus) < min_group
-            or others < min_group
-        )
+        suppressed = len(at_stage) < min_group or len(focus) < min_group or others < min_group
         rows.append(
             {
                 "stage": stage.value,
                 "disclosed_at_stage": len(at_stage),
-                "share": (
-                    None
-                    if suppressed
-                    else round(len(focus) / len(at_stage), 3)
-                ),
+                "share": (None if suppressed else round(len(focus) / len(at_stage), 3)),
                 "suppressed": suppressed,
                 "note": (
                     ""
@@ -180,9 +166,7 @@ def stage_representation(
     return {
         "dimension": dimension,
         "focus_value": focus_value,
-        "coverage": coverage(
-            journeys, disclosures=disclosures, dimension=dimension
-        ),
+        "coverage": coverage(journeys, disclosures=disclosures, dimension=dimension),
         "stages": rows,
         "largest_fall": (
             {

@@ -182,9 +182,7 @@ def _message(review: ReviewFacts, step: ReminderStep, days: int) -> str:
     )
 
 
-def due_reminders(
-    reviews: list[ReviewFacts], *, today: date
-) -> list[Reminder]:
+def due_reminders(reviews: list[ReviewFacts], *, today: date) -> list[Reminder]:
     """Which reminders should go out today.
 
     Only the furthest step that has come due and has not been sent, per review —
@@ -199,9 +197,7 @@ def due_reminders(
             continue
 
         days = review.days_until_due(today)
-        due_steps = [
-            step for threshold, step in ESCALATION_SCHEDULE if days <= threshold
-        ]
+        due_steps = [step for threshold, step in ESCALATION_SCHEDULE if days <= threshold]
         unsent = [step for step in due_steps if step not in review.reminders_sent]
         if not unsent:
             continue
@@ -246,9 +242,7 @@ class DriftCase:
             "resolution": self.resolution,
             "auto_outcome": self.auto_outcome,
             "new_probation_end_date": (
-                self.new_probation_end_date.isoformat()
-                if self.new_probation_end_date
-                else None
+                self.new_probation_end_date.isoformat() if self.new_probation_end_date else None
             ),
         }
 

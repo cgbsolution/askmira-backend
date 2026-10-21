@@ -146,17 +146,13 @@ async def set_policy(
         raise _bad_request(str(exc)) from exc
 
     stmt = tenant_scoped(
-        select(RetentionPolicyRow).where(
-            RetentionPolicyRow.data_category_key == data_category_key
-        ),
+        select(RetentionPolicyRow).where(RetentionPolicyRow.data_category_key == data_category_key),
         RetentionPolicyRow,
         user,
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
-        row = RetentionPolicyRow(
-            tenant_id=user.tenant_id, data_category_key=data_category_key
-        )
+        row = RetentionPolicyRow(tenant_id=user.tenant_id, data_category_key=data_category_key)
         session.add(row)
 
     row.retention_period_months = validated.retention_period_months
@@ -238,9 +234,7 @@ async def seed_default_policies(
 async def list_policies(session: AsyncSession, user: User) -> dict[str, Any]:
     stmt = tenant_scoped(select(RetentionPolicyRow), RetentionPolicyRow, user)
     rows = (
-        (await session.execute(stmt.order_by(RetentionPolicyRow.data_category_key)))
-        .scalars()
-        .all()
+        (await session.execute(stmt.order_by(RetentionPolicyRow.data_category_key))).scalars().all()
     )
     from app.services.dpdp.categories import CATEGORIES
 
@@ -344,9 +338,7 @@ async def release_hold(
     The row is the evidence that records were frozen between two dates, which is
     the whole reason a hold exists.
     """
-    stmt = tenant_scoped(
-        select(LegalHold).where(LegalHold.id == hold_id), LegalHold, user
-    )
+    stmt = tenant_scoped(select(LegalHold).where(LegalHold.id == hold_id), LegalHold, user)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise _not_found("No such legal hold.")
@@ -379,9 +371,7 @@ async def release_hold(
 
 
 async def active_holds(session: AsyncSession, user: User) -> list[LegalHold]:
-    stmt = tenant_scoped(
-        select(LegalHold).where(LegalHold.released_at.is_(None)), LegalHold, user
-    )
+    stmt = tenant_scoped(select(LegalHold).where(LegalHold.released_at.is_(None)), LegalHold, user)
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -517,9 +507,7 @@ async def approve_run(
             "dry run would execute a plan nobody intended to execute."
         )
     if row.status is not RetentionRunStatus.AWAITING_APPROVAL:
-        raise _bad_request(
-            f"That run is {row.status.value}, not awaiting approval."
-        )
+        raise _bad_request(f"That run is {row.status.value}, not awaiting approval.")
 
     row.status = RetentionRunStatus.APPROVED
     row.approved_by_user_id = user.id
@@ -533,10 +521,7 @@ async def approve_run(
         entity_type="retention_run",
         entity_id=row.id,
         actor=user,
-        summary=(
-            f"Retention run approved: {row.records_to_act} records, "
-            f"{row.counts_by_action}."
-        ),
+        summary=(f"Retention run approved: {row.records_to_act} records, {row.counts_by_action}."),
         request=request,
     )
     await session.commit()
@@ -574,12 +559,8 @@ async def reject_run(
     return row
 
 
-async def _run_or_404(
-    session: AsyncSession, user: User, run_id: uuid.UUID
-) -> RetentionRun:
-    stmt = tenant_scoped(
-        select(RetentionRun).where(RetentionRun.id == run_id), RetentionRun, user
-    )
+async def _run_or_404(session: AsyncSession, user: User, run_id: uuid.UUID) -> RetentionRun:
+    stmt = tenant_scoped(select(RetentionRun).where(RetentionRun.id == run_id), RetentionRun, user)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise _not_found("No such retention run.")
@@ -616,9 +597,7 @@ async def execute_plan(
     moment = now or datetime.now(UTC)
 
     if row.status is RetentionRunStatus.DRY_RUN:
-        raise _bad_request(
-            "A dry run cannot be executed. It was produced to be read."
-        )
+        raise _bad_request("A dry run cannot be executed. It was produced to be read.")
     if row.status is RetentionRunStatus.AWAITING_APPROVAL:
         raise _bad_request(
             f"This run affects {row.records_to_act} records, which is above the "
@@ -725,10 +704,7 @@ async def execute_plan(
                 tenant_id=user.tenant_id,
                 record_table=table_name,
                 record_id=record_id,
-                reason=(
-                    f"Deleted by retention run {row.id} on "
-                    f"{row.evaluated_on.isoformat()}."
-                ),
+                reason=(f"Deleted by retention run {row.id} on {row.evaluated_on.isoformat()}."),
                 suppressed_at=moment,
                 expires_on=(moment + timedelta(days=_SUPPRESSION_DAYS)).date(),
             )
@@ -795,8 +771,7 @@ async def _anonymise_row(
             or column.name.endswith("_employee_id")
             or is_direct_identifier(column.name)
             or (
-                classification is not None
-                and classification.columns.get(column.name) == "identity"
+                classification is not None and classification.columns.get(column.name) == "identity"
             )
         )
     ]
@@ -884,9 +859,7 @@ async def gather_candidates(
 
     employees = {
         emp.id: emp
-        for emp in (
-            await session.scalars(tenant_scoped(select(Employee), Employee, user))
-        ).all()
+        for emp in (await session.scalars(tenant_scoped(select(Employee), Employee, user))).all()
     }
     out: list[planner_engine.CandidateRecord] = []
     for table in Base.metadata.sorted_tables:
@@ -986,9 +959,7 @@ async def apply_suppressions(
     return {"suppressions_checked": len(rows), "reappeared_and_removed": removed}
 
 
-async def scheduled_sweep(
-    session: AsyncSession, user: User, *, today: date
-) -> dict[str, Any]:
+async def scheduled_sweep(session: AsyncSession, user: User, *, today: date) -> dict[str, Any]:
     """The nightly job: re-apply suppressions, then plan and (if small) execute.
 
     A plan above the approval threshold is written and left AWAITING_APPROVAL for
@@ -1146,7 +1117,9 @@ async def trust_centre(session: AsyncSession, user: User) -> dict[str, Any]:
         "open_legal_holds_count": len(holds),
         # A hold's reason can name a dispute. Everybody sees that holds exist;
         # HR sees why.
-        "open_legal_holds": [] if not permissions.is_hr(user) else [
+        "open_legal_holds": []
+        if not permissions.is_hr(user)
+        else [
             {
                 "reason": hold.reason,
                 "placed_at": hold.placed_at.isoformat(),
@@ -1164,8 +1137,7 @@ async def trust_centre(session: AsyncSession, user: User) -> dict[str, Any]:
         "not_built": [
             "The per-module purge is not implemented: a retention run records "
             "what would be removed and removes nothing.",
-            "No scheduled job runs the sweep; the planner is callable and "
-            "unscheduled.",
+            "No scheduled job runs the sweep; the planner is callable and unscheduled.",
             "No restore procedure reads the suppression list, because no "
             "restore procedure exists in this codebase.",
         ],

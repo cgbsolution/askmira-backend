@@ -51,6 +51,7 @@ class CompOffStatus(str, enum.Enum):
 #: second-half request on the same date are two halves, not an overlap.
 HALF_DAY_SESSIONS = ("first_half", "second_half")
 
+
 class LeaveType(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A kind of leave: Earned, Casual, Sick, Maternity, Comp-off, and so on."""
 
@@ -166,9 +167,7 @@ class LeaveBalanceAdjustment(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "leave_balance_adjustments"
     __table_args__ = (
-        Index(
-            "ix_leave_adjustments_slot", "tenant_id", "employee_id", "leave_type_id", "year"
-        ),
+        Index("ix_leave_adjustments_slot", "tenant_id", "employee_id", "leave_type_id", "year"),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(

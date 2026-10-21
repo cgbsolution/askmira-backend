@@ -82,9 +82,7 @@ async def my_pin_status(session: AsyncSession, user: User) -> dict[str, Any]:
         )
     )
     locked = (
-        row is not None
-        and row.locked_until is not None
-        and row.locked_until > datetime.now(UTC)
+        row is not None and row.locked_until is not None and row.locked_until > datetime.now(UTC)
     )
     return {
         "employee_id": str(employee_id),
@@ -307,9 +305,7 @@ async def _record_punch(
         if last is not None and last.direction is PunchDirection.IN
         else PunchDirection.IN
     )
-    photo_key = (
-        await store_photo_for(device.tenant_id, photo) if photo and mode != "off" else None
-    )
+    photo_key = await store_photo_for(device.tenant_id, photo) if photo and mode != "off" else None
     label = None
     if device.work_location_id:
         label = await session.scalar(

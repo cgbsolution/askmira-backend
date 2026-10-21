@@ -12,8 +12,7 @@ ENDPOINTS: dict[str, str] = {
         "reference: a company policy file; unpublished ones exist only for HR."
     ),
     "GET /letter-templates": (
-        "reference: the template catalogue, not issued letters. Inactive versions "
-        "only for HR."
+        "reference: the template catalogue, not issued letters. Inactive versions only for HR."
     ),
     "GET /letter-templates/merge-fields": "reference: the merge tokens a template may use.",
     "GET /letters": "permissions: your own letters unless HR.",

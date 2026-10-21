@@ -231,8 +231,7 @@ def classify(
         # question refused for scope or missing data has no factual half we can
         # answer, because we do not have the facts.
         answerable = (
-            "the factual, computable part of your question — what your record "
-            "actually says"
+            "the factual, computable part of your question — what your record actually says"
         )
 
     return RefusalOutcome(
@@ -259,10 +258,7 @@ def split_response(
     if outcome.is_total or not factual_answer.strip():
         return outcome.message()
 
-    return (
-        f"{factual_answer.strip()}\n\n"
-        f"{outcome.message()}"
-    )
+    return f"{factual_answer.strip()}\n\n{outcome.message()}"
 
 
 def assert_not_certain(text: str) -> None:

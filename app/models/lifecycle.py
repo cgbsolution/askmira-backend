@@ -104,12 +104,15 @@ class LifecycleEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     event_type: Mapped[LifecycleEventType] = mapped_column(
         Enum(LifecycleEventType, name="lifecycle_event_type"),
-        nullable=False, index=True,
+        nullable=False,
+        index=True,
     )
 
     #: When it takes effect. Not when it was approved.
@@ -128,27 +131,30 @@ class LifecycleEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     status: Mapped[LifecycleStatus] = mapped_column(
         Enum(LifecycleStatus, name="lifecycle_status"),
-        default=LifecycleStatus.DRAFT, nullable=False, index=True,
+        default=LifecycleStatus.DRAFT,
+        nullable=False,
+        index=True,
     )
 
     #: What the approver was shown. Snapshotted, so "did they know PT would
     #: change" is answerable about the moment they signed rather than about what
     #: the code would say today.
-    consequences_shown: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    consequences_shown: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     # ── What the cascade produced ───────────────────────────────────────────
     letter_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("issued_letters.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
     salary_revision_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("employee_salaries.id", ondelete="SET NULL"),
         nullable=True,
     )
     position_assignment_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("position_assignments.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("position_assignments.id", ondelete="SET NULL"),
         nullable=True,
     )
     new_ctc_annual: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
@@ -160,14 +166,10 @@ class LifecycleEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: When the change actually landed on the record. Separate from
     #: `approved_at`, and the difference is the whole point of future dating.
-    effected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    effected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Why the cascade failed, where it did. A half-applied promotion nobody
     #: knows about is much worse than a visible failure.
@@ -177,8 +179,10 @@ class LifecycleEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Groups a bulk raise. An increment cycle is one decision producing four
     #: hundred events, and "show me that cycle" has to be one query.
     batch_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("lifecycle_batches.id", ondelete="SET NULL"),
-        nullable=True, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("lifecycle_batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     batch: Mapped[LifecycleBatch | None] = relationship(back_populates="events")
@@ -205,16 +209,12 @@ class LifecycleBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Whether each event needs its own approval or the batch is approved once.
     #: Per tenant configuration: approving four hundred promotions individually
     #: is theatre, and approving a mass termination in one click is not.
-    approve_individually: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    approve_individually: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     raised_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    events: Mapped[list[LifecycleEvent]] = relationship(
-        back_populates="batch", lazy="selectin"
-    )
+    events: Mapped[list[LifecycleEvent]] = relationship(back_populates="batch", lazy="selectin")
 
 
 class ProbationPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -239,9 +239,7 @@ class ProbationPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     grace_days: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     #: Whether a confirmation carries a salary revision by default. Common in
     #: the Indian mid-market and absent elsewhere.
-    confirmation_raises_salary: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    confirmation_raises_salary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     #: Who to escalate to when a manager and their manager both stay silent.
     hr_escalation_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -261,22 +259,20 @@ class ProbationReminder(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "probation_reminders"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "review_id", "step", name="uq_probation_reminder_once"
-        ),
+        UniqueConstraint("tenant_id", "review_id", "step", name="uq_probation_reminder_once"),
     )
 
     review_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("probation_reviews.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("probation_reviews.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     #: manager_first | manager_second | skip_level | hr
     step: Mapped[str] = mapped_column(String(32), nullable=False)
     recipient_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    sent_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     days_until_due: Mapped[int] = mapped_column(Integer, nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)

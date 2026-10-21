@@ -78,7 +78,11 @@ class Transport(Protocol):
     """
 
     async def request(
-        self, method: str, path: str, *, json: dict | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict | None = None,
         headers: dict | None = None,
     ) -> tuple[int, dict[str, Any]]: ...
 
@@ -186,9 +190,7 @@ class JobBoardAdapter(ABC):
     rate_limit_per_minute: int = 30
 
     @abstractmethod
-    async def publish_job(
-        self, spec: JobSpec, credentials: BoardCredentials
-    ) -> PublishResult: ...
+    async def publish_job(self, spec: JobSpec, credentials: BoardCredentials) -> PublishResult: ...
 
     @abstractmethod
     async def update_job(
@@ -196,9 +198,7 @@ class JobBoardAdapter(ABC):
     ) -> PublishResult: ...
 
     @abstractmethod
-    async def close_job(
-        self, external_job_id: str, credentials: BoardCredentials
-    ) -> None: ...
+    async def close_job(self, external_job_id: str, credentials: BoardCredentials) -> None: ...
 
     @abstractmethod
     async def fetch_applications(
@@ -216,9 +216,7 @@ class JobBoardAdapter(ABC):
 
     # ── Optional capabilities ───────────────────────────────────────────────
 
-    async def refresh_job(
-        self, external_job_id: str, credentials: BoardCredentials
-    ) -> datetime:
+    async def refresh_job(self, external_job_id: str, credentials: BoardCredentials) -> datetime:
         """Boost a posting back up the listing.
 
         Not every board has the concept. The default says so rather than

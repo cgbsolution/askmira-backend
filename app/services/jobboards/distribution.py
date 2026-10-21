@@ -65,9 +65,7 @@ async def job_spec_for(
             state_code = getattr(location, "state_code", None)
 
     published = [v for v in (requisition.jd_versions or []) if v.get("body")]
-    description = (
-        published[-1]["body"] if published else (requisition.description or "")
-    )
+    description = published[-1]["body"] if published else (requisition.description or "")
 
     return JobSpec(
         requisition_code=requisition.code,
@@ -99,9 +97,7 @@ async def job_spec_for(
     )
 
 
-async def _account(
-    session: AsyncSession, user: User, board: JobBoard
-) -> JobBoardAccount:
+async def _account(session: AsyncSession, user: User, board: JobBoard) -> JobBoardAccount:
     account = await session.scalar(
         tenant_scoped(
             select(JobBoardAccount).where(
@@ -164,9 +160,7 @@ async def publish_posting(
         )
     )
     if posting is None:
-        posting = JobPosting(
-            tenant_id=user.tenant_id, requisition_id=requisition_id, board=board
-        )
+        posting = JobPosting(tenant_id=user.tenant_id, requisition_id=requisition_id, board=board)
         session.add(posting)
         await session.flush()
 
@@ -210,9 +204,7 @@ async def publish_posting(
         # a board that cannot refresh would fail forever on a timer.
         interval = _default_refresh_interval(board)
     posting.refresh_interval_days = interval
-    posting.next_refresh_at = (
-        moment + timedelta(days=interval) if interval else None
-    )
+    posting.next_refresh_at = moment + timedelta(days=interval) if interval else None
     await session.flush()
 
     await audit.record(
@@ -352,9 +344,7 @@ async def refresh_posting(
         await adapter.refresh_job(posting.external_job_id, credentials)
     except (BoardTransientFailure, BoardPermanentFailure, registry.AdapterUnavailable) as exc:
         posting.attempt_count += 1
-        return await _handle_failure(
-            session, user, posting, exc, moment=moment, account=account
-        )
+        return await _handle_failure(session, user, posting, exc, moment=moment, account=account)
 
     posting.last_refreshed_at = moment
     posting.next_refresh_at = (

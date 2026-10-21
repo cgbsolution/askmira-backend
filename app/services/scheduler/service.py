@@ -213,9 +213,7 @@ async def _latest(
     *,
     only: SchedulerRunStatus | None = None,
 ) -> SchedulerJobRun | None:
-    stmt = select(SchedulerJobRun).where(
-        SchedulerJobRun.job_key == job.key, _run_owner(job, user)
-    )
+    stmt = select(SchedulerJobRun).where(SchedulerJobRun.job_key == job.key, _run_owner(job, user))
     if only is not None:
         stmt = stmt.where(SchedulerJobRun.status == only)
     return await session.scalar(stmt.order_by(SchedulerJobRun.started_at.desc()).limit(1))
@@ -272,9 +270,7 @@ async def recent_runs(
     job = job_by_key(job_key)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such job.")
-    stmt = select(SchedulerJobRun).where(
-        SchedulerJobRun.job_key == job_key, _run_owner(job, user)
-    )
+    stmt = select(SchedulerJobRun).where(SchedulerJobRun.job_key == job_key, _run_owner(job, user))
     rows = await session.scalars(stmt.order_by(SchedulerJobRun.started_at.desc()).limit(limit))
     return [_run_dict(row) for row in rows.all()]
 

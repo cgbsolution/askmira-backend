@@ -50,9 +50,7 @@ async def gratuity_config(session: AsyncSession, user: User) -> GratuityConfig:
     signed off is a number with no authority behind it, and finance will book
     against it.
     """
-    config = await session.scalar(
-        tenant_scoped(select(GratuityConfig), GratuityConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(GratuityConfig), GratuityConfig, user))
     if config is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -142,9 +140,7 @@ async def accrue_gratuity(
     else:
         employees = (
             await session.scalars(
-                tenant_scoped(
-                    select(Employee).where(Employee.id.in_(employee_ids)), Employee, user
-                )
+                tenant_scoped(select(Employee).where(Employee.id.in_(employee_ids)), Employee, user)
             )
         ).all()
 
@@ -166,9 +162,7 @@ async def accrue_gratuity(
         if employee.date_of_joining is None:
             continue
 
-        wages = await wage_basis_for(
-            session, user, employee.id, as_of, config.formula_basis
-        )
+        wages = await wage_basis_for(session, user, employee.id, as_of, config.formula_basis)
         if wages <= ZERO:
             continue
 
@@ -233,9 +227,7 @@ async def accrue_gratuity(
     return accruals
 
 
-async def liability_report(
-    session: AsyncSession, user: User, as_of: date
-) -> dict[str, Any]:
+async def liability_report(session: AsyncSession, user: User, as_of: date) -> dict[str, Any]:
     """Accrued gratuity liability, by department and by tenure band.
 
     Finance and auditors both ask for this, and the totals must reconcile to
@@ -365,9 +357,7 @@ async def compute_exit_gratuity(
             detail="This employee has no date of joining, so service cannot be computed",
         )
 
-    wages = await wage_basis_for(
-        session, user, employee_id, exit_date, config.formula_basis
-    )
+    wages = await wage_basis_for(session, user, employee_id, exit_date, config.formula_basis)
     if wages <= ZERO:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -509,9 +499,7 @@ async def request_encashment(
     # the financial year: in February the balance is next year's row, the old
     # one having been carried forward and closed on 1 January.
     year = leave_ledger.leave_year_today()
-    balance = await available_leave_balance(
-        session, user, employee_id, leave_type_code, year
-    )
+    balance = await available_leave_balance(session, user, employee_id, leave_type_code, year)
 
     already = await session.scalar(
         tenant_scoped(
@@ -519,9 +507,7 @@ async def request_encashment(
                 EncashmentRequest.employee_id == employee_id,
                 EncashmentRequest.leave_type_code == leave_type_code,
                 EncashmentRequest.financial_year == financial_year,
-                EncashmentRequest.status.in_(
-                    [EncashmentStatus.APPROVED, EncashmentStatus.PAID]
-                ),
+                EncashmentRequest.status.in_([EncashmentStatus.APPROVED, EncashmentStatus.PAID]),
             ),
             EncashmentRequest,
             user,

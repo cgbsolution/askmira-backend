@@ -158,13 +158,14 @@ async def submit_application(
     if consent_whatsapp and outcome.candidate.phone:
         outcome.candidate.whatsapp_opt_in_at = datetime.now(UTC)
         outcome.candidate.whatsapp_opted_out_at = None
-    row, token = await careers.issue_portal_token(
-        session, actor, candidate_id=outcome.candidate.id
-    )
+    row, token = await careers.issue_portal_token(session, actor, candidate_id=outcome.candidate.id)
     from app.services.hiring import candidate_comms
 
     await candidate_comms.on_portal_link(
-        session, actor, candidate=outcome.candidate, token=token,
+        session,
+        actor,
+        candidate=outcome.candidate,
+        token=token,
         event_key=candidate_comms.APPLICATION_RECEIVED,
         # The role applied for, which for a returning candidate may not be the
         # one their record was first created against.

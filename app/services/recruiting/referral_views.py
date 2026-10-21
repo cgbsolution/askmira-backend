@@ -49,9 +49,7 @@ __all__ = [
     "refer_candidate",
 ]
 
-_DUPLICATE_RULE = (
-    "If two people refer the same candidate, the first submission wins by timestamp."
-)
+_DUPLICATE_RULE = "If two people refer the same candidate, the first submission wins by timestamp."
 
 
 def _name(employee: Employee | None) -> str | None:
@@ -178,9 +176,7 @@ async def my_referrals(session: AsyncSession, user: User) -> list[dict[str, Any]
         )
     ).all()
     payouts = await _payouts_by_referral(session, user, [r.id for r, _, _ in rows])
-    winners = {
-        r.duplicate_of_id for r, _, _ in rows if r.duplicate_of_id is not None
-    }
+    winners = {r.duplicate_of_id for r, _, _ in rows if r.duplicate_of_id is not None}
     winner_dates: dict[uuid.UUID, str] = {}
     if winners:
         winner_dates = {

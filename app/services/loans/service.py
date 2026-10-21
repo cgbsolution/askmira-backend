@@ -196,8 +196,7 @@ async def apply_for_loan(
     )
     if open_loan is not None:
         raise _refuse(
-            "There is already an application under this scheme awaiting a decision or "
-            "disbursal.",
+            "There is already an application under this scheme awaiting a decision or disbursal.",
             status.HTTP_409_CONFLICT,
         )
 
@@ -543,9 +542,9 @@ async def record_recovery(
         )
     ).all()
     instalments = (loan.schedule or {}).get("instalments") or []
-    next_instalment = instalments[len(recovered_rows)] if len(recovered_rows) < len(
-        instalments
-    ) else None
+    next_instalment = (
+        instalments[len(recovered_rows)] if len(recovered_rows) < len(instalments) else None
+    )
     interest = ZERO
     if decision.amount > ZERO and next_instalment is not None:
         interest = min(decision.amount, Decimal(str(next_instalment["interest"])))
@@ -581,9 +580,7 @@ async def record_recovery(
         action=AuditAction.UPDATE,
         entity_type="loan_account",
         entity_id=loan.id,
-        summary=(
-            f"Recovery for {period}: {'skipped' if decision.is_skipped else decision.amount}"
-        ),
+        summary=(f"Recovery for {period}: {'skipped' if decision.is_skipped else decision.amount}"),
         changes=decision.as_dict(),
         request=request,
     )
@@ -629,9 +626,7 @@ async def create_component(
 ) -> ReimbursementComponent:
     existing = await session.scalar(
         tenant_scoped(
-            select(ReimbursementComponent.id).where(
-                ReimbursementComponent.code == values["code"]
-            ),
+            select(ReimbursementComponent.id).where(ReimbursementComponent.code == values["code"]),
             ReimbursementComponent,
             user,
         )
@@ -749,8 +744,7 @@ async def list_claims(
     labels = await _employee_labels(session, user, {claim.employee_id for claim in claims})
     names = {c.code: c.name for c in await list_components(session, user)}
     return [
-        (claim, labels.get(claim.employee_id), names.get(claim.component_code))
-        for claim in claims
+        (claim, labels.get(claim.employee_id), names.get(claim.component_code)) for claim in claims
     ]
 
 

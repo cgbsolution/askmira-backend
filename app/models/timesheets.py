@@ -157,13 +157,18 @@ class HourlyRate(Base, UUIDMixin, TenantMixin, TimestampMixin):
         # One general rate and one rate per project may start on a given day.
         Index(
             "uq_hourly_rate_from",
-            "tenant_id", "employee_id", "effective_from",
+            "tenant_id",
+            "employee_id",
+            "effective_from",
             unique=True,
             postgresql_where=text("project_id IS NULL"),
         ),
         Index(
             "uq_hourly_rate_project_from",
-            "tenant_id", "employee_id", "project_id", "effective_from",
+            "tenant_id",
+            "employee_id",
+            "project_id",
+            "effective_from",
             unique=True,
             postgresql_where=text("project_id IS NOT NULL"),
         ),

@@ -26,9 +26,7 @@ ENDPOINTS: dict[str, str] = {
         "reference: the company directory - names, titles, departments and work "
         "email, which every colleague may see. Personal fields are not in it."
     ),
-    "GET /employees/me": (
-        "own: the caller's own record, found through the login's employee link."
-    ),
+    "GET /employees/me": ("own: the caller's own record, found through the login's employee link."),
     "PATCH /employees/me": (
         "own: the caller's own display name and personal contact details; no "
         "employment field is in the contract."
@@ -63,8 +61,7 @@ ENDPOINTS: dict[str, str] = {
         "working record only, without pay, documents or tickets."
     ),
     "GET /employees/{employee_id}/profile": (
-        "permissions: the person themselves and HR; identifiers masked for "
-        "everyone but HR."
+        "permissions: the person themselves and HR; identifiers masked for everyone but HR."
     ),
     "GET /employees/{employee_id}/change-requests": (
         "permissions: the person's own requests, or HR."
@@ -73,9 +70,7 @@ ENDPOINTS: dict[str, str] = {
         "scoped:tenant_scoped: a directory photo, shown to every colleague beside "
         "the name they can already see; another workspace's id is a 404."
     ),
-    "POST /exits/resign": (
-        "own: the caller's own resignation; whose it is comes from the login."
-    ),
+    "POST /exits/resign": ("own: the caller's own resignation; whose it is comes from the login."),
     "GET /exits/mine": "own: the caller's own exit record.",
     "GET /exits/clearance/mine": (
         "own: clearance items naming the caller as owner, or waiting on them as the "
@@ -96,8 +91,7 @@ ENDPOINTS: dict[str, str] = {
         "scoped:is_leaver: the leaver fills in their own, or HR records it."
     ),
     "POST /exits/{exit_id}/withdraw": (
-        "own: the caller withdraws their own unaccepted resignation; anybody "
-        "else's exit is a 404."
+        "own: the caller withdraws their own unaccepted resignation; anybody else's exit is a 404."
     ),
     "GET /org/custom-fields": (
         "reference: field labels for the profile; the service lists sensitive ones to HR only."

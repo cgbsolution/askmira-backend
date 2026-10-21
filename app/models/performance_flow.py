@@ -159,14 +159,10 @@ class Pip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     outcome_recorded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     #: Set where somebody proceeded to an unsuccessful outcome knowing the trail
     #: had gaps. Recording that decision is itself the useful fact.
-    weak_trail_acknowledged: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    weak_trail_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     #: The gaps as they stood when the outcome was recorded, frozen. Recomputing
     #: them later would describe a plan that has since been edited.
-    trail_gaps_at_outcome: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    trail_gaps_at_outcome: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     exit_record_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("exit_records.id", ondelete="SET NULL"),
@@ -186,9 +182,7 @@ class PipMilestone(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "pip_milestones"
-    __table_args__ = (
-        Index("ix_pip_milestones_pip", "tenant_id", "pip_id", "target_date"),
-    )
+    __table_args__ = (Index("ix_pip_milestones_pip", "tenant_id", "pip_id", "target_date"),)
 
     pip_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -217,9 +211,7 @@ class PipCheckIn(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "pip_check_ins"
-    __table_args__ = (
-        Index("ix_pip_check_ins_pip", "tenant_id", "pip_id", "scheduled_for"),
-    )
+    __table_args__ = (Index("ix_pip_check_ins_pip", "tenant_id", "pip_id", "scheduled_for"),)
 
     pip_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -283,9 +275,7 @@ class PipEmployeeStatement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     author_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    recorded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -307,13 +297,9 @@ class IncrementCycle(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: The annual cost of the *rises*, not the payroll. Charging whole salaries
     #: against an increment budget only shows up when a department appears 900%
     #: over.
-    budget_total: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    budget_total: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     #: `{department_id: amount}`.
-    budget_by_department: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    budget_by_department: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     status: Mapped[IncrementCycleStatusEnum] = mapped_column(
         Enum(IncrementCycleStatusEnum, name="increment_cycle_status"),
         default=IncrementCycleStatusEnum.DRAFT,
@@ -349,12 +335,8 @@ class IncrementMatrixRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "increment_matrix_rows"
     __table_args__ = (
-        UniqueConstraint(
-            "cycle_id", "rating_label", name="uq_increment_band_per_rating"
-        ),
-        CheckConstraint(
-            "max_percentage >= min_percentage", name="ck_increment_band_ordered"
-        ),
+        UniqueConstraint("cycle_id", "rating_label", name="uq_increment_band_per_rating"),
+        CheckConstraint("max_percentage >= min_percentage", name="ck_increment_band_ordered"),
         CheckConstraint("min_percentage >= 0", name="ck_increment_band_nonneg"),
         CheckConstraint(
             "recommended_percentage BETWEEN min_percentage AND max_percentage",
@@ -371,9 +353,7 @@ class IncrementMatrixRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     rating_label: Mapped[str] = mapped_column(String(64), nullable=False)
     min_percentage: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
     max_percentage: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
-    recommended_percentage: Mapped[float] = mapped_column(
-        Numeric(6, 2), nullable=False
-    )
+    recommended_percentage: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
 
 
 class IncrementRecommendation(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -386,9 +366,7 @@ class IncrementRecommendation(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "increment_recommendations"
     __table_args__ = (
-        UniqueConstraint(
-            "cycle_id", "employee_id", name="uq_one_recommendation_per_cycle"
-        ),
+        UniqueConstraint("cycle_id", "employee_id", name="uq_one_recommendation_per_cycle"),
         CheckConstraint("current_ctc > 0", name="ck_recommendation_ctc_positive"),
         Index("ix_recommendations_dept", "tenant_id", "cycle_id", "department_id"),
     )
@@ -412,9 +390,7 @@ class IncrementRecommendation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     current_ctc: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
     rating_label: Mapped[str] = mapped_column(String(64), nullable=False)
-    recommended_percentage: Mapped[float] = mapped_column(
-        Numeric(6, 2), nullable=False
-    )
+    recommended_percentage: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
     recommended_ctc: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
     #: The annual cost of the rise. This is what consumes the budget.
     increase_amount: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False)
@@ -427,29 +403,25 @@ class IncrementRecommendation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: Append-only list of {actor, decision, at, note}.
     approvals: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    requires_escalation: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    overage_amount: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    requires_escalation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    overage_amount: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     promotion_to_grade: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: What the manager was shown at the moment they chose the number.
     equity_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # What releasing the cycle produced for this person: the new salary record
     # and the increment letter. Set once; a second release finds them and skips.
     salary_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("employee_salaries.id", ondelete="SET NULL"),
         nullable=True,
     )
     letter_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("issued_letters.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -516,15 +488,11 @@ class PromotionRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
-    grade_applied: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    grade_applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     is_backdated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     arrears_from: Mapped[date | None] = mapped_column(Date, nullable=True)
-    applied_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     applied_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

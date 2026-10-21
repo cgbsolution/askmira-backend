@@ -107,9 +107,7 @@ def price(
     return hourly, amount, basis
 
 
-def weekly_excess(
-    policy: OvertimePolicy, week: list[tuple[int, int, bool]]
-) -> int:
+def weekly_excess(policy: OvertimePolicy, week: list[tuple[int, int, bool]]) -> int:
     """Minutes of a week past the policy's weekly threshold, not counted daily.
 
     `week` is (worked minutes, daily overtime minutes, is a rest day) for each
@@ -296,8 +294,10 @@ async def update_policy(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found")
     changes = payload.model_dump(exclude_unset=True)
-    if "effective_to" in changes and changes["effective_to"] is not None and (
-        changes["effective_to"] < row.effective_from
+    if (
+        "effective_to" in changes
+        and changes["effective_to"] is not None
+        and (changes["effective_to"] < row.effective_from)
     ):
         raise _unprocessable("A policy cannot end before it starts.")
     before = {key: str(getattr(row, key)) for key in changes}
@@ -549,7 +549,11 @@ async def sync(
             await session.flush()
             try:
                 await _approve_entry(
-                    session, user, entry, policy, eligible,
+                    session,
+                    user,
+                    entry,
+                    policy,
+                    eligible,
                     "Approved by policy: this overtime policy needs no approval.",
                     decided_by=None,
                 )
@@ -615,7 +619,11 @@ async def sync(
                 await session.flush()
                 try:
                     await _approve_entry(
-                        session, user, entry, policy, excess,
+                        session,
+                        user,
+                        entry,
+                        policy,
+                        excess,
                         "Approved by policy: this overtime policy needs no approval.",
                         decided_by=None,
                     )
@@ -749,8 +757,11 @@ async def _reads(
                 status=row.status,
                 decided_by_name=deciders.get(row.decided_by_user_id)
                 if row.decided_by_user_id
-                else ("Policy" if row.decided_at and row.status is not OvertimeStatus.PENDING
-                      else None),
+                else (
+                    "Policy"
+                    if row.decided_at and row.status is not OvertimeStatus.PENDING
+                    else None
+                ),
                 decided_at=row.decided_at,
                 decision_note=row.decision_note,
                 paid_in_run_id=row.paid_in_run_id,

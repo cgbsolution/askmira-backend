@@ -164,8 +164,14 @@ async def my_period(
     last_past = min(end, today - timedelta(days=1))
     if last_past >= start:
         await attendance_service.recompute_range(
-            session, user, employee_ids=[employee_id], start=start, end=last_past,
-            skip_locked=True, missing_only=True, commit=True,
+            session,
+            user,
+            employee_ids=[employee_id],
+            start=start,
+            end=last_past,
+            skip_locked=True,
+            missing_only=True,
+            commit=True,
         )
     days = await _days(session, user, start, end, {employee_id})
     lock = await attendance_service.active_lock_covering(session, user, start, end)
@@ -277,9 +283,7 @@ async def team_today(
                 .where(
                     AttendancePunch.employee_id.in_(ids),
                     AttendancePunch.punched_at
-                    >= datetime.combine(
-                        today - timedelta(days=1), datetime.min.time(), tzinfo=UTC
-                    ),
+                    >= datetime.combine(today - timedelta(days=1), datetime.min.time(), tzinfo=UTC),
                 )
                 .order_by(AttendancePunch.punched_at),
                 AttendancePunch,
@@ -352,7 +356,8 @@ async def team_today(
             state, detail = "on_leave", leave_today[employee.id]
         elif employee.id in remote_today:
             state = (
-                "on_duty" if remote_today[employee.id] is RegularisationKind.ON_DUTY
+                "on_duty"
+                if remote_today[employee.id] is RegularisationKind.ON_DUTY
                 else "work_from_home"
             )
         elif today in holidays.get(employee.id, {}):
@@ -477,9 +482,7 @@ async def list_regularisations(
         AttendanceRegularisation.attendance_date.desc(),
         AttendanceRegularisation.created_at.desc(),
     )
-    return list(
-        (await session.scalars(tenant_scoped(stmt, AttendanceRegularisation, user))).all()
-    )
+    return list((await session.scalars(tenant_scoped(stmt, AttendanceRegularisation, user))).all())
 
 
 async def _others_in_scope(session: AsyncSession, user: User) -> set[uuid.UUID] | None:
@@ -645,17 +648,37 @@ async def exceptions_report(
 
     for day in days:
         if day.status is AttendanceStatus.NEEDS_REGULARISATION:
-            add(day.employee_id, day.attendance_date, "needs_regularisation",
-                day.computation_note or "Needs regularisation", day)
+            add(
+                day.employee_id,
+                day.attendance_date,
+                "needs_regularisation",
+                day.computation_note or "Needs regularisation",
+                day,
+            )
         elif day.status is AttendanceStatus.ABSENT:
-            add(day.employee_id, day.attendance_date, "absent",
-                day.computation_note or "Absent", day)
+            add(
+                day.employee_id,
+                day.attendance_date,
+                "absent",
+                day.computation_note or "Absent",
+                day,
+            )
         if day.late_by_minutes > 0:
-            add(day.employee_id, day.attendance_date, "late",
-                f"Late by {day.late_by_minutes} minutes", day)
+            add(
+                day.employee_id,
+                day.attendance_date,
+                "late",
+                f"Late by {day.late_by_minutes} minutes",
+                day,
+            )
         if day.early_by_minutes > 0:
-            add(day.employee_id, day.attendance_date, "early_out",
-                f"Left {day.early_by_minutes} minutes early", day)
+            add(
+                day.employee_id,
+                day.attendance_date,
+                "early_out",
+                f"Left {day.early_by_minutes} minutes early",
+                day,
+            )
 
     zones = await attendance_service.employee_timezones(session, user, list(ids))
     punch_stmt = select(AttendancePunch).where(

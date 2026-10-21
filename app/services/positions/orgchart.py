@@ -76,10 +76,7 @@ class ChartNode:
         A manager reading their own subtree wants one number for "how short am
         I", not a count they have to assemble by eye.
         """
-        return sum(
-            (1 if child.is_vacant else 0) + child.vacant_below()
-            for child in self.children
-        )
+        return sum((1 if child.is_vacant else 0) + child.vacant_below() for child in self.children)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -108,9 +105,7 @@ def find_cycles(snapshots: list[OccupancySnapshot]) -> list[list[str]]:
     refusing to draw anything because one branch is wrong is not helpful to the
     person who has to fix it.
     """
-    parent = {
-        s.position.position_id: s.position.reports_to_position_id for s in snapshots
-    }
+    parent = {s.position.position_id: s.position.reports_to_position_id for s in snapshots}
     codes = {s.position.position_id: s.position.code for s in snapshots}
 
     cycles: list[list[str]] = []
@@ -124,7 +119,7 @@ def find_cycles(snapshots: list[OccupancySnapshot]) -> list[list[str]]:
         node: str | None = start
         while node is not None and node in parent:
             if node in on_path:
-                loop = path[path.index(node):]
+                loop = path[path.index(node) :]
                 cycles.append([codes.get(p, p) for p in loop])
                 break
             if node in seen_globally:
@@ -148,9 +143,7 @@ def build_chart(
     """
     problems: list[str] = []
 
-    live = [
-        s for s in snapshots if s.position.status is not PositionStatus.ABOLISHED
-    ]
+    live = [s for s in snapshots if s.position.status is not PositionStatus.ABOLISHED]
     by_id = {s.position.position_id: s for s in live}
 
     cycles = find_cycles(live)
@@ -179,13 +172,9 @@ def build_chart(
             fte=position.fte,
             department_name=position.department_name or "(no department)",
             grade=position.grade,
-            holder_name=(
-                (holder.employee_label or holder.employee_id) if holder else None
-            ),
+            holder_name=((holder.employee_label or holder.employee_id) if holder else None),
             covering_names=tuple(
-                h.employee_label or h.employee_id
-                for h in snapshot.holders
-                if not h.counts
+                h.employee_label or h.employee_id for h in snapshot.holders if not h.counts
             ),
         )
 

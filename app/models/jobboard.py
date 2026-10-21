@@ -103,9 +103,7 @@ class JobBoardAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One tenant's login for one board."""
 
     __tablename__ = "job_board_accounts"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "board", name="uq_job_board_account_once"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "board", name="uq_job_board_account_once"),)
 
     board: Mapped[JobBoard] = mapped_column(
         Enum(JobBoard, name="job_board"), nullable=False, index=True
@@ -122,9 +120,7 @@ class JobBoardAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):
     settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    last_polled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The board's own last words when something went wrong. Kept on the account
     # so an expired subscription is visible without opening a log.
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -135,15 +131,15 @@ class JobPosting(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "job_postings"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "requisition_id", "board", name="uq_job_posting_per_board"
-        ),
+        UniqueConstraint("tenant_id", "requisition_id", "board", name="uq_job_posting_per_board"),
         Index("ix_job_postings_refresh", "tenant_id", "status", "next_refresh_at"),
     )
 
     requisition_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     board: Mapped[JobBoard] = mapped_column(
         Enum(JobBoard, name="job_board", create_type=False), nullable=False, index=True
@@ -152,14 +148,12 @@ class JobPosting(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     status: Mapped[PostingStatus] = mapped_column(
         Enum(PostingStatus, name="posting_status"),
-        default=PostingStatus.DRAFT, nullable=False, index=True,
+        default=PostingStatus.DRAFT,
+        nullable=False,
+        index=True,
     )
-    published_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # ── Refresh / boost ─────────────────────────────────────────────────────
     # A Naukri posting decays in listing position within days and clients expect
@@ -204,19 +198,25 @@ class Application(Base, UUIDMixin, TenantMixin, TimestampMixin):
         # The same board application must not land twice. Boards re-send on
         # their own schedule and a poll that overlaps a webhook is normal.
         UniqueConstraint(
-            "tenant_id", "board", "external_application_id",
+            "tenant_id",
+            "board",
+            "external_application_id",
             name="uq_application_external_once",
         ),
         Index("ix_applications_candidate", "tenant_id", "candidate_id", "created_at"),
     )
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     requisition_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     board: Mapped[JobBoard] = mapped_column(
         Enum(JobBoard, name="job_board", create_type=False), nullable=False, index=True
@@ -225,7 +225,9 @@ class Application(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     status: Mapped[ApplicationStatus] = mapped_column(
         Enum(ApplicationStatus, name="application_status"),
-        default=ApplicationStatus.APPLIED, nullable=False, index=True,
+        default=ApplicationStatus.APPLIED,
+        nullable=False,
+        index=True,
     )
     applied_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
@@ -247,9 +249,7 @@ class Application(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # answerable per row rather than recomputed from a policy that has since
     # changed.
     retention_until: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
-    purged_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # What was removed. The row itself survives a purge so hiring statistics do
     # not silently change when personal data is deleted — the count of
     # applications is not personal data, the applicant is.
@@ -270,8 +270,10 @@ class CandidateConsent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     purpose: Mapped[ConsentPurpose] = mapped_column(
         Enum(ConsentPurpose, name="consent_purpose"), nullable=False
@@ -318,21 +320,15 @@ class CareersPageConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
     culture_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Applying without an account. Forced signup measurably depresses
     # application rates, and a candidate who cannot finish is not a candidate.
-    allow_apply_without_account: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    allow_apply_without_account: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # ── DPDP ────────────────────────────────────────────────────────────────
     # The notice a candidate is shown at application, and how long their data is
     # kept. Two years is a common Indian talent-pool period, but it is the
     # client's decision and the notice has to state whatever it is.
     privacy_notice_html: Mapped[str | None] = mapped_column(Text, nullable=True)
-    privacy_notice_version: Mapped[str] = mapped_column(
-        String(32), default="1", nullable=False
-    )
-    resume_retention_days: Mapped[int] = mapped_column(
-        Integer, default=730, nullable=False
-    )
+    privacy_notice_version: Mapped[str] = mapped_column(String(32), default="1", nullable=False)
+    resume_retention_days: Mapped[int] = mapped_column(Integer, default=730, nullable=False)
 
     seo_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     seo_description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -352,24 +348,20 @@ class CandidatePortalToken(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "candidate_portal_tokens"
-    __table_args__ = (
-        UniqueConstraint("token_hash", name="uq_candidate_portal_token"),
-    )
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_candidate_portal_token"),)
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CandidateDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -383,8 +375,10 @@ class CandidateDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "candidate_documents"
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     category: Mapped[str] = mapped_column(String(64), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -394,6 +388,4 @@ class CandidateDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     retention_until: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
-    purged_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -94,11 +94,10 @@ class IndeedAdapter(JobBoardAdapter):
             raise BoardPermanentFailure(f"Indeed rejected this: {message}")
         raise BoardTransientFailure(f"Indeed returned {code}: {message}")
 
-    async def publish_job(
-        self, spec: JobSpec, credentials: BoardCredentials
-    ) -> PublishResult:
+    async def publish_job(self, spec: JobSpec, credentials: BoardCredentials) -> PublishResult:
         code, body = await self._transport.request(
-            "POST", "/feed/jobs",
+            "POST",
+            "/feed/jobs",
             json={
                 "employerId": credentials.username,
                 "job": feed_entry(spec, reference=spec.requisition_code),
@@ -120,7 +119,8 @@ class IndeedAdapter(JobBoardAdapter):
         self, external_job_id: str, spec: JobSpec, credentials: BoardCredentials
     ) -> PublishResult:
         code, body = await self._transport.request(
-            "PUT", f"/feed/jobs/{external_job_id}",
+            "PUT",
+            f"/feed/jobs/{external_job_id}",
             json={"job": feed_entry(spec, reference=spec.requisition_code)},
             headers=self._headers(credentials),
         )
@@ -129,8 +129,7 @@ class IndeedAdapter(JobBoardAdapter):
             external_job_id=external_job_id,
             published_at=datetime.now(UTC),
             warnings=(
-                "The edit is in the feed. Indeed shows the previous version until it "
-                "crawls again.",
+                "The edit is in the feed. Indeed shows the previous version until it crawls again.",
             ),
         )
 
@@ -149,7 +148,8 @@ class IndeedAdapter(JobBoardAdapter):
     ) -> list[RawApplication]:
         params = f"&since={since.isoformat()}" if since else ""
         code, body = await self._transport.request(
-            "GET", f"/apply/applications?jobKey={external_job_id}{params}",
+            "GET",
+            f"/apply/applications?jobKey={external_job_id}{params}",
             headers=self._headers(credentials),
         )
         self._check(code, body)
@@ -190,4 +190,3 @@ class IndeedAdapter(JobBoardAdapter):
         if isinstance(content, str):
             return content.encode("utf-8")
         raise BoardTransientFailure("Indeed returned an empty resume body.")
-

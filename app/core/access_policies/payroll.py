@@ -19,9 +19,7 @@ ENDPOINTS: dict[str, str] = {
     "GET /benefits/plans": (
         "permissions: active plans for everyone; ended plans and enrolment counts for HR."
     ),
-    "GET /benefits/me": (
-        "own: the caller's own enrolments, by user.employee_id from the token."
-    ),
+    "GET /benefits/me": ("own: the caller's own enrolments, by user.employee_id from the token."),
     "POST /benefits/plans/{plan_id}/enrol": (
         "own: enrols the caller (user.employee_id from the token) in the plan."
     ),
@@ -35,8 +33,7 @@ ENDPOINTS: dict[str, str] = {
     "GET /encashment/policies": "reference: the encashment rules.",
     "POST /encashment/requests": "permissions: your own encashment unless payroll.",
     "GET /encashment/requests": (
-        "permissions: your own encashments, a manager's reporting line, or everybody for "
-        "payroll."
+        "permissions: your own encashments, a manager's reporting line, or everybody for payroll."
     ),
     # ── Tax declarations ────────────────────────────────────────────────────
     "GET /tax/windows": "reference: declaration and proof windows.",

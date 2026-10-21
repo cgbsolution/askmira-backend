@@ -485,9 +485,7 @@ class ReimbursementProvider(InputProvider):
                 output.notices.append(f"Reimbursement claim {claim.id}: {exc}")
                 continue
             if payable <= ZERO:
-                output.notices.append(
-                    f"Reimbursement claim {claim.id}: nothing is payable — {why}"
-                )
+                output.notices.append(f"Reimbursement claim {claim.id}: nothing is payable — {why}")
                 continue
             used[key] += payable
             output.lines[claim.employee_id].append(
@@ -743,11 +741,7 @@ class ArrearsProvider(InputProvider):
                     start=ZERO,
                 )
                 employer = sum(
-                    (
-                        _d(x.difference)
-                        for x in mine
-                        if x.component_type == "employer_contribution"
-                    ),
+                    (_d(x.difference) for x in mine if x.component_type == "employer_contribution"),
                     start=ZERO,
                 )
                 basis = (
@@ -757,29 +751,68 @@ class ArrearsProvider(InputProvider):
                 emitted = output.lines[employee_id]
                 if earnings > ZERO:
                     emitted.append(
-                        InputLine(self.key, "ARREARS", "Salary arrears", InputKind.EARNING,
-                                  earnings, earnings, basis, source)
+                        InputLine(
+                            self.key,
+                            "ARREARS",
+                            "Salary arrears",
+                            InputKind.EARNING,
+                            earnings,
+                            earnings,
+                            basis,
+                            source,
+                        )
                     )
                 elif earnings < ZERO:
                     emitted.append(
-                        InputLine(self.key, "ARREARS_RECOVERY", "Salary arrears recovered",
-                                  InputKind.DEDUCTION, -earnings, ZERO, basis, source)
+                        InputLine(
+                            self.key,
+                            "ARREARS_RECOVERY",
+                            "Salary arrears recovered",
+                            InputKind.DEDUCTION,
+                            -earnings,
+                            ZERO,
+                            basis,
+                            source,
+                        )
                     )
                 if deductions > ZERO:
                     emitted.append(
-                        InputLine(self.key, "ARREARS_STATUTORY", "Statutory arrears (employee)",
-                                  InputKind.DEDUCTION, deductions, ZERO, basis, source)
+                        InputLine(
+                            self.key,
+                            "ARREARS_STATUTORY",
+                            "Statutory arrears (employee)",
+                            InputKind.DEDUCTION,
+                            deductions,
+                            ZERO,
+                            basis,
+                            source,
+                        )
                     )
                 elif deductions < ZERO:
                     emitted.append(
-                        InputLine(self.key, "ARREARS_STATUTORY_REFUND",
-                                  "Statutory arrears refunded (employee)",
-                                  InputKind.REIMBURSEMENT, -deductions, ZERO, basis, source)
+                        InputLine(
+                            self.key,
+                            "ARREARS_STATUTORY_REFUND",
+                            "Statutory arrears refunded (employee)",
+                            InputKind.REIMBURSEMENT,
+                            -deductions,
+                            ZERO,
+                            basis,
+                            source,
+                        )
                     )
                 if employer != ZERO:
                     emitted.append(
-                        InputLine(self.key, "ARREARS_EMPLOYER", "Statutory arrears (employer)",
-                                  InputKind.EMPLOYER_CONTRIBUTION, employer, ZERO, basis, source)
+                        InputLine(
+                            self.key,
+                            "ARREARS_EMPLOYER",
+                            "Statutory arrears (employer)",
+                            InputKind.EMPLOYER_CONTRIBUTION,
+                            employer,
+                            ZERO,
+                            basis,
+                            source,
+                        )
                     )
                 if not emitted:
                     output.lines.pop(employee_id, None)
@@ -858,8 +891,7 @@ class RewardPerquisiteProvider(InputProvider):
                 )
             except HTTPException as exc:
                 output.notices.append(
-                    f"Reward perquisites for employee {employee_id} are not included: "
-                    f"{exc.detail}"
+                    f"Reward perquisites for employee {employee_id} are not included: {exc.detail}"
                 )
                 continue
 
@@ -1457,9 +1489,7 @@ class AdjustmentProvider(InputProvider):
                         PayrollAdjustmentApplication.adjustment_id,
                         PayrollAdjustmentApplication.period_year,
                         PayrollAdjustmentApplication.period_month,
-                    ).where(
-                        PayrollAdjustmentApplication.adjustment_id.in_([r.id for r in rows])
-                    ),
+                    ).where(PayrollAdjustmentApplication.adjustment_id.in_([r.id for r in rows])),
                     PayrollAdjustmentApplication,
                     user,
                 )
@@ -1574,9 +1604,8 @@ class AdjustmentProvider(InputProvider):
             )
         )
         adjustment.amount_applied = _d(adjustment.amount_applied) + amount
-        cap_reached = (
-            adjustment.total_cap is not None
-            and _d(adjustment.amount_applied) >= _d(adjustment.total_cap)
+        cap_reached = adjustment.total_cap is not None and _d(adjustment.amount_applied) >= _d(
+            adjustment.total_cap
         )
         if adjustment.recurrence is AdjustmentRecurrence.ONE_TIME or cap_reached:
             adjustment.status = AdjustmentStatus.COMPLETED

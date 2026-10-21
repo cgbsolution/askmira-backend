@@ -103,9 +103,7 @@ class ReferralProgramme(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "referral_programmes"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_referral_programme_name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_referral_programme_name"),)
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -114,21 +112,13 @@ class ReferralProgramme(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: `{grade: amount}`.
     bonus_by_grade: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     #: `[{key, label, share_percent, days_after_joining}]`, summing to 100.
-    payout_milestones: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
-    require_confirmed: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
-    exclude_on_pip: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    payout_milestones: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    require_confirmed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    exclude_on_pip: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: Never configurable to False. A panel member referring into their own
     #: requisition is deciding on a candidate they are paid for, and no tenant
     #: setting should be able to permit that.
-    exclude_hiring_team: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    exclude_hiring_team: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -139,9 +129,7 @@ class Referral(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_referrals_candidate", "tenant_id", "candidate_key"),
         Index("ix_referrals_referrer", "tenant_id", "referrer_employee_id"),
-        CheckConstraint(
-            "bonus_amount >= 0", name="ck_referral_bonus_nonneg"
-        ),
+        CheckConstraint("bonus_amount >= 0", name="ck_referral_bonus_nonneg"),
     )
 
     programme_id: Mapped[uuid.UUID] = mapped_column(
@@ -171,9 +159,7 @@ class Referral(Base, UUIDMixin, TenantMixin, TimestampMixin):
     share_channel: Mapped[ShareChannelEnum | None] = mapped_column(
         Enum(ShareChannelEnum, name="referral_share_channel"), nullable=True
     )
-    submitted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[ReferralStatusEnum] = mapped_column(
         Enum(ReferralStatusEnum, name="referral_status"),
         default=ReferralStatusEnum.SUBMITTED,
@@ -181,15 +167,9 @@ class Referral(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: Where this one lost the duplicate race, which referral won it. Stored so
     #: the referrer can be told who and when rather than only that they lost.
-    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
-    ineligibility_reason: Mapped[str | None] = mapped_column(
-        String(48), nullable=True
-    )
-    bonus_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    ineligibility_reason: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    bonus_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     hired_on: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
@@ -203,9 +183,7 @@ class ReferralPayout(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "referral_payouts"
     __table_args__ = (
-        UniqueConstraint(
-            "referral_id", "milestone_key", name="uq_payout_per_milestone"
-        ),
+        UniqueConstraint("referral_id", "milestone_key", name="uq_payout_per_milestone"),
         CheckConstraint("amount > 0", name="ck_payout_amount_positive"),
     )
 
@@ -227,9 +205,7 @@ class ReferralPayout(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Set when payroll has taken it. Null means owed, which is what keeps an
     #: unpaid milestone visible.
     payroll_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    paid_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     forfeited_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -296,9 +272,5 @@ class CandidateDiversityDisclosure(Base, UUIDMixin, TenantMixin, TimestampMixin)
     value: Mapped[str] = mapped_column(String(80), nullable=False)
     #: The consent record this disclosure rests on. Without it the row should
     #: not exist.
-    consent_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
-    disclosed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    consent_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    disclosed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

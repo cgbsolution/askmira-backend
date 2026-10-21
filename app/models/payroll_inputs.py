@@ -112,9 +112,7 @@ class PayrollAdjustment(Base, UUIDMixin, TenantMixin, TimestampMixin):
         CheckConstraint(
             "total_cap IS NULL OR total_cap > 0", name="ck_payroll_adjustment_cap_positive"
         ),
-        CheckConstraint(
-            "start_month BETWEEN 1 AND 12", name="ck_payroll_adjustment_start_month"
-        ),
+        CheckConstraint("start_month BETWEEN 1 AND 12", name="ck_payroll_adjustment_start_month"),
         CheckConstraint(
             "end_month IS NULL OR end_month BETWEEN 1 AND 12",
             name="ck_payroll_adjustment_end_month",
@@ -123,7 +121,9 @@ class PayrollAdjustment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     kind: Mapped[AdjustmentKind] = mapped_column(
@@ -185,7 +185,9 @@ class PayrollAdjustmentApplication(Base, UUIDMixin, TenantMixin, TimestampMixin)
     __tablename__ = "payroll_adjustment_applications"
     __table_args__ = (
         UniqueConstraint(
-            "adjustment_id", "period_year", "period_month",
+            "adjustment_id",
+            "period_year",
+            "period_month",
             name="uq_adjustment_application_period",
         ),
     )
@@ -197,7 +199,9 @@ class PayrollAdjustmentApplication(Base, UUIDMixin, TenantMixin, TimestampMixin)
         index=True,
     )
     run_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="RESTRICT"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("payroll_runs.id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -231,7 +235,9 @@ class OvertimePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     #: Null applies to every location without a policy of its own.
     location_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), nullable=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("locations.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     rate_multiplier: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
@@ -285,7 +291,9 @@ class OvertimeEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     attendance_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -293,7 +301,8 @@ class OvertimeEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
         String(8), default="daily", server_default="daily", nullable=False
     )
     policy_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("overtime_policies.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("overtime_policies.id", ondelete="RESTRICT"),
         nullable=False,
     )
     #: Beyond the shift (daily) or beyond the weekly threshold (weekly).
@@ -329,13 +338,19 @@ class ShiftAllowancePayment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "shift_allowance_payments"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "employee_id", "shift_id", "period_year", "period_month",
+            "tenant_id",
+            "employee_id",
+            "shift_id",
+            "period_year",
+            "period_month",
             name="uq_shift_allowance_period",
         ),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     shift_id: Mapped[uuid.UUID] = mapped_column(

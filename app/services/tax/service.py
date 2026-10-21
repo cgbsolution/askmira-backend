@@ -258,9 +258,7 @@ async def assert_window_open(
     """Refuse a submission outside its window, unless late is permitted."""
     window = await window_for(session, user, financial_year, window_type)
     if window is None:
-        raise TaxWorkflowError(
-            f"No {window_type.value} window is configured for {financial_year}."
-        )
+        raise TaxWorkflowError(f"No {window_type.value} window is configured for {financial_year}.")
 
     moment = on or await local_today(session, user)
     if window.is_open(moment) or window.allow_late_submission:
@@ -449,8 +447,7 @@ async def upsert_declaration(
     if existing is not None:
         if existing.status is DeclarationStatus.LOCKED:
             raise TaxWorkflowError(
-                f"The {section} declaration is locked for {financial_year} and cannot "
-                "be changed."
+                f"The {section} declaration is locked for {financial_year} and cannot be changed."
             )
         previous = str(existing.declared_amount)
         existing.declared_amount = declared_amount
@@ -511,9 +508,7 @@ async def submit_declaration(
             status_code=status.HTTP_409_CONFLICT,
             detail="This declaration is locked for the year and cannot be changed",
         )
-    await assert_window_open(
-        session, user, declaration.financial_year, WindowType.DECLARATION
-    )
+    await assert_window_open(session, user, declaration.financial_year, WindowType.DECLARATION)
 
     declaration.status = DeclarationStatus.SUBMITTED
     declaration.submitted_at = datetime.now(UTC)
@@ -744,8 +739,9 @@ async def previous_employer_document(
     if record is None or stored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No Form 16 is attached")
     data, mime = stored
-    await _record_document_read(session, user, record.employee_id, "previous_employer_income",
-                                record.id, request)
+    await _record_document_read(
+        session, user, record.employee_id, "previous_employer_income", record.id, request
+    )
     return data, mime, f"form16_{financial_year}{_extension(record.document_storage_key)}"
 
 
@@ -870,8 +866,9 @@ async def proof_document(
             status_code=status.HTTP_404_NOT_FOUND, detail="No document is stored for this proof"
         )
     data, mime = stored
-    await _record_document_read(session, user, declaration.employee_id, "tax_proof", proof.id,
-                                request)
+    await _record_document_read(
+        session, user, declaration.employee_id, "tax_proof", proof.id, request
+    )
     return data, mime, proof.document_name or f"proof{_extension(proof.document_storage_key)}"
 
 
@@ -1094,9 +1091,7 @@ async def close_proof_window(
     for declaration in declarations:
         declaration.status = DeclarationStatus.LOCKED
         declaration.locked_at = now
-        if Decimal(str(declaration.accepted_amount)) < Decimal(
-            str(declaration.declared_amount)
-        ):
+        if Decimal(str(declaration.accepted_amount)) < Decimal(str(declaration.declared_amount)):
             unproven += 1
 
     await audit.record(
@@ -1193,8 +1188,13 @@ async def build_projection_input(
     employee = await session.get(Employee, employee_id)
     age = None
     if employee and employee.date_of_birth:
-        age = start.year - employee.date_of_birth.year - (
-            (start.month, start.day) < (employee.date_of_birth.month, employee.date_of_birth.day)
+        age = (
+            start.year
+            - employee.date_of_birth.year
+            - (
+                (start.month, start.day)
+                < (employee.date_of_birth.month, employee.date_of_birth.day)
+            )
         )
 
     other = await sources.other_taxable_income(
@@ -1410,9 +1410,7 @@ async def issue_form_12bb(
     except TaxWorkflowError:
         rules = None
 
-    values = await form_12bb.claim_values(
-        session, user, employee_id, financial_year, rules=rules
-    )
+    values = await form_12bb.claim_values(session, user, employee_id, financial_year, rules=rules)
     template = await support.ensure_letter_template(
         session, user, form_12bb.FORM_12BB_CODE, form_12bb.seed_template
     )
@@ -1441,9 +1439,7 @@ async def list_form_12bb(
     template_ids = (
         await session.scalars(
             tenant_scoped(
-                select(LetterTemplate.id).where(
-                    LetterTemplate.code == form_12bb.FORM_12BB_CODE
-                ),
+                select(LetterTemplate.id).where(LetterTemplate.code == form_12bb.FORM_12BB_CODE),
                 LetterTemplate,
                 user,
             )

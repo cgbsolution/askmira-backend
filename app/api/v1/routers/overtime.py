@@ -59,9 +59,7 @@ async def update_policy(
     session: DbSession,
     request: Request,
 ) -> OvertimePolicyRead:
-    return await overtime_service.update_policy(
-        session, user, policy_id, payload, request=request
-    )
+    return await overtime_service.update_policy(session, user, policy_id, payload, request=request)
 
 
 @router.post("/sync", response_model=OvertimeSyncResult, dependencies=HR_ONLY)

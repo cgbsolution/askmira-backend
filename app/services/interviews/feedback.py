@@ -117,9 +117,7 @@ def visible_feedback_for(
     if not hide_until_submitted:
         return list(all_feedback)
 
-    own = next(
-        (f for f in all_feedback if f.panelist_id == viewer_panelist_id), None
-    )
+    own = next((f for f in all_feedback if f.panelist_id == viewer_panelist_id), None)
     viewer_has_submitted = own is not None and own.is_submitted
 
     if viewer_has_submitted:
@@ -209,16 +207,12 @@ def consolidate(
     negatives = len(submitted) - positives
     unanimous = bool(submitted) and (positives == 0 or negatives == 0)
 
-    strong_dissent = (
-        any(f.recommendation is Recommendation.STRONG_YES for f in submitted)
-        and any(f.recommendation is Recommendation.STRONG_NO for f in submitted)
+    strong_dissent = any(f.recommendation is Recommendation.STRONG_YES for f in submitted) and any(
+        f.recommendation is Recommendation.STRONG_NO for f in submitted
     )
 
     if not submitted:
-        headline = (
-            "No feedback submitted yet. Nothing here says anything about this "
-            "candidate."
-        )
+        headline = "No feedback submitted yet. Nothing here says anything about this candidate."
     elif strong_dissent:
         yes_names = [
             f.panelist_label or f.panelist_id
@@ -246,9 +240,7 @@ def consolidate(
         )
 
     if outstanding:
-        headline += (
-            f" Still waiting on {len(outstanding)}: {', '.join(outstanding)}."
-        )
+        headline += f" Still waiting on {len(outstanding)}: {', '.join(outstanding)}."
 
     # Per competency, the spread rather than the mean — two interviewers scoring
     # 2 and 8 is not a 5, it is a disagreement about the same person.

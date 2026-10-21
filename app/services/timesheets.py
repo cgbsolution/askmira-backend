@@ -860,9 +860,7 @@ async def add_rate(
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    project = (
-        await _project(session, user, payload.project_id) if payload.project_id else None
-    )
+    project = await _project(session, user, payload.project_id) if payload.project_id else None
     taken = await session.scalar(
         tenant_scoped(
             select(HourlyRate.id).where(
@@ -931,18 +929,22 @@ async def list_rates(
             )
         )
     ).all()
-    names = {
-        p.id: p.name
-        for p in (
-            await session.scalars(
-                tenant_scoped(
-                    select(Project).where(Project.id.in_({r.project_id for r in rows})),
-                    Project,
-                    user,
+    names = (
+        {
+            p.id: p.name
+            for p in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(Project).where(Project.id.in_({r.project_id for r in rows})),
+                        Project,
+                        user,
+                    )
                 )
-            )
-        ).all()
-    } if any(r.project_id for r in rows) else {}
+            ).all()
+        }
+        if any(r.project_id for r in rows)
+        else {}
+    )
     return [
         {
             "id": str(r.id),

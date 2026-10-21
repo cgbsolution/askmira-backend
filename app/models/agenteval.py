@@ -85,9 +85,7 @@ class EvalSuiteRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Whether this agent produces a number somebody acts on. Forces a
     #: discrimination assertion — the service refuses a scoring suite without
     #: one rather than warning about it.
-    is_scoring_agent: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    is_scoring_agent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     cases: Mapped[list[EvalCaseRow]] = relationship(
         back_populates="suite", lazy="selectin", cascade="all, delete-orphan"
@@ -104,8 +102,10 @@ class EvalCaseRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     suite_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("eval_suites.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("eval_suites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -118,12 +118,8 @@ class EvalCaseRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     #: Set where this case came from a real defect. That makes it a regression
     #: case, and a failed regression case blocks a merge outright.
-    is_regression_case: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    source_incident_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
+    is_regression_case: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     suite: Mapped[EvalSuiteRow] = relationship(back_populates="cases")
 
@@ -139,8 +135,10 @@ class EvalRunRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     suite_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("eval_suites.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("eval_suites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     agent_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     #: A hash of the implementation, not a version somebody bumps by hand.
@@ -150,9 +148,7 @@ class EvalRunRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     triggered_by: Mapped[EvalTrigger] = mapped_column(
         Enum(EvalTrigger, name="eval_trigger"),
         default=EvalTrigger.MANUAL,
@@ -172,25 +168,17 @@ class EvalRunRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    blocking_reasons: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    blocking_reasons: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     warnings: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     #: Every numeric measurement in the run, flattened. What `compare` diffs.
     metrics: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     #: The diff against the previous run for this agent, where there was one.
-    diff_from_previous: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    diff_from_previous: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
-    total_latency_ms: Mapped[float] = mapped_column(
-        Numeric(12, 2), default=0, nullable=False
-    )
+    total_latency_ms: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_cost_inr: Mapped[float] = mapped_column(
-        Numeric(12, 4), default=0, nullable=False
-    )
+    total_cost_inr: Mapped[float] = mapped_column(Numeric(12, 4), default=0, nullable=False)
 
     results: Mapped[list[EvalResultRow]] = relationship(
         back_populates="run", lazy="selectin", cascade="all, delete-orphan"
@@ -212,14 +200,14 @@ class EvalResultRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     run_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("eval_runs.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     case_name: Mapped[str] = mapped_column(String(160), nullable=False)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    is_regression_case: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    is_regression_case: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     source_incident_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     #: What the agent actually returned. Kept so a failure can be diagnosed
@@ -229,13 +217,9 @@ class EvalResultRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     verdicts: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     measurements: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
-    latency_ms: Mapped[float] = mapped_column(
-        Numeric(12, 2), default=0, nullable=False
-    )
+    latency_ms: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    cost_inr: Mapped[float] = mapped_column(
-        Numeric(12, 4), default=0, nullable=False
-    )
+    cost_inr: Mapped[float] = mapped_column(Numeric(12, 4), default=0, nullable=False)
 
     run: Mapped[EvalRunRow] = relationship(back_populates="results")
 
@@ -250,9 +234,7 @@ class AgentFeedback(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "agent_feedback"
-    __table_args__ = (
-        Index("ix_agent_feedback_agent", "tenant_id", "agent_key", "created_at"),
-    )
+    __table_args__ = (Index("ix_agent_feedback_agent", "tenant_id", "agent_key", "created_at"),)
 
     agent_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     #: What the agent was given and what it returned, so the feedback can become
@@ -266,6 +248,7 @@ class AgentFeedback(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     promoted_to_case_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("eval_cases.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("eval_cases.id", ondelete="SET NULL"),
         nullable=True,
     )

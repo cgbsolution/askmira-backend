@@ -55,9 +55,7 @@ async def create_invoice(
     request: Request,
 ) -> dict[str, Any]:
     """Enter an invoice; its TDS is worked out from the rule set in force that day."""
-    return await contractors.create_invoice(
-        session, user, contractor_id, payload, request=request
-    )
+    return await contractors.create_invoice(session, user, contractor_id, payload, request=request)
 
 
 @router.post("/invoices/{invoice_id}/approve")
@@ -76,7 +74,11 @@ async def mark_paid(
     request: Request,
 ) -> dict[str, Any]:
     return await contractors.mark_paid(
-        session, user, invoice_id, paid_on=payload.paid_on, reference=payload.reference,
+        session,
+        user,
+        invoice_id,
+        paid_on=payload.paid_on,
+        reference=payload.reference,
         request=request,
     )
 
@@ -126,7 +128,11 @@ async def tds_statement(
 ) -> Response:
     """A contractor's TDS deductions for a quarter with their challans, as a PDF."""
     data, filename = await contractors.tds_statement_pdf(
-        session, user, contractor_id, financial_year=financial_year, quarter=quarter,
+        session,
+        user,
+        contractor_id,
+        financial_year=financial_year,
+        quarter=quarter,
         request=request,
     )
     return Response(

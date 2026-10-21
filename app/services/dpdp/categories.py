@@ -357,9 +357,7 @@ CATEGORIES: dict[str, DataCategory] = {
             purposes=("statutory_filing", "employee_benefits"),
             retention=Retention(
                 months=60,
-                statutory_reference=(
-                    "ESI Act s.46; Rights of Persons with Disabilities Act"
-                ),
+                statutory_reference=("ESI Act s.46; Rights of Persons with Disabilities Act"),
                 clock_starts="last_working_day",
                 note=(
                     "DPDP requires a verifiable-consent route for a person with a "
@@ -372,8 +370,7 @@ CATEGORIES: dict[str, DataCategory] = {
             key="performance",
             name="Performance and appraisal",
             description=(
-                "Ratings, calibration outcomes, goals, manager and peer feedback, "
-                "PIP records."
+                "Ratings, calibration outcomes, goals, manager and peer feedback, PIP records."
             ),
             principal_kinds=(PrincipalKind.EMPLOYEE,),
             lawful_basis=LawfulBasis.EMPLOYMENT_CONTRACT,
@@ -466,9 +463,7 @@ CATEGORIES: dict[str, DataCategory] = {
             purposes=("employment_administration", "statutory_filing"),
             retention=Retention(
                 months=60,
-                statutory_reference=(
-                    "POSH Act s.21 and Rule 14 (annual report and records)"
-                ),
+                statutory_reference=("POSH Act s.21 and Rule 14 (annual report and records)"),
                 clock_starts="case_closed",
                 note=(
                     "A POSH record names a complainant as well as a respondent, and "
@@ -579,9 +574,7 @@ CATEGORIES: dict[str, DataCategory] = {
             purposes=("security_and_fraud", "statutory_filing"),
             retention=Retention(
                 months=96,
-                statutory_reference=(
-                    "IT Act s.43A read with the reasonable-security duty"
-                ),
+                statutory_reference=("IT Act s.43A read with the reasonable-security duty"),
                 clock_starts="record_created",
                 note=(
                     "The audit log cannot be erased on request without destroying "
@@ -667,8 +660,7 @@ def category(key: str) -> DataCategory:
         return CATEGORIES[key]
     except KeyError:
         raise KeyError(
-            f"No data category {key!r}. Known categories: "
-            f"{', '.join(sorted(CATEGORIES))}."
+            f"No data category {key!r}. Known categories: {', '.join(sorted(CATEGORIES))}."
         ) from None
 
 

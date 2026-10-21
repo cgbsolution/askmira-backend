@@ -1,10 +1,13 @@
 """Conversations with Ask Mira, and one turn of one.
 
-A turn: the gates (server configured, workspace switched it on, the person
-agreed, today's and this month's limits), one model call that plans, the
-chosen tool run here as the person, and a reply saved beside its cards. The
-model call leaves its DPDP transfer and agent-invocation rows; the turn leaves
-an AI-action audit row (FS-AIT-01) — all in the turn's own transaction.
+A turn: today's limit, then one of two planners. With AI usable (server
+configured, workspace switched it on, the person agreed, this month's budget
+left) one model call plans; without it the words are matched by rule here
+(direct.py) and nothing leaves AskMira. Either way the chosen tool runs here
+as the person, and a reply is saved beside its cards. The model call leaves its
+DPDP transfer and agent-invocation rows; every turn leaves an audit row
+(an AI-action row, FS-AIT-01, when a model planned it) — all in the turn's own
+transaction.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
 from app.services.ai import client, governance
+from app.services.companion import direct
 from app.services.companion.config import (
     TOOL_GROUPS,
     CompanionConfig,
@@ -322,7 +326,9 @@ async def _tokens_this_month(session: AsyncSession, user: User) -> int:
     return int(tokens or 0)
 
 
-async def _check_limits(session: AsyncSession, user: User, config: CompanionConfig) -> None:
+async def _check_limits(
+    session: AsyncSession, user: User, config: CompanionConfig, *, ai: bool
+) -> None:
     if await _sent_today(session, user, owner_id=user.id) >= config.daily_messages_per_person:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -331,8 +337,10 @@ async def _check_limits(session: AsyncSession, user: User, config: CompanionConf
                 f"{config.name}. The count starts again at midnight."
             ),
         )
-    if config.monthly_token_budget and (
-        await _tokens_this_month(session, user) >= config.monthly_token_budget
+    if (
+        ai
+        and config.monthly_token_budget
+        and (await _tokens_this_month(session, user) >= config.monthly_token_budget)
     ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -346,24 +354,35 @@ async def _check_limits(session: AsyncSession, user: User, config: CompanionConf
 # ── Status and settings ──────────────────────────────────────────────────────
 
 
-async def status_for(session: AsyncSession, user: User) -> dict[str, Any]:
-    """What the chat screen needs: whether it can be used, why not, and who it is."""
+async def _reason(session: AsyncSession, user: User) -> str | None:
+    """Why a model may not plan this person's turns, or None when it may."""
     ai = await governance.status_for(session, user)
-    config = await get_config(session, user)
-    reason: str | None = None
     if not ai["configured"]:
-        reason = "not_configured"
-    elif not ai["features"].get(AGENT_KEY):
-        reason = "disabled"
-    elif not ai["my_consent"]:
-        reason = "no_consent"
-    tools = await offered(session, user, config) if reason in (None, "no_consent") else []
+        return "not_configured"
+    if not ai["features"].get(AGENT_KEY):
+        return "disabled"
+    if not ai["my_consent"]:
+        return "no_consent"
+    return None
+
+
+async def status_for(session: AsyncSession, user: User) -> dict[str, Any]:
+    """What the chat screen needs: which planner answers, why, and who it is.
+
+    The chat is always there. Without AI it answers by matching words to a
+    lookup (direct mode); `reason` says why AI is not planning.
+    """
+    config = await get_config(session, user)
+    reason = await _reason(session, user)
+    tools = await offered(session, user, config, ai=reason is None)
     return {
-        "available": reason is None,
+        "available": True,
+        "mode": "ai" if reason is None else "direct",
         "reason": reason,
         "name": config.name,
         "greeting": config.greeting,
         "tools": [{"key": tool.key, "title": tool.title} for tool in tools],
+        "examples": direct.examples(tools),
         "daily_limit": config.daily_messages_per_person,
         "sent_today": await _sent_today(session, user, owner_id=user.id),
         "can_configure": permissions.is_admin(user),
@@ -425,10 +444,9 @@ def _context(history: list[CompanionMessage], name: str, text: str) -> str:
 async def send(
     session: AsyncSession, user: User, payload: MessageIn, *, request: Request | None
 ) -> dict[str, Any]:
-    await governance.require(session, user, AGENT_KEY)
-    await governance.require_consent(session, user, "ai_companion_queries")
     config = await get_config(session, user)
-    await _check_limits(session, user, config)
+    ai = await _reason(session, user) is None
+    await _check_limits(session, user, config, ai=ai)
 
     now = datetime.now(UTC)
     if payload.conversation_id:
@@ -457,6 +475,11 @@ async def send(
     )
     session.add(mine)
     await session.flush()
+
+    if not ai:
+        return await _send_direct(
+            session, user, config, conversation, mine, payload.text, request=request
+        )
 
     tenant = await session.get(Tenant, user.tenant_id)
     tools = await offered(session, user, config)
@@ -566,6 +589,60 @@ async def send(
         tool=chosen.key if chosen else None,
         arguments=used,
         invocation_id=str(invocation.id),
+    )
+    await session.commit()
+    return {
+        "conversation": _conversation_read(conversation),
+        "messages": [_message_read(mine), _message_read(reply)],
+    }
+
+
+async def _send_direct(
+    session: AsyncSession,
+    user: User,
+    config: CompanionConfig,
+    conversation: CompanionConversation,
+    mine: CompanionMessage,
+    text: str,
+    *,
+    request: Request | None,
+) -> dict[str, Any]:
+    """A turn planned by rule (direct.py): no model, nothing sent outside AskMira."""
+    tools = await offered(session, user, config, ai=False)
+    plan = direct.plan(text, tools, today=_today(), name=config.name)
+    # The plan only ever names an offered tool; checked again all the same.
+    chosen = {tool.key: tool for tool in tools}.get(plan.tool or "")
+    cards: list[dict[str, Any]] = []
+    used: dict[str, Any] = {}
+    if chosen is not None:
+        cards, used = await run(session, user, chosen, plan.inputs, today=_today())
+
+    reply = CompanionMessage(
+        tenant_id=user.tenant_id,
+        conversation_id=conversation.id,
+        user_id=user.id,
+        role="assistant",
+        text=plan.reply,
+        tool=chosen.key if chosen else None,
+        arguments=used or None,
+        cards=cards,
+    )
+    session.add(reply)
+    conversation.last_message_at = datetime.now(UTC)
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="companion_message",
+        entity_id=reply.id,
+        actor=user,
+        changes={"mode": "direct", "tool": chosen.key if chosen else None, "arguments": used},
+        summary=(
+            f"Ask Mira (direct) answered {user.full_name}"
+            + (f" with {chosen.title.lower()}" if chosen else " without a tool")
+        ),
+        request=request,
     )
     await session.commit()
     return {

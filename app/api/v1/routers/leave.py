@@ -112,9 +112,7 @@ async def deactivate_leave_type(
     return LeaveTypeRead.model_validate(row)
 
 
-@router.post(
-    "/types/{leave_type_id}/activate", response_model=LeaveTypeRead, dependencies=HR_ONLY
-)
+@router.post("/types/{leave_type_id}/activate", response_model=LeaveTypeRead, dependencies=HR_ONLY)
 async def activate_leave_type(
     leave_type_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> LeaveTypeRead:
@@ -385,9 +383,7 @@ async def preview_request(
     return await leave_service.preview(session, user, payload)
 
 
-@router.post(
-    "/requests", response_model=LeaveRequestRead, status_code=status.HTTP_201_CREATED
-)
+@router.post("/requests", response_model=LeaveRequestRead, status_code=status.HTTP_201_CREATED)
 async def create_request(
     payload: LeaveRequestCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> LeaveRequestRead:
@@ -418,9 +414,7 @@ async def list_requests(
 async def download_request_document(
     request_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> Response:
-    filename, mime, data = await leave_service.document(
-        session, user, request_id, request=request
-    )
+    filename, mime, data = await leave_service.document(session, user, request_id, request=request)
     return Response(
         content=data,
         media_type=mime,

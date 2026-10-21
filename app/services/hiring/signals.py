@@ -130,9 +130,7 @@ def proctoring_statement(notes: dict[str, Any] | None) -> dict[str, Any]:
     status = "observations_recorded" if statements else "no_observations"
     return {
         "status": status,
-        "label": (
-            "Observations recorded" if statements else "No observations recorded"
-        ),
+        "label": ("Observations recorded" if statements else "No observations recorded"),
         "statements": statements,
         "note": (
             "These are what the proctoring tool logged during the assessment. They are "
@@ -193,9 +191,7 @@ def present_score(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fit_score_view(
-    *, fit_score: Any, presented_scores: list[dict[str, Any]]
-) -> dict[str, Any]:
+def fit_score_view(*, fit_score: Any, presented_scores: list[dict[str, Any]]) -> dict[str, Any]:
     """The stored Fit Score, only beside the component scores that back it."""
     value = _decimal(fit_score)
     components = [
@@ -223,9 +219,7 @@ def fit_score_view(
                 "their signals back it, so it is not shown."
             ),
         }
-    confidences = [
-        _decimal(s["confidence"]) for s in components if s.get("confidence") is not None
-    ]
+    confidences = [_decimal(s["confidence"]) for s in components if s.get("confidence") is not None]
     return {
         "value": str(value),
         "status": "shown_with_components",

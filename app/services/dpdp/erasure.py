@@ -187,13 +187,21 @@ async def execute_erasure(
                     .values({name: None for name in clearable})
                 )
                 executed.append(
-                    {"table": table.name, "outcome": "fields_cleared", "fields": clearable,
-                     "rows": len(ids)}
+                    {
+                        "table": table.name,
+                        "outcome": "fields_cleared",
+                        "fields": clearable,
+                        "rows": len(ids),
+                    }
                 )
             anything_retained = True
             executed.append(
-                {"table": table.name, "outcome": "retained", "rows": len(ids),
-                 "reason": NEVER_DELETED[table.name]}
+                {
+                    "table": table.name,
+                    "outcome": "retained",
+                    "rows": len(ids),
+                    "reason": NEVER_DELETED[table.name],
+                }
             )
             continue
 
@@ -208,8 +216,12 @@ async def execute_erasure(
             except IntegrityError:
                 anything_retained = True
                 executed.append(
-                    {"table": table.name, "outcome": "retained", "rows": len(ids),
-                     "reason": "Other records still refer to these rows, so they were kept."}
+                    {
+                        "table": table.name,
+                        "outcome": "retained",
+                        "rows": len(ids),
+                        "reason": "Other records still refer to these rows, so they were kept.",
+                    }
                 )
                 continue
             deleted.extend((table.name, rid) for rid in ids)
@@ -250,9 +262,7 @@ async def execute_erasure(
         )
 
     complete = plan.is_complete and not anything_retained
-    row.status = (
-        DprRequestStatus.COMPLETED if complete else DprRequestStatus.PARTIALLY_COMPLETED
-    )
+    row.status = DprRequestStatus.COMPLETED if complete else DprRequestStatus.PARTIALLY_COMPLETED
     row.responded_at = moment
     row.response_payload = {
         "executed_at": moment.isoformat(),

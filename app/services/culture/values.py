@@ -127,9 +127,7 @@ def coverage(
             "define. A tally over codes nobody defined is a tally of typos."
         )
 
-    per_value: dict[str, dict[str, int]] = {
-        v.code: {s.value: 0 for s in sources} for v in values
-    }
+    per_value: dict[str, dict[str, int]] = {v.code: {s.value: 0 for s in sources} for v in values}
     totals = {s.value: 0 for s in sources}
 
     for item in items:
@@ -221,9 +219,7 @@ def trend(
         if end < start:
             raise ValuesError(f"Period {label!r} ends before it starts.")
         count = sum(
-            1
-            for i in items
-            if i.value_code == value_code and start <= i.occurred_on <= end
+            1 for i in items if i.value_code == value_code and start <= i.occurred_on <= end
         )
         buckets.append(
             {
@@ -306,8 +302,7 @@ def for_person(
     rows = [
         i
         for i in items
-        if i.subject_id == subject_id
-        and (value_code is None or i.value_code == value_code)
+        if i.subject_id == subject_id and (value_code is None or i.value_code == value_code)
     ]
     return {
         "subject_id": subject_id,

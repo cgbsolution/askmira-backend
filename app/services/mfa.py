@@ -134,8 +134,13 @@ async def enable(
     row.recovery_code_hashes = [_hash(c) for c in codes]
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="user", entity_id=user.id, summary="Two-step sign-in turned on",
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=user.id,
+        summary="Two-step sign-in turned on",
         request=request,
     )
     return {"recovery_codes": codes}
@@ -195,8 +200,13 @@ async def disable(
     await session.delete(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="user", entity_id=user.id, summary="Two-step sign-in turned off",
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=user.id,
+        summary="Two-step sign-in turned off",
         request=request,
     )
 
@@ -222,8 +232,12 @@ async def admin_reset(
     await session.delete(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=admin.tenant_id, actor=admin, action=AuditAction.UPDATE,
-        entity_type="user", entity_id=target.id,
+        session,
+        tenant_id=admin.tenant_id,
+        actor=admin,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=target.id,
         summary=f"Two-step sign-in reset for {target.full_name}; they set it up again at sign-in",
         request=request,
     )

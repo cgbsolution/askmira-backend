@@ -97,9 +97,7 @@ class GstEntityRegistration(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "gst_entity_registrations"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "legal_entity_id", "state_code", name="uq_gst_reg_per_state"
-        ),
+        UniqueConstraint("tenant_id", "legal_entity_id", "state_code", name="uq_gst_reg_per_state"),
         CheckConstraint("length(gstin) = 15", name="ck_gst_reg_gstin_length"),
         CheckConstraint("length(state_code) = 2", name="ck_gst_reg_state_length"),
     )
@@ -130,9 +128,7 @@ class GstBlockedCategory(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "gst_blocked_categories"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "category_key", name="uq_gst_blocked_category"
-        ),
+        UniqueConstraint("tenant_id", "category_key", name="uq_gst_blocked_category"),
         CheckConstraint(
             "(reviewed = false) OR (reviewed_by IS NOT NULL)",
             name="ck_gst_rule_reviewed_names_reviewer",
@@ -146,9 +142,7 @@ class GstBlockedCategory(Base, UUIDMixin, TenantMixin, TimestampMixin):
     reference: Mapped[str] = mapped_column(
         String(120), default="Section 17(5), CGST Act", nullable=False
     )
-    has_exceptions: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    has_exceptions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     exception_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     reviewed_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -208,9 +202,7 @@ class GstInputCredit(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Case-folded with separators stripped, so an OCR reading of `INV/2026/42`
     #: matches a portal download of `inv-2026-42`. Stored rather than computed
     #: at query time so the match is indexable.
-    normalised_invoice_number: Mapped[str] = mapped_column(
-        String(120), nullable=False
-    )
+    normalised_invoice_number: Mapped[str] = mapped_column(String(120), nullable=False)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
 
     category_key: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -222,9 +214,7 @@ class GstInputCredit(Base, UUIDMixin, TenantMixin, TimestampMixin):
     hsn_sac: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     supplier_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    place_of_supply_state_code: Mapped[str | None] = mapped_column(
-        String(2), nullable=True
-    )
+    place_of_supply_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     recipient_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     tax_split: Mapped[GstTaxSplitEnum | None] = mapped_column(
         Enum(GstTaxSplitEnum, name="gst_tax_split"), nullable=True
@@ -236,14 +226,10 @@ class GstInputCredit(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Not nullable, either of them.
     eligibility_reason: Mapped[str] = mapped_column(Text, nullable=False)
     eligibility_reference: Mapped[str] = mapped_column(String(120), nullable=False)
-    claimable_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    claimable_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     #: What is in question on an uncertain line, so a review queue can be
     #: prioritised by money rather than by date.
-    amount_at_stake: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    amount_at_stake: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
 
     reconciliation_status: Mapped[Gstr2bMatchEnum] = mapped_column(
         Enum(Gstr2bMatchEnum, name="gstr2b_match_state"),
@@ -262,9 +248,7 @@ class GstCreditReview(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "gst_credit_reviews"
-    __table_args__ = (
-        UniqueConstraint("credit_id", name="uq_gst_review_per_credit"),
-    )
+    __table_args__ = (UniqueConstraint("credit_id", name="uq_gst_review_per_credit"),)
 
     credit_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -287,9 +271,7 @@ class Gstr2bImport(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "gstr2b_imports"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "legal_entity_id", "period_label", name="uq_2b_per_period"
-        ),
+        UniqueConstraint("tenant_id", "legal_entity_id", "period_label", name="uq_2b_per_period"),
     )
 
     legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -299,9 +281,7 @@ class Gstr2bImport(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     period_label: Mapped[str] = mapped_column(String(16), nullable=False)
     line_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_tax: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    total_tax: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     imported_on: Mapped[date] = mapped_column(Date, nullable=False)
     imported_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -336,9 +316,7 @@ class Gstr2bLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     vendor_gstin: Mapped[str] = mapped_column(String(15), nullable=False)
     vendor_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
     invoice_number: Mapped[str] = mapped_column(String(120), nullable=False)
-    normalised_invoice_number: Mapped[str] = mapped_column(
-        String(120), nullable=False
-    )
+    normalised_invoice_number: Mapped[str] = mapped_column(String(120), nullable=False)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
     taxable_value: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     cgst: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
@@ -373,21 +351,15 @@ class GstReconciliation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     period_label: Mapped[str] = mapped_column(String(16), nullable=False)
     captured_lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     portal_lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    matched_tax: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
-    missing_in_2b_tax: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    matched_tax: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
+    missing_in_2b_tax: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     missing_in_register_tax: Mapped[float] = mapped_column(
         Numeric(16, 2), default=0, nullable=False
     )
     #: The headline. Eligible credit captured here and absent from the portal,
     #: which means the vendor has not filed and the money is recoverable by
     #: chasing them.
-    at_risk_tax: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    at_risk_tax: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     counts: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     lines: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     run_on: Mapped[date] = mapped_column(Date, nullable=False)

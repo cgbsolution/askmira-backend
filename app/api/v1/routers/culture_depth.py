@@ -379,9 +379,7 @@ async def survey_results(
     threshold applies to whoever asks, because a bypass for one role is how a
     manager eventually works out who said what.
     """
-    return await culture.survey_results(
-        session, user, survey_id=survey_id, group_by=group_by
-    )
+    return await culture.survey_results(session, user, survey_id=survey_id, group_by=group_by)
 
 
 # ── Action plans ────────────────────────────────────────────────────────────

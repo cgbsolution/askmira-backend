@@ -95,12 +95,9 @@ class IncrementBand:
     def __post_init__(self) -> None:
         if self.max_percentage < self.min_percentage:
             raise IncrementError(
-                f"The band for {self.rating_label!r} has a maximum below its "
-                "minimum."
+                f"The band for {self.rating_label!r} has a maximum below its minimum."
             )
-        if not (
-            self.min_percentage <= self.recommended_percentage <= self.max_percentage
-        ):
+        if not (self.min_percentage <= self.recommended_percentage <= self.max_percentage):
             raise IncrementError(
                 f"The recommended {self.recommended_percentage}% for "
                 f"{self.rating_label!r} is outside its own band of "
@@ -252,9 +249,7 @@ class BudgetState:
             "allocated": str(self.allocated),
             "consumed": str(self.consumed),
             "remaining": str(self.remaining),
-            "utilisation": (
-                str(self.utilisation) if self.utilisation is not None else None
-            ),
+            "utilisation": (str(self.utilisation) if self.utilisation is not None else None),
             "over_budget": self.over_budget,
             "mode": self.mode.value,
             "message": self.message,
@@ -327,10 +322,7 @@ def headroom(
         "company": company.as_dict(),
         "binding_scope": binding.scope,
         "spendable": str(max(Decimal("0"), binding.remaining)),
-        "note": (
-            f"The {binding.scope} budget is the tighter of the two. "
-            f"{binding.message}"
-        ),
+        "note": (f"The {binding.scope} budget is the tighter of the two. {binding.message}"),
     }
 
 
@@ -405,8 +397,10 @@ def consume(
             message=f"Within budget. {after['note']}",
         )
 
-    scope = "department and company" if over_dept and over_company else (
-        "department" if over_dept else "company"
+    scope = (
+        "department and company"
+        if over_dept and over_company
+        else ("department" if over_dept else "company")
     )
     if mode is OverageMode.BLOCK:
         return ConsumeResult(
@@ -507,9 +501,7 @@ def equity_snapshot(
     }
 
     if band_midpoint is not None:
-        out["compa_ratio"] = compa_ratio(
-            ctc=proposed_ctc, band_midpoint=band_midpoint
-        )
+        out["compa_ratio"] = compa_ratio(ctc=proposed_ctc, band_midpoint=band_midpoint)
 
     if len(others) < min_group:
         out["parity"] = None

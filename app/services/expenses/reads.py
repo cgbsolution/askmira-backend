@@ -308,9 +308,7 @@ def _report_read(
     )
 
 
-async def _reports(
-    session: AsyncSession, user: User, stmt
-) -> list[ReportRead]:
+async def _reports(session: AsyncSession, user: User, stmt) -> list[ReportRead]:
     pairs = (await session.execute(tenant_scoped(stmt, ExpenseReport, user))).all()
     if not pairs:
         return []
@@ -332,17 +330,14 @@ async def _reports(
     for claim, employee in line_rows:
         by_report.setdefault(claim.report_id, []).append(claim_read(claim, employee, context))
     return [
-        _report_read(report, employee, by_report.get(report.id, []))
-        for report, employee in pairs
+        _report_read(report, employee, by_report.get(report.id, [])) for report, employee in pairs
     ]
 
 
 async def list_reports(
     session: AsyncSession, user: User, *, employee_id: uuid.UUID | None
 ) -> list[ReportRead]:
-    stmt = select(ExpenseReport, Employee).join(
-        Employee, Employee.id == ExpenseReport.employee_id
-    )
+    stmt = select(ExpenseReport, Employee).join(Employee, Employee.id == ExpenseReport.employee_id)
     if employee_id is not None:
         stmt = stmt.where(ExpenseReport.employee_id == employee_id)
     stmt = stmt.order_by(ExpenseReport.created_at.desc()).limit(_LIST_LIMIT)
@@ -411,8 +406,7 @@ async def _trips(session: AsyncSession, user: User, stmt) -> list[TravelRequestR
     pairs = (await session.execute(tenant_scoped(stmt, TravelRequest, user))).all()
     issued = await _issued_by_trip(session, user, [trip.id for trip, _ in pairs])
     return [
-        _trip_read(trip, employee, issued.get(trip.id, Decimal("0")))
-        for trip, employee in pairs
+        _trip_read(trip, employee, issued.get(trip.id, Decimal("0"))) for trip, employee in pairs
     ]
 
 
@@ -423,9 +417,7 @@ async def list_travel_requests(
     employee_id: uuid.UUID | None,
     status_filter: TravelRequestStatusEnum | None = None,
 ) -> list[TravelRequestRead]:
-    stmt = select(TravelRequest, Employee).join(
-        Employee, Employee.id == TravelRequest.employee_id
-    )
+    stmt = select(TravelRequest, Employee).join(Employee, Employee.id == TravelRequest.employee_id)
     if employee_id is not None:
         stmt = stmt.where(TravelRequest.employee_id == employee_id)
     if status_filter is not None:
@@ -465,9 +457,7 @@ def _facts(row: TravelAdvance) -> advance_engine.AdvanceFacts:
     )
 
 
-async def _advances(
-    session: AsyncSession, user: User, stmt, *, today: date
-) -> list[AdvanceRead]:
+async def _advances(session: AsyncSession, user: User, stmt, *, today: date) -> list[AdvanceRead]:
     rows = (await session.execute(tenant_scoped(stmt, TravelAdvance, user))).all()
     if not rows:
         return []
@@ -732,9 +722,7 @@ async def _policy_reads(session: AsyncSession, user: User, policies) -> list[Pol
 async def list_policies(
     session: AsyncSession, user: User, *, include_inactive: bool = False
 ) -> list[PolicyRead]:
-    stmt = select(ExpensePolicy).order_by(
-        ExpensePolicy.effective_from.desc(), ExpensePolicy.name
-    )
+    stmt = select(ExpensePolicy).order_by(ExpensePolicy.effective_from.desc(), ExpensePolicy.name)
     if not include_inactive:
         stmt = stmt.where(ExpensePolicy.is_active.is_(True))
     policies = (await session.scalars(tenant_scoped(stmt, ExpensePolicy, user))).all()

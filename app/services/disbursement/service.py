@@ -75,8 +75,7 @@ class BatchBlockedError(Exception):
         self.batch = batch
         self.result = result
         super().__init__(
-            f"{len(result.exceptions)} exception(s) prevent this disbursement being "
-            "prepared."
+            f"{len(result.exceptions)} exception(s) prevent this disbursement being prepared."
         )
 
 
@@ -117,9 +116,7 @@ async def prepare_batch(
     there is no warning tier here.
     """
     run = await session.scalar(
-        tenant_scoped(
-            select(PayrollRun).where(PayrollRun.id == payroll_run_id), PayrollRun, user
-        )
+        tenant_scoped(select(PayrollRun).where(PayrollRun.id == payroll_run_id), PayrollRun, user)
     )
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
@@ -174,11 +171,7 @@ async def prepare_batch(
                 user,
             )
         )
-        number = (
-            decrypt_secret(account.account_number, user.tenant_id) or ""
-            if account
-            else ""
-        )
+        number = decrypt_secret(account.account_number, user.tenant_id) or "" if account else ""
         resolved.append((payslip, employee, account, number))
         to_validate.append(
             {
@@ -246,9 +239,7 @@ async def prepare_batch(
     )
 
     try:
-        content = formats.serialise(
-            instruction, profile.file_format, config=profile.format_config
-        )
+        content = formats.serialise(instruction, profile.file_format, config=profile.format_config)
     except formats.FormatError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -480,8 +471,7 @@ async def release_batch(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This batch was approved by the person who prepared it. It will not be "
-                "released."
+                "This batch was approved by the person who prepared it. It will not be released."
             ),
         )
     if confirm is not None:
@@ -795,9 +785,7 @@ async def supplementary_batch(
             batch_reference=f"SUPP{batch.id.hex[:8].upper()}",
             lines=payment_lines,
         )
-        content = formats.serialise(
-            instruction, profile.file_format, config=profile.format_config
-        )
+        content = formats.serialise(instruction, profile.file_format, config=profile.format_config)
         batch.file_hash = formats.file_hash(content)
         batch.encrypted_file = encrypt_secret(content, user.tenant_id)
         batch.file_name = f"SUPP_{profile.file_format.value.upper()}_{batch.id.hex[:8]}.txt"
@@ -846,9 +834,7 @@ async def _notify_failed_credits(
     await support.ensure_event_templates(session, user.tenant_id, NOTICE_TEMPLATES)
     recipients = await support.active_user_ids(session, user.tenant_id, roles=ALERT_ROLES)
     if not recipients:
-        recipients = await support.active_user_ids(
-            session, user.tenant_id, roles={UserRole.ADMIN}
-        )
+        recipients = await support.active_user_ids(session, user.tenant_id, roles={UserRole.ADMIN})
     if not recipients:
         return 0
     run = await session.scalar(

@@ -208,9 +208,7 @@ def should_warn(
         return False, "The entitlement is fully used."
 
     months_left = (
-        (financial_year_end.year - today.year) * 12
-        + financial_year_end.month
-        - today.month
+        (financial_year_end.year - today.year) * 12 + financial_year_end.month - today.month
     )
     if months_left < 0:
         return False, "The year has ended; the unclaimed balance is now taxable."

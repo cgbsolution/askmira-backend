@@ -210,9 +210,7 @@ async def compute_run(
     return await payslip_service.run_read(session, user, run)
 
 
-@router.post(
-    "/runs/{run_id}/variances/{employee_id}/acknowledge", response_model=PayrollRunRead
-)
+@router.post("/runs/{run_id}/variances/{employee_id}/acknowledge", response_model=PayrollRunRead)
 async def acknowledge_variance(
     run_id: uuid.UUID,
     employee_id: uuid.UUID,

@@ -184,20 +184,19 @@ async def define_value(
     """
     try:
         values_engine.ValueDefinition(
-            code=code, name=name, description=description, icon=icon or "",
+            code=code,
+            name=name,
+            description=description,
+            icon=icon or "",
             colour=colour or "",
         )
     except values_engine.ValuesError as exc:
         raise _bad_request(str(exc)) from exc
 
-    stmt = tenant_scoped(
-        select(CompanyValue).where(CompanyValue.code == code), CompanyValue, user
-    )
+    stmt = tenant_scoped(select(CompanyValue).where(CompanyValue.code == code), CompanyValue, user)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
-        row = CompanyValue(
-            tenant_id=user.tenant_id, code=code, name=name, description=description
-        )
+        row = CompanyValue(tenant_id=user.tenant_id, code=code, name=name, description=description)
         session.add(row)
     else:
         row.name = name
@@ -294,9 +293,7 @@ async def tag_value(
     return row
 
 
-async def _tagged_items(
-    session: AsyncSession, user: User
-) -> list[values_engine.TaggedItem]:
+async def _tagged_items(session: AsyncSession, user: User) -> list[values_engine.TaggedItem]:
     stmt = tenant_scoped(select(ValueTag), ValueTag, user)
     return [
         values_engine.TaggedItem(
@@ -337,9 +334,7 @@ async def value_analytics(
         report = values_engine.coverage(items, values=definitions)
         unlived = values_engine.unlived_values(items, values=definitions)
         groups = (
-            values_engine.by_group(
-                items, values=definitions, group_sizes=group_sizes
-            )
+            values_engine.by_group(items, values=definitions, group_sizes=group_sizes)
             if group_sizes
             else None
         )
@@ -380,9 +375,7 @@ async def open_cycle(
             "nobody adjudicated is a shoutout with a certificate."
         )
     try:
-        award_engine.NominationWindow(
-            opens_on=nominations_open_on, closes_on=nominations_close_on
-        )
+        award_engine.NominationWindow(opens_on=nominations_open_on, closes_on=nominations_close_on)
     except award_engine.AwardError as exc:
         raise _bad_request(str(exc)) from exc
 
@@ -438,9 +431,7 @@ async def nominate(
     date would otherwise accept late entries and the jury would score a
     different field from the one everybody was told about.
     """
-    stmt = tenant_scoped(
-        select(AwardCycle).where(AwardCycle.id == cycle_id), AwardCycle, user
-    )
+    stmt = tenant_scoped(select(AwardCycle).where(AwardCycle.id == cycle_id), AwardCycle, user)
     cycle = (await session.execute(stmt)).scalar_one_or_none()
     if cycle is None:
         raise _not_found("No such award cycle in this tenant.")
@@ -579,9 +570,7 @@ async def score_nomination(
     if cycle is None:
         raise _not_found("The cycle for this nomination is gone.")
     if str(user.id) not in list(cycle.juror_user_ids or []):
-        raise _forbidden(
-            "Only a juror on this cycle may score its nominations."
-        )
+        raise _forbidden("Only a juror on this cycle may score its nominations.")
 
     programme = (
         await session.execute(
@@ -680,9 +669,7 @@ async def jury_view(
             )
         ).scalar_one_or_none()
         if cycle is None or str(user.id) not in list(cycle.juror_user_ids or []):
-            raise permissions.forbidden(
-                "Only jurors on this cycle and HR can open its jury view."
-            )
+            raise permissions.forbidden("Only jurors on this cycle and HR can open its jury view.")
     stmt = tenant_scoped(
         select(AwardNomination).where(AwardNomination.id == nomination_id),
         AwardNomination,
@@ -718,20 +705,24 @@ async def jury_view(
     )
 
     own = next((s for s in engine_scores if s.juror_id == str(user.id)), None)
-    juror_names = {
-        str(uid): name
-        for uid, name in (
-            await session.execute(
-                tenant_scoped(
-                    select(User.id, User.full_name).where(
-                        User.id.in_([uuid.UUID(s.juror_id) for s in visible])
-                    ),
-                    User,
-                    user,
+    juror_names = (
+        {
+            str(uid): name
+            for uid, name in (
+                await session.execute(
+                    tenant_scoped(
+                        select(User.id, User.full_name).where(
+                            User.id.in_([uuid.UUID(s.juror_id) for s in visible])
+                        ),
+                        User,
+                        user,
+                    )
                 )
-            )
-        ).all()
-    } if visible else {}
+            ).all()
+        }
+        if visible
+        else {}
+    )
     return {
         "nomination_id": str(nomination_id),
         "citation": nomination.citation,
@@ -816,9 +807,7 @@ async def declare_winner(
     programme = (
         await session.execute(
             tenant_scoped(
-                select(AwardProgramme).where(
-                    AwardProgramme.id == nomination.programme_id
-                ),
+                select(AwardProgramme).where(AwardProgramme.id == nomination.programme_id),
                 AwardProgramme,
                 user,
             )
@@ -1020,9 +1009,7 @@ async def submit_response(
 
     employee = (
         await session.execute(
-            tenant_scoped(
-                select(Employee).where(Employee.id == employee_id), Employee, user
-            )
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
         )
     ).scalar_one_or_none()
 
@@ -1035,15 +1022,9 @@ async def submit_response(
             comment_ai_ok=bool(comment_ai_ok and free_text),
             group_key=group_key,
             department_key=(
-                str(employee.department_id)
-                if employee and employee.department_id
-                else None
+                str(employee.department_id) if employee and employee.department_id else None
             ),
-            location_key=(
-                str(employee.location_id)
-                if employee and employee.location_id
-                else None
-            ),
+            location_key=(str(employee.location_id) if employee and employee.location_id else None),
             submitted_on=submitted_on or date.today(),
         )
     )
@@ -1101,9 +1082,7 @@ async def close_survey(
     return survey
 
 
-async def _answers(
-    session: AsyncSession, user: User, survey_id: uuid.UUID
-) -> list[SurveyResponse]:
+async def _answers(session: AsyncSession, user: User, survey_id: uuid.UUID) -> list[SurveyResponse]:
     return list(
         (
             await session.execute(
@@ -1218,9 +1197,7 @@ async def survey_results(
             after=[dict(r.answers or {}) for r in rows],
             before_instrument=previous.instrument_key,
             after_instrument=survey.instrument_key,
-            min_responses=max(
-                previous.min_responses_to_report, survey.min_responses_to_report
-            ),
+            min_responses=max(previous.min_responses_to_report, survey.min_responses_to_report),
         ).as_dict()
         movement["previous_wave_id"] = str(previous.id)
         movement["previous_wave_name"] = previous.name
@@ -1384,9 +1361,7 @@ async def complete_plan(
 
     if not permissions.is_hr(user) and row.owner_employee_id != user.employee_id:
         raise permissions.forbidden("Only the plan's owner or HR can mark it complete.")
-    allowed, reason = plan_engine.can_complete(
-        await _engine_plan(session, user, row)
-    )
+    allowed, reason = plan_engine.can_complete(await _engine_plan(session, user, row))
     if not allowed:
         raise _bad_request(reason)
 
@@ -1424,16 +1399,20 @@ async def _wave_movement_by_theme(
             )
         ).scalar_one_or_none()
         after = (
-            await session.execute(
-                tenant_scoped(
-                    select(Survey)
-                    .where(Survey.previous_wave_id == survey_id)
-                    .order_by(Survey.opens_on),
-                    Survey,
-                    user,
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(Survey)
+                        .where(Survey.previous_wave_id == survey_id)
+                        .order_by(Survey.opens_on),
+                        Survey,
+                        user,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if (
             before is None
             or after is None
@@ -1473,17 +1452,13 @@ async def loop_report(
     """
     rows = list(
         (
-            await session.execute(
-                tenant_scoped(select(SurveyActionPlan), SurveyActionPlan, user)
-            )
+            await session.execute(tenant_scoped(select(SurveyActionPlan), SurveyActionPlan, user))
         ).scalars()
     )
     plans = [await _engine_plan(session, user, row) for row in rows]
     if movement is None:
         movement = await _wave_movement_by_theme(session, user, {r.survey_id for r in rows})
-    return plan_engine.loop_closure(
-        plans=plans, movement=dict(movement or {}), today=as_of
-    )
+    return plan_engine.loop_closure(plans=plans, movement=dict(movement or {}), today=as_of)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1499,9 +1474,7 @@ def _notification_text(row: Announcement) -> str:
     return text
 
 
-async def deliver_announcement(
-    session: AsyncSession, user: Any, row: Announcement
-) -> int:
+async def deliver_announcement(session: AsyncSession, user: Any, row: Announcement) -> int:
     """Notify everybody in the audience who has a login, in the caller's
     transaction. Returns how many people it reached.
 
@@ -1881,9 +1854,7 @@ async def set_event_privacy(
         )
     ).scalar_one_or_none()
     if row is None:
-        row = EventPrivacyPreference(
-            tenant_id=user.tenant_id, employee_id=employee_id
-        )
+        row = EventPrivacyPreference(tenant_id=user.tenant_id, employee_id=employee_id)
         session.add(row)
     row.share_birthday = share_birthday
     row.share_work_anniversary = share_work_anniversary
@@ -1953,9 +1924,7 @@ async def calendar(
         )
         for p in (
             await session.execute(
-                tenant_scoped(
-                    select(EventPrivacyPreference), EventPrivacyPreference, user
-                )
+                tenant_scoped(select(EventPrivacyPreference), EventPrivacyPreference, user)
             )
         ).scalars()
     }
@@ -2033,9 +2002,7 @@ async def calendar(
             {
                 **event.as_dict(),
                 "photo_url": (
-                    by_id[event.employee_id].photo_url
-                    if event.employee_id in by_id
-                    else None
+                    by_id[event.employee_id].photo_url if event.employee_id in by_id else None
                 ),
             }
             for event in events

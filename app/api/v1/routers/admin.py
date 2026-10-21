@@ -140,7 +140,11 @@ async def change_role(
 ) -> ManagedUserRead:
     """Change somebody else's role. Never your own; never to super admin."""
     return await user_admin.set_role(
-        session, user, user_id=user_id, role=payload.role, reason=payload.reason,
+        session,
+        user,
+        user_id=user_id,
+        role=payload.role,
+        reason=payload.reason,
         request=request,
     )
 
@@ -154,7 +158,11 @@ async def change_active(
     request: Request,
 ) -> ManagedUserRead:
     return await user_admin.set_active(
-        session, user, user_id=user_id, active=payload.active, reason=payload.reason,
+        session,
+        user,
+        user_id=user_id,
+        active=payload.active,
+        reason=payload.reason,
         request=request,
     )
 
@@ -169,7 +177,11 @@ async def link_employee(
 ) -> ManagedUserRead:
     """Link a login to its employee record (or unlink it). Self-service depends on it."""
     return await user_admin.link_employee(
-        session, user, user_id=user_id, employee_id=payload.employee_id, reason=payload.reason,
+        session,
+        user,
+        user_id=user_id,
+        employee_id=payload.employee_id,
+        reason=payload.reason,
         request=request,
     )
 
@@ -324,8 +336,12 @@ async def set_role_rights(
     area: str, payload: AreaRightsIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, bool]:
     result = await access_admin.set_role_rights(
-        session, user, area, payload.model_dump(),
-        confirm=confirmation(session, user, "user.role_change"), request=request,
+        session,
+        user,
+        area,
+        payload.model_dump(),
+        confirm=confirmation(session, user, "user.role_change"),
+        request=request,
     )
     await session.commit()
     return result
@@ -336,7 +352,10 @@ async def clear_role_rights(
     area: str, user: CurrentUser, session: DbSession, request: Request
 ) -> None:
     await access_admin.clear_role_rights(
-        session, user, area, confirm=confirmation(session, user, "user.role_change"),
+        session,
+        user,
+        area,
+        confirm=confirmation(session, user, "user.role_change"),
         request=request,
     )
     await session.commit()
@@ -352,8 +371,13 @@ async def set_user_rights(
     request: Request,
 ) -> dict[str, bool]:
     result = await access_admin.set_user_rights(
-        session, user, user_id, area, payload.model_dump(),
-        confirm=confirmation(session, user, "user.role_change"), request=request,
+        session,
+        user,
+        user_id,
+        area,
+        payload.model_dump(),
+        confirm=confirmation(session, user, "user.role_change"),
+        request=request,
     )
     await session.commit()
     return result
@@ -368,7 +392,11 @@ async def clear_user_rights(
     user_id: uuid.UUID, area: str, user: CurrentUser, session: DbSession, request: Request
 ) -> None:
     await access_admin.clear_user_rights(
-        session, user, user_id, area, confirm=confirmation(session, user, "user.role_change"),
+        session,
+        user,
+        user_id,
+        area,
+        confirm=confirmation(session, user, "user.role_change"),
         request=request,
     )
     await session.commit()
@@ -380,13 +408,16 @@ async def set_scope(
 ) -> dict[str, Any]:
     """Limit a sub-admin to some departments or locations; both empty removes the limit."""
     result = await access_admin.set_scope(
-        session, user, user_id,
-        department_ids=payload.department_ids, location_ids=payload.location_ids,
-        confirm=confirmation(session, user, "user.role_change"), request=request,
+        session,
+        user,
+        user_id,
+        department_ids=payload.department_ids,
+        location_ids=payload.location_ids,
+        confirm=confirmation(session, user, "user.role_change"),
+        request=request,
     )
     await session.commit()
     return {"scope": result}
-
 
 
 # ── API keys and webhooks ───────────────────────────────────────────────────

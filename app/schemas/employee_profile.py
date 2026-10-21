@@ -247,9 +247,9 @@ class Education(_Section):
     end_year: int | None = Field(default=None, ge=1950, le=2100)
     grade: str | None = Field(default=None, max_length=32)
 
-    _blank = field_validator(
-        "specialisation", "board_or_university", "grade", mode="before"
-    )(_strip)
+    _blank = field_validator("specialisation", "board_or_university", "grade", mode="before")(
+        _strip
+    )
 
     @model_validator(mode="after")
     def _years(self) -> Education:
@@ -266,9 +266,7 @@ class PreviousEmployment(_Section):
     location: str | None = Field(default=None, max_length=128)
     reason_for_leaving: str | None = Field(default=None, max_length=500)
 
-    _blank = field_validator("designation", "location", "reason_for_leaving", mode="before")(
-        _strip
-    )
+    _blank = field_validator("designation", "location", "reason_for_leaving", mode="before")(_strip)
 
     @model_validator(mode="after")
     def _dates(self) -> PreviousEmployment:
@@ -383,9 +381,7 @@ class NomineesWrite(BaseModel):
             totals[nominee.purpose] = totals.get(nominee.purpose, Decimal(0)) + (
                 nominee.share_percent
             )
-        wrong = {
-            purpose.value.upper(): total for purpose, total in totals.items() if total != 100
-        }
+        wrong = {purpose.value.upper(): total for purpose, total in totals.items() if total != 100}
         if wrong:
             detail = ", ".join(f"{k} {v.normalize():f}%" for k, v in sorted(wrong.items()))
             raise ValueError(

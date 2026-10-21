@@ -51,8 +51,7 @@ class PfElectionUpsert(BaseModel):
     def one_vpf_form(self) -> PfElectionUpsert:
         if self.vpf_percentage is not None and self.vpf_fixed_amount is not None:
             raise ValueError(
-                "A VPF election is either a percentage of wages or a fixed amount, "
-                "not both."
+                "A VPF election is either a percentage of wages or a fixed amount, not both."
             )
         return self
 
@@ -163,9 +162,7 @@ async def list_pf_elections(
     stmt = select(EmployeePfElection).order_by(EmployeePfElection.effective_from.desc())
     if employee_id is not None:
         stmt = stmt.where(EmployeePfElection.employee_id == employee_id)
-    rows = (
-        await session.scalars(tenant_scoped(stmt, EmployeePfElection, user))
-    ).all()
+    rows = (await session.scalars(tenant_scoped(stmt, EmployeePfElection, user))).all()
     return [PfElectionRead.model_validate(row) for row in rows]
 
 
@@ -188,9 +185,7 @@ async def create_pf_election(
     move it.
     """
     employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == payload.employee_id), Employee, user
-        )
+        tenant_scoped(select(Employee).where(Employee.id == payload.employee_id), Employee, user)
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -238,8 +233,7 @@ async def create_pf_election(
         entity_type="employee_pf_election",
         entity_id=row.id,
         summary=(
-            f"Recorded PF election for {employee.employee_code} from "
-            f"{payload.effective_from}"
+            f"Recorded PF election for {employee.employee_code} from {payload.effective_from}"
         ),
         changes={
             "pf_on_actual_wage": payload.pf_on_actual_wage,
@@ -293,9 +287,7 @@ async def create_work_location(
     instead of applying the destination state to the whole month.
     """
     employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == payload.employee_id), Employee, user
-        )
+        tenant_scoped(select(Employee).where(Employee.id == payload.employee_id), Employee, user)
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -344,8 +336,7 @@ async def create_work_location(
         entity_type="employee_work_location",
         entity_id=row.id,
         summary=(
-            f"Posted {employee.employee_code} to a new work location from "
-            f"{payload.effective_from}"
+            f"Posted {employee.employee_code} to a new work location from {payload.effective_from}"
         ),
         changes={"location_id": str(payload.location_id), "reason": payload.reason},
         request=request,
@@ -393,9 +384,7 @@ async def list_bonus(
     financial_year: str = Query(pattern=r"^\d{4}-\d{4}$"),
     eligible_only: bool = False,
 ) -> list[BonusRead]:
-    stmt = select(BonusComputation).where(
-        BonusComputation.financial_year == financial_year
-    )
+    stmt = select(BonusComputation).where(BonusComputation.financial_year == financial_year)
     if eligible_only:
         stmt = stmt.where(BonusComputation.is_eligible.is_(True))
     rows = (await session.scalars(tenant_scoped(stmt, BonusComputation, user))).all()

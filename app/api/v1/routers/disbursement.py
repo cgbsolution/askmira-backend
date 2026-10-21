@@ -296,9 +296,7 @@ async def create_account(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=problem)
 
     employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == payload.employee_id), Employee, user
-        )
+        tenant_scoped(select(Employee).where(Employee.id == payload.employee_id), Employee, user)
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -346,10 +344,7 @@ async def create_account(
         action=AuditAction.CREATE,
         entity_type="employee_bank_account",
         entity_id=account.id,
-        summary=(
-            f"Recorded a bank account for {employee.employee_code} "
-            f"(name similarity {score})"
-        ),
+        summary=(f"Recorded a bank account for {employee.employee_code} (name similarity {score})"),
         changes={
             "ifsc": account.ifsc,
             "verification_method": payload.verification_method.value,
@@ -414,9 +409,7 @@ async def list_batches(
     session: DbSession,
     payroll_run_id: uuid.UUID | None = None,
 ) -> list[BatchRead]:
-    rows = await disbursement_service.list_batches(
-        session, user, payroll_run_id=payroll_run_id
-    )
+    rows = await disbursement_service.list_batches(session, user, payroll_run_id=payroll_run_id)
     return [_batch_read(batch, prepared, approved) for batch, prepared, approved in rows]
 
 
@@ -435,9 +428,7 @@ async def get_batch(batch_id: uuid.UUID, user: CurrentUser, session: DbSession) 
     response_model=list[LineRead],
     dependencies=[Depends(require_roles(*PREPARER_ROLES))],
 )
-async def list_lines(
-    batch_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> list[LineRead]:
+async def list_lines(batch_id: uuid.UUID, user: CurrentUser, session: DbSession) -> list[LineRead]:
     rows = await disbursement_service.batch_lines(session, user, batch_id)
     out = []
     for line, label in rows:

@@ -109,8 +109,7 @@ class HraWorking:
             ),
         }
         return (
-            f"Your HRA exemption is {self.exemption}, limited by "
-            f"{labels[self.binding_constraint]}."
+            f"Your HRA exemption is {self.exemption}, limited by {labels[self.binding_constraint]}."
         )
 
 
@@ -548,16 +547,13 @@ def project(inputs: ProjectionInput, rules: dict[str, Any]) -> TaxComputation:
             )
             continue
 
-        allowed, ceiling = apply_section_ceiling(
-            section, accepted_total, rules, age=inputs.age
-        )
+        allowed, ceiling = apply_section_ceiling(section, accepted_total, rules, age=inputs.age)
         deductions += allowed
 
         note = ""
         if accepted_total < declared_total:
             note = (
-                f"Declared {_money(declared_total)}, proved and accepted "
-                f"{_money(accepted_total)}."
+                f"Declared {_money(declared_total)}, proved and accepted {_money(accepted_total)}."
             )
         if ceiling is not None and accepted_total > ceiling:
             note = (note + " " if note else "") + f"Capped at the {section} limit."
@@ -664,9 +660,7 @@ def months_remaining_in_year(current_month: int, fy_start_month: int) -> int:
     return MONTHS_IN_YEAR - offset
 
 
-def compare_regimes(
-    inputs: ProjectionInput, rules: dict[str, Any]
-) -> dict[str, Any]:
+def compare_regimes(inputs: ProjectionInput, rules: dict[str, Any]) -> dict[str, Any]:
     """Project under both regimes, so an employee can choose with their own numbers.
 
     Most employees cannot make this choice unaided, and every one who guesses
@@ -680,9 +674,9 @@ def compare_regimes(
         results[regime] = project(replace(inputs, regime=regime), rules)
 
     best = min(results, key=lambda name: results[name].annual_tax_liability)
-    saving = max(r.annual_tax_liability for r in results.values()) - results[
-        best
-    ].annual_tax_liability
+    saving = (
+        max(r.annual_tax_liability for r in results.values()) - results[best].annual_tax_liability
+    )
 
     return {
         "regimes": {name: result.as_working() for name, result in results.items()},

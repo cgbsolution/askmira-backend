@@ -94,8 +94,7 @@ async def _earlier_years(
         by_period[line.period] = by_period.get(line.period, ZERO) + Decimal(str(line.difference))
     receipt = _receipt_start(batch)
     by_year = {
-        _start_year(label): amount
-        for label, amount in relief.allocate_by_period(by_period).items()
+        _start_year(label): amount for label, amount in relief.allocate_by_period(by_period).items()
     }
     earlier = {year: amount for year, amount in by_year.items() if year < receipt and amount > 0}
     return receipt, dict(sorted(earlier.items()))
@@ -183,9 +182,7 @@ async def compute_employee_relief(
                 original_income=original,
                 arrear_portion=portion,
                 tax_on_original=await _tax(session, user, label, year_regime, original),
-                tax_with_arrear=await _tax(
-                    session, user, label, year_regime, original + portion
-                ),
+                tax_with_arrear=await _tax(session, user, label, year_regime, original + portion),
             )
         )
 
@@ -357,9 +354,7 @@ async def form_10e_pdf(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No Form 10E has been issued for this relief.",
         )
-    letter, intact = await documents_service.verify_letter(
-        session, user, record.form_10e_letter_id
-    )
+    letter, intact = await documents_service.verify_letter(session, user, record.form_10e_letter_id)
     if not intact:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -22,8 +22,7 @@ ENDPOINTS: dict[str, str] = {
         "other id is a 404."
     ),
     "GET /payroll/my-total-rewards": (
-        "own: the caller's own statement, by user.employee_id from the token; takes no "
-        "person id."
+        "own: the caller's own statement, by user.employee_id from the token; takes no person id."
     ),
     "GET /payroll/my-salary": (
         "own: the caller's own salary history, by user.employee_id; takes no person id."

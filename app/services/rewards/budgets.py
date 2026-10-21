@@ -130,9 +130,7 @@ class BudgetDecision:
         return {
             "permitted": self.permitted,
             "blocking_budget_id": self.blocking_budget_id,
-            "blocking_scope": (
-                self.blocking_scope.value if self.blocking_scope else None
-            ),
+            "blocking_scope": (self.blocking_scope.value if self.blocking_scope else None),
             "warnings": list(self.warnings),
             "overspend_points": self.overspend_points,
             "message": self.message,
@@ -161,11 +159,7 @@ def check(
     if points <= 0:
         raise BudgetError("An award of zero or fewer points is not an award.")
 
-    applicable = [
-        b
-        for b in budgets
-        if b.covers(as_of) and scope_keys.get(b.scope) == b.scope_key
-    ]
+    applicable = [b for b in budgets if b.covers(as_of) and scope_keys.get(b.scope) == b.scope_key]
 
     exceeded = [b for b in applicable if b.consumed_points + points > b.allocated_points]
     hard = sorted(
@@ -238,9 +232,7 @@ def check(
     )
 
 
-def utilisation(
-    budgets: list[Budget], *, as_of: date, rate_per_point: Decimal
-) -> dict[str, Any]:
+def utilisation(budgets: list[Budget], *, as_of: date, rate_per_point: Decimal) -> dict[str, Any]:
     """Consumption per budget, in points and rupees.
 
     The rupee figure is what makes a budget report meaningful to finance, and
@@ -260,12 +252,8 @@ def utilisation(
                 "consumed_points": budget.consumed_points,
                 "remaining_points": budget.remaining,
                 "utilisation": budget.utilisation,
-                "allocated_rupees": str(
-                    money(Decimal(budget.allocated_points) * rate_per_point)
-                ),
-                "consumed_rupees": str(
-                    money(Decimal(budget.consumed_points) * rate_per_point)
-                ),
+                "allocated_rupees": str(money(Decimal(budget.allocated_points) * rate_per_point)),
+                "consumed_rupees": str(money(Decimal(budget.consumed_points) * rate_per_point)),
                 "enforcement": budget.enforcement.value,
                 "exhausted": budget.remaining <= 0,
             }

@@ -140,9 +140,9 @@ def _ctc_table(context: MergeContext) -> str:
         rows.append(
             "<tr>"
             f"<td>{html.escape(str(component['name']))}</td>"
-            f"<td style=\"text-align:right\">"
+            f'<td style="text-align:right">'
             f"{html.escape(group_indian(component['monthly_amount']))}</td>"
-            f"<td style=\"text-align:right\">"
+            f'<td style="text-align:right">'
             f"{html.escape(group_indian(component['annual_amount']))}</td>"
             "</tr>"
         )
@@ -374,10 +374,7 @@ def render_template(
         resolved[token] = value
 
     if unresolved:
-        raise LetterMergeError(
-            "This letter cannot be generated — "
-            + "; ".join(unresolved)
-        )
+        raise LetterMergeError("This letter cannot be generated — " + "; ".join(unresolved))
     if empty_required:
         raise LetterMergeError(
             "This letter cannot be generated: required field(s) resolved to nothing — "

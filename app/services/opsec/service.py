@@ -78,9 +78,7 @@ def _not_found(detail: str) -> HTTPException:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def session_policy(
-    session: AsyncSession, user: User
-) -> access.SessionPolicy:
+async def session_policy(session: AsyncSession, user: User) -> access.SessionPolicy:
     stmt = tenant_scoped(select(TenantSessionPolicy), TenantSessionPolicy, user)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
@@ -89,9 +87,7 @@ async def session_policy(
         idle_timeout_minutes=row.idle_timeout_minutes,
         absolute_lifetime_hours=row.absolute_lifetime_hours,
         max_concurrent_sessions=row.max_concurrent_sessions,
-        enforce_ip_allowlist_for_privileged=(
-            row.enforce_ip_allowlist_for_privileged
-        ),
+        enforce_ip_allowlist_for_privileged=(row.enforce_ip_allowlist_for_privileged),
     )
 
 
@@ -211,8 +207,7 @@ async def start_session(
         for row in active[:evict]:
             row.revoked_at = moment
             row.revoked_reason = (
-                "Displaced by a newer sign-in under this tenant's concurrent "
-                "session limit."
+                "Displaced by a newer sign-in under this tenant's concurrent session limit."
             )
 
     row = UserSession(
@@ -286,14 +281,10 @@ async def list_sessions(
                 ),
                 "state": state.value,
                 "is_usable": state.is_usable,
-                "revoked_at": (
-                    row.revoked_at.isoformat() if row.revoked_at else None
-                ),
+                "revoked_at": (row.revoked_at.isoformat() if row.revoked_at else None),
                 "revoked_reason": row.revoked_reason,
                 "step_up_verified_at": (
-                    row.step_up_verified_at.isoformat()
-                    if row.step_up_verified_at
-                    else None
+                    row.step_up_verified_at.isoformat() if row.step_up_verified_at else None
                 ),
             }
         )
@@ -334,9 +325,7 @@ async def revoke_session(
     moment = now or datetime.now(UTC)
 
     if session_id is None and all_for_user is None:
-        raise _bad_request(
-            "Revoking needs either one session or a user to revoke all for."
-        )
+        raise _bad_request("Revoking needs either one session or a user to revoke all for.")
 
     stmt = tenant_scoped(select(UserSession), UserSession, user)
     if session_id is not None:
@@ -373,11 +362,7 @@ async def revoke_session(
         actor=user,
         summary=(
             f"{len(rows)} session(s) revoked: {reason}"
-            + (
-                " Tokens issued before now are invalid."
-                if all_for_user is not None
-                else ""
-            )
+            + (" Tokens issued before now are invalid." if all_for_user is not None else "")
         ),
         request=request,
     )
@@ -548,10 +533,7 @@ async def satisfy_challenge(
         entity_type="step_up_challenge",
         entity_id=challenge.id,
         actor=user,
-        summary=(
-            f"Step-up for {challenge.action_key} "
-            f"{'satisfied' if succeeded else 'failed'}."
-        ),
+        summary=(f"Step-up for {challenge.action_key} {'satisfied' if succeeded else 'failed'}."),
         request=request,
     )
     await session.commit()
@@ -715,9 +697,7 @@ async def siem_health(
     }
 
 
-async def preview_events(
-    session: AsyncSession, user: User, *, limit: int = 20
-) -> dict[str, Any]:
+async def preview_events(session: AsyncSession, user: User, *, limit: int = 20) -> dict[str, Any]:
     """Map recent audit rows onto the wire format, so a client can see it.
 
     Shown rather than described. A SIEM engineer asking "what will arrive" gets
@@ -850,8 +830,7 @@ async def record_finding(
         scope_area = pentest.ScopeArea(area)
     except ValueError as exc:
         raise _bad_request(
-            f"{area!r} is not a scope area. Known: "
-            f"{', '.join(a.value for a in pentest.ScopeArea)}."
+            f"{area!r} is not a scope area. Known: {', '.join(a.value for a in pentest.ScopeArea)}."
         ) from exc
 
     finding = pentest.Finding(
@@ -956,12 +935,8 @@ async def registers(session: AsyncSession, user: User) -> dict[str, Any]:
                 "expected_interval_minutes": d.expected_interval_minutes,
                 "datasets": d.datasets,
                 "health_state": d.health_state.value,
-                "last_success_at": (
-                    d.last_success_at.isoformat() if d.last_success_at else None
-                ),
-                "last_failure_at": (
-                    d.last_failure_at.isoformat() if d.last_failure_at else None
-                ),
+                "last_success_at": (d.last_success_at.isoformat() if d.last_success_at else None),
+                "last_failure_at": (d.last_failure_at.isoformat() if d.last_failure_at else None),
             }
             for d in destinations
         ],
@@ -1039,11 +1014,7 @@ async def posture(
     as_of = today or datetime.now(UTC).date()
 
     drill_rows = (
-        (
-            await session.execute(
-                tenant_scoped(select(RestoreDrill), RestoreDrill, user)
-            )
-        )
+        (await session.execute(tenant_scoped(select(RestoreDrill), RestoreDrill, user)))
         .scalars()
         .all()
     )
@@ -1061,11 +1032,7 @@ async def posture(
     ]
 
     finding_rows = (
-        (
-            await session.execute(
-                tenant_scoped(select(PenTestFinding), PenTestFinding, user)
-            )
-        )
+        (await session.execute(tenant_scoped(select(PenTestFinding), PenTestFinding, user)))
         .scalars()
         .all()
     )

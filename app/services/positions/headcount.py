@@ -227,9 +227,7 @@ class OccupancySnapshot:
                 if self.primary_holder
                 else None
             ),
-            "covering": [
-                h.employee_label or h.employee_id for h in self.holders if not h.counts
-            ],
+            "covering": [h.employee_label or h.employee_id for h in self.holders if not h.counts],
         }
 
 
@@ -260,9 +258,7 @@ def occupancy_on(
             # Primary first, so `primary_holder` is not order-dependent.
             key=lambda a: (not a.counts, a.from_date, a.assignment_id),
         )
-        snapshots.append(
-            OccupancySnapshot(position=position, holders=tuple(holders), on=on)
-        )
+        snapshots.append(OccupancySnapshot(position=position, holders=tuple(holders), on=on))
     return snapshots
 
 
@@ -297,9 +293,7 @@ class Totals:
         }
 
 
-def aggregate(
-    snapshots: list[OccupancySnapshot], *, by: str | None = None
-) -> dict[str, Totals]:
+def aggregate(snapshots: list[OccupancySnapshot], *, by: str | None = None) -> dict[str, Totals]:
     """Roll up occupancy, optionally grouped.
 
     `by` is one of `department`, `location`, `cost_centre`, `grade`, or `None`
@@ -385,8 +379,4 @@ def people_holding_more_than_one_position(
     for snapshot in snapshots:
         for holder in snapshot.holders:
             holdings[holder.employee_id].append(snapshot.position.code)
-    return {
-        employee_id: sorted(codes)
-        for employee_id, codes in holdings.items()
-        if len(codes) > 1
-    }
+    return {employee_id: sorted(codes) for employee_id, codes in holdings.items() if len(codes) > 1}

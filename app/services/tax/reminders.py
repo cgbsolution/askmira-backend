@@ -45,8 +45,7 @@ EVENT_UNPROVEN = "tax.proof.unproven"
 TEMPLATES: dict[str, tuple[str, str]] = {
     EVENT_OPENED: (
         "The {window} window for {financial_year} is open",
-        "You can submit your tax {window}s for {financial_year} in AskMira until "
-        "{closes_at}.",
+        "You can submit your tax {window}s for {financial_year} in AskMira until {closes_at}.",
     ),
     EVENT_CLOSING: (
         "{days_left} day(s) left: tax {window} window for {financial_year}",

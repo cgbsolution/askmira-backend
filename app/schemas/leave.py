@@ -96,9 +96,7 @@ class LeavePolicyUpdate(BaseModel):
     applies_to_gender: PolicyGender | None = None
     annual_quota_days: Decimal | None = Field(default=None, ge=0, le=366, decimal_places=2)
     accrual_frequency: AccrualFrequency | None = None
-    max_carry_forward_days: Decimal | None = Field(
-        default=None, ge=0, le=366, decimal_places=2
-    )
+    max_carry_forward_days: Decimal | None = Field(default=None, ge=0, le=366, decimal_places=2)
     #: Sent as null to remove the limit; left out to keep it.
     max_consecutive_days: int | None = Field(default=None, ge=1, le=366)
     min_notice_days: int | None = Field(default=None, ge=0, le=365)

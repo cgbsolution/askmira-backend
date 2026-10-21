@@ -104,9 +104,7 @@ async def _offer(session: AsyncSession, user: User, offer_id: uuid.UUID) -> Offe
     return offer
 
 
-async def _requisition(
-    session: AsyncSession, user: User, requisition_id: uuid.UUID
-) -> Requisition:
+async def _requisition(session: AsyncSession, user: User, requisition_id: uuid.UUID) -> Requisition:
     requisition = await session.scalar(
         tenant_scoped(
             select(Requisition).where(Requisition.id == requisition_id), Requisition, user
@@ -117,9 +115,7 @@ async def _requisition(
     return requisition
 
 
-async def _structure(
-    session: AsyncSession, user: User, structure_id: uuid.UUID
-) -> SalaryStructure:
+async def _structure(session: AsyncSession, user: User, structure_id: uuid.UUID) -> SalaryStructure:
     structure = await session.scalar(
         tenant_scoped(
             select(SalaryStructure).where(SalaryStructure.id == structure_id),
@@ -134,9 +130,7 @@ async def _structure(
     return structure
 
 
-async def _components(
-    session: AsyncSession, user: User, offer: Offer
-) -> list[OfferComponent]:
+async def _components(session: AsyncSession, user: User, offer: Offer) -> list[OfferComponent]:
     rows = await session.scalars(
         tenant_scoped(
             select(OfferComponent)
@@ -444,8 +438,7 @@ async def update_offer_terms(
         summary=(
             f"Offer {offer.code} edited"
             + (
-                f"; {voided} approval(s) voided because these terms changed: "
-                f"{', '.join(changed)}"
+                f"; {voided} approval(s) voided because these terms changed: {', '.join(changed)}"
                 if voided
                 else ""
             )
@@ -466,9 +459,7 @@ async def update_offer_terms(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def _comparable_ctcs(
-    session: AsyncSession, user: User, offer: Offer
-) -> list[Decimal]:
+async def _comparable_ctcs(session: AsyncSession, user: User, offer: Offer) -> list[Decimal]:
     """What comparable employees currently earn.
 
     Same grade, same department where the offer names one. Only live salary
@@ -498,9 +489,7 @@ async def _comparable_ctcs(
     return [Decimal(str(value)) for value in rows.all()]
 
 
-async def approval_payload(
-    session: AsyncSession, user: User, *, offer_id: uuid.UUID
-) -> dict:
+async def approval_payload(session: AsyncSession, user: User, *, offer_id: uuid.UUID) -> dict:
     """Everything an approver needs, assembled server-side.
 
     Deviation and parity come back in one call with the offer. Fetched
@@ -514,12 +503,10 @@ async def approval_payload(
     deviation = offer_terms.budget_deviation(
         offered_ctc=Decimal(str(offer.ctc_annual)),
         band_min=(
-            None if requisition.budget_ctc_min is None
-            else Decimal(str(requisition.budget_ctc_min))
+            None if requisition.budget_ctc_min is None else Decimal(str(requisition.budget_ctc_min))
         ),
         band_max=(
-            None if requisition.budget_ctc_max is None
-            else Decimal(str(requisition.budget_ctc_max))
+            None if requisition.budget_ctc_max is None else Decimal(str(requisition.budget_ctc_max))
         ),
     )
     parity = offer_terms.internal_parity(
@@ -690,8 +677,7 @@ async def submit_offer(
         "status": offer.status.value,
         "over_band": over_band,
         "chain": [
-            {"sequence": s.sequence, "role": s.approver_role, "reason": s.reason}
-            for s in chain
+            {"sequence": s.sequence, "role": s.approver_role, "reason": s.reason} for s in chain
         ],
         "terms_fingerprint": fingerprint,
     }
@@ -746,8 +732,7 @@ async def approve_offer(
         is_hiring_manager=(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
-        is_originator=offer.created_by_user_id is not None
-        and offer.created_by_user_id == user.id,
+        is_originator=offer.created_by_user_id is not None and offer.created_by_user_id == user.id,
     )
     if not authority.allowed:
         raise permissions.forbidden(authority.message)
@@ -764,9 +749,7 @@ async def approve_offer(
 
     # The approver signs the terms as they stand right now, not as they stood
     # when the step was created.
-    fingerprint = offer_terms.terms_fingerprint(
-        await _material_terms(session, user, offer)
-    )
+    fingerprint = offer_terms.terms_fingerprint(await _material_terms(session, user, offer))
     pending.decision = ApprovalDecision.APPROVED if approve else ApprovalDecision.REJECTED
     pending.decided_by_user_id = user.id
     pending.decided_at = datetime.now(UTC)
@@ -780,9 +763,7 @@ async def approve_offer(
         remaining = 0
     else:
         remaining = sum(
-            1
-            for s in steps
-            if s.decision in (ApprovalDecision.PENDING, ApprovalDecision.VOIDED)
+            1 for s in steps if s.decision in (ApprovalDecision.PENDING, ApprovalDecision.VOIDED)
         )
         if remaining == 0:
             await _record_event(session, user, offer, to_status=OfferStatus.APPROVED)
@@ -817,7 +798,7 @@ async def approve_offer(
 
 
 def _place(location: Location | None) -> str | None:
-    """"Bengaluru HQ, Bengaluru"; just "Bengaluru" when the name already says it."""
+    """ "Bengaluru HQ, Bengaluru"; just "Bengaluru" when the name already says it."""
     if location is None:
         return None
     if location.city and location.city.lower() not in location.name.lower():
@@ -1008,7 +989,10 @@ async def release_offer(
         session, user, candidate_id=candidate.id
     )
     await candidate_comms.on_portal_link(
-        session, user, candidate=candidate, token=portal_token,
+        session,
+        user,
+        candidate=candidate,
+        token=portal_token,
         event_key=candidate_comms.OFFER_RELEASED,
         payload={"valid_until": f"{offer.valid_until:%d %B %Y}"},
     )
@@ -1154,7 +1138,11 @@ async def accept_offer(
             ),
         )
     result = await _respond(
-        session, user, offer, to_status=OfferStatus.ACCEPTED, reason=signature_reference,
+        session,
+        user,
+        offer,
+        to_status=OfferStatus.ACCEPTED,
+        reason=signature_reference,
         request=request,
     )
     return result
@@ -1281,9 +1269,7 @@ async def revoke_offer(
     return result
 
 
-async def lapse_due_offers(
-    session: AsyncSession, user: User, *, as_of: date | None = None
-) -> dict:
+async def lapse_due_offers(session: AsyncSession, user: User, *, as_of: date | None = None) -> dict:
     """Expire released offers past their validity date.
 
     Run on a schedule. An offer that never lapses shows a candidate who went
@@ -1418,9 +1404,7 @@ async def convert_to_employee(
                 "source": candidate.source,
                 "offer_code": offer.code,
                 "candidate_id": str(candidate.id),
-                "expected_ctc": (
-                    str(candidate.expected_ctc) if candidate.expected_ctc else None
-                ),
+                "expected_ctc": (str(candidate.expected_ctc) if candidate.expected_ctc else None),
                 "current_ctc_at_offer": (
                     str(candidate.current_ctc) if candidate.current_ctc else None
                 ),
@@ -1528,9 +1512,7 @@ async def _user_names(
     return {row.id: row.full_name for row in rows}
 
 
-async def _approval_steps(
-    session: AsyncSession, user: User, offer: Offer
-) -> list[OfferApproval]:
+async def _approval_steps(session: AsyncSession, user: User, offer: Offer) -> list[OfferApproval]:
     rows = await session.scalars(
         tenant_scoped(
             select(OfferApproval)
@@ -1559,8 +1541,7 @@ def _my_authority(
         is_hiring_manager=(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
-        is_originator=offer.created_by_user_id is not None
-        and offer.created_by_user_id == user.id,
+        is_originator=offer.created_by_user_id is not None and offer.created_by_user_id == user.id,
     )
     return {
         "can_decide": authority.allowed,
@@ -1667,9 +1648,7 @@ async def offer_history(
     ]
 
 
-async def offer_detail(
-    session: AsyncSession, user: User, *, offer_id: uuid.UUID
-) -> dict[str, Any]:
+async def offer_detail(session: AsyncSession, user: User, *, offer_id: uuid.UUID) -> dict[str, Any]:
     """The whole offer for HR: terms, breakup, approvals, history and what can be done."""
     offer = await _offer(session, user, offer_id)
     requisition = await _requisition(session, user, offer.requisition_id)

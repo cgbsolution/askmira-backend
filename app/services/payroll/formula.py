@@ -106,9 +106,7 @@ def validate_formula(formula: str, known_codes: set[str]) -> set[str]:
     referenced = referenced_components(formula)
     unknown = referenced - known_codes
     if unknown:
-        raise FormulaError(
-            f"Formula references unknown component(s): {', '.join(sorted(unknown))}"
-        )
+        raise FormulaError(f"Formula references unknown component(s): {', '.join(sorted(unknown))}")
     return referenced
 
 

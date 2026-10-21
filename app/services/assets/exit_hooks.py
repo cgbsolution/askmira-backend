@@ -176,8 +176,7 @@ async def add_exit_clearance(
         entity_type="exit_record",
         entity_id=record.id,
         summary=(
-            f"Added {len(added)} asset return item(s) to the exit checklist: "
-            + ", ".join(added)
+            f"Added {len(added)} asset return item(s) to the exit checklist: " + ", ".join(added)
         ),
         changes={"asset_tags": added},
         request=request,
@@ -290,9 +289,7 @@ async def on_clearance_signed(
         return
 
     employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == assignment.employee_id), Employee, user
-        )
+        tenant_scoped(select(Employee).where(Employee.id == assignment.employee_id), Employee, user)
     )
     who = employee.employee_code if employee else "the leaver"
     now = datetime.now(UTC)
@@ -316,8 +313,7 @@ async def on_clearance_signed(
             "settlement."
         )
         summary = (
-            f"{asset.asset_tag} not returned by {who} at exit; "
-            f"{item.recovery_amount} to recover"
+            f"{asset.asset_tag} not returned by {who} at exit; {item.recovery_amount} to recover"
         )
     elif item.status is ClearanceStatus.WAIVED:
         assignment.outcome = AssignmentOutcome.WRITTEN_OFF

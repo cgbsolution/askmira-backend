@@ -142,17 +142,17 @@ class Requisition(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # The approved seat this requisition fills (slice 23). Null is legitimate
     # and is exactly what makes a requisition off-budget: companies do hire
     # ahead of an approval, and a product that blocked it would be worked
     # around within a week, at which point the flag is gone too.
     position_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("positions.id", ondelete="SET NULL"),
-        nullable=True, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("positions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     # Headcount approved for this position by position management (slice 23).

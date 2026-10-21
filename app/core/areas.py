@@ -39,20 +39,49 @@ AREAS: dict[str, str] = {
 }
 
 RIGHTS: tuple[str, ...] = (
-    "can_view", "can_create", "can_edit", "can_delete", "can_approve", "can_export",
+    "can_view",
+    "can_create",
+    "can_edit",
+    "can_delete",
+    "can_approve",
+    "can_export",
 )
 
 _SEGMENT_AREA: dict[str, str] = {
     **dict.fromkeys(
-        ("employees", "org", "positions", "lifecycle", "exits", "documents", "letters",
-         "letter-templates", "onboarding", "assets", "helpdesk"),
+        (
+            "employees",
+            "org",
+            "positions",
+            "lifecycle",
+            "exits",
+            "documents",
+            "letters",
+            "letter-templates",
+            "onboarding",
+            "assets",
+            "helpdesk",
+        ),
         "people",
     ),
     **dict.fromkeys(("leave", "attendance"), "time"),
     **dict.fromkeys(
-        ("payroll", "salaries", "salary-components", "salary-structures", "tax", "statutory",
-         "filings", "disbursement", "arrears", "loans", "reimbursements", "gratuity",
-         "encashment", "gst"),
+        (
+            "payroll",
+            "salaries",
+            "salary-components",
+            "salary-structures",
+            "tax",
+            "statutory",
+            "filings",
+            "disbursement",
+            "arrears",
+            "loans",
+            "reimbursements",
+            "gratuity",
+            "encashment",
+            "gst",
+        ),
         "payroll",
     ),
     "expenses": "expenses",
@@ -60,8 +89,16 @@ _SEGMENT_AREA: dict[str, str] = {
         ("hiring", "offers", "careers", "interviews", "recruiting", "job-boards"), "hiring"
     ),
     **dict.fromkeys(
-        ("appraisal", "calibration", "competency", "cycle-config", "performance", "goals",
-         "feedback", "one-on-ones"),
+        (
+            "appraisal",
+            "calibration",
+            "competency",
+            "cycle-config",
+            "performance",
+            "goals",
+            "feedback",
+            "one-on-ones",
+        ),
         "performance",
     ),
     **dict.fromkeys(("culture", "rewards"), "culture"),

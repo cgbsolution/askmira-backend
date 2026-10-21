@@ -227,9 +227,7 @@ async def preview(
                     "period": arrear.period,
                     "earnings_arrear": str(arrear.earnings_arrear),
                     "employee_deduction_arrear": str(arrear.employee_deduction_arrear),
-                    "employer_contribution_arrear": str(
-                        arrear.employer_contribution_arrear
-                    ),
+                    "employer_contribution_arrear": str(arrear.employer_contribution_arrear),
                     "net_payable": str(arrear.net_payable),
                     "rule_set_ids": arrear.rule_set_ids,
                     "components": [d.as_dict() for d in arrear.diffs if d.difference],
@@ -307,9 +305,7 @@ async def list_lines(
     Never a lump sum: basic and a travel allowance are taxed differently, count
     differently towards PF, and appear on different lines of a return.
     """
-    rows = await arrears_service.batch_lines(
-        session, user, batch_id, employee_id=employee_id
-    )
+    rows = await arrears_service.batch_lines(session, user, batch_id, employee_id=employee_id)
     out = []
     for line, label in rows:
         read = ArrearLineRead.model_validate(line)
@@ -478,6 +474,4 @@ async def payable(
     What the next payroll run pays. The run itself is another module's; this is
     the list it reads.
     """
-    return await arrears_service.payable_arrears(
-        session, user, legal_entity_id=legal_entity_id
-    )
+    return await arrears_service.payable_arrears(session, user, legal_entity_id=legal_entity_id)

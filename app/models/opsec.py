@@ -88,28 +88,16 @@ class TenantSessionPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "tenant_session_policies"
     __table_args__ = (
         UniqueConstraint("tenant_id", name="uq_session_policy_per_tenant"),
-        CheckConstraint(
-            "idle_timeout_minutes >= 1", name="ck_session_idle_positive"
-        ),
-        CheckConstraint(
-            "absolute_lifetime_hours >= 1", name="ck_session_lifetime_positive"
-        ),
-        CheckConstraint(
-            "max_concurrent_sessions >= 0", name="ck_session_concurrency"
-        ),
+        CheckConstraint("idle_timeout_minutes >= 1", name="ck_session_idle_positive"),
+        CheckConstraint("absolute_lifetime_hours >= 1", name="ck_session_lifetime_positive"),
+        CheckConstraint("max_concurrent_sessions >= 0", name="ck_session_concurrency"),
     )
 
-    idle_timeout_minutes: Mapped[int] = mapped_column(
-        Integer, default=60, nullable=False
-    )
-    absolute_lifetime_hours: Mapped[int] = mapped_column(
-        Integer, default=12, nullable=False
-    )
+    idle_timeout_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    absolute_lifetime_hours: Mapped[int] = mapped_column(Integer, default=12, nullable=False)
     #: Zero means unlimited. A consultant on a laptop and a phone is not an
     #: attack, so a limit is opt-in.
-    max_concurrent_sessions: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    max_concurrent_sessions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     enforce_ip_allowlist_for_privileged: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
@@ -143,22 +131,20 @@ class UserSession(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     #: A hash, never the token. A session table holding live refresh tokens is
     #: a credential store with a friendly name.
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
 
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
     ip_address: Mapped[str | None] = mapped_column(INET, nullable=True)
@@ -166,9 +152,7 @@ class UserSession(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Best-effort, from the address. Shown as a hint, never as a fact — a VPN
     #: makes this wrong, and a UI presenting it as certain teaches people to
     #: dismiss a real alert.
-    approximate_location: Mapped[str | None] = mapped_column(
-        String(120), nullable=True
-    )
+    approximate_location: Mapped[str | None] = mapped_column(String(120), nullable=True)
     #: When the person last proved who they are, for step-up. Separate from
     #: session age on purpose: a ten-minute-old session is exactly as
     #: untrustworthy at a disbursement as a ten-hour-old one.
@@ -186,25 +170,24 @@ class StepUpChallenge(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "step_up_challenges"
-    __table_args__ = (
-        Index("ix_stepup_user", "tenant_id", "user_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_stepup_user", "tenant_id", "user_id", "created_at"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     session_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("user_sessions.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("user_sessions.id", ondelete="SET NULL"),
         nullable=True,
     )
     action_key: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
     #: Why the prompt appeared, shown to the person. An unexplained challenge is
     #: friction, and friction gets routed around.
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    satisfied_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     ip_address: Mapped[str | None] = mapped_column(INET, nullable=True)
 
@@ -215,9 +198,7 @@ class SiemDestination(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "siem_destinations"
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_siem_destination_name"),
-        CheckConstraint(
-            "expected_interval_minutes >= 1", name="ck_siem_interval_positive"
-        ),
+        CheckConstraint("expected_interval_minutes >= 1", name="ck_siem_interval_positive"),
     )
 
     name: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -232,21 +213,13 @@ class SiemDestination(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: How long a gap is normal for this tenant. A quiet tenant legitimately
     #: goes hours between events, and alerting them on a normal quiet period is
     #: how the alert gets muted.
-    expected_interval_minutes: Mapped[int] = mapped_column(
-        Integer, default=1440, nullable=False
-    )
+    expected_interval_minutes: Mapped[int] = mapped_column(Integer, default=1440, nullable=False)
     #: Which datasets this destination receives. Empty means all.
     datasets: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
-    last_success_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_failure_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    consecutive_failures: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     health_state: Mapped[DeliveryStateEnum] = mapped_column(
         Enum(DeliveryStateEnum, name="siem_delivery_state"),
         default=DeliveryStateEnum.NEVER_DELIVERED,
@@ -256,9 +229,7 @@ class SiemDestination(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: When somebody was last told this destination is unhealthy. Recorded so a
     #: failing feed is alerted once and then at a sensible interval, rather than
     #: every minute until the alert is muted.
-    alerted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SiemDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -276,8 +247,10 @@ class SiemDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     destination_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("siem_destinations.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("siem_destinations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     attempted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True

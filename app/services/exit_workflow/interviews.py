@@ -193,9 +193,7 @@ async def interview_summary(
     for key in RATING_KEYS:
         given = [r.ratings[key] for r in rows if isinstance((r.ratings or {}).get(key), int)]
         ratings[key] = (
-            {"average": round(statistics.fmean(given), 2), "answers": len(given)}
-            if given
-            else None
+            {"average": round(statistics.fmean(given), 2), "answers": len(given)} if given else None
         )
 
     def share(flag: str) -> str | None:
@@ -285,9 +283,7 @@ async def former_employee(
     record = await session.scalar(
         tenant_scoped(
             select(ExitRecord)
-            .where(
-                ExitRecord.employee_id == match.id, ExitRecord.status != ExitStatus.CANCELLED
-            )
+            .where(ExitRecord.employee_id == match.id, ExitRecord.status != ExitStatus.CANCELLED)
             .order_by(ExitRecord.created_at.desc())
             .limit(1),
             ExitRecord,

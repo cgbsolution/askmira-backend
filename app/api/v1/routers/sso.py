@@ -173,9 +173,7 @@ async def create_provider(
     provider = IdentityProvider(
         tenant_id=user.tenant_id,
         client_secret_encrypted=(
-            encrypt_secret(payload.client_secret, user.tenant_id)
-            if payload.client_secret
-            else None
+            encrypt_secret(payload.client_secret, user.tenant_id) if payload.client_secret else None
         ),
         **data,
     )
@@ -305,9 +303,7 @@ async def oidc_callback(
     The tokens returned here are AskMira's, carrying the role AskMira assigned.
     Nothing from the provider's claims influences that.
     """
-    attempt = await session.scalar(
-        select(SsoLoginAttempt).where(SsoLoginAttempt.state == state)
-    )
+    attempt = await session.scalar(select(SsoLoginAttempt).where(SsoLoginAttempt.state == state))
     if attempt is None or attempt.consumed_at is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -508,9 +504,7 @@ async def _complete_login(
         access_token=create_access_token(
             user_id=str(user.id), tenant_id=str(user.tenant_id), role=user.role.value
         ),
-        refresh_token=create_refresh_token(
-            user_id=str(user.id), tenant_id=str(user.tenant_id)
-        ),
+        refresh_token=create_refresh_token(user_id=str(user.id), tenant_id=str(user.tenant_id)),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserRead.model_validate(user),
         tenant=TenantRead.model_validate(tenant),

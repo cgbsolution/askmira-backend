@@ -368,8 +368,8 @@ async def capture_claim(
     )
     # A paper receipt seen in person is finance's call about somebody else's
     # claim. Anybody else — finance included, for their own — attaches the file.
-    paper_receipt = body.has_receipt and permissions.is_hr(user) and (
-        employee_id != user.employee_id
+    paper_receipt = (
+        body.has_receipt and permissions.is_hr(user) and (employee_id != user.employee_id)
     )
     return await expenses.capture_claim(
         session,

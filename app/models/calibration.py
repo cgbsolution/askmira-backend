@@ -79,7 +79,8 @@ class CalibrationPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     mode: Mapped[CalibrationMode] = mapped_column(
@@ -115,20 +116,17 @@ class DistributionTarget(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "distribution_targets"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "policy_id", "rating_value", name="uq_distribution_target"
-        ),
+        UniqueConstraint("tenant_id", "policy_id", "rating_value", name="uq_distribution_target"),
     )
 
     policy_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("calibration_policies.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("calibration_policies.id", ondelete="CASCADE"),
         nullable=False,
     )
     rating_value: Mapped[str] = mapped_column(String(64), nullable=False)
     target_percent: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
-    tolerance_percent: Mapped[float] = mapped_column(
-        Numeric(6, 2), default=0, nullable=False
-    )
+    tolerance_percent: Mapped[float] = mapped_column(Numeric(6, 2), default=0, nullable=False)
 
     policy: Mapped[CalibrationPolicy] = relationship(back_populates="targets")
 
@@ -139,7 +137,8 @@ class CalibrationSession(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "calibration_sessions"
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -162,9 +161,7 @@ class CalibrationSession(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    scheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Locking writes the final ratings back to the appraisals.
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -196,7 +193,8 @@ class CalibrationChange(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "calibration_changes"
 
     session_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("calibration_sessions.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("calibration_sessions.id", ondelete="CASCADE"),
         nullable=False,
     )
     appraisal_id: Mapped[uuid.UUID] = mapped_column(

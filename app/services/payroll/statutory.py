@@ -291,13 +291,11 @@ def compute_bonus(
     rate = percentage if percentage is not None else minimum_percent
     if rate < minimum_percent:
         raise StatutoryError(
-            f"A bonus percentage of {rate} is below the statutory minimum of "
-            f"{minimum_percent}."
+            f"A bonus percentage of {rate} is below the statutory minimum of {minimum_percent}."
         )
     if rate > maximum_percent:
         raise StatutoryError(
-            f"A bonus percentage of {rate} is above the statutory maximum of "
-            f"{maximum_percent}."
+            f"A bonus percentage of {rate} is above the statutory maximum of {maximum_percent}."
         )
 
     annual_wage = eligible_wage * Decimal(12)
@@ -307,9 +305,7 @@ def compute_bonus(
     # attendance, so an employee with unpaid absence gets a smaller bonus.
     proportion = days_worked / total_working_days
     if proportion < 1:
-        notes.append(
-            f"Prorated to {days_worked} of {total_working_days} working days."
-        )
+        notes.append(f"Prorated to {days_worked} of {total_working_days} working days.")
 
     return BonusResult(
         is_eligible=True,
@@ -354,9 +350,7 @@ class EsiContributionPeriod:
         return month >= self.start_month or month <= self.end_month
 
 
-def esi_contribution_period(
-    month: int, config: dict[str, Any]
-) -> EsiContributionPeriod:
+def esi_contribution_period(month: int, config: dict[str, Any]) -> EsiContributionPeriod:
     """The contribution period a month falls in."""
     periods = config.get("contribution_periods")
     if not periods:
@@ -465,9 +459,7 @@ def resolve_professional_tax_state(
 
     # The state in force at the start of the period.
     before = [
-        (effective, state)
-        for effective, state in location_history
-        if effective <= period_start
+        (effective, state) for effective, state in location_history if effective <= period_start
     ]
     opening_state = before[-1][1] if before else location_history[0][1]
 

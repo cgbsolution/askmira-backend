@@ -156,9 +156,7 @@ def _require_hr(user: User) -> None:
 
 def _not_yourself(user: User, employee_id: uuid.UUID, action: str) -> None:
     if user.employee_id is not None and employee_id == user.employee_id:
-        raise permissions.forbidden(
-            f"This asset is yours. Somebody else in HR has to {action} it."
-        )
+        raise permissions.forbidden(f"This asset is yours. Somebody else in HR has to {action} it.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -266,9 +264,7 @@ async def _user_ids_for_employees(
         (
             await session.scalars(
                 tenant_scoped(
-                    select(User.id).where(
-                        User.employee_id.in_(wanted), User.is_active.is_(True)
-                    ),
+                    select(User.id).where(User.employee_id.in_(wanted), User.is_active.is_(True)),
                     User,
                     user,
                 )
@@ -480,9 +476,12 @@ async def update_category(
         entity_id=category.id,
         summary=f"Changed the asset category {category.code}: {', '.join(sorted(before))}",
         changes={
-            field: {"from": str(old) if old is not None else None,
-                    "to": str(getattr(category, field)) if getattr(category, field) is not None
-                    else None}
+            field: {
+                "from": str(old) if old is not None else None,
+                "to": str(getattr(category, field))
+                if getattr(category, field) is not None
+                else None,
+            }
             for field, old in before.items()
         },
         request=request,
@@ -781,9 +780,7 @@ async def summary(session: AsyncSession, user: User) -> dict[str, Any]:
     by_status = {member.value: 0 for member in AssetStatus}
     for asset_status, count in (
         await session.execute(
-            tenant_scoped(
-                select(Asset.status, func.count()).group_by(Asset.status), Asset, user
-            )
+            tenant_scoped(select(Asset.status, func.count()).group_by(Asset.status), Asset, user)
         )
     ).all():
         by_status[asset_status.value] = count
@@ -1120,9 +1117,7 @@ async def change_status(
         )
     if target not in _TRANSITIONS[asset.status]:
         hint = (
-            " Take it back from its holder first."
-            if asset.status is AssetStatus.ASSIGNED
-            else ""
+            " Take it back from its holder first." if asset.status is AssetStatus.ASSIGNED else ""
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1369,9 +1364,7 @@ async def return_asset(
     asset.status_reason = assignment.return_notes if next_status is AssetStatus.IN_REPAIR else None
     asset.status_changed_at = now
     await session.flush()
-    holder = (await _employees(session, user, {assignment.employee_id})).get(
-        assignment.employee_id
-    )
+    holder = (await _employees(session, user, {assignment.employee_id})).get(assignment.employee_id)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1487,8 +1480,10 @@ async def employee_assets(
             tenant_scoped(
                 select(AssetAssignment)
                 .where(AssetAssignment.employee_id == employee_id)
-                .order_by(AssetAssignment.closed_at.desc().nulls_first(),
-                          AssetAssignment.assigned_at.desc()),
+                .order_by(
+                    AssetAssignment.closed_at.desc().nulls_first(),
+                    AssetAssignment.assigned_at.desc(),
+                ),
                 AssetAssignment,
                 user,
             )
@@ -2004,10 +1999,11 @@ async def approvals_inbox(session: AsyncSession, user: User) -> list[dict[str, A
     The same rule as `decide_request`: HR sees everybody's, a manager their
     reporting line's, and nobody their own.
     """
-    stmt = select(AssetRequest, Employee, AssetCategory).join(
-        Employee, Employee.id == AssetRequest.employee_id
-    ).join(AssetCategory, AssetCategory.id == AssetRequest.category_id).where(
-        AssetRequest.status == AssetRequestStatus.PENDING
+    stmt = (
+        select(AssetRequest, Employee, AssetCategory)
+        .join(Employee, Employee.id == AssetRequest.employee_id)
+        .join(AssetCategory, AssetCategory.id == AssetRequest.category_id)
+        .where(AssetRequest.status == AssetRequestStatus.PENDING)
     )
     if not permissions.is_hr(user):
         line = await permissions.reporting_line(session, user)

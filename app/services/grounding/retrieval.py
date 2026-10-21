@@ -149,9 +149,7 @@ class RetrievalScope:
         return {
             "kind": self.kind.value,
             "requester_employee_id": self.requester_employee_id,
-            "employee_count": (
-                "all" if self.kind is ScopeKind.TENANT else len(self.employee_ids)
-            ),
+            "employee_count": ("all" if self.kind is ScopeKind.TENANT else len(self.employee_ids)),
         }
 
 
@@ -184,9 +182,7 @@ def scope_for(
     kind = _ROLE_SCOPE.get(role, ScopeKind.SELF)
 
     if kind is ScopeKind.SELF:
-        resolved = (
-            frozenset({requester_employee_id}) if requester_employee_id else frozenset()
-        )
+        resolved = frozenset({requester_employee_id}) if requester_employee_id else frozenset()
     elif kind is ScopeKind.TEAM:
         resolved = frozenset(reachable_employee_ids)
         if requester_employee_id:
@@ -248,7 +244,7 @@ class RetrievedRecord:
         user-content delimiters used in `injection.py` so retrieved records and
         employee-typed text are never the same kind of thing in the prompt.
         """
-        lines = [f"<record id=\"{self.citation_id}\">"]
+        lines = [f'<record id="{self.citation_id}">']
         lines.extend(f"  {key}: {value}" for key, value in self.content.items())
         lines.append("</record>")
         return "\n".join(lines)

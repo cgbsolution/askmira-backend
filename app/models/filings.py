@@ -130,7 +130,10 @@ class TdsChallan(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "tds_challans"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "bsr_code", "deposit_date", "challan_serial",
+            "tenant_id",
+            "bsr_code",
+            "deposit_date",
+            "challan_serial",
             name="uq_tds_challan_identity",
         ),
     )

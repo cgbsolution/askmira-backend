@@ -117,9 +117,7 @@ class SubProcessor:
             "is_optional": self.is_optional,
             "categories_permitted": list(self.categories_permitted),
             "category_names": [
-                CATEGORIES[key].name
-                for key in self.categories_permitted
-                if key in CATEGORIES
+                CATEGORIES[key].name for key in self.categories_permitted if key in CATEGORIES
             ],
             "safeguards": list(self.safeguards),
         }
@@ -211,8 +209,7 @@ def sub_processor(key: str) -> SubProcessor:
         return SUB_PROCESSORS[key]
     except KeyError:
         raise KeyError(
-            f"No sub-processor {key!r}. Registered: "
-            f"{', '.join(sorted(SUB_PROCESSORS))}."
+            f"No sub-processor {key!r}. Registered: {', '.join(sorted(SUB_PROCESSORS))}."
         ) from None
 
 
@@ -220,9 +217,7 @@ def crosses_border(key: str) -> bool:
     return sub_processor(key).is_cross_border
 
 
-def assert_transfer_allowed(
-    sub_processor_key: str, category_keys: tuple[str, ...]
-) -> None:
+def assert_transfer_allowed(sub_processor_key: str, category_keys: tuple[str, ...]) -> None:
     """Refuse a transfer of categories a sub-processor may not receive.
 
     Raises rather than filtering. A version of this that dropped the offending
@@ -240,15 +235,11 @@ def assert_transfer_allowed(
             "to leave."
         )
 
-    disallowed = [
-        key for key in category_keys if key not in spec.categories_permitted
-    ]
+    disallowed = [key for key in category_keys if key not in spec.categories_permitted]
     if disallowed:
         names = ", ".join(sorted(category(k).name for k in disallowed))
         border = (
-            f"This is a cross-border transfer to {spec.country}. "
-            if spec.is_cross_border
-            else ""
+            f"This is a cross-border transfer to {spec.country}. " if spec.is_cross_border else ""
         )
         raise TransferError(
             f"{spec.name} may not receive: {names}. {border}"
@@ -311,12 +302,8 @@ def trust_centre_disclosure() -> dict[str, Any]:
     return {
         "ai_model_providers": [s.as_dict() for s in ai],
         "other_sub_processors": [s.as_dict() for s in others],
-        "cross_border_count": sum(
-            1 for s in SUB_PROCESSORS.values() if s.is_cross_border
-        ),
-        "in_india_count": sum(
-            1 for s in SUB_PROCESSORS.values() if not s.is_cross_border
-        ),
+        "cross_border_count": sum(1 for s in SUB_PROCESSORS.values() if s.is_cross_border),
+        "in_india_count": sum(1 for s in SUB_PROCESSORS.values() if not s.is_cross_border),
         "statement": (
             "Your employees' primary records are stored in India. The "
             f"{len(ai)} AI model provider(s) listed above process data outside "

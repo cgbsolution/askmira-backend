@@ -496,12 +496,16 @@ def _assignment_read(
 async def list_assignments(
     session: AsyncSession, user: User, *, employee_id: uuid.UUID | None = None
 ) -> list[AssignmentRead]:
-    shift_stmt = select(ShiftAssignment, Employee, Shift).join(
-        Employee, Employee.id == ShiftAssignment.employee_id
-    ).join(Shift, Shift.id == ShiftAssignment.shift_id)
-    roster_stmt = select(RosterAssignment, Employee, Roster).join(
-        Employee, Employee.id == RosterAssignment.employee_id
-    ).join(Roster, Roster.id == RosterAssignment.roster_id)
+    shift_stmt = (
+        select(ShiftAssignment, Employee, Shift)
+        .join(Employee, Employee.id == ShiftAssignment.employee_id)
+        .join(Shift, Shift.id == ShiftAssignment.shift_id)
+    )
+    roster_stmt = (
+        select(RosterAssignment, Employee, Roster)
+        .join(Employee, Employee.id == RosterAssignment.employee_id)
+        .join(Roster, Roster.id == RosterAssignment.roster_id)
+    )
     if employee_id is not None:
         shift_stmt = shift_stmt.where(ShiftAssignment.employee_id == employee_id)
         roster_stmt = roster_stmt.where(RosterAssignment.employee_id == employee_id)
@@ -563,8 +567,7 @@ async def assign_shift(
             "closed": closed,
         },
         summary=(
-            f"Assigned {employee.employee_code} to shift {shift.code} "
-            f"from {data.effective_from}"
+            f"Assigned {employee.employee_code} to shift {shift.code} from {data.effective_from}"
         ),
         request=request,
     )
@@ -623,8 +626,7 @@ async def assign_roster(
             "closed": closed,
         },
         summary=(
-            f"Assigned {employee.employee_code} to roster {roster.name} "
-            f"from {data.effective_from}"
+            f"Assigned {employee.employee_code} to roster {roster.name} from {data.effective_from}"
         ),
         request=request,
     )
@@ -791,9 +793,7 @@ async def update_attendance_settings(
         entity_id=tenant.id,
         actor=user,
         changes={"before": before.model_dump(), "after": after.model_dump()},
-        summary=(
-            f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}"
-        ),
+        summary=(f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}"),
         request=request,
     )
     await session.commit()

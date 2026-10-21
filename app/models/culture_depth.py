@@ -146,9 +146,7 @@ class CompanyValue(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One company value. `code` is what `competency_value_links` references."""
 
     __tablename__ = "company_values"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "code", name="uq_company_value_code"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_company_value_code"),)
 
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -210,9 +208,7 @@ class AwardProgramme(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A recurring award: its categories, its jury, and who may be nominated."""
 
     __tablename__ = "award_programmes"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_award_programme_name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_award_programme_name"),)
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -236,9 +232,7 @@ class AwardCycle(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "award_cycles"
     __table_args__ = (
-        UniqueConstraint(
-            "programme_id", "label", name="uq_award_cycle_label"
-        ),
+        UniqueConstraint("programme_id", "label", name="uq_award_cycle_label"),
         CheckConstraint(
             "nominations_close_on >= nominations_open_on",
             name="ck_award_window_ordered",
@@ -314,17 +308,13 @@ class AwardNomination(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: popularity contest with a jury watching.
     citation: Mapped[str] = mapped_column(Text, nullable=False)
     #: `[{kind, id, label}]` pointing at shoutouts, goals or project records.
-    supporting_evidence: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    supporting_evidence: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     status: Mapped[NominationStatusEnum] = mapped_column(
         Enum(NominationStatusEnum, name="award_nomination_status"),
         default=NominationStatusEnum.SUBMITTED,
         nullable=False,
     )
-    submitted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class JuryScore(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -337,9 +327,7 @@ class JuryScore(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "jury_scores"
     __table_args__ = (
-        UniqueConstraint(
-            "nomination_id", "juror_user_id", name="uq_one_score_per_juror"
-        ),
+        UniqueConstraint("nomination_id", "juror_user_id", name="uq_one_score_per_juror"),
     )
 
     nomination_id: Mapped[uuid.UUID] = mapped_column(
@@ -355,9 +343,7 @@ class JuryScore(Base, UUIDMixin, TenantMixin, TimestampMixin):
     scores: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_submitted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    submitted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AwardResult(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -369,9 +355,7 @@ class AwardResult(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "award_results"
     __table_args__ = (
-        UniqueConstraint(
-            "cycle_id", "category_key", "employee_id", name="uq_one_win_per_category"
-        ),
+        UniqueConstraint("cycle_id", "category_key", "employee_id", name="uq_one_win_per_category"),
         Index("ix_award_results_employee", "tenant_id", "employee_id"),
     )
 
@@ -395,9 +379,7 @@ class AwardResult(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     citation: Mapped[str] = mapped_column(Text, nullable=False)
     awarded_on: Mapped[date] = mapped_column(Date, nullable=False)
-    announced_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -410,9 +392,7 @@ class Survey(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "surveys"
     __table_args__ = (
-        CheckConstraint(
-            "min_responses_to_report >= 5", name="ck_survey_anonymity_floor"
-        ),
+        CheckConstraint("min_responses_to_report >= 5", name="ck_survey_anonymity_floor"),
         CheckConstraint("closes_on >= opens_on", name="ck_survey_window_ordered"),
         CheckConstraint(
             "resurvey_interval_days IS NULL OR resurvey_interval_days >= 30",
@@ -440,9 +420,7 @@ class Survey(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: A check constraint holds the floor at five. A tenant may raise it; the
     #: database will not let anybody lower it, because a threshold an admin can
     #: set to one is not a threshold.
-    min_responses_to_report: Mapped[int] = mapped_column(
-        Integer, default=5, nullable=False
-    )
+    min_responses_to_report: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     is_anonymous: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: Days after this wave closes that the next wave opens. Null means no
     #: re-survey is scheduled. `schedule_due_resurveys` reads it; nothing else
@@ -467,11 +445,7 @@ class SurveyParticipant(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "survey_participants"
-    __table_args__ = (
-        UniqueConstraint(
-            "survey_id", "employee_id", name="uq_one_participant_row"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("survey_id", "employee_id", name="uq_one_participant_row"),)
 
     survey_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -485,9 +459,7 @@ class SurveyParticipant(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    responded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reminded_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
@@ -541,9 +513,7 @@ class SurveyActionPlan(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """What one group committed to after seeing its results."""
 
     __tablename__ = "survey_action_plans"
-    __table_args__ = (
-        Index("ix_action_plans_scope", "tenant_id", "scope", "scope_key"),
-    )
+    __table_args__ = (Index("ix_action_plans_scope", "tenant_id", "scope", "scope_key"),)
 
     survey_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -578,9 +548,7 @@ class ActionPlanItem(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One thing somebody said they would do."""
 
     __tablename__ = "action_plan_items"
-    __table_args__ = (
-        Index("ix_action_items_owner", "tenant_id", "owner_employee_id"),
-    )
+    __table_args__ = (Index("ix_action_items_owner", "tenant_id", "owner_employee_id"),)
 
     plan_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -611,26 +579,18 @@ class Announcement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One published communication."""
 
     __tablename__ = "announcements"
-    __table_args__ = (
-        Index("ix_announcements_publish", "tenant_id", "publish_at"),
-    )
+    __table_args__ = (Index("ix_announcements_publish", "tenant_id", "publish_at"),)
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     #: `{department_ids, location_ids, grades}`. All empty means everybody -
     #: unconfigured and nobody have to be different states.
     audience: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
-    publish_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    publish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     #: Null where acknowledgement is required: a register that disappears is not
     #: a register, and the audit question is asked months later.
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    requires_acknowledgement: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requires_acknowledgement: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     channels: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     #: SHA-256 of the title and body as published. An acknowledgement stores the
     #: hash it attested to, so an edit does not silently inherit signatures.
@@ -641,9 +601,7 @@ class Announcement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: When the audience was notified through the notification engine. Null
     #: until `publish_at` has passed and delivery ran - which is what stops a
     #: scheduled announcement being sent twice.
-    delivered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: How many people with a login the delivery reached.
     delivered_count: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
@@ -680,9 +638,7 @@ class AnnouncementAcknowledgement(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    acknowledged_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    acknowledged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     #: Kept for an audit that asks how, not only whether.
     channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -702,9 +658,7 @@ class EventPrivacyPreference(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "event_privacy_preferences"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "employee_id", name="uq_event_privacy_person"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "employee_id", name="uq_event_privacy_person"),)
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -712,26 +666,18 @@ class EventPrivacyPreference(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    share_birthday: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    share_work_anniversary: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    share_birthday: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    share_work_anniversary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     #: `team` or `company`. Some people are happy for their team to know and not
     #: the whole organisation.
-    birthday_scope: Mapped[str] = mapped_column(
-        String(16), default="team", nullable=False
-    )
+    birthday_scope: Mapped[str] = mapped_column(String(16), default="team", nullable=False)
 
 
 class CompanyEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A holiday or company event on the shared calendar. Nobody's private data."""
 
     __tablename__ = "company_events"
-    __table_args__ = (
-        Index("ix_company_events_date", "tenant_id", "on_date"),
-    )
+    __table_args__ = (Index("ix_company_events_date", "tenant_id", "on_date"),)
 
     kind: Mapped[EventKindEnum] = mapped_column(
         Enum(EventKindEnum, name="calendar_event_kind"), nullable=False

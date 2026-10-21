@@ -37,16 +37,18 @@ class TalentPoolMember(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One candidate in one pool, with who put them there and why."""
 
     __tablename__ = "talent_pool_members"
-    __table_args__ = (
-        UniqueConstraint("pool_id", "candidate_id", name="uq_talent_pool_member"),
-    )
+    __table_args__ = (UniqueConstraint("pool_id", "candidate_id", name="uq_talent_pool_member"),)
 
     pool_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("talent_pools.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("talent_pools.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)

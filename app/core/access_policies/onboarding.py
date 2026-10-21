@@ -18,8 +18,7 @@ ENDPOINTS: dict[str, str] = {
         "scoped:_refuse_completion: the joiner for their own document task, or HR."
     ),
     "POST /onboarding/tasks/{task_id}/form": (
-        "scoped:can_manage: the joiner generates their own plan's form, or HR does; "
-        "nobody else."
+        "scoped:can_manage: the joiner generates their own plan's form, or HR does; nobody else."
     ),
     "GET /onboarding/tasks/{task_id}/document": (
         "scoped:_task_and_plan: somebody who can see the plan; the vault then allows only "

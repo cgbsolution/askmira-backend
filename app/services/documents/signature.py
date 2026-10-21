@@ -146,9 +146,7 @@ class NoopProvider(SignatureProvider):
     async def get_status(self, request_id: str) -> SignatureStatus:
         if request_id not in self._documents:
             raise SignatureError(f"Unknown signature request {request_id}")
-        return SignatureStatus(
-            request_id=request_id, state="signed", signed_at=datetime.now(UTC)
-        )
+        return SignatureStatus(request_id=request_id, state="signed", signed_at=datetime.now(UTC))
 
     async def download_signed(self, request_id: str) -> bytes:
         document = self._documents.get(request_id)
@@ -336,7 +334,6 @@ def get_provider(name: str, **kwargs: Any) -> SignatureProvider:
     provider_class = _PROVIDERS.get(name.lower())
     if provider_class is None:
         raise SignatureError(
-            f"Unknown signature provider '{name}'. Available: "
-            f"{', '.join(sorted(_PROVIDERS))}"
+            f"Unknown signature provider '{name}'. Available: {', '.join(sorted(_PROVIDERS))}"
         )
     return provider_class(**kwargs)

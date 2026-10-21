@@ -102,7 +102,11 @@ class NotificationTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "notification_templates"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "event_key", "channel", "locale", "version",
+            "tenant_id",
+            "event_key",
+            "channel",
+            "locale",
+            "version",
             name="uq_notification_template_version",
         ),
     )
@@ -123,7 +127,8 @@ class NotificationTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     # WhatsApp business-initiated messages must name an approved Meta template.
     whatsapp_template_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("whatsapp_templates.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("whatsapp_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -176,9 +181,7 @@ class WhatsAppConsent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "whatsapp_consents"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", name="uq_whatsapp_consent_user"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_whatsapp_consent_user"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -195,9 +198,7 @@ class WhatsAppConsent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # The last inbound message from this user. Meta's 24-hour customer-service
     # window is measured from it: inside the window a free-form reply is
     # allowed, outside it only an approved template.
-    last_inbound_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def is_active(self) -> bool:
@@ -234,8 +235,10 @@ class Notification(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "notifications"
 
     recipient_user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     event_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     channel: Mapped[Channel] = mapped_column(
@@ -256,9 +259,7 @@ class Notification(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # and security alerts; not shoutouts.
     is_urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    provider_message_id: Mapped[str | None] = mapped_column(
-        String(255), nullable=True, index=True
-    )
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -284,8 +285,10 @@ class NotificationDigest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "notification_digests"
 
     recipient_user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     # In the recipient's own timezone, which is why it is stored rather than
     # derived at send time.
@@ -384,7 +387,9 @@ class PushDevice(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     #: SHA-256 of the token, to find a phone again; the token itself is encrypted.

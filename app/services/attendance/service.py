@@ -80,10 +80,7 @@ def haversine_metres(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     d_phi = math.radians(lat2 - lat1)
     d_lambda = math.radians(lon2 - lon1)
 
-    a = (
-        math.sin(d_phi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    )
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
     return 2 * EARTH_RADIUS_METRES * math.asin(math.sqrt(a))
 
 
@@ -269,8 +266,7 @@ class ShiftResolver:
 
         for roster_assignment in self._rosters.get(employee_id, []):
             if roster_assignment.effective_from <= on_date and (
-                roster_assignment.effective_to is None
-                or roster_assignment.effective_to >= on_date
+                roster_assignment.effective_to is None or roster_assignment.effective_to >= on_date
             ):
                 roster: Roster = roster_assignment.roster
                 if roster.cycle_days <= 0:
@@ -325,19 +321,17 @@ async def _leave_days_for(
     day: on leave if both halves are paid, loss of pay if neither is, and a
     half-payable day when only one is.
     """
-    stmt = (
-        tenant_scoped(
-            select(LeaveRequest, LeaveType)
-            .join(LeaveType, LeaveType.id == LeaveRequest.leave_type_id)
-            .where(
-                LeaveRequest.employee_id == employee_id,
-                LeaveRequest.status == LeaveRequestStatus.APPROVED,
-                LeaveRequest.start_date <= end,
-                LeaveRequest.end_date >= start,
-            ),
-            LeaveRequest,
-            user,
-        )
+    stmt = tenant_scoped(
+        select(LeaveRequest, LeaveType)
+        .join(LeaveType, LeaveType.id == LeaveRequest.leave_type_id)
+        .where(
+            LeaveRequest.employee_id == employee_id,
+            LeaveRequest.status == LeaveRequestStatus.APPROVED,
+            LeaveRequest.start_date <= end,
+            LeaveRequest.end_date >= start,
+        ),
+        LeaveRequest,
+        user,
     )
     result: dict[date, tuple[bool, bool]] = {}
     unpaid: list[UnpaidLeaveSpan] = []
@@ -370,9 +364,7 @@ async def _leave_days_for(
     return result, unpaid
 
 
-def _sandwiched_unpaid_days(
-    spans: list[UnpaidLeaveSpan], is_off: Any
-) -> set[date]:
+def _sandwiched_unpaid_days(spans: list[UnpaidLeaveSpan], is_off: Any) -> set[date]:
     """Offs strictly between the first and last working day of unpaid leave that charged them.
 
     The leave engine charges them under a policy's sandwich rule; a request
@@ -410,9 +402,7 @@ async def _regularisations_for(
     return {r.attendance_date: r for r in (await session.scalars(stmt)).all()}
 
 
-async def _locked_dates(
-    session: AsyncSession, user: User, start: date, end: date
-) -> set[date]:
+async def _locked_dates(session: AsyncSession, user: User, start: date, end: date) -> set[date]:
     """Dates inside any active lock that overlaps the range."""
     locks = (
         await session.scalars(
@@ -491,9 +481,7 @@ async def recompute_range(
                     ),
                 )
 
-    people_stmt = select(
-        Employee.id, Employee.date_of_joining, Employee.date_of_exit
-    ).where(
+    people_stmt = select(Employee.id, Employee.date_of_joining, Employee.date_of_exit).where(
         Employee.deleted_at.is_(None),
         Employee.status != EmploymentStatus.PRE_JOINING,
     )
@@ -536,12 +524,10 @@ async def recompute_range(
             select(AttendancePunch)
             .where(
                 AttendancePunch.employee_id == employee_id,
-                AttendancePunch.punched_at >= datetime.combine(
-                    first - timedelta(days=1), datetime.min.time(), tzinfo=UTC
-                ),
-                AttendancePunch.punched_at <= datetime.combine(
-                    last + timedelta(days=2), datetime.min.time(), tzinfo=UTC
-                ),
+                AttendancePunch.punched_at
+                >= datetime.combine(first - timedelta(days=1), datetime.min.time(), tzinfo=UTC),
+                AttendancePunch.punched_at
+                <= datetime.combine(last + timedelta(days=2), datetime.min.time(), tzinfo=UTC),
             )
             .order_by(AttendancePunch.punched_at),
             AttendancePunch,
@@ -564,9 +550,7 @@ async def recompute_range(
         while cursor <= last:
             day = cursor
             cursor += timedelta(days=1)
-            if day in locked or (
-                missing_only and day in existing and not _unjudged(existing[day])
-            ):
+            if day in locked or (missing_only and day in existing and not _unjudged(existing[day])):
                 continue
 
             plan = resolver.resolve(employee_id, day)
@@ -828,8 +812,15 @@ async def lock_period(
     # Every day that is over must have a computed row before it is frozen: a
     # missing row counts as zero loss of pay, which silently overpays.
     await recompute_range(
-        session, user, employee_ids=None, start=period_start, end=period_end,
-        skip_locked=True, missing_only=True, request=request, commit=False,
+        session,
+        user,
+        employee_ids=None,
+        start=period_start,
+        end=period_end,
+        skip_locked=True,
+        missing_only=True,
+        request=request,
+        commit=False,
     )
 
     if existing is not None:
@@ -906,10 +897,7 @@ async def unlock_period(
             "period_end": str(lock.period_end),
             "reason": reason,
         },
-        summary=(
-            f"Unlocked attendance for {lock.period_start} to {lock.period_end} "
-            f"({reason})"
-        ),
+        summary=(f"Unlocked attendance for {lock.period_start} to {lock.period_end} ({reason})"),
         request=request,
     )
     await session.commit()
@@ -977,9 +965,7 @@ async def _approver_user_ids(
         found = (
             await session.scalars(
                 tenant_scoped(
-                    select(User.id).where(
-                        User.employee_id == manager_id, User.is_active.is_(True)
-                    ),
+                    select(User.id).where(User.employee_id == manager_id, User.is_active.is_(True)),
                     User,
                     user,
                 )
@@ -1615,9 +1601,7 @@ async def import_punch_rows(
 # ── Scheduler entry point ───────────────────────────────────────────────────
 
 
-async def nightly_recompute(
-    session: AsyncSession, user: User, *, as_of: date
-) -> dict[str, Any]:
+async def nightly_recompute(session: AsyncSession, user: User, *, as_of: date) -> dict[str, Any]:
     """The nightly job's body for one tenant.
 
     Recomputes the last three days — a night shift that started the day before
@@ -1629,15 +1613,25 @@ async def nightly_recompute(
     recent_start = as_of - timedelta(days=3)
     recent_end = as_of - timedelta(days=1)
     written = await recompute_range(
-        session, user, employee_ids=None, start=recent_start, end=recent_end,
-        skip_locked=True, commit=False,
+        session,
+        user,
+        employee_ids=None,
+        start=recent_start,
+        end=recent_end,
+        skip_locked=True,
+        commit=False,
     )
     backfill_start = (as_of.replace(day=1) - timedelta(days=1)).replace(day=1)
     backfilled = 0
     if backfill_start < recent_start:
         backfilled = await recompute_range(
-            session, user, employee_ids=None, start=backfill_start,
-            end=recent_start - timedelta(days=1), skip_locked=True, missing_only=True,
+            session,
+            user,
+            employee_ids=None,
+            start=backfill_start,
+            end=recent_start - timedelta(days=1),
+            skip_locked=True,
+            missing_only=True,
             commit=False,
         )
     await session.commit()

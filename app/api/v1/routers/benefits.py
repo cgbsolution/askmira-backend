@@ -112,7 +112,5 @@ async def endorsements(
     plan_id: uuid.UUID, since: date, user: CurrentUser, session: DbSession, request: Request
 ) -> Response:
     """Additions and deletions since a date, for the insurer's endorsement."""
-    content = await benefits.endorsements_csv(
-        session, user, plan_id, since=since, request=request
-    )
+    content = await benefits.endorsements_csv(session, user, plan_id, since=since, request=request)
     return _csv(content, f"endorsements-since-{since}.csv")

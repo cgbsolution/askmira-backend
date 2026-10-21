@@ -644,8 +644,12 @@ async def register_device(
     now = _dt.now(UTC)
     if row is None:
         row = PushDevice(
-            tenant_id=user.tenant_id, user_id=user.id, push_token_hash=digest,
-            push_token_encrypted=token, platform=platform, last_registered_at=now,
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            push_token_hash=digest,
+            push_token_encrypted=token,
+            platform=platform,
+            last_registered_at=now,
         )
         session.add(row)
     else:

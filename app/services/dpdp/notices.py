@@ -125,9 +125,7 @@ _LANGUAGE_NAMES: dict[Language, str] = {
 #: `Language`, and an invariant asserts it is a strict subset — the day it
 #: equals `Language` is the day this product genuinely supports all of them,
 #: and that day should require editing this line.
-SHIPPED_LANGUAGES: frozenset[Language] = frozenset(
-    {Language.ENGLISH, Language.HINDI}
-)
+SHIPPED_LANGUAGES: frozenset[Language] = frozenset({Language.ENGLISH, Language.HINDI})
 
 
 #: Framing text per language. Purpose descriptions live on the `Purpose` and
@@ -247,9 +245,7 @@ class Notice:
 
     @property
     def untranslated_items(self) -> int:
-        return sum(
-            1 for i in (*self.choices, *self.disclosures) if i.body_untranslated
-        )
+        return sum(1 for i in (*self.choices, *self.disclosures) if i.body_untranslated)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -269,9 +265,7 @@ class Notice:
 
 
 def _item(spec: Purpose, framing: dict[str, str], *, translated: bool) -> NoticeItem:
-    data_used = tuple(
-        category(key).name for key in spec.data_categories
-    )
+    data_used = tuple(category(key).name for key in spec.data_categories)
     return NoticeItem(
         purpose_key=spec.key,
         heading=spec.name,
@@ -340,7 +334,5 @@ def render_notice(
             if choices
             else framing["rights_line"]
         ),
-        fallback_line=(
-            _FRAMING[Language.ENGLISH]["fallback_line"] if is_fallback else ""
-        ),
+        fallback_line=(_FRAMING[Language.ENGLISH]["fallback_line"] if is_fallback else ""),
     )

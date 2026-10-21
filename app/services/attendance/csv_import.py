@@ -211,9 +211,7 @@ def parse_punch_csv(
             errors.append(RowError(number, code, str(exc)))
             continue
         if punched_at > now + _FUTURE_TOLERANCE:
-            errors.append(
-                RowError(number, code, f"{cell('punched_at')} is in the future.")
-            )
+            errors.append(RowError(number, code, f"{cell('punched_at')} is in the future."))
             continue
 
         device_id = cell("device_id") or None

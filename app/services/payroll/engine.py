@@ -459,30 +459,18 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         lines = []
 
     gross_earnings = sum(
-        (
-            line.amount
-            for line in lines
-            if line.component_type is ComponentType.EARNING
-        ),
+        (line.amount for line in lines if line.component_type is ComponentType.EARNING),
         start=Decimal(0),
     )
 
     # ── 2. Statutory wage bases, from the prorated amounts ──────────────────
     # PF on BASIC + DA (whatever the tenant has flagged), never on gross.
     pf_wage_base = sum(
-        (
-            prorated[c.component_code]
-            for c in salary.components
-            if c.counts_toward_pf
-        ),
+        (prorated[c.component_code] for c in salary.components if c.counts_toward_pf),
         start=Decimal(0),
     )
     esi_wage_base = sum(
-        (
-            prorated[c.component_code]
-            for c in salary.components
-            if c.counts_toward_esi
-        ),
+        (prorated[c.component_code] for c in salary.components if c.counts_toward_esi),
         start=Decimal(0),
     )
 
@@ -686,15 +674,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             tds = result.amount
             tds_working = result.working
 
-    total_deductions = (
-        pf_employee + vpf + esi_employee + professional_tax + lwf_employee + tds
-    )
+    total_deductions = pf_employee + vpf + esi_employee + professional_tax + lwf_employee + tds
     total_deductions += sum(
-        (
-            line.amount
-            for line in lines
-            if line.component_type is ComponentType.DEDUCTION
-        ),
+        (line.amount for line in lines if line.component_type is ComponentType.DEDUCTION),
         start=Decimal(0),
     )
     total_deductions += input_deductions
@@ -749,9 +731,15 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             total_deductions += item.amount
             computed_inputs.append(
                 ComputedInputLine(
-                    provider=item.provider, code=item.code, name=item.name, kind=item.kind,
-                    amount=_money(item.amount), requested=_money(item.amount),
-                    taxable_amount=_ZERO, basis=item.basis, source=item.source,
+                    provider=item.provider,
+                    code=item.code,
+                    name=item.name,
+                    kind=item.kind,
+                    amount=_money(item.amount),
+                    requested=_money(item.amount),
+                    taxable_amount=_ZERO,
+                    basis=item.basis,
+                    source=item.source,
                 )
             )
         else:
@@ -765,8 +753,13 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
             computed_inputs.append(
                 ComputedInputLine(
-                    provider=item.provider, code=item.code, name=item.name, kind=item.kind,
-                    amount=_ZERO, requested=_money(item.amount), taxable_amount=_ZERO,
+                    provider=item.provider,
+                    code=item.code,
+                    name=item.name,
+                    kind=item.kind,
+                    amount=_ZERO,
+                    requested=_money(item.amount),
+                    taxable_amount=_ZERO,
                     basis=(
                         f"Not recovered this month: {reason}. It stays owed and is attempted "
                         "again next run."
@@ -819,50 +812,89 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     if pf_rules is not None:
         lines.extend(
             [
-                ComputedLine("PF_EMPLOYEE", "Provident Fund (employee)",
-                             ComponentType.DEDUCTION, pf_employee,
-                             f"{pf_employee_rate}% of PF wage base {pf_base}", str(pf_rules.id)),
-                ComputedLine("PF_EMPLOYER", "Provident Fund (employer)",
-                             ComponentType.EMPLOYER_CONTRIBUTION, pf_employer,
-                             f"{pf_employer_rate}% of PF wage base {pf_base}", str(pf_rules.id)),
+                ComputedLine(
+                    "PF_EMPLOYEE",
+                    "Provident Fund (employee)",
+                    ComponentType.DEDUCTION,
+                    pf_employee,
+                    f"{pf_employee_rate}% of PF wage base {pf_base}",
+                    str(pf_rules.id),
+                ),
+                ComputedLine(
+                    "PF_EMPLOYER",
+                    "Provident Fund (employer)",
+                    ComponentType.EMPLOYER_CONTRIBUTION,
+                    pf_employer,
+                    f"{pf_employer_rate}% of PF wage base {pf_base}",
+                    str(pf_rules.id),
+                ),
             ]
         )
     if esi_rules is not None and (esi_employee or esi_employer):
         lines.extend(
             [
-                ComputedLine("ESI_EMPLOYEE", "ESI (employee)", ComponentType.DEDUCTION,
-                             esi_employee, f"ESI wages {contribution_base}",
-                             str(esi_rules.id)),
-                ComputedLine("ESI_EMPLOYER", "ESI (employer)",
-                             ComponentType.EMPLOYER_CONTRIBUTION, esi_employer,
-                             f"ESI wages {contribution_base}", str(esi_rules.id)),
+                ComputedLine(
+                    "ESI_EMPLOYEE",
+                    "ESI (employee)",
+                    ComponentType.DEDUCTION,
+                    esi_employee,
+                    f"ESI wages {contribution_base}",
+                    str(esi_rules.id),
+                ),
+                ComputedLine(
+                    "ESI_EMPLOYER",
+                    "ESI (employer)",
+                    ComponentType.EMPLOYER_CONTRIBUTION,
+                    esi_employer,
+                    f"ESI wages {contribution_base}",
+                    str(esi_rules.id),
+                ),
             ]
         )
     if vpf and pf_rules is not None:
         lines.append(
-            ComputedLine("VPF", "Voluntary Provident Fund", ComponentType.DEDUCTION, vpf,
-                         f"employee election on PF wage base {pf_wage_base}", str(pf_rules.id))
+            ComputedLine(
+                "VPF",
+                "Voluntary Provident Fund",
+                ComponentType.DEDUCTION,
+                vpf,
+                f"employee election on PF wage base {pf_wage_base}",
+                str(pf_rules.id),
+            )
         )
     if lwf_employee or lwf_employer:
         lines.extend(
             [
-                ComputedLine("LWF_EMPLOYEE", "Labour Welfare Fund (employee)",
-                             ComponentType.DEDUCTION, lwf_employee,
-                             f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
-                             f"{payroll_input.period_start.month}",
-                             str(lwf_rules.id)),  # type: ignore[union-attr]
-                ComputedLine("LWF_EMPLOYER", "Labour Welfare Fund (employer)",
-                             ComponentType.EMPLOYER_CONTRIBUTION, lwf_employer,
-                             f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
-                             f"{payroll_input.period_start.month}",
-                             str(lwf_rules.id)),  # type: ignore[union-attr]
+                ComputedLine(
+                    "LWF_EMPLOYEE",
+                    "Labour Welfare Fund (employee)",
+                    ComponentType.DEDUCTION,
+                    lwf_employee,
+                    f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
+                    f"{payroll_input.period_start.month}",
+                    str(lwf_rules.id),
+                ),  # type: ignore[union-attr]
+                ComputedLine(
+                    "LWF_EMPLOYER",
+                    "Labour Welfare Fund (employer)",
+                    ComponentType.EMPLOYER_CONTRIBUTION,
+                    lwf_employer,
+                    f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
+                    f"{payroll_input.period_start.month}",
+                    str(lwf_rules.id),
+                ),  # type: ignore[union-attr]
             ]
         )
     if professional_tax:
         lines.append(
-            ComputedLine("PT", "Professional Tax", ComponentType.DEDUCTION, professional_tax,
-                         f"{pt_rules.jurisdiction} slab on gross {month_gross}",  # type: ignore[union-attr]
-                         str(pt_rules.id))  # type: ignore[union-attr]
+            ComputedLine(
+                "PT",
+                "Professional Tax",
+                ComponentType.DEDUCTION,
+                professional_tax,
+                f"{pt_rules.jurisdiction} slab on gross {month_gross}",  # type: ignore[union-attr]
+                str(pt_rules.id),
+            )  # type: ignore[union-attr]
         )
 
     over_ceiling: dict[str, str] | None = None
@@ -931,12 +963,16 @@ def _check_input(item: InputLine) -> None:
         raise PayrollRuleError(
             f"{item.name}: {item.taxable_amount} taxable is more than the {item.amount} paid"
         )
-    if item.kind in (
-        InputKind.REIMBURSEMENT,
-        InputKind.DEDUCTION,
-        InputKind.RECOVERY,
-        InputKind.EMPLOYER_CONTRIBUTION,
-    ) and item.taxable_amount != 0:
+    if (
+        item.kind
+        in (
+            InputKind.REIMBURSEMENT,
+            InputKind.DEDUCTION,
+            InputKind.RECOVERY,
+            InputKind.EMPLOYER_CONTRIBUTION,
+        )
+        and item.taxable_amount != 0
+    ):
         raise PayrollRuleError(f"{item.name}: a {item.kind.value} line carries no taxable income")
 
 

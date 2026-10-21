@@ -219,8 +219,12 @@ _STAGE_FIELDS = (
 
 
 async def _sequence_taken(
-    session: AsyncSession, user: User, requisition_id: uuid.UUID, sequence: int,
-    *, excluding: uuid.UUID | None = None,
+    session: AsyncSession,
+    user: User,
+    requisition_id: uuid.UUID,
+    sequence: int,
+    *,
+    excluding: uuid.UUID | None = None,
 ) -> bool:
     stmt = select(InterviewStage.id).where(
         InterviewStage.requisition_id == requisition_id,
@@ -314,9 +318,7 @@ async def list_stages(
         await visibility.load_requisition(session, user, requisition_id)
         stmt = stmt.where(InterviewStage.requisition_id == requisition_id)
     elif not permissions.is_hr(user):
-        stmt = stmt.where(
-            InterviewStage.requisition_id.in_(visibility.team_requisition_ids(user))
-        )
+        stmt = stmt.where(InterviewStage.requisition_id.in_(visibility.team_requisition_ids(user)))
     rows = await session.scalars(tenant_scoped(stmt, InterviewStage, user))
     return list(rows.all())
 
@@ -408,8 +410,10 @@ async def propose_panel_slots(
             connection.last_error = str(exc)
             busy.append(
                 availability.PanelistBusy(
-                    panelist_id=str(user_id), read_failed=True,
-                    failure_reason=str(exc), label=label,
+                    panelist_id=str(user_id),
+                    read_failed=True,
+                    failure_reason=str(exc),
+                    label=label,
                 )
             )
             continue
@@ -418,7 +422,8 @@ async def propose_panel_slots(
         if result is None or not result.ok:
             busy.append(
                 availability.PanelistBusy(
-                    panelist_id=str(user_id), read_failed=True,
+                    panelist_id=str(user_id),
+                    read_failed=True,
                     failure_reason=(result.error if result else "no result returned"),
                     label=label,
                 )
@@ -429,8 +434,7 @@ async def propose_panel_slots(
             availability.PanelistBusy(
                 panelist_id=str(user_id),
                 intervals=tuple(
-                    availability.BusyInterval(start=start, end=end)
-                    for start, end in result.busy
+                    availability.BusyInterval(start=start, end=end) for start, end in result.busy
                 ),
                 label=label,
             )
@@ -460,9 +464,7 @@ async def propose_panel_slots(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _description(
-    stage: InterviewStage, candidate: Candidate, panelist_names: list[str]
-) -> str:
+def _description(stage: InterviewStage, candidate: Candidate, panelist_names: list[str]) -> str:
     """Joining instructions the candidate can actually use.
 
     Interviewer names included deliberately: walking into a room without knowing
@@ -511,9 +513,7 @@ async def _sync_event(
         if person is None:
             continue
         attendees.append(person.email)
-        employee = (
-            await session.get(Employee, person.employee_id) if person.employee_id else None
-        )
+        employee = await session.get(Employee, person.employee_id) if person.employee_id else None
         names.append(employee.display_name or person.email if employee else person.email)
     if candidate.email:
         attendees.append(candidate.email)
@@ -539,9 +539,7 @@ async def _sync_event(
         if interview.external_event_id:
             # Patch, never delete-then-create. Attendees keep their responses and
             # a failure cannot leave the interview with no event at all.
-            result = await adapter.update_event(
-                interview.external_event_id, spec, token=token
-            )
+            result = await adapter.update_event(interview.external_event_id, spec, token=token)
         else:
             result = await adapter.create_event(spec, token=token)
     except (
@@ -608,9 +606,7 @@ async def schedule_interview(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="An interview needs at least one interviewer.",
         )
-    await _require_panel_members(
-        session, user, [*panelist_user_ids, *(observer_user_ids or [])]
-    )
+    await _require_panel_members(session, user, [*panelist_user_ids, *(observer_user_ids or [])])
 
     utc_start = availability.to_utc(start, candidate_timezone)
     interview = Interview(
@@ -630,37 +626,48 @@ async def schedule_interview(
     for user_id in panelist_user_ids:
         session.add(
             InterviewPanelist(
-                tenant_id=user.tenant_id, interview_id=interview.id, user_id=user_id,
+                tenant_id=user.tenant_id,
+                interview_id=interview.id,
+                user_id=user_id,
                 role=PanelistRole.CHAIR if user_id == chair_user_id else PanelistRole.INTERVIEWER,
             )
         )
     for user_id in observer_user_ids or []:
         session.add(
             InterviewPanelist(
-                tenant_id=user.tenant_id, interview_id=interview.id, user_id=user_id,
+                tenant_id=user.tenant_id,
+                interview_id=interview.id,
+                user_id=user_id,
                 role=PanelistRole.OBSERVER,
             )
         )
     await session.flush()
 
     warnings = await _sync_event(
-        session, user, interview, stage, candidate,
-        transport=transport, organiser_user_id=user.id,
+        session,
+        user,
+        interview,
+        stage,
+        candidate,
+        transport=transport,
+        organiser_user_id=user.id,
     )
     interview.calendar_warnings = warnings
     await session.flush()
 
     await candidate_comms.on_interview(
-        session, user, event_key=candidate_comms.INTERVIEW_SCHEDULED,
-        interview=interview, stage_name=stage.name, candidate=candidate,
+        session,
+        user,
+        event_key=candidate_comms.INTERVIEW_SCHEDULED,
+        interview=interview,
+        stage_name=stage.name,
+        candidate=candidate,
     )
     await dispatch.notify(
         session,
         tenant_id=user.tenant_id,
         event_key="interview.scheduled",
-        recipient_user_ids=list(
-            dict.fromkeys([*panelist_user_ids, *(observer_user_ids or [])])
-        ),
+        recipient_user_ids=list(dict.fromkeys([*panelist_user_ids, *(observer_user_ids or [])])),
         payload={
             "candidate": candidate.full_name,
             "stage": stage.name,
@@ -748,8 +755,13 @@ async def reschedule_interview(
         panelist.decline_notified_at = None
 
     warnings = await _sync_event(
-        session, user, interview, stage, candidate,
-        transport=transport, organiser_user_id=user.id,
+        session,
+        user,
+        interview,
+        stage,
+        candidate,
+        transport=transport,
+        organiser_user_id=user.id,
     )
     interview.calendar_warnings = warnings
     await session.flush()
@@ -782,8 +794,12 @@ async def reschedule_interview(
     )
     if candidate is not None:
         await candidate_comms.on_interview(
-            session, user, event_key=candidate_comms.INTERVIEW_RESCHEDULED,
-            interview=interview, stage_name=stage.name, candidate=candidate,
+            session,
+            user,
+            event_key=candidate_comms.INTERVIEW_RESCHEDULED,
+            interview=interview,
+            stage_name=stage.name,
+            candidate=candidate,
         )
     return {
         "interview_id": str(interview.id),
@@ -843,8 +859,12 @@ async def cancel_interview(
     if cancelled_for is not None:
         cancelled_stage = await _stage(session, user, interview.stage_id)
         await candidate_comms.on_interview(
-            session, user, event_key=candidate_comms.INTERVIEW_CANCELLED,
-            interview=interview, stage_name=cancelled_stage.name, candidate=cancelled_for,
+            session,
+            user,
+            event_key=candidate_comms.INTERVIEW_CANCELLED,
+            interview=interview,
+            stage_name=cancelled_stage.name,
+            candidate=cancelled_for,
         )
     await audit.record(
         session,
@@ -855,8 +875,11 @@ async def cancel_interview(
         entity_id=interview.id,
         summary=f"Interview cancelled: {reason}",
     )
-    return {"interview_id": str(interview.id), "status": interview.status.value,
-            "warnings": warnings}
+    return {
+        "interview_id": str(interview.id),
+        "status": interview.status.value,
+        "warnings": warnings,
+    }
 
 
 _OUTCOMES = frozenset(
@@ -1152,11 +1175,7 @@ async def record_response(
 
     notified = False
     if response is ResponseStatus.DECLINED:
-        recipients = [
-            uid
-            for uid in (interview.scheduled_by_user_id,)
-            if uid is not None
-        ]
+        recipients = [uid for uid in (interview.scheduled_by_user_id,) if uid is not None]
         person = await session.get(User, panelist_user_id)
         candidate = await session.get(Candidate, interview.candidate_id)
         if recipients:
@@ -1445,9 +1464,7 @@ async def visible_feedback(
     }
 
 
-async def consolidated_view(
-    session: AsyncSession, user: User, *, interview_id: uuid.UUID
-) -> dict:
+async def consolidated_view(session: AsyncSession, user: User, *, interview_id: uuid.UUID) -> dict:
     """The hiring manager's view, once feedback is in.
 
     AI round scores sit beside the human panel rather than being blended into it,
@@ -1537,9 +1554,7 @@ async def advance_blockers(
     return blockers
 
 
-async def advance_check(
-    session: AsyncSession, user: User, *, interview_id: uuid.UUID
-) -> dict:
+async def advance_check(session: AsyncSession, user: User, *, interview_id: uuid.UUID) -> dict:
     """The advance gate, for somebody allowed to oversee this interview."""
     _, _, _, oversees = await visibility.load_interview(session, user, interview_id)
     if not oversees:
@@ -1759,8 +1774,13 @@ async def create_self_schedule_link(
         summary=f"Self-scheduling link issued for '{stage.name}' with {len(cleaned)} slot(s)",
     )
     await candidate_comms.on_self_schedule_link(
-        session, user, candidate=candidate, stage_name=stage.name, token=token,
-        expires_at=link.expires_at, timezone_name=candidate_timezone,
+        session,
+        user,
+        candidate=candidate,
+        stage_name=stage.name,
+        token=token,
+        expires_at=link.expires_at,
+        timezone_name=candidate_timezone,
     )
     return link, token
 
@@ -1879,10 +1899,7 @@ async def book_self_schedule(
 
     zone = candidate_timezone or link.candidate_timezone
     chosen = availability.to_utc(slot_start, zone)
-    offered = {
-        datetime.fromisoformat(slot["start"]).astimezone(UTC)
-        for slot in link.offered_slots
-    }
+    offered = {datetime.fromisoformat(slot["start"]).astimezone(UTC) for slot in link.offered_slots}
     if chosen not in offered:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1935,9 +1952,7 @@ async def book_self_schedule(
     return {
         "interview_id": str(interview.id),
         "start_utc": interview.scheduled_start.isoformat(),
-        "start_local": availability.render_for(
-            interview.scheduled_start, zone
-        ).isoformat(),
+        "start_local": availability.render_for(interview.scheduled_start, zone).isoformat(),
         "timezone": zone,
         "join_url": interview.join_url,
     }

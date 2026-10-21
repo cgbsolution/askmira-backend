@@ -187,9 +187,7 @@ def visible_scores_for(
     return [s for s in all_scores if s.juror_id == viewer_juror_id]
 
 
-def outstanding_jurors(
-    *, jurors: list[str], scores: list[JuryScore]
-) -> list[str]:
+def outstanding_jurors(*, jurors: list[str], scores: list[JuryScore]) -> list[str]:
     """Who has not scored yet, named rather than counted.
 
     "3 outstanding" makes somebody open five records to find out who to chase.
@@ -224,9 +222,7 @@ class NominationResult:
         }
 
 
-def aggregate_scores(
-    nomination: Nomination, scores: list[JuryScore]
-) -> NominationResult:
+def aggregate_scores(nomination: Nomination, scores: list[JuryScore]) -> NominationResult:
     """Combine the jury's submitted scores for one nomination.
 
     Only submitted scores count. A draft is somebody's thinking, and averaging
@@ -254,9 +250,7 @@ def aggregate_scores(
         for key, value in score.scores.items():
             criteria.setdefault(key, []).append(value)
 
-    per_criterion = {
-        key: round(statistics.fmean(values), 2) for key, values in criteria.items()
-    }
+    per_criterion = {key: round(statistics.fmean(values), 2) for key, values in criteria.items()}
     means = [s.mean for s in submitted]
     spread = round(max(means) - min(means), 2) if len(means) > 1 else 0.0
 
@@ -290,15 +284,9 @@ def ranked_shortlist(
     about.
     """
     in_category = [
-        r
-        for r in results
-        if r.category_key == category_key and r.juror_count >= minimum_jurors
+        r for r in results if r.category_key == category_key and r.juror_count >= minimum_jurors
     ]
-    thin = [
-        r
-        for r in results
-        if r.category_key == category_key and r.juror_count < minimum_jurors
-    ]
+    thin = [r for r in results if r.category_key == category_key and r.juror_count < minimum_jurors]
 
     ordered = sorted(in_category, key=lambda r: r.mean_score, reverse=True)
     top = ordered[0].mean_score if ordered else None

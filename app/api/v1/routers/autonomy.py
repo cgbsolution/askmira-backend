@@ -302,9 +302,7 @@ async def decision_stats(
 
 
 @router.get("/autonomy/transparency")
-async def transparency(
-    session: DbSession, user: CurrentUser
-) -> dict[str, Any]:
+async def transparency(session: DbSession, user: CurrentUser) -> dict[str, Any]:
     """What each agent may do, has done, is waiting on, and reverted.
 
     Not role-gated. This is what an enterprise security review asks for, and it

@@ -66,8 +66,14 @@ async def update_project(
     request: Request,
 ) -> dict[str, Any]:
     return await timesheets.update_project(
-        session, user, project_id, name=payload.name, client=payload.client,
-        billable=payload.billable, active=payload.active, request=request,
+        session,
+        user,
+        project_id,
+        name=payload.name,
+        client=payload.client,
+        billable=payload.billable,
+        active=payload.active,
+        request=request,
     )
 
 
@@ -147,9 +153,7 @@ async def decide(
 
 
 @router.get("/report", dependencies=MANAGERS)
-async def report(
-    user: CurrentUser, session: DbSession, start: date, end: date
-) -> dict[str, Any]:
+async def report(user: CurrentUser, session: DbSession, start: date, end: date) -> dict[str, Any]:
     """Approved hours by project and person."""
     return await timesheets.hours_report(session, user, start=start, end=end)
 

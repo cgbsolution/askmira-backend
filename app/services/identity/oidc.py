@@ -97,9 +97,7 @@ async def discover(discovery_url: str) -> OidcDiscovery:
             response = await client.get(discovery_url)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise OidcError(
-                f"Could not reach the provider's discovery document: {exc}"
-            ) from exc
+            raise OidcError(f"Could not reach the provider's discovery document: {exc}") from exc
 
     document = response.json()
     required = ("issuer", "authorization_endpoint", "token_endpoint", "jwks_uri")
@@ -152,9 +150,7 @@ def build_authorization_url(
     return f"{authorization_endpoint}{separator}{urlencode(query)}"
 
 
-def start_login(
-    *, discovery: OidcDiscovery, client_id: str, redirect_uri: str
-) -> OidcLoginStart:
+def start_login(*, discovery: OidcDiscovery, client_id: str, redirect_uri: str) -> OidcLoginStart:
     """Begin a flow. The caller stores state, nonce and verifier server-side."""
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
@@ -227,9 +223,7 @@ async def exchange_code(
         expected_nonce=expected_nonce,
     )
 
-    return OidcIdentity(
-        subject=claims["sub"], issuer=claims["iss"], claims=claims
-    )
+    return OidcIdentity(subject=claims["sub"], issuer=claims["iss"], claims=claims)
 
 
 def verify_id_token(
@@ -245,9 +239,7 @@ def verify_id_token(
     Split out from `exchange_code` so it is testable without a live provider.
     """
     try:
-        signing_key = PyJWKClient(jwks_uri, cache_keys=True).get_signing_key_from_jwt(
-            id_token
-        )
+        signing_key = PyJWKClient(jwks_uri, cache_keys=True).get_signing_key_from_jwt(id_token)
     except Exception as exc:
         raise OidcError(f"Could not fetch the provider's signing key: {exc}") from exc
 

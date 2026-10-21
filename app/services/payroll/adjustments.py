@@ -347,8 +347,7 @@ async def pending_for(session: AsyncSession, user: User) -> list[PayrollAdjustme
 def _refuse_own(user: User, employee_id: uuid.UUID) -> None:
     if user.employee_id is not None and user.employee_id == employee_id:
         raise permissions.forbidden(
-            "Nobody keys in or decides an adjustment to their own pay. Ask a colleague in "
-            "payroll."
+            "Nobody keys in or decides an adjustment to their own pay. Ask a colleague in payroll."
         )
 
 
@@ -452,9 +451,7 @@ async def approve(
     note: str | None = None,
     request: Request | None = None,
 ) -> AdjustmentRead:
-    return await _decide(
-        session, user, adjustment_id, approve_it=True, note=note, request=request
-    )
+    return await _decide(session, user, adjustment_id, approve_it=True, note=note, request=request)
 
 
 async def reject(
@@ -465,9 +462,7 @@ async def reject(
     note: str | None,
     request: Request | None = None,
 ) -> AdjustmentRead:
-    return await _decide(
-        session, user, adjustment_id, approve_it=False, note=note, request=request
-    )
+    return await _decide(session, user, adjustment_id, approve_it=False, note=note, request=request)
 
 
 async def cancel(
@@ -540,9 +535,7 @@ async def import_csv(
         row.employee_code.upper(): row
         for row in (
             await session.scalars(
-                tenant_scoped(
-                    select(Employee).where(Employee.deleted_at.is_(None)), Employee, user
-                )
+                tenant_scoped(select(Employee).where(Employee.deleted_at.is_(None)), Employee, user)
             )
         ).all()
     }

@@ -181,9 +181,7 @@ class ExpensePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "expense_policies"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "name", "effective_from", name="uq_expense_policy_version"
-        ),
+        UniqueConstraint("tenant_id", "name", "effective_from", name="uq_expense_policy_version"),
         Index("ix_expense_policies_effective", "tenant_id", "effective_from"),
     )
 
@@ -192,13 +190,9 @@ class ExpensePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Empty means every grade. Unconfigured and none-of-them have to be
     #: different states, or a policy saved before grades were set applies to
     #: nobody and silently governs nothing.
-    applicable_grades: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    applicable_grades: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     #: Location ids. Empty means every location, for the same reason.
-    applicable_locations: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    applicable_locations: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     #: A superseded policy is kept, not deleted: claims evaluated under it
     #: reference its rules.
@@ -220,9 +214,7 @@ class ExpensePolicyRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
             name="uq_policy_rule_category_tier",
         ),
         CheckConstraint("limit_amount >= 0", name="ck_policy_rule_limit_nonneg"),
-        CheckConstraint(
-            "receipt_threshold >= 0", name="ck_policy_rule_threshold_nonneg"
-        ),
+        CheckConstraint("receipt_threshold >= 0", name="ck_policy_rule_threshold_nonneg"),
     )
 
     policy_id: Mapped[uuid.UUID] = mapped_column(
@@ -242,17 +234,11 @@ class ExpensePolicyRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     violation_action: Mapped[ViolationActionEnum] = mapped_column(
         Enum(ViolationActionEnum, name="expense_violation_action"), nullable=False
     )
-    requires_receipt: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    requires_receipt: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: Below this, no receipt. A ₹40 auto fare with a receipt demand is a policy
     #: that produces fake receipts.
-    receipt_threshold: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    requires_pre_approval: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    receipt_threshold: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    requires_pre_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     #: A per-diem rule never demands a receipt, whatever `requires_receipt`
     #: says. The flag exists so a policy author cannot accidentally require one.
     is_per_diem: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -300,9 +286,7 @@ class MileageRate(Base, UUIDMixin, TenantMixin, TimestampMixin):
             name="uq_mileage_rate_version",
         ),
         CheckConstraint("rate_per_km > 0", name="ck_mileage_rate_positive"),
-        CheckConstraint(
-            "tolerance_percent >= 0", name="ck_mileage_tolerance_nonneg"
-        ),
+        CheckConstraint("tolerance_percent >= 0", name="ck_mileage_tolerance_nonneg"),
     )
 
     vehicle_type: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -310,9 +294,7 @@ class MileageRate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     #: How far beyond the declared route before the claim is flagged. A route is
     #: a straight line and a road is not.
-    tolerance_percent: Mapped[float] = mapped_column(
-        Numeric(6, 2), default=15, nullable=False
-    )
+    tolerance_percent: Mapped[float] = mapped_column(Numeric(6, 2), default=15, nullable=False)
 
 
 class PerDiemRate(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -336,12 +318,8 @@ class PerDiemRate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     grade: Mapped[str] = mapped_column(String(40), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    includes_meals: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
-    includes_accommodation: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    includes_meals: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    includes_accommodation: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class ExchangeRateQuote(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -361,9 +339,7 @@ class ExchangeRateQuote(Base, UUIDMixin, TenantMixin, TimestampMixin):
             name="uq_exchange_rate_per_day",
         ),
         CheckConstraint("rate > 0", name="ck_exchange_rate_positive"),
-        CheckConstraint(
-            "from_currency <> to_currency", name="ck_exchange_rate_differs"
-        ),
+        CheckConstraint("from_currency <> to_currency", name="ck_exchange_rate_differs"),
     )
 
     from_currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -379,9 +355,7 @@ class TenantExpenseSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "tenant_expense_settings"
     __table_args__ = (
         UniqueConstraint("tenant_id", name="uq_expense_settings_per_tenant"),
-        CheckConstraint(
-            "advance_block_after_days >= 1", name="ck_advance_block_positive"
-        ),
+        CheckConstraint("advance_block_after_days >= 1", name="ck_advance_block_positive"),
     )
 
     conversion_convention: Mapped[ConversionConventionEnum] = mapped_column(
@@ -392,13 +366,9 @@ class TenantExpenseSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
     rate_source: Mapped[str] = mapped_column(
         String(120), default="RBI reference rate", nullable=False
     )
-    reporting_currency: Mapped[str] = mapped_column(
-        String(3), default="INR", nullable=False
-    )
+    reporting_currency: Mapped[str] = mapped_column(String(3), default="INR", nullable=False)
     #: How long an advance may sit unsettled before it blocks a new one.
-    advance_block_after_days: Mapped[int] = mapped_column(
-        Integer, default=45, nullable=False
-    )
+    advance_block_after_days: Mapped[int] = mapped_column(Integer, default=45, nullable=False)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -413,9 +383,7 @@ class TravelRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         CheckConstraint("to_date >= from_date", name="ck_travel_dates_ordered"),
         CheckConstraint("estimated_cost >= 0", name="ck_travel_estimate_nonneg"),
-        CheckConstraint(
-            "advance_requested >= 0", name="ck_travel_advance_nonneg"
-        ),
+        CheckConstraint("advance_requested >= 0", name="ck_travel_advance_nonneg"),
         Index("ix_travel_requests_employee", "tenant_id", "employee_id", "from_date"),
     )
 
@@ -431,12 +399,8 @@ class TravelRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Free-form destination list; each entry carries a city and a tier so the
     #: policy engine has a tier without a second lookup at claim time.
     destinations: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    estimated_cost: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    advance_requested: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    estimated_cost: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    advance_requested: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     status: Mapped[TravelRequestStatusEnum] = mapped_column(
         Enum(TravelRequestStatusEnum, name="travel_request_status"),
         default=TravelRequestStatusEnum.DRAFT,
@@ -448,9 +412,7 @@ class TravelRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TravelAdvance(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -495,16 +457,10 @@ class TravelAdvance(Base, UUIDMixin, TenantMixin, TimestampMixin):
         default=AdvanceStatusEnum.ISSUED,
         nullable=False,
     )
-    claimed_against: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    claimed_against: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     settled_on: Mapped[date | None] = mapped_column(Date, nullable=True)
-    recovered_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    refunded_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    recovered_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    refunded_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     issued_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -542,18 +498,12 @@ class AdvanceSettlement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     outcome: Mapped[SettlementOutcomeEnum] = mapped_column(
         Enum(SettlementOutcomeEnum, name="advance_settlement_outcome"), nullable=False
     )
-    recovery_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    refund_amount: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    recovery_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    refund_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     #: The recovery is handed to payroll (slice 14) rather than netted here.
     #: Null until payroll has picked it up, which is what makes an unrecovered
     #: balance visible instead of assumed.
-    payroll_recovery_ref: Mapped[str | None] = mapped_column(
-        String(120), nullable=True
-    )
+    payroll_recovery_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     #: The same for a balance owed *to* the employee: paid in the next payroll
     #: run, and null until a run approved that payment.
     payroll_refund_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -624,20 +574,14 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: In the reporting currency. `original_amount` is what was spent.
     amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
     original_amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
-    original_currency: Mapped[str] = mapped_column(
-        String(3), default="INR", nullable=False
-    )
-    exchange_rate: Mapped[float | None] = mapped_column(
-        Numeric(18, 6), nullable=True
-    )
+    original_currency: Mapped[str] = mapped_column(String(3), default="INR", nullable=False)
+    exchange_rate: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     exchange_rate_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     conversion_convention: Mapped[ConversionConventionEnum | None] = mapped_column(
         Enum(ConversionConventionEnum, name="expense_conversion_convention"),
         nullable=True,
     )
-    exchange_rate_source: Mapped[str | None] = mapped_column(
-        String(120), nullable=True
-    )
+    exchange_rate_source: Mapped[str | None] = mapped_column(String(120), nullable=True)
     incurred_on: Mapped[date] = mapped_column(Date, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     has_receipt: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -667,9 +611,7 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=True,
     )
     limit_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
-    already_claimed: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    already_claimed: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     overage: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     justification: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: A flagged claim shows the flag to the approver. Hiding it would make the
@@ -680,24 +622,14 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approval_chain: Mapped[list] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
-    flagged_for_approver: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    exceeds_route_tolerance: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    evaluated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    submitted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    flagged_for_approver: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exceeds_route_tolerance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     #: The line manager's stage, kept apart from finance's final decision so
@@ -715,9 +647,7 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     reimbursed_in_run_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="SET NULL"), nullable=True
     )
-    reimbursed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reimbursed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: The travel-advance settlement this claim was offset against. A claim
     #: covered by an advance is not paid again through payroll.
     advance_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -728,7 +658,8 @@ class ExpenseClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Paid in a leaver's full and final settlement instead of a payroll run.
     settled_in_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(
-            "settlements.id", ondelete="SET NULL",
+            "settlements.id",
+            ondelete="SET NULL",
             name="fk_expense_claims_settled_in_settlement_id",
         ),
         nullable=True,
@@ -811,9 +742,7 @@ class ExpenseReport(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "expense_reports"
-    __table_args__ = (
-        Index("ix_expense_reports_employee", "tenant_id", "employee_id", "status"),
-    )
+    __table_args__ = (Index("ix_expense_reports_employee", "tenant_id", "employee_id", "status"),)
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -832,12 +761,8 @@ class ExpenseReport(Base, UUIDMixin, TenantMixin, TimestampMixin):
         default=ExpenseReportStatusEnum.DRAFT,
         nullable=False,
     )
-    submitted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

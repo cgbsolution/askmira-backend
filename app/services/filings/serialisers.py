@@ -129,8 +129,7 @@ def serialise_ecr(ecr: EcrReturn) -> str:
         ]
         if len(fields) != len(ECR_COLUMNS):
             raise SerialiserError(
-                f"An ECR line has {len(fields)} fields; the format takes "
-                f"{len(ECR_COLUMNS)}."
+                f"An ECR line has {len(fields)} fields; the format takes {len(ECR_COLUMNS)}."
             )
         lines.append("|".join(fields))
 
@@ -216,9 +215,7 @@ def serialise_pt_challan(challan: PtChallan) -> str:
     if challan.slab_counts:
         header.append("")
         header.append("Employee count by slab:")
-        header.extend(
-            f"  {slab}: {count}" for slab, count in sorted(challan.slab_counts.items())
-        )
+        header.extend(f"  {slab}: {count}" for slab, count in sorted(challan.slab_counts.items()))
 
     body = ["", "Employee code,Name,Gross wages,Tax deducted"]
     body.extend(
@@ -265,9 +262,7 @@ def serialise_tds_24q(return_: Tds24QReturn) -> str:
 
     rows: list[str] = []
 
-    rows.append(
-        "^".join(["FH", "24Q", return_.tan, return_.financial_year, f"Q{return_.quarter}"])
-    )
+    rows.append("^".join(["FH", "24Q", return_.tan, return_.financial_year, f"Q{return_.quarter}"]))
     rows.append(
         "^".join(
             [

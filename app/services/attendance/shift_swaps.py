@@ -138,8 +138,13 @@ async def _user_ids_for(
     )
 
 
-def _read(row: ShiftSwapRequest, names: dict[uuid.UUID, str], shifts: dict[uuid.UUID, Shift],
-          *, viewer: User) -> dict[str, Any]:
+def _read(
+    row: ShiftSwapRequest,
+    names: dict[uuid.UUID, str],
+    shifts: dict[uuid.UUID, Shift],
+    *,
+    viewer: User,
+) -> dict[str, Any]:
     def shift(shift_id: uuid.UUID) -> dict[str, Any]:
         s = shifts.get(shift_id)
         return {
@@ -164,8 +169,10 @@ def _read(row: ShiftSwapRequest, names: dict[uuid.UUID, str], shifts: dict[uuid.
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
         "you_are": (
-            "requester" if viewer.employee_id == row.requester_employee_id
-            else "partner" if viewer.employee_id == row.partner_employee_id
+            "requester"
+            if viewer.employee_id == row.requester_employee_id
+            else "partner"
+            if viewer.employee_id == row.partner_employee_id
             else "approver"
         ),
     }
@@ -427,11 +434,19 @@ async def decide_swap(
                 "to raise the swap again."
             )
         await qualifications.require_qualified(
-            session, user, row.requester_employee_id, [theirs], row.swap_date,
+            session,
+            user,
+            row.requester_employee_id,
+            [theirs],
+            row.swap_date,
             who=await _employee_name(session, user, row.requester_employee_id),
         )
         await qualifications.require_qualified(
-            session, user, row.partner_employee_id, [mine], row.swap_date,
+            session,
+            user,
+            row.partner_employee_id,
+            [mine],
+            row.swap_date,
             who=await _employee_name(session, user, row.partner_employee_id),
         )
         for employee_id, shift_id in (

@@ -169,11 +169,7 @@ def treatment_for(
     every other effective-dated table here, and for the same reason: a
     threshold that changes in April must not restate a March reward.
     """
-    candidates = [
-        r
-        for r in rules
-        if r.reward_type == reward_type and r.effective_from <= as_of
-    ]
+    candidates = [r for r in rules if r.reward_type == reward_type and r.effective_from <= as_of]
     if not candidates:
         raise TaxError(
             f"No tax treatment rule for {reward_type!r} in force on "
@@ -195,9 +191,7 @@ class RewardEvent:
     description: str = ""
 
 
-def cumulative_value(
-    events: list[RewardEvent], *, employee_id: str, fy: str
-) -> Decimal:
+def cumulative_value(events: list[RewardEvent], *, employee_id: str, fy: str) -> Decimal:
     """Total reward value for one person in one financial year."""
     return money(
         sum(
@@ -279,10 +273,7 @@ def assess(
 
     if rule.treatment is TaxTreatment.EXEMPT:
         taxable = Decimal("0.00")
-        note = (
-            f"{reward_type} is treated as exempt for {fy}. Nothing flows into "
-            "payroll."
-        )
+        note = f"{reward_type} is treated as exempt for {fy}. Nothing flows into payroll."
     elif rule.treatment is TaxTreatment.GIFT_RULE:
         taxable = total if total > threshold else Decimal("0.00")
         note = (
@@ -387,11 +378,7 @@ def reward_statement(
     and how close they are to a threshold, while that is still information
     rather than a surprise.
     """
-    mine = [
-        e
-        for e in events
-        if e.employee_id == employee_id and financial_year(e.given_on) == fy
-    ]
+    mine = [e for e in events if e.employee_id == employee_id and financial_year(e.given_on) == fy]
     assessments = [
         assess(
             events,

@@ -143,9 +143,7 @@ class PointsLedgerEntry(Base, UUIDMixin, TenantMixin):
     #: same size are worth different amounts.
     rate_per_point: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False)
     source_type: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    source_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     #: A checkpoint written at insert, never the reported balance. Reporting
     #: derives; `verify_chain` compares the two so drift is visible.
     balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -157,9 +155,7 @@ class PointsLedgerEntry(Base, UUIDMixin, TenantMixin):
     department_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     cost_centre: Mapped[str | None] = mapped_column(String(120), nullable=True)
     #: For a REVERSED row: which entry it reverses. Visible on the statement.
-    reverses_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    reverses_entry_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -178,9 +174,7 @@ class PointsValuation(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "points_valuations"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "effective_from", name="uq_points_valuation_version"
-        ),
+        UniqueConstraint("tenant_id", "effective_from", name="uq_points_valuation_version"),
         CheckConstraint("points_per_rupee > 0", name="ck_points_per_rupee_positive"),
     )
 
@@ -200,12 +194,8 @@ class PointsExpiryPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    expire_after_days: Mapped[int] = mapped_column(
-        Integer, default=365, nullable=False
-    )
-    notify_days_before: Mapped[int] = mapped_column(
-        Integer, default=30, nullable=False
-    )
+    expire_after_days: Mapped[int] = mapped_column(Integer, default=365, nullable=False)
+    notify_days_before: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     #: Shown at award time, not buried. Points that quietly vanish teach people
     #: the recognition was not real.
     disclosure: Mapped[str] = mapped_column(Text, nullable=False)
@@ -267,9 +257,7 @@ class RewardTaxRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
             "effective_from",
             name="uq_reward_tax_rule_version",
         ),
-        CheckConstraint(
-            "exemption_threshold_per_year >= 0", name="ck_reward_threshold_nonneg"
-        ),
+        CheckConstraint("exemption_threshold_per_year >= 0", name="ck_reward_threshold_nonneg"),
         CheckConstraint(
             "(reviewed = false) OR (reviewed_by IS NOT NULL)",
             name="ck_reviewed_names_reviewer",
@@ -320,9 +308,7 @@ class RewardEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: than a date-range scan with an April boundary in every query.
     financial_year: Mapped[str] = mapped_column(String(9), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     #: Written when the perquisite has been handed to payroll. Null means it
     #: has not been, which is what keeps an unprocessed perquisite visible.
     payroll_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -358,9 +344,7 @@ class PointsRedemption(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
     )
     requested_on: Mapped[date] = mapped_column(Date, nullable=False)
-    ledger_entry_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    ledger_entry_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
 
 
 class FulfilmentRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -372,9 +356,7 @@ class FulfilmentRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "reward_fulfilments"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "order_id", name="uq_fulfilment_order"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "order_id", name="uq_fulfilment_order"),)
 
     redemption_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
@@ -384,9 +366,7 @@ class FulfilmentRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: Kept as the partner's own reference even when it matches nothing here -
     #: an orphan fulfilment is a finding, not a row to discard.
-    external_redemption_ref: Mapped[str | None] = mapped_column(
-        String(120), nullable=True
-    )
+    external_redemption_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     order_id: Mapped[str] = mapped_column(String(120), nullable=False)
     item_sku: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -398,9 +378,7 @@ class RewardInvoiceLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One line the partner billed us for."""
 
     __tablename__ = "reward_invoice_lines"
-    __table_args__ = (
-        Index("ix_invoice_lines_order", "tenant_id", "order_id"),
-    )
+    __table_args__ = (Index("ix_invoice_lines_order", "tenant_id", "order_id"),)
 
     order_id: Mapped[str] = mapped_column(String(120), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
@@ -430,12 +408,8 @@ class ReconciliationRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     redemption_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     fulfilment_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     invoice_line_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    redeemed_value: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    invoiced_value: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    redeemed_value: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    invoiced_value: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     #: The gaps as reported, by kind. Not netted - a fulfilment failure and a
     #: billing error of the same size would cancel to zero.
     gaps: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

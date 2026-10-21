@@ -477,9 +477,7 @@ async def structure_detail(
                 component_type=item.component.component_type,
                 calculation_type=item.component.calculation_type,
                 value=(
-                    Decimal(str(item.component.value))
-                    if item.component.value is not None
-                    else None
+                    Decimal(str(item.component.value)) if item.component.value is not None else None
                 ),
                 base_component_code=item.component.base_component_code,
                 formula=item.component.formula,

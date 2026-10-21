@@ -127,10 +127,6 @@ def plan_attempt(
         reason=(
             f"Attempt {attempt} failed: {message}. Retrying in "
             f"{int(delay.total_seconds())}s"
-            + (
-                " — the board asked us to wait that long."
-                if retry_after_seconds
-                else "."
-            )
+            + (" — the board asked us to wait that long." if retry_after_seconds else ".")
         ),
     )

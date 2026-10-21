@@ -205,11 +205,15 @@ class AssetAssignment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     asset_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("assets.id", ondelete="RESTRICT"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("assets.id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
 
@@ -223,9 +227,7 @@ class AssetAssignment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     assignment_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Recorded by the holder themselves. Nobody acknowledges on their behalf.
-    acknowledged_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     returned_to_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -265,7 +267,9 @@ class AssetRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "asset_requests"
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     category_id: Mapped[uuid.UUID] = mapped_column(

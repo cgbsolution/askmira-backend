@@ -295,9 +295,7 @@ async def create_offer(
     return OfferRead.model_validate(offer)
 
 
-@router.get(
-    "/offers", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.get("/offers", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def list_offers(
     user: CurrentUser,
     session: DbSession,
@@ -366,9 +364,7 @@ async def update_offer_terms(
 async def submit_offer(
     offer_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    result = await offer_service.submit_offer(
-        session, user, offer_id=offer_id, request=request
-    )
+    result = await offer_service.submit_offer(session, user, offer_id=offer_id, request=request)
     await session.commit()
     return result
 

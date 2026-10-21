@@ -41,9 +41,7 @@ async def list_requests(
     return await service.list_requests(session, user, scope=scope)
 
 
-@router.post(
-    "/requests", response_model=FeedbackRequestDetail, status_code=status.HTTP_201_CREATED
-)
+@router.post("/requests", response_model=FeedbackRequestDetail, status_code=status.HTTP_201_CREATED)
 async def create_request(
     payload: FeedbackRequestCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> FeedbackRequestDetail:

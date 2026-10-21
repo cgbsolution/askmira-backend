@@ -94,9 +94,7 @@ class IngestOutcome:
 
 
 async def _retention_days(session: AsyncSession, user: User) -> int:
-    config = await session.scalar(
-        tenant_scoped(select(CareersPageConfig), CareersPageConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(CareersPageConfig), CareersPageConfig, user))
     return config.resume_retention_days if config else DEFAULT_RETENTION_DAYS
 
 
@@ -127,8 +125,7 @@ async def _existing_identities(
         # apply the same normalisation the rule does, or it silently decides the
         # answer by deciding what the rule is allowed to look at.
         conditions.append(
-            func.right(func.regexp_replace(Candidate.phone, r"\D", "", "g"), 10)
-            == normalised_phone
+            func.right(func.regexp_replace(Candidate.phone, r"\D", "", "g"), 10) == normalised_phone
         )
 
     from sqlalchemy import or_
@@ -137,9 +134,7 @@ async def _existing_identities(
         tenant_scoped(select(Candidate).where(or_(*conditions)), Candidate, user)
     )
     return [
-        dedup.identity_of(
-            c.id, email=c.email, phone=c.phone, full_name=c.full_name
-        )
+        dedup.identity_of(c.id, email=c.email, phone=c.phone, full_name=c.full_name)
         for c in rows.all()
     ]
 
@@ -161,7 +156,10 @@ async def ingest_application(
 
     if not raw.email and not raw.phone:
         return IngestOutcome(
-            application=None, candidate=None, created_candidate=False, duplicate=False,
+            application=None,
+            candidate=None,
+            created_candidate=False,
+            duplicate=False,
             note=(
                 f"{raw.full_name or 'This application'} arrived from {raw.board} with "
                 "neither an email nor a phone number. There is no way to contact them "
@@ -184,7 +182,9 @@ async def ingest_application(
         if existing is not None:
             candidate = await session.get(Candidate, existing.candidate_id)
             return IngestOutcome(
-                application=existing, candidate=candidate, created_candidate=False,
+                application=existing,
+                candidate=candidate,
+                created_candidate=False,
                 duplicate=True,
                 note=(
                     f"Already ingested from {raw.board} on "
@@ -210,7 +210,10 @@ async def ingest_application(
             target_requisition_id = posting.requisition_id
     if target_requisition_id is None:
         return IngestOutcome(
-            application=None, candidate=None, created_candidate=False, duplicate=False,
+            application=None,
+            candidate=None,
+            created_candidate=False,
+            duplicate=False,
             note=(
                 f"No requisition matches {raw.board} job '{raw.external_job_id}'. The "
                 "posting may have been created outside AskMira; nothing was created, "
@@ -228,7 +231,10 @@ async def ingest_application(
     )
     if requisition is None:
         return IngestOutcome(
-            application=None, candidate=None, created_candidate=False, duplicate=False,
+            application=None,
+            candidate=None,
+            created_candidate=False,
+            duplicate=False,
             note="The requisition this application belongs to no longer exists.",
         )
 
@@ -300,20 +306,22 @@ async def ingest_application(
 
     for purpose in consent_purposes or []:
         await record_consent(
-            session, user,
-            candidate_id=candidate.id, purpose=purpose, granted=True,
-            notice_text=notice_text or "", notice_version=notice_version or "1",
-            source_ip=source_ip, now=moment,
+            session,
+            user,
+            candidate_id=candidate.id,
+            purpose=purpose,
+            granted=True,
+            notice_text=notice_text or "",
+            notice_version=notice_version or "1",
+            source_ip=source_ip,
+            now=moment,
         )
 
     if created:
         note = f"New candidate from {raw.board}."
     else:
         prior = await candidate_history(session, user, candidate_id=candidate.id)
-        note = (
-            f"{match.reason} This is application {len(prior)} for "
-            f"{candidate.full_name}."
-        )
+        note = f"{match.reason} This is application {len(prior)} for {candidate.full_name}."
 
     await audit.record(
         session,
@@ -322,14 +330,15 @@ async def ingest_application(
         action=AuditAction.CREATE,
         entity_type="application",
         entity_id=application.id,
-        summary=(
-            f"Application from {raw.board} for {requisition.code}: {note}"
-        ),
+        summary=(f"Application from {raw.board} for {requisition.code}: {note}"),
         changes={"matched_on": application.matched_on, "board": raw.board},
     )
     return IngestOutcome(
-        application=application, candidate=candidate, created_candidate=created,
-        duplicate=False, note=note,
+        application=application,
+        candidate=candidate,
+        created_candidate=created,
+        duplicate=False,
+        note=note,
     )
 
 
@@ -346,9 +355,7 @@ async def ingest_batch(
     to be 38 duplicates is a very different day from 40 new people, and a single
     total hides which one it was.
     """
-    outcomes = [
-        await ingest_application(session, user, raw, now=now) for raw in applications
-    ]
+    outcomes = [await ingest_application(session, user, raw, now=now) for raw in applications]
     return {
         "received": len(applications),
         "new_candidates": sum(1 for o in outcomes if o.created_candidate),

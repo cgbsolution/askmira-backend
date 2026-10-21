@@ -86,8 +86,9 @@ async def load_journeys(
 ) -> tuple[list[funnel_engine.CandidateJourney], dict[str, int]]:
     """Every candidate's dated path, and independent per-stage counts to reconcile."""
     stmt = tenant_scoped(
-        select(Candidate, Requisition)
-        .join(Requisition, Requisition.id == Candidate.requisition_id),
+        select(Candidate, Requisition).join(
+            Requisition, Requisition.id == Candidate.requisition_id
+        ),
         Candidate,
         user,
     )
@@ -203,9 +204,7 @@ async def load_journeys(
                 requisition_id=str(requisition.id),
                 department_id=str(requisition.department_id or ""),
                 recruiter_id=str(requisition.recruiter_id or ""),
-                rejected_at_stage=(
-                    _REJECTION_MAP.get(rejected_stage) if rejected_stage else None
-                ),
+                rejected_at_stage=(_REJECTION_MAP.get(rejected_stage) if rejected_stage else None),
             )
         )
 
@@ -367,9 +366,7 @@ async def interviewer_report(session: AsyncSession, user: User) -> dict[str, Any
             "name": names.get(uid, ""),
             "severity": interviewer_engine.severity(facts, interviewer_id=str(uid)),
             "turnaround": interviewer_engine.turnaround(facts, interviewer_id=str(uid)),
-            "feedback_quality": interviewer_engine.feedback_quality(
-                facts, interviewer_id=str(uid)
-            ),
+            "feedback_quality": interviewer_engine.feedback_quality(facts, interviewer_id=str(uid)),
         }
         for uid in interviewer_ids
     ]
@@ -387,8 +384,9 @@ async def diversity_dimensions(session: AsyncSession, user: User) -> list[dict[s
     """Dimensions and values that have disclosures. No counts — they identify people."""
     rows = await session.execute(
         tenant_scoped(
-            select(CandidateDiversityDisclosure.dimension, CandidateDiversityDisclosure.value)
-            .distinct(),
+            select(
+                CandidateDiversityDisclosure.dimension, CandidateDiversityDisclosure.value
+            ).distinct(),
             CandidateDiversityDisclosure,
             user,
         )
@@ -452,8 +450,10 @@ async def cost_per_hire_report(
             ),
         )
     year, month = int(match.group(1)), match.group(2)
-    stmt = select(func.count()).select_from(Offer).where(
-        Offer.status == OfferStatus.JOINED, extract("year", Offer.joining_date) == year
+    stmt = (
+        select(func.count())
+        .select_from(Offer)
+        .where(Offer.status == OfferStatus.JOINED, extract("year", Offer.joining_date) == year)
     )
     if month:
         stmt = stmt.where(extract("month", Offer.joining_date) == int(month))
@@ -476,9 +476,7 @@ async def cost_per_hire_report(
     report = funnel_engine.cost_per_hire(
         hires=hires, components=components, period_label=period_label
     )
-    report["hires_counted_from"] = (
-        "Offers marked joined with a joining date in this period."
-    )
+    report["hires_counted_from"] = "Offers marked joined with a joining date in this period."
     report["cost_lines"] = [
         {
             "id": str(row.id),

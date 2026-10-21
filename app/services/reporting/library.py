@@ -171,9 +171,7 @@ STARTERS: tuple[StarterReport, ...] = (
                 Selection("date_of_joining"),
                 Selection("date_of_exit"),
             ),
-            filters=(
-                Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),
-            ),
+            filters=(Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),),
             sort_by=(("date_of_exit", "desc"),),
         ),
         category="Attrition",
@@ -186,9 +184,7 @@ STARTERS: tuple[StarterReport, ...] = (
         Definition(
             entity_key="employee",
             selections=(Selection("department"), Selection("headcount", "count", "Exits")),
-            filters=(
-                Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),
-            ),
+            filters=(Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),),
             group_by=("department",),
             sort_by=(("headcount", "desc"),),
         ),
@@ -207,9 +203,7 @@ STARTERS: tuple[StarterReport, ...] = (
         Definition(
             entity_key="employee",
             selections=(Selection("grade"), Selection("headcount", "count", "Exits")),
-            filters=(
-                Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),
-            ),
+            filters=(Filter("date_of_exit", Operator.RELATIVE_RANGE, "current_financial_year"),),
             group_by=("grade",),
             sort_by=(("headcount", "desc"),),
         ),
@@ -220,8 +214,7 @@ STARTERS: tuple[StarterReport, ...] = (
     _report(
         "probation_due_soon",
         "Probation reviews due",
-        "Whose probation ends in the next 30 days? Missing one confirms somebody "
-        "by default.",
+        "Whose probation ends in the next 30 days? Missing one confirms somebody by default.",
         Definition(
             entity_key="employee",
             selections=(
@@ -361,9 +354,7 @@ STARTERS: tuple[StarterReport, ...] = (
                 Selection("attendance_status"),
                 Selection("day_count", "count", "Days"),
             ),
-            filters=(
-                Filter("attendance_date", Operator.RELATIVE_RANGE, "last_30_days"),
-            ),
+            filters=(Filter("attendance_date", Operator.RELATIVE_RANGE, "last_30_days"),),
             group_by=("department", "attendance_status"),
         ),
         chart_type="stacked",
@@ -381,9 +372,7 @@ STARTERS: tuple[StarterReport, ...] = (
                 Selection("late_by_minutes", "avg", "Average minutes late"),
                 Selection("day_count", "count", "Days"),
             ),
-            filters=(
-                Filter("attendance_date", Operator.RELATIVE_RANGE, "last_30_days"),
-            ),
+            filters=(Filter("attendance_date", Operator.RELATIVE_RANGE, "last_30_days"),),
             group_by=("department",),
             sort_by=(("late_by_minutes", "desc"),),
         ),
@@ -546,9 +535,7 @@ def starters_for(role: str) -> list[dict[str, Any]]:
     Offering a manager "Salary register" and refusing it when they click is worse
     than not offering it.
     """
-    return [
-        s.as_dict() for s in STARTERS if may_see(role, s.required_sensitivity)
-    ]
+    return [s.as_dict() for s in STARTERS if may_see(role, s.required_sensitivity)]
 
 
 def validate_library() -> list[str]:
@@ -604,13 +591,9 @@ def validate_library() -> list[str]:
 
         if definition.group_by:
             for selection in definition.selections:
-                if (
-                    selection.field_key not in definition.group_by
-                    and selection.aggregation is None
-                ):
+                if selection.field_key not in definition.group_by and selection.aggregation is None:
                     problems.append(
-                        f"{starter.key}: '{selection.field_key}' is neither grouped nor "
-                        "aggregated."
+                        f"{starter.key}: '{selection.field_key}' is neither grouped nor aggregated."
                     )
 
         for selection in definition.selections:

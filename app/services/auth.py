@@ -241,9 +241,7 @@ async def login(
     from app.services.identity import directory
 
     try:
-        user = await directory.find_login(
-            session, payload.identifier, workspace=payload.workspace
-        )
+        user = await directory.find_login(session, payload.identifier, workspace=payload.workspace)
     except directory.AmbiguousLoginError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -432,9 +430,14 @@ async def complete_mfa_login(
         )
     if not await mfa.check_code(session, user, code):
         await audit.record(
-            session, tenant_id=user.tenant_id, action=AuditAction.LOGIN_FAILED,
-            entity_type="user", entity_id=user.id, actor=user,
-            summary="Wrong two-step sign-in code", request=request,
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.LOGIN_FAILED,
+            entity_type="user",
+            entity_id=user.id,
+            actor=user,
+            summary="Wrong two-step sign-in code",
+            request=request,
         )
         await session.commit()
         raise HTTPException(
@@ -449,8 +452,13 @@ async def complete_mfa_login(
         )
     user.last_login_at = datetime.now(UTC)
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.LOGIN, entity_type="user",
-        entity_id=user.id, actor=user, summary="Signed in with two-step sign-in",
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.LOGIN,
+        entity_type="user",
+        entity_id=user.id,
+        actor=user,
+        summary="Signed in with two-step sign-in",
         request=request,
     )
     await session.commit()

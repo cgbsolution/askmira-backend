@@ -82,9 +82,7 @@ class CostCentre(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "cost_centres"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "code", name="uq_cost_centre_code"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_cost_centre_code"),)
 
     code: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -123,7 +121,8 @@ class Position(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("locations.id", ondelete="SET NULL"), nullable=True
     )
     cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("cost_centres.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("cost_centres.id", ondelete="SET NULL"),
         nullable=True,
     )
     grade: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
@@ -132,8 +131,10 @@ class Position(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # between seats, so when somebody leaves their reports are not orphaned — the
     # seat above them is simply empty.
     reports_to_position_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("positions.id", ondelete="SET NULL"),
-        nullable=True, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("positions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     budgeted_ctc_min: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
@@ -142,13 +143,12 @@ class Position(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Decimal, not float, and not an integer. A part-time seat is 0.5 of a
     # position and 0.5 of a budget, and the budget number has to agree with
     # finance's.
-    fte: Mapped[float] = mapped_column(
-        Numeric(4, 2), default=1, nullable=False
-    )
+    fte: Mapped[float] = mapped_column(Numeric(4, 2), default=1, nullable=False)
 
     status: Mapped[PositionStatus] = mapped_column(
         Enum(PositionStatus, name="position_status"),
-        default=PositionStatus.APPROVED, nullable=False,
+        default=PositionStatus.APPROVED,
+        nullable=False,
     )
     effective_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     #: Set when the seat is abolished. The row survives — a position that stopped
@@ -163,9 +163,7 @@ class Position(Base, UUIDMixin, TenantMixin, TimestampMixin):
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: Why it was frozen or abolished. A decision somebody has to defend later.
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -186,17 +184,18 @@ class PositionAssignment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_position_assignments_span", "tenant_id", "position_id", "from_date"),
         Index("ix_position_assignments_employee", "tenant_id", "employee_id"),
-        CheckConstraint(
-            "to_date IS NULL OR to_date >= from_date", name="ck_assignment_span"
-        ),
+        CheckConstraint("to_date IS NULL OR to_date >= from_date", name="ck_assignment_span"),
     )
 
     position_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("positions.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("positions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
         nullable=False,
     )
 
@@ -207,7 +206,9 @@ class PositionAssignment(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     assignment_type: Mapped[AssignmentType] = mapped_column(
         Enum(AssignmentType, name="position_assignment_type"),
-        default=AssignmentType.PRIMARY, nullable=False, index=True,
+        default=AssignmentType.PRIMARY,
+        nullable=False,
+        index=True,
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -235,14 +236,13 @@ class HeadcountBudget(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("departments.id", ondelete="CASCADE"), nullable=True
     )
     cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("cost_centres.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("cost_centres.id", ondelete="SET NULL"),
         nullable=True,
     )
 
     approved_positions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    approved_cost: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    approved_cost: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -258,15 +258,15 @@ class PositionScenario(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "position_scenarios"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_scenario_name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_scenario_name"),)
 
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[ScenarioStatus] = mapped_column(
         Enum(ScenarioStatus, name="position_scenario_status"),
-        default=ScenarioStatus.DRAFT, nullable=False, index=True,
+        default=ScenarioStatus.DRAFT,
+        nullable=False,
+        index=True,
     )
     #: The date the scenario models. A reorg effective in April is a different
     #: set of numbers from the same reorg today.
@@ -278,12 +278,8 @@ class PositionScenario(Base, UUIDMixin, TenantMixin, TimestampMixin):
     committed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    committed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    discarded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     changes: Mapped[list[ScenarioChange]] = relationship(
         back_populates="scenario", cascade="all, delete-orphan", lazy="selectin"
@@ -306,15 +302,18 @@ class ScenarioChange(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     scenario_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("position_scenarios.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("position_scenarios.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     #: create | move | freeze | unfreeze | abolish
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     #: Null for a create, where the position does not exist yet.
     position_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("positions.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("positions.id", ondelete="CASCADE"),
         nullable=True,
     )
     values: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -324,7 +323,8 @@ class ScenarioChange(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: create produced. Without it, "what did this reorg actually do" is a
     #: reconstruction.
     applied_position_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("positions.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("positions.id", ondelete="SET NULL"),
         nullable=True,
     )
 

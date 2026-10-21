@@ -98,26 +98,18 @@ _STEP_UP_REASONS: dict[str, str] = {
         "This sends money. Confirm it is you before the file goes to the bank."
     ),
     "payroll.rule_change": (
-        "A statutory rate applies to everybody's pay and to the filing built on "
-        "it."
+        "A statutory rate applies to everybody's pay and to the filing built on it."
     ),
-    "data.bulk_export": (
-        "This takes a lot of people's records out of the product at once."
-    ),
+    "data.bulk_export": ("This takes a lot of people's records out of the product at once."),
     "payroll.run_approve": "This finalises what everybody is paid this month.",
     "dpdp.erasure_execute": "This deletes somebody's records permanently.",
     "retention.execute_run": "This deletes or anonymises records in bulk.",
     "user.role_change": (
-        "Changing what somebody can reach is how an account becomes an admin "
-        "account."
+        "Changing what somebody can reach is how an account becomes an admin account."
     ),
-    "tenant.sso_configure": (
-        "Identity-provider settings decide who can sign in as anybody."
-    ),
+    "tenant.sso_configure": ("Identity-provider settings decide who can sign in as anybody."),
     "session.revoke_all": "This signs everybody out.",
-    "operator.grant": (
-        "This lets somebody outside your organisation work on your payroll."
-    ),
+    "operator.grant": ("This lets somebody outside your organisation work on your payroll."),
 }
 
 
@@ -208,9 +200,7 @@ class SessionPolicy:
             "idle_timeout_minutes": self.idle_timeout_minutes,
             "absolute_lifetime_hours": self.absolute_lifetime_hours,
             "max_concurrent_sessions": self.max_concurrent_sessions or "unlimited",
-            "enforce_ip_allowlist_for_privileged": (
-                self.enforce_ip_allowlist_for_privileged
-            ),
+            "enforce_ip_allowlist_for_privileged": (self.enforce_ip_allowlist_for_privileged),
         }
 
 

@@ -92,9 +92,7 @@ def validate_ifsc(ifsc: str | None) -> str | None:
 
 def normalise_name(name: str) -> str:
     """Strip everything a bank ignores when it matches a beneficiary name."""
-    without_titles = re.sub(
-        r"\b(mr|mrs|ms|miss|dr|shri|smt|sri)\b\.?", " ", name.lower()
-    )
+    without_titles = re.sub(r"\b(mr|mrs|ms|miss|dr|shri|smt|sri)\b\.?", " ", name.lower())
     return " ".join(re.sub(r"[^a-z ]", " ", without_titles).split())
 
 
@@ -142,14 +140,18 @@ def validate_lines(
         if not account:
             found.append(
                 BatchException(
-                    "ACCOUNT_MISSING", subject, "account_number",
+                    "ACCOUNT_MISSING",
+                    subject,
+                    "account_number",
                     "No bank account on record. This employee cannot be paid.",
                 )
             )
         elif not ACCOUNT_PATTERN.match(account):
             found.append(
                 BatchException(
-                    "ACCOUNT_MALFORMED", subject, "account_number",
+                    "ACCOUNT_MALFORMED",
+                    subject,
+                    "account_number",
                     f"'{account}' is not a plausible account number — 9 to 18 digits, "
                     "no spaces or punctuation.",
                 )
@@ -167,15 +169,18 @@ def validate_lines(
         if not isinstance(amount, Decimal):
             found.append(
                 BatchException(
-                    "AMOUNT_NOT_DECIMAL", subject, "amount",
-                    "The amount is not a Decimal. Money in a payment file is never a "
-                    "float.",
+                    "AMOUNT_NOT_DECIMAL",
+                    subject,
+                    "amount",
+                    "The amount is not a Decimal. Money in a payment file is never a float.",
                 )
             )
         elif amount <= 0:
             found.append(
                 BatchException(
-                    "AMOUNT_NOT_POSITIVE", subject, "amount",
+                    "AMOUNT_NOT_POSITIVE",
+                    subject,
+                    "amount",
                     f"Net pay is {amount}. A zero or negative credit is not something "
                     "to send to a bank — if this employee is owed nothing, leave them "
                     "off the batch.",
@@ -188,7 +193,9 @@ def validate_lines(
         if not holder.strip():
             found.append(
                 BatchException(
-                    "HOLDER_NAME_MISSING", subject, "account_holder_name",
+                    "HOLDER_NAME_MISSING",
+                    subject,
+                    "account_holder_name",
                     "No account holder name. Banks match on it.",
                 )
             )
@@ -197,7 +204,9 @@ def validate_lines(
             if score < name_match_threshold:
                 found.append(
                     BatchException(
-                        "NAME_MISMATCH", subject, "account_holder_name",
+                        "NAME_MISMATCH",
+                        subject,
+                        "account_holder_name",
                         f"The account is held by '{holder}' but the employee is "
                         f"'{employee_name}' (similarity {score}). Confirm this is the "
                         "right account — a credit to the wrong person is not "

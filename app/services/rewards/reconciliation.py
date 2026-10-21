@@ -147,9 +147,9 @@ def reconcile(
     by_order = {f.order_id: f for f in fulfilled.values()}
     invoice_by_order: dict[str, Decimal] = {}
     for line in invoices:
-        invoice_by_order[line.order_id] = invoice_by_order.get(
-            line.order_id, Decimal("0")
-        ) + line.amount
+        invoice_by_order[line.order_id] = (
+            invoice_by_order.get(line.order_id, Decimal("0")) + line.amount
+        )
 
     gaps: list[Gap] = []
 

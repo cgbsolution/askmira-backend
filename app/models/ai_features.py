@@ -61,9 +61,7 @@ class SurveyTopicSummary(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "survey_topic_summaries"
     __table_args__ = (
         Index("ix_survey_topic_summaries_survey", "tenant_id", "survey_id", "created_at"),
-        CheckConstraint(
-            "confidence >= 0 AND confidence <= 1", name="ck_survey_topic_confidence"
-        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_survey_topic_confidence"),
     )
 
     survey_id: Mapped[uuid.UUID] = mapped_column(

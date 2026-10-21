@@ -37,7 +37,7 @@ def _token(code: str) -> str:
 def _rows(line_type: str) -> str:
     return "\n".join(
         f"    <tr><td>{label}</td>"
-        f"<td style=\"text-align:right\">{{{{manual.{_token(code)}_amount}}}}</td>"
+        f'<td style="text-align:right">{{{{manual.{_token(code)}_amount}}}}</td>'
         f"<td>{{{{manual.{_token(code)}_basis}}}}</td></tr>"
         for code, label, kind in HEADS
         if kind == line_type

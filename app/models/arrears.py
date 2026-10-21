@@ -79,11 +79,13 @@ class SalaryRevision(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
     )
     previous_salary_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("employee_salaries.id", ondelete="SET NULL"),
         nullable=True,
     )
     new_salary_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("employee_salaries.id", ondelete="RESTRICT"),
         nullable=False,
     )
 
@@ -149,9 +151,7 @@ class ArrearBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     employee_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_earnings_arrear: Mapped[float] = mapped_column(
-        Numeric(16, 2), default=0, nullable=False
-    )
+    total_earnings_arrear: Mapped[float] = mapped_column(Numeric(16, 2), default=0, nullable=False)
     # Employee-side statutory arrears reduce the net; employer-side ones do not
     # but are still owed, so they are counted separately rather than netted.
     total_employee_deduction_arrear: Mapped[float] = mapped_column(
@@ -214,7 +214,11 @@ class ArrearLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "arrear_lines"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "batch_id", "employee_id", "period", "component_code",
+            "tenant_id",
+            "batch_id",
+            "employee_id",
+            "period",
+            "component_code",
             name="uq_arrear_line",
         ),
     )
@@ -245,7 +249,8 @@ class ArrearLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # in force in that period. Recorded because it is the thing most likely to
     # be wrong and the hardest to notice.
     rule_set_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("payroll_rule_sets.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("payroll_rule_sets.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -269,7 +274,10 @@ class SectionRelief(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "section_reliefs"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "employee_id", "financial_year", "arrear_batch_id",
+            "tenant_id",
+            "employee_id",
+            "financial_year",
+            "arrear_batch_id",
             name="uq_section_relief",
         ),
     )

@@ -86,13 +86,9 @@ async def _config_by_slug(session: AsyncSession, slug: str) -> CareersPageConfig
     page, so the slug *is* the tenant resolution. That is why the slug is
     globally unique at the database rather than unique per tenant.
     """
-    config = await session.scalar(
-        select(CareersPageConfig).where(CareersPageConfig.slug == slug)
-    )
+    config = await session.scalar(select(CareersPageConfig).where(CareersPageConfig.slug == slug))
     if config is None or not config.is_published:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No careers page here."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No careers page here.")
     return config
 
 
@@ -407,8 +403,11 @@ async def portal_view(session: AsyncSession, token: str, *, now: datetime | None
             for a in applications
         ],
         "documents": [
-            {"category": d.category, "file_name": d.file_name,
-             "uploaded_on": d.uploaded_at.date().isoformat()}
+            {
+                "category": d.category,
+                "file_name": d.file_name,
+                "uploaded_on": d.uploaded_at.date().isoformat(),
+            }
             for d in documents
         ],
         "retention_note": (
@@ -428,9 +427,7 @@ def _status_note(value: ApplicationStatus) -> str:
         ),
         ApplicationStatus.INTERVIEWING: "You are in the interview process for this role.",
         ApplicationStatus.OFFERED: "An offer has been made for this role.",
-        ApplicationStatus.CLOSED: (
-            "This application is closed. We are not taking it further."
-        ),
+        ApplicationStatus.CLOSED: ("This application is closed. We are not taking it further."),
     }[value]
 
 
@@ -513,7 +510,11 @@ async def _purge_hiring_extras(
 
 
 async def _purge_candidate(
-    session: AsyncSession, tenant_id: uuid.UUID, candidate: Candidate, *, note: str,
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    candidate: Candidate,
+    *,
+    note: str,
     now: datetime,
 ) -> dict:
     """Clear the person, keep the shape.
@@ -612,9 +613,7 @@ async def purge_on_request(
             ),
         )
 
-    result = await _purge_candidate(
-        session, user.tenant_id, candidate, note=reason, now=moment
-    )
+    result = await _purge_candidate(session, user.tenant_id, candidate, note=reason, now=moment)
 
     # Withdrawal is recorded rather than the consent being deleted.
     for purpose in ConsentPurpose:
@@ -647,9 +646,7 @@ async def purge_on_request(
     return result | {"reason": reason}
 
 
-async def purge_expired(
-    session: AsyncSession, user: User, *, as_of: date | None = None
-) -> dict:
+async def purge_expired(session: AsyncSession, user: User, *, as_of: date | None = None) -> dict:
     """Scheduled retention purge.
 
     Runs against `retention_until`, which was computed at ingestion from the
@@ -699,8 +696,11 @@ async def purge_expired(
 
     purged = [
         await _purge_candidate(
-            session, user.tenant_id, candidate,
-            note=f"Retention period expired on or before {today}.", now=moment,
+            session,
+            user.tenant_id,
+            candidate,
+            note=f"Retention period expired on or before {today}.",
+            now=moment,
         )
         for candidate in candidates.values()
     ]

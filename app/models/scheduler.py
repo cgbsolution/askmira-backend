@@ -34,9 +34,7 @@ class SchedulerRunStatus(str, enum.Enum):
 
 class SchedulerJobRun(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "scheduler_job_runs"
-    __table_args__ = (
-        Index("ix_scheduler_run_job_tenant", "job_key", "tenant_id", "started_at"),
-    )
+    __table_args__ = (Index("ix_scheduler_run_job_tenant", "job_key", "tenant_id", "started_at"),)
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),

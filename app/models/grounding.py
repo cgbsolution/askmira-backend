@@ -87,19 +87,13 @@ class AgentInvocation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: reached that record" is answerable against the scope as it was, not as
     #: the role table says it would be today.
     scope_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    scope_employee_count: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    scope_employee_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     question: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: The identifiers of everything retrieved. The set, not a count — "it cited
     #: something that was never retrieved" is only checkable if this survives.
-    retrieved_record_ids: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
-    refused_sources: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    retrieved_record_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    refused_sources: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     outcome: Mapped[InvocationOutcome] = mapped_column(
         Enum(InvocationOutcome, name="invocation_outcome"),
@@ -114,30 +108,20 @@ class AgentInvocation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     rendered_output: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     citations: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    citation_failures: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
-    citations_verified: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    citation_failures: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    citations_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    refusal_reasons: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    refusal_reasons: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     confidence_band: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
-    latency_ms: Mapped[float] = mapped_column(
-        Numeric(12, 2), default=0, nullable=False
-    )
+    latency_ms: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: Which sub-processor saw the payload, where one did. Links this log to
     #: slice 25's cross-border transfer register.
     sub_processor_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PromptInjectionAttempt(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -160,9 +144,7 @@ class PromptInjectionAttempt(Base, UUIDMixin, TenantMixin, TimestampMixin):
     source_field: Mapped[str] = mapped_column(String(64), nullable=False)
     #: Which record the text came from, so somebody can go and look at it.
     source_table: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    source_record_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), nullable=True
-    )
+    source_record_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
     #: The matched span only, not the whole document. Enough to see what was
     #: attempted without copying a candidate's entire CV into a security log.
@@ -175,9 +157,7 @@ class PromptInjectionAttempt(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: Whether a person has looked at it. An unreviewed queue that nobody can
     #: separate from a reviewed one stops being read.
-    reviewed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reviewed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

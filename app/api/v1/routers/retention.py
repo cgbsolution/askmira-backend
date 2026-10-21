@@ -80,9 +80,7 @@ class CandidateIn(BaseModel):
 class PlanIn(BaseModel):
     candidates: list[CandidateIn] = Field(default_factory=list)
     today: date | None = None
-    approval_threshold: int = Field(
-        default=planner_engine.DEFAULT_APPROVAL_THRESHOLD, ge=1
-    )
+    approval_threshold: int = Field(default=planner_engine.DEFAULT_APPROVAL_THRESHOLD, ge=1)
     #: Defaults to True. A dry run is the default posture here, not a debug
     #: flag — asking for a destructive run has to be a deliberate `false`.
     dry_run: bool = True
@@ -171,9 +169,7 @@ async def seed_policies(
     _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
     """Write the system defaults — the statutory floor exactly — for what is unset."""
-    written = await retention_service.seed_default_policies(
-        session, user, request=request
-    )
+    written = await retention_service.seed_default_policies(session, user, request=request)
     return {"created": len(written)}
 
 
@@ -212,11 +208,7 @@ async def list_holds(
     stmt = tenant_scoped(select(LegalHold), LegalHold, user)
     if not include_released:
         stmt = stmt.where(LegalHold.released_at.is_(None))
-    rows = (
-        (await session.execute(stmt.order_by(LegalHold.placed_at.desc())))
-        .scalars()
-        .all()
-    )
+    rows = (await session.execute(stmt.order_by(LegalHold.placed_at.desc()))).scalars().all()
     return {
         "holds": [
             {
@@ -227,9 +219,7 @@ async def list_holds(
                 "from_date": row.from_date.isoformat() if row.from_date else None,
                 "to_date": row.to_date.isoformat() if row.to_date else None,
                 "placed_at": row.placed_at.isoformat(),
-                "released_at": (
-                    row.released_at.isoformat() if row.released_at else None
-                ),
+                "released_at": (row.released_at.isoformat() if row.released_at else None),
                 "release_reason": row.release_reason,
                 "is_active": row.is_active,
             }
@@ -305,9 +295,7 @@ async def plan_run(
 
 class SweepIn(BaseModel):
     today: date | None = None
-    approval_threshold: int = Field(
-        default=planner_engine.DEFAULT_APPROVAL_THRESHOLD, ge=1
-    )
+    approval_threshold: int = Field(default=planner_engine.DEFAULT_APPROVAL_THRESHOLD, ge=1)
 
 
 @router.post("/retention/sweep/preview", status_code=status.HTTP_201_CREATED)
@@ -418,13 +406,9 @@ async def list_runs(
                 "records_blocked": row.records_blocked,
                 "counts_by_action": row.counts_by_action,
                 "approved_by_user_id": (
-                    str(row.approved_by_user_id)
-                    if row.approved_by_user_id
-                    else None
+                    str(row.approved_by_user_id) if row.approved_by_user_id else None
                 ),
-                "executed_at": (
-                    row.executed_at.isoformat() if row.executed_at else None
-                ),
+                "executed_at": (row.executed_at.isoformat() if row.executed_at else None),
             }
             for row in rows
         ]
@@ -440,9 +424,7 @@ async def approve_run(
     _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
     """Authorise a run above the volume threshold."""
-    row = await retention_service.approve_run(
-        session, user, run_id=run_id, request=request
-    )
+    row = await retention_service.approve_run(session, user, run_id=run_id, request=request)
     return {"id": str(row.id), "status": row.status.value}
 
 
@@ -474,9 +456,7 @@ async def execute_run(
     Deletes or anonymises each planned record, re-checking legal holds first,
     and reports the real counts — `records_actually_removed` is what was removed.
     """
-    return await retention_service.execute_plan(
-        session, user, run_id=run_id, request=request
-    )
+    return await retention_service.execute_plan(session, user, run_id=run_id, request=request)
 
 
 @router.get("/retention/action-log")
@@ -507,9 +487,7 @@ async def action_log(
                 "record_count": row.record_count,
                 "executed_at": row.executed_at.isoformat(),
                 "approved_by_user_id": (
-                    str(row.approved_by_user_id)
-                    if row.approved_by_user_id
-                    else None
+                    str(row.approved_by_user_id) if row.approved_by_user_id else None
                 ),
                 "sample_record_hashes": row.sample_record_hashes,
             }

@@ -241,9 +241,7 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
             "previous_employer_gross": str(_money(context.base.previous_gross)),
             "previous_employer_tds": str(_money(context.base.previous_tds)),
         },
-        "annual_liability_excluding_this_month_one_off": str(
-            projection.annual_tax_liability
-        ),
+        "annual_liability_excluding_this_month_one_off": str(projection.annual_tax_liability),
         "annual_liability": str(with_projection.annual_tax_liability),
         "tds_already_deducted": str(_money(prior.tds_deducted)),
         "recurring_tds": str(recurring_amount),

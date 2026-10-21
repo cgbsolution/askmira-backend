@@ -210,9 +210,7 @@ def allocate_by_period(
             year_str, month_str = period.split("-")
             year, month = int(year_str), int(month_str)
         except ValueError as exc:
-            raise ReliefError(
-                f"'{period}' is not a period. Use the form 2026-04."
-            ) from exc
+            raise ReliefError(f"'{period}' is not a period. Use the form 2026-04.") from exc
 
         start_year = year if month >= financial_year_start_month else year - 1
         label = f"{start_year}-{start_year + 1}"

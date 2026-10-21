@@ -21,9 +21,7 @@ from typing import Any
 
 from app.models.documents import FieldSource, LetterCategory
 
-REVIEW_BANNER = (
-    "Seed template. Review and adapt with your HR and legal teams before issuing."
-)
+REVIEW_BANNER = "Seed template. Review and adapt with your HR and legal teams before issuing."
 
 
 def _field(token: str, label: str, source: FieldSource, required: bool = True) -> dict[str, Any]:

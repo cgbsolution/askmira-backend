@@ -138,9 +138,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
         if spec.correlation_id:
             # Written into the event so it can be found again if our stored id
             # is ever lost — which is how orphans happen.
-            body["extendedProperties"] = {
-                "private": {"askmira_interview_id": spec.correlation_id}
-            }
+            body["extendedProperties"] = {"private": {"askmira_interview_id": spec.correlation_id}}
         if spec.with_conference:
             body["conferenceData"] = {
                 "createRequest": {
@@ -187,8 +185,7 @@ class GoogleCalendarAdapter(CalendarAdapter):
             "POST",
             # `conferenceDataVersion=1` is required or the conference request is
             # silently ignored and the event has no link.
-            "/calendar/v3/calendars/primary/events"
-            "?conferenceDataVersion=1&sendUpdates=all",
+            "/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all",
             json=self._event_body(spec),
             headers=self._headers(token),
         )

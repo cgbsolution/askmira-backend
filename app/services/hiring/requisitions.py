@@ -197,18 +197,32 @@ async def _check_references(
     A foreign key to another company's department is accepted by the database
     and quietly links two tenants' records.
     """
-    if department_id is not None and await session.scalar(
-        tenant_scoped(select(Department.id).where(Department.id == department_id), Department, user)
-    ) is None:
+    if (
+        department_id is not None
+        and await session.scalar(
+            tenant_scoped(
+                select(Department.id).where(Department.id == department_id), Department, user
+            )
+        )
+        is None
+    ):
         raise _unprocessable("That department is not in this workspace.")
-    if location_id is not None and await session.scalar(
-        tenant_scoped(select(Location.id).where(Location.id == location_id), Location, user)
-    ) is None:
+    if (
+        location_id is not None
+        and await session.scalar(
+            tenant_scoped(select(Location.id).where(Location.id == location_id), Location, user)
+        )
+        is None
+    ):
         raise _unprocessable("That location is not in this workspace.")
     for employee_id in employee_ids:
-        if employee_id is not None and await session.scalar(
-            tenant_scoped(select(Employee.id).where(Employee.id == employee_id), Employee, user)
-        ) is None:
+        if (
+            employee_id is not None
+            and await session.scalar(
+                tenant_scoped(select(Employee.id).where(Employee.id == employee_id), Employee, user)
+            )
+            is None
+        ):
             raise _unprocessable("A person named on this requisition is not in this workspace.")
 
 
@@ -585,8 +599,7 @@ def _authority_for(
             user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
         ),
         is_originator=(
-            requisition.raised_by_user_id is not None
-            and requisition.raised_by_user_id == user.id
+            requisition.raised_by_user_id is not None and requisition.raised_by_user_id == user.id
         ),
     )
 
@@ -795,9 +808,7 @@ async def submit_requisition(
 
     existing = await session.scalars(
         tenant_scoped(
-            select(RequisitionApproval).where(
-                RequisitionApproval.requisition_id == requisition.id
-            ),
+            select(RequisitionApproval).where(RequisitionApproval.requisition_id == requisition.id),
             RequisitionApproval,
             user,
         )
@@ -836,8 +847,7 @@ async def submit_requisition(
         entity_id=requisition.id,
         summary=(
             f"Requisition {requisition.code} sent for approval to "
-            f"{len(chain)} approver(s)"
-            + (f" with {len(flags)} budget flag(s)" if flags else "")
+            f"{len(chain)} approver(s)" + (f" with {len(flags)} budget flag(s)" if flags else "")
         ),
         changes={"chain": [s.approver_role for s in chain], "flags": flags},
         request=request,
@@ -846,8 +856,7 @@ async def submit_requisition(
         "requisition_id": str(requisition.id),
         "status": requisition.status.value,
         "chain": [
-            {"sequence": s.sequence, "role": s.approver_role, "reason": s.reason}
-            for s in chain
+            {"sequence": s.sequence, "role": s.approver_role, "reason": s.reason} for s in chain
         ],
         "flags": flags,
     }
@@ -901,9 +910,7 @@ async def approve_requisition(
             ),
         )
 
-    pending.decision = (
-        ApprovalDecision.APPROVED if approve else ApprovalDecision.REJECTED
-    )
+    pending.decision = ApprovalDecision.APPROVED if approve else ApprovalDecision.REJECTED
     pending.decided_by_user_id = user.id
     pending.decided_at = datetime.now(UTC)
     pending.note = (
@@ -916,9 +923,7 @@ async def approve_requisition(
         requisition.status = RequisitionStatus.REJECTED
         remaining = 0
     else:
-        remaining = sum(
-            1 for s in steps if s.decision is ApprovalDecision.PENDING
-        )
+        remaining = sum(1 for s in steps if s.decision is ApprovalDecision.PENDING)
         if remaining == 0:
             requisition.status = RequisitionStatus.OPEN
             requisition.approved_by_user_id = user.id
@@ -1035,8 +1040,7 @@ async def pending_decisions(session: AsyncSession, user: User) -> list[dict[str,
             user_role=user.role.value,
             has_reports=user.has_reports,
             is_hiring_manager=(
-                user.employee_id is not None
-                and user.employee_id == requisition.hiring_manager_id
+                user.employee_id is not None and user.employee_id == requisition.hiring_manager_id
             ),
             is_originator=offer.created_by_user_id == user.id,
         )
@@ -1053,8 +1057,13 @@ async def pending_decisions(session: AsyncSession, user: User) -> list[dict[str,
                 "step_role": pending_offer.approver_role,
                 "step_reason": pending_offer.reason,
                 "flags": (
-                    [{"kind": "over_band", "severity": "blocking_attention",
-                      "message": deviation.get("headline", "")}]
+                    [
+                        {
+                            "kind": "over_band",
+                            "severity": "blocking_attention",
+                            "message": deviation.get("headline", ""),
+                        }
+                    ]
                     if deviation.get("is_over_band")
                     else []
                 ),
@@ -1069,9 +1078,7 @@ async def pending_decisions(session: AsyncSession, user: User) -> list[dict[str,
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def reserve_vacancy(
-    session: AsyncSession, user: User, *, requisition: Requisition
-) -> None:
+async def reserve_vacancy(session: AsyncSession, user: User, *, requisition: Requisition) -> None:
     """Take a seat for an offer being released.
 
     Refuses when the requisition is full. Two offers released against one

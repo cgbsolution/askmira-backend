@@ -251,9 +251,7 @@ async def list_schemes(user: CurrentUser, session: DbSession) -> list[SchemeRead
 async def create_scheme(
     payload: SchemeCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> SchemeRead:
-    scheme = await loan_service.create_scheme(
-        session, user, payload.model_dump(), request=request
-    )
+    scheme = await loan_service.create_scheme(session, user, payload.model_dump(), request=request)
     await session.commit()
     await session.refresh(scheme)
     return SchemeRead.model_validate(scheme)
@@ -362,7 +360,11 @@ async def approve_loan(
     payload: LoanDecision | None = None,
 ) -> LoanRead:
     await loan_service.decide_loan(
-        session, user, loan_id, approve=True, note=payload.note if payload else None,
+        session,
+        user,
+        loan_id,
+        approve=True,
+        note=payload.note if payload else None,
         request=request,
     )
     await session.commit()
@@ -401,7 +403,10 @@ async def disburse_loan(
     payload: LoanDisbursal | None = None,
 ) -> LoanRead:
     await loan_service.disburse_loan(
-        session, user, loan_id, disbursed_on=payload.disbursed_on if payload else None,
+        session,
+        user,
+        loan_id,
+        disbursed_on=payload.disbursed_on if payload else None,
         request=request,
     )
     await session.commit()
@@ -460,8 +465,12 @@ async def declare_flexi(
     payload: FlexiDeclareIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
     return await flexi.declare(
-        session, user, payload.financial_year, payload.allocations,
-        submit=payload.submit, request=request,
+        session,
+        user,
+        payload.financial_year,
+        payload.allocations,
+        submit=payload.submit,
+        request=request,
     )
 
 
@@ -480,7 +489,10 @@ async def employee_flexi(
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
 async def set_flexi_pot(
-    employee_id: uuid.UUID, payload: FlexiPotIn, user: CurrentUser, session: DbSession,
+    employee_id: uuid.UUID,
+    payload: FlexiPotIn,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
     return await flexi.set_pot(
@@ -493,11 +505,18 @@ async def set_flexi_pot(
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
 async def decide_flexi(
-    declaration_id: uuid.UUID, payload: FlexiDecisionIn, user: CurrentUser, session: DbSession,
+    declaration_id: uuid.UUID,
+    payload: FlexiDecisionIn,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
     return await flexi.decide(
-        session, user, declaration_id, approve=payload.approve, note=payload.note,
+        session,
+        user,
+        declaration_id,
+        approve=payload.approve,
+        note=payload.note,
         request=request,
     )
 

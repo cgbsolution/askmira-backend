@@ -81,9 +81,7 @@ class CitationProblem(str, enum.Enum):
     @property
     def explanation(self) -> str:
         return {
-            CitationProblem.RECORD_NOT_FOUND: (
-                "the response cited a record that does not exist"
-            ),
+            CitationProblem.RECORD_NOT_FOUND: ("the response cited a record that does not exist"),
             CitationProblem.NOT_IN_RETRIEVED_SET: (
                 "the response cited a record that was never retrieved for this "
                 "question — it exists, which makes this worse rather than "
@@ -94,9 +92,7 @@ class CitationProblem(str, enum.Enum):
                 "scope, which means the retrieval was wider than it should have "
                 "been"
             ),
-            CitationProblem.UNCITED_CLAIM: (
-                "the response made a factual claim with no citation"
-            ),
+            CitationProblem.UNCITED_CLAIM: ("the response made a factual claim with no citation"),
             CitationProblem.FORBIDDEN_SOURCE: (
                 "the response cited a source no agent may retrieve from"
             ),
@@ -201,8 +197,7 @@ def _uncited_factual_sentences(text: str) -> list[str]:
             continue
         lowered = sentence.lower()
         if any(
-            marker in lowered
-            for marker in ("i cannot", "i can't", "i could not", "i am not able")
+            marker in lowered for marker in ("i cannot", "i can't", "i could not", "i am not able")
         ):
             continue
         if _FACTUAL_MARKERS.search(sentence):
@@ -275,9 +270,7 @@ def verify(
                 CitationFailure(
                     problem=CitationProblem.OUT_OF_SCOPE,
                     citation_id=citation_id,
-                    detail=(
-                        "the record is outside the requester's permission scope"
-                    ),
+                    detail=("the record is outside the requester's permission scope"),
                 )
             )
 
@@ -303,11 +296,7 @@ def verify(
         )
 
     return VerifiedResponse(
-        outcome=(
-            VerificationOutcome.VERIFIED
-            if citations
-            else VerificationOutcome.NO_CLAIMS
-        ),
+        outcome=(VerificationOutcome.VERIFIED if citations else VerificationOutcome.NO_CLAIMS),
         text=text,
         citations=tuple(citations),
         original_text=text,

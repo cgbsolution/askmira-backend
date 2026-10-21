@@ -60,27 +60,58 @@ BOARD = "naukri"
 #: job titles and departments. Deliberately partial — see the module docstring.
 FUNCTIONAL_AREAS: dict[str, tuple[str, ...]] = {
     "IT Software - Application Programming": (
-        "engineer", "developer", "programmer", "backend", "frontend", "fullstack",
-        "full stack", "software", "sde", "architect",
+        "engineer",
+        "developer",
+        "programmer",
+        "backend",
+        "frontend",
+        "fullstack",
+        "full stack",
+        "software",
+        "sde",
+        "architect",
     ),
     "IT Software - QA & Testing": ("qa", "test", "sdet", "quality assurance"),
     "IT Software - DBA / Datawarehousing": ("data engineer", "dba", "warehouse", "etl"),
     "Analytics & Business Intelligence": (
-        "analyst", "analytics", "data scientist", "business intelligence", "bi ",
+        "analyst",
+        "analytics",
+        "data scientist",
+        "business intelligence",
+        "bi ",
     ),
     "Sales, Retail, Business Development": (
-        "sales", "business development", "account executive", "bd ", "revenue",
+        "sales",
+        "business development",
+        "account executive",
+        "bd ",
+        "revenue",
     ),
     "Marketing, Advertising, MR, PR": ("marketing", "brand", "growth", "seo", "content"),
     "HR / Recruitment / Administration / IR": (
-        "hr", "human resource", "recruiter", "talent", "people ops", "admin",
+        "hr",
+        "human resource",
+        "recruiter",
+        "talent",
+        "people ops",
+        "admin",
     ),
     "Accounts, Finance, Tax, Company Secretary, Audit": (
-        "finance", "accounts", "accountant", "audit", "tax", "controller", "cfo",
+        "finance",
+        "accounts",
+        "accountant",
+        "audit",
+        "tax",
+        "controller",
+        "cfo",
     ),
     "Design, Creative, User Experience": ("design", "ux", "ui ", "creative", "product design"),
     "ITES, BPO, KPO, LPO, Customer Service, Operations": (
-        "support", "customer success", "operations", "bpo", "service desk",
+        "support",
+        "customer success",
+        "operations",
+        "bpo",
+        "service desk",
     ),
 }
 
@@ -111,9 +142,7 @@ DEFAULT_REFRESH_INTERVAL_DAYS = 7
 
 def _haystack(spec: JobSpec) -> str:
     return " ".join(
-        part.lower()
-        for part in (spec.title, spec.department or "", " ".join(spec.skills))
-        if part
+        part.lower() for part in (spec.title, spec.department or "", " ".join(spec.skills)) if part
     )
 
 
@@ -174,8 +203,7 @@ class NaukriAdapter(JobBoardAdapter):
         role_category, matched_role = map_role_category(spec)
         if not matched_role:
             warnings.append(
-                f"No Naukri role category matched, so it is posted under "
-                f"'{DEFAULT_ROLE_CATEGORY}'."
+                f"No Naukri role category matched, so it is posted under '{DEFAULT_ROLE_CATEGORY}'."
             )
 
         skills = list(dict.fromkeys(s.strip() for s in spec.skills if s.strip()))
@@ -273,14 +301,11 @@ class NaukriAdapter(JobBoardAdapter):
             )
         if code in (400, 401, 403, 404, 422):
             raise BoardPermanentFailure(
-                f"Naukri rejected this: {message}. Sending it again will be rejected "
-                "the same way."
+                f"Naukri rejected this: {message}. Sending it again will be rejected the same way."
             )
         raise BoardTransientFailure(f"Naukri returned {code}: {message}")
 
-    async def publish_job(
-        self, spec: JobSpec, credentials: BoardCredentials
-    ) -> PublishResult:
+    async def publish_job(self, spec: JobSpec, credentials: BoardCredentials) -> PublishResult:
         payload, warnings = self.build_payload(spec)
         code, body = await self._transport.request(
             "POST", "/v1/jobs", json=payload, headers=self._headers(credentials)
@@ -299,9 +324,7 @@ class NaukriAdapter(JobBoardAdapter):
         return PublishResult(
             external_job_id=external_id,
             published_at=datetime.now(UTC),
-            expires_at=(
-                datetime.fromisoformat(expires).replace(tzinfo=UTC) if expires else None
-            ),
+            expires_at=(datetime.fromisoformat(expires).replace(tzinfo=UTC) if expires else None),
             accepted_as={
                 "functionalArea": payload["functionalArea"],
                 "roleCategory": payload["roleCategory"],
@@ -316,8 +339,10 @@ class NaukriAdapter(JobBoardAdapter):
     ) -> PublishResult:
         payload, warnings = self.build_payload(spec)
         code, body = await self._transport.request(
-            "PUT", f"/v1/jobs/{external_job_id}",
-            json=payload, headers=self._headers(credentials),
+            "PUT",
+            f"/v1/jobs/{external_job_id}",
+            json=payload,
+            headers=self._headers(credentials),
         )
         self._check(code, body)
         return PublishResult(
@@ -333,9 +358,7 @@ class NaukriAdapter(JobBoardAdapter):
         )
         self._check(code, body)
 
-    async def refresh_job(
-        self, external_job_id: str, credentials: BoardCredentials
-    ) -> datetime:
+    async def refresh_job(self, external_job_id: str, credentials: BoardCredentials) -> datetime:
         """Boost the posting back up the listing.
 
         The one board operation clients ask about by name.
@@ -355,14 +378,12 @@ class NaukriAdapter(JobBoardAdapter):
     ) -> list[RawApplication]:
         params = f"?since={since.isoformat()}" if since else ""
         code, body = await self._transport.request(
-            "GET", f"/v1/jobs/{external_job_id}/applications{params}",
+            "GET",
+            f"/v1/jobs/{external_job_id}/applications{params}",
             headers=self._headers(credentials),
         )
         self._check(code, body)
-        return [
-            self._to_application(row, external_job_id)
-            for row in body.get("applications", [])
-        ]
+        return [self._to_application(row, external_job_id) for row in body.get("applications", [])]
 
     def _to_application(self, row: dict[str, Any], external_job_id: str) -> RawApplication:
         """Naukri's shape into ours.
@@ -384,9 +405,7 @@ class NaukriAdapter(JobBoardAdapter):
             expected_ctc=_decimal(row.get("expectedCtc")),
             total_experience_years=_decimal(row.get("totalExperience")),
             notice_period_days=_notice_days(row.get("noticePeriod")),
-            applied_at=(
-                datetime.fromisoformat(applied).replace(tzinfo=UTC) if applied else None
-            ),
+            applied_at=(datetime.fromisoformat(applied).replace(tzinfo=UTC) if applied else None),
             raw=row,
         )
 
@@ -425,8 +444,10 @@ class NaukriAdapter(JobBoardAdapter):
                 "happened."
             )
         code, body = await self._transport.request(
-            "POST", "/v1/resdex/search",
-            json={"query": query, "limit": limit}, headers=self._headers(credentials),
+            "POST",
+            "/v1/resdex/search",
+            json={"query": query, "limit": limit},
+            headers=self._headers(credentials),
         )
         self._check(code, body)
         return [self._to_application(row, external_job_id="") for row in body.get("results", [])]
@@ -465,4 +486,3 @@ def _notice_days(value: Any) -> int | None:
     if "day" in text or "week" not in text:
         return number
     return number * 7
-

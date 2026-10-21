@@ -229,18 +229,14 @@ def expense_extraction(case: dict[str, Any]) -> dict[str, Any]:
     for line in text.splitlines():
         lowered = line.lower()
         if "total" in lowered:
-            digits = "".join(
-                ch for ch in line if ch.isdigit() or ch == "."
-            ).strip(".")
+            digits = "".join(ch for ch in line if ch.isdigit() or ch == ".").strip(".")
             if digits:
                 try:
                     amount = float(digits)
                 except ValueError:
                     amount = None
 
-    vendor = next(
-        (line.strip() for line in text.splitlines() if line.strip()), ""
-    )
+    vendor = next((line.strip() for line in text.splitlines() if line.strip()), "")
 
     if amount is None:
         return {
@@ -290,8 +286,6 @@ def agent_fingerprint(agent_key: str) -> str:
 
     fn = AGENTS.get(agent_key)
     if fn is None:
-        raise KeyError(
-            f"No agent {agent_key!r}. Registered: {', '.join(sorted(AGENTS))}."
-        )
+        raise KeyError(f"No agent {agent_key!r}. Registered: {', '.join(sorted(AGENTS))}.")
     source = inspect.getsource(fn).encode("utf-8")
     return hashlib.sha256(source).hexdigest()[:16]

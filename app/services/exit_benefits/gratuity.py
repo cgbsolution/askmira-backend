@@ -161,9 +161,7 @@ def compute_service(
 
     if not config.include_notice_period_in_service and notice_period_days > 0:
         excluded += notice_period_days
-        notes.append(
-            f"{notice_period_days} days of notice period are excluded by configuration."
-        )
+        notes.append(f"{notice_period_days} days of notice period are excluded by configuration.")
 
     countable = max(0, total_days - excluded)
     raw_years = Decimal(countable) / DAYS_PER_YEAR

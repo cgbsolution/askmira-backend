@@ -104,9 +104,7 @@ def normalise_candidate_key(raw: str) -> str:
     return re.sub(r"\s+", "", (raw or "").strip().lower())
 
 
-async def _referrer_on_pip(
-    session: AsyncSession, user: User, employee_id: uuid.UUID
-) -> bool:
+async def _referrer_on_pip(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
     """Whether the referrer has a live improvement plan, from the PIP records."""
     from app.models.performance_flow import Pip, PipStatusEnum
 
@@ -264,9 +262,7 @@ async def generate_share_link(
     programme = (
         await session.execute(
             tenant_scoped(
-                select(ReferralProgramme).where(
-                    ReferralProgramme.id == programme_id
-                ),
+                select(ReferralProgramme).where(ReferralProgramme.id == programme_id),
                 ReferralProgramme,
                 user,
             )
@@ -289,8 +285,7 @@ async def generate_share_link(
         "link": link,
         "terms": {
             "duplicate_rule": (
-                "If two people refer the same candidate, the first submission "
-                "wins by timestamp."
+                "If two people refer the same candidate, the first submission wins by timestamp."
             ),
             "bonus_by_grade": programme.bonus_by_grade,
             "milestones": programme.payout_milestones,
@@ -444,9 +439,7 @@ async def submit_referral(
             else ReferralStatusEnum.SUBMITTED
         ),
         duplicate_of_id=(
-            uuid.UUID(verdict["winner_referral_id"])
-            if verdict["is_duplicate"]
-            else None
+            uuid.UUID(verdict["winner_referral_id"]) if verdict["is_duplicate"] else None
         ),
     )
     session.add(row)
@@ -458,10 +451,7 @@ async def submit_referral(
         entity_type="referral",
         entity_id=row.id,
         actor=user,
-        summary=(
-            "Referral submitted"
-            + (" (duplicate)." if verdict["is_duplicate"] else ".")
-        ),
+        summary=("Referral submitted" + (" (duplicate)." if verdict["is_duplicate"] else ".")),
         request=request,
     )
     await session.commit()
@@ -493,9 +483,7 @@ async def mark_referral_hired(
     """
     row = (
         await session.execute(
-            tenant_scoped(
-                select(Referral).where(Referral.id == referral_id), Referral, user
-            )
+            tenant_scoped(select(Referral).where(Referral.id == referral_id), Referral, user)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -515,9 +503,7 @@ async def mark_referral_hired(
     programme = (
         await session.execute(
             tenant_scoped(
-                select(ReferralProgramme).where(
-                    ReferralProgramme.id == row.programme_id
-                ),
+                select(ReferralProgramme).where(ReferralProgramme.id == row.programme_id),
                 ReferralProgramme,
                 user,
             )
@@ -531,15 +517,18 @@ async def mark_referral_hired(
             f"needs an answer. Configured: {sorted(programme.bonus_by_grade)}."
         )
 
-    milestones = tuple(
-        referral_engine.BonusMilestone(
-            key=str(m["key"]),
-            label=str(m["label"]),
-            share_percent=_d(m["share_percent"]),
-            days_after_joining=int(m["days_after_joining"]),
+    milestones = (
+        tuple(
+            referral_engine.BonusMilestone(
+                key=str(m["key"]),
+                label=str(m["label"]),
+                share_percent=_d(m["share_percent"]),
+                days_after_joining=int(m["days_after_joining"]),
+            )
+            for m in (programme.payout_milestones or [])
         )
-        for m in (programme.payout_milestones or [])
-    ) or referral_engine.DEFAULT_MILESTONES
+        or referral_engine.DEFAULT_MILESTONES
+    )
 
     try:
         schedule = referral_engine.payout_schedule(
@@ -630,10 +619,7 @@ async def pay_milestone(
         entity_type="referral_payout",
         entity_id=row.id,
         actor=user,
-        summary=(
-            f"Referral milestone {row.milestone_key} paid via "
-            f"{payroll_reference}."
-        ),
+        summary=(f"Referral milestone {row.milestone_key} paid via {payroll_reference}."),
         request=request,
     )
     await session.commit()
@@ -642,10 +628,7 @@ async def pay_milestone(
         "payout_id": str(row.id),
         "status": row.status.value,
         "amount": str(row.amount),
-        "note": (
-            "Paid through payroll with tax deducted - a referral bonus is "
-            "salary income."
-        ),
+        "note": ("Paid through payroll with tax deducted - a referral bonus is salary income."),
     }
 
 
@@ -705,9 +688,7 @@ async def cost_report(
         (
             await session.execute(
                 tenant_scoped(
-                    select(RecruitmentCost).where(
-                        RecruitmentCost.period_label == period_label
-                    ),
+                    select(RecruitmentCost).where(RecruitmentCost.period_label == period_label),
                     RecruitmentCost,
                     user,
                 )
@@ -716,9 +697,9 @@ async def cost_report(
     )
     components: dict[str, Decimal] = {}
     for row in rows:
-        components[row.component.value] = components.get(
-            row.component.value, Decimal("0")
-        ) + _d(row.amount)
+        components[row.component.value] = components.get(row.component.value, Decimal("0")) + _d(
+            row.amount
+        )
 
     try:
         return funnel_engine.cost_per_hire(
@@ -794,12 +775,8 @@ async def interviewer_signals(
     """
     return {
         "interviewer_id": interviewer_id,
-        "severity": interviewer_engine.severity(
-            feedback, interviewer_id=interviewer_id
-        ),
-        "turnaround": interviewer_engine.turnaround(
-            feedback, interviewer_id=interviewer_id
-        ),
+        "severity": interviewer_engine.severity(feedback, interviewer_id=interviewer_id),
+        "turnaround": interviewer_engine.turnaround(feedback, interviewer_id=interviewer_id),
         "feedback_quality": interviewer_engine.feedback_quality(
             feedback, interviewer_id=interviewer_id
         ),

@@ -364,9 +364,7 @@ def waiting_on(chain: list[dict[str, Any]], acting: set[str]) -> bool:
 # ── Delegation ──────────────────────────────────────────────────────────────
 
 
-async def acting_for(
-    session: AsyncSession, user: User, on: date | None = None
-) -> set[uuid.UUID]:
+async def acting_for(session: AsyncSession, user: User, on: date | None = None) -> set[uuid.UUID]:
     """The approvers whose decisions this person may take today, themselves included."""
     day = on or datetime.now(UTC).date()
     rows = (
@@ -475,15 +473,23 @@ async def create_delegation(
     if delegate is None:
         raise HTTPException(status_code=422, detail="That person cannot sign in to approve.")
     row = ApprovalDelegation(
-        tenant_id=user.tenant_id, from_user_id=giver_id, to_user_id=delegate.id,
-        starts_on=starts_on, ends_on=ends_on, reason=(reason or "").strip() or None,
+        tenant_id=user.tenant_id,
+        from_user_id=giver_id,
+        to_user_id=delegate.id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        reason=(reason or "").strip() or None,
         created_by_user_id=user.id,
     )
     session.add(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.CREATE,
-        entity_type="approval_delegation", entity_id=row.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="approval_delegation",
+        entity_id=row.id,
         summary=f"Approvals handed to {delegate.full_name}, {starts_on} to {ends_on}",
         request=request,
     )
@@ -508,8 +514,13 @@ async def cancel_delegation(
     row.cancelled = True
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="approval_delegation", entity_id=row.id, summary="Delegation ended",
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="approval_delegation",
+        entity_id=row.id,
+        summary="Delegation ended",
         request=request,
     )
 
@@ -602,8 +613,17 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict[str, Any]]:
 
 
 _FIELDS = (
-    "name", "priority", "active", "min_amount", "max_amount", "min_days", "leave_type_ids",
-    "expense_categories", "department_ids", "location_ids", "escalate_after_hours",
+    "name",
+    "priority",
+    "active",
+    "min_amount",
+    "max_amount",
+    "min_days",
+    "leave_type_ids",
+    "expense_categories",
+    "department_ids",
+    "location_ids",
+    "escalate_after_hours",
     "description",
 )
 
@@ -622,10 +642,15 @@ async def create_rule(
     session.add(rule)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.CREATE,
-        entity_type="approval_rule", entity_id=rule.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="approval_rule",
+        entity_id=rule.id,
         summary=f"Approval rule '{rule.name}' for {rule.process.value} created",
-        changes=_rule_read(rule), request=request,
+        changes=_rule_read(rule),
+        request=request,
     )
     return _rule_read(rule)
 
@@ -637,7 +662,11 @@ def _jsonable(value: Any) -> Any:
 
 
 async def update_rule(
-    session: AsyncSession, user: User, rule_id: uuid.UUID, values: dict[str, Any], *,
+    session: AsyncSession,
+    user: User,
+    rule_id: uuid.UUID,
+    values: dict[str, Any],
+    *,
     request: Request | None = None,
 ) -> dict[str, Any]:
     _require_admin(user)
@@ -656,10 +685,15 @@ async def update_rule(
         rule.steps = _validate_steps(values["steps"])
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="approval_rule", entity_id=rule.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="approval_rule",
+        entity_id=rule.id,
         summary=f"Approval rule '{rule.name}' changed; requests already submitted keep their chain",
-        changes={"from": before, "to": _rule_read(rule)}, request=request,
+        changes={"from": before, "to": _rule_read(rule)},
+        request=request,
     )
     return _rule_read(rule)
 
@@ -677,9 +711,15 @@ async def delete_rule(
     await session.delete(rule)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.DELETE,
-        entity_type="approval_rule", entity_id=rule_id,
-        summary=f"Approval rule '{before['name']}' deleted", changes=before, request=request,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.DELETE,
+        entity_type="approval_rule",
+        entity_id=rule_id,
+        summary=f"Approval rule '{before['name']}' deleted",
+        changes=before,
+        request=request,
     )
 
 
@@ -688,15 +728,16 @@ async def delete_rule(
 
 def _waiting_since(chain: list[dict[str, Any]], index: int, submitted_at: datetime) -> datetime:
     previous = [
-        datetime.fromisoformat(s["decided_at"])
-        for s in chain[:index]
-        if s.get("decided_at")
+        datetime.fromisoformat(s["decided_at"]) for s in chain[:index] if s.get("decided_at")
     ]
     return max([submitted_at, *previous])
 
 
 async def _escalate_chain(
-    session: AsyncSession, actor: User, chain: list[dict[str, Any]], submitted_at: datetime,
+    session: AsyncSession,
+    actor: User,
+    chain: list[dict[str, Any]],
+    submitted_at: datetime,
     now: datetime,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """The chain with its current step moved up a level if it has waited too long."""
@@ -723,12 +764,15 @@ async def _escalate_chain(
     step["escalated"] = True
     if above is not None and login is not None:
         step.update(
-            role="escalated", approver_user_id=str(login.id),
-            approver_employee_id=str(above.id), approver_name=above.full_name,
+            role="escalated",
+            approver_user_id=str(login.id),
+            approver_employee_id=str(above.id),
+            approver_name=above.full_name,
         )
     else:
-        step.update(role="hr", approver_user_id=None, approver_employee_id=None,
-                    approver_name="HR team")
+        step.update(
+            role="hr", approver_user_id=None, approver_employee_id=None, approver_name="HR team"
+        )
     new_chain = [dict(s) for s in chain]
     new_chain[index] = step
     return new_chain, step
@@ -765,12 +809,11 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
             )
         )
     ).all()
+
     async def pending(model, status_column, status_value):
         return (
             await session.scalars(
-                tenant_scoped(
-                    select(model).where(status_column == status_value), model, actor
-                )
+                tenant_scoped(select(model).where(status_column == status_value), model, actor)
             )
         ).all()
 
@@ -778,9 +821,7 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
         AttendanceRegularisation, AttendanceRegularisation.status, RegularisationStatus.PENDING
     )
     sheets = await pending(Timesheet, Timesheet.status, TimesheetStatus.SUBMITTED)
-    events = await pending(
-        LifecycleEvent, LifecycleEvent.status, LifecycleStatus.PENDING_APPROVAL
-    )
+    events = await pending(LifecycleEvent, LifecycleEvent.status, LifecycleStatus.PENDING_APPROVAL)
     for row, submitted, kind in [
         *((leave, leave.created_at, "leave request") for leave in leaves),
         *((claim, claim.submitted_at or claim.created_at, "expense claim") for claim in claims),
@@ -797,8 +838,12 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
         row.approval_chain = new_chain
         moved += 1
         await audit.record(
-            session, tenant_id=actor.tenant_id, actor=actor, actor_type="system",
-            action=AuditAction.UPDATE, entity_type=row.__tablename__.rstrip("s"),
+            session,
+            tenant_id=actor.tenant_id,
+            actor=actor,
+            actor_type="system",
+            action=AuditAction.UPDATE,
+            entity_type=row.__tablename__.rstrip("s"),
             entity_id=row.id,
             summary=(
                 f"Escalated after {step['escalate_after_hours']} hours waiting on "
@@ -807,10 +852,15 @@ async def escalate_due(session: AsyncSession, actor: User, *, now: datetime | No
         )
         if step.get("approver_user_id"):
             await notify(
-                session, tenant_id=actor.tenant_id, event_key="approvals.escalated",
+                session,
+                tenant_id=actor.tenant_id,
+                event_key="approvals.escalated",
                 recipient_user_ids=[uuid.UUID(step["approver_user_id"])],
-                payload={"what": kind, "from": step["escalated_from"],
-                         "hours": step["escalate_after_hours"]},
+                payload={
+                    "what": kind,
+                    "from": step["escalated_from"],
+                    "hours": step["escalate_after_hours"],
+                },
                 commit=False,
             )
     await session.commit()
@@ -829,4 +879,3 @@ def _register_events() -> None:
 
 
 _register_events()
-

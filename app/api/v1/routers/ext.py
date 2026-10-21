@@ -273,13 +273,20 @@ async def leave_balances(
     out = []
     for b, type_code, code in rows:
         parts = {
-            "opening": b.opening_balance, "accrued": b.accrued, "used": b.used,
-            "encashed": b.encashed, "carried_forward": b.carried_forward,
+            "opening": b.opening_balance,
+            "accrued": b.accrued,
+            "used": b.used,
+            "encashed": b.encashed,
+            "carried_forward": b.carried_forward,
             "adjusted": b.adjusted,
         }
         available = (
-            parts["opening"] + parts["accrued"] + parts["carried_forward"] + parts["adjusted"]
-            - parts["used"] - parts["encashed"]
+            parts["opening"]
+            + parts["accrued"]
+            + parts["carried_forward"]
+            + parts["adjusted"]
+            - parts["used"]
+            - parts["encashed"]
         )
         out.append(
             {

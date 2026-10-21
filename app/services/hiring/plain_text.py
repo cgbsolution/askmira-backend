@@ -17,8 +17,26 @@ from html.parser import HTMLParser
 __all__ = ["html_to_paragraphs"]
 
 _BLOCK_TAGS = frozenset(
-    {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section",
-     "article", "header", "footer", "blockquote"}
+    {
+        "p",
+        "div",
+        "br",
+        "li",
+        "ul",
+        "ol",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "tr",
+        "section",
+        "article",
+        "header",
+        "footer",
+        "blockquote",
+    }
 )
 _SKIP_TAGS = frozenset({"script", "style", "template", "noscript", "iframe", "object"})
 

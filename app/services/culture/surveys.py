@@ -155,8 +155,7 @@ class Instrument:
 #: The eNPS question, worded as the instrument defines it. Rewording it is how a
 #: benchmark stops being a benchmark.
 ENPS_QUESTION = (
-    "How likely are you to recommend this company as a place to work to a "
-    "friend or colleague?"
+    "How likely are you to recommend this company as a place to work to a friend or colleague?"
 )
 
 
@@ -420,11 +419,7 @@ def score_scale(
                 float(low + high - value) if item.reverse_scored else float(value)
             )
 
-    return {
-        key: round(statistics.fmean(values), 2)
-        for key, values in per_item.items()
-        if values
-    }
+    return {key: round(statistics.fmean(values), 2) for key, values in per_item.items() if values}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -519,9 +514,7 @@ def breakdown(
     }
 
     if below and parent_total_shown:
-        visible = sorted(
-            (r for r in out.values() if r.is_visible), key=lambda r: r.responses
-        )
+        visible = sorted((r for r in out.values() if r.is_visible), key=lambda r: r.responses)
         if visible:
             victim = visible[0]
             out[victim.key] = BreakdownResult(

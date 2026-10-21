@@ -105,9 +105,7 @@ class PromotionPlan:
             "steps": [s.value for s in self.steps],
             "is_complete": self.is_complete,
             "is_backdated": self.is_backdated,
-            "arrears_from": (
-                self.arrears_from.isoformat() if self.arrears_from else None
-            ),
+            "arrears_from": (self.arrears_from.isoformat() if self.arrears_from else None),
             "message": self.message,
         }
 
@@ -175,8 +173,7 @@ def plan_promotion(
             f"{money(current_ctc)} to {money(new_ctc)}, effective "
             f"{effective_from.isoformat()}. All four steps apply together."
             + (
-                f" Back-dated: arrears are due from "
-                f"{effective_from.isoformat()}."
+                f" Back-dated: arrears are due from {effective_from.isoformat()}."
                 if backdated
                 else ""
             )
@@ -205,13 +202,9 @@ def arrears_window(
         "from": effective_from.isoformat(),
         "to": today.isoformat(),
         "months_spanned": (
-            (today.year - effective_from.year) * 12
-            + today.month
-            - effective_from.month
+            (today.year - effective_from.year) * 12 + today.month - effective_from.month
         ),
-        "last_payroll_run": (
-            last_payroll_run.isoformat() if last_payroll_run else None
-        ),
+        "last_payroll_run": (last_payroll_run.isoformat() if last_payroll_run else None),
         "note": (
             "Arrears run from the effective date, not from the last payroll "
             "run. A revision effective in April and approved in July owes April "

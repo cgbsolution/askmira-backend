@@ -102,9 +102,7 @@ async def create_requisition(
     )
     await session.commit()
     return RequisitionDetail.model_validate(
-        await requisition_service.requisition_detail(
-            session, user, requisition_id=requisition.id
-        )
+        await requisition_service.requisition_detail(session, user, requisition_id=requisition.id)
     )
 
 
@@ -117,9 +115,7 @@ async def get_requisition(
     requisition_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> RequisitionDetail:
     return RequisitionDetail.model_validate(
-        await requisition_service.requisition_detail(
-            session, user, requisition_id=requisition_id
-        )
+        await requisition_service.requisition_detail(session, user, requisition_id=requisition_id)
     )
 
 
@@ -140,9 +136,7 @@ async def update_requisition(
     )
     await session.commit()
     return RequisitionDetail.model_validate(
-        await requisition_service.requisition_detail(
-            session, user, requisition_id=requisition_id
-        )
+        await requisition_service.requisition_detail(session, user, requisition_id=requisition_id)
     )
 
 
@@ -168,9 +162,7 @@ async def change_requisition_status(
     )
     await session.commit()
     return RequisitionDetail.model_validate(
-        await requisition_service.requisition_detail(
-            session, user, requisition_id=requisition_id
-        )
+        await requisition_service.requisition_detail(session, user, requisition_id=requisition_id)
     )
 
 
@@ -294,9 +286,7 @@ async def set_candidate_tags(
     return {"tags": tags}
 
 
-@router.get(
-    "/candidate-tags", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))]
-)
+@router.get("/candidate-tags", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))])
 async def candidate_tags(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     """Tags in use among the candidates you can see, most used first."""
     return await talent.tag_counts(session, user)
@@ -337,7 +327,11 @@ async def update_talent_pool(
     request: Request,
 ) -> dict[str, Any]:
     result = await talent.update_pool(
-        session, user, pool_id, name=payload.name, description=payload.description,
+        session,
+        user,
+        pool_id,
+        name=payload.name,
+        description=payload.description,
         request=request,
     )
     await session.commit()
@@ -367,7 +361,11 @@ async def add_talent_pool_members(
 ) -> dict[str, Any]:
     """Add those who agreed to be kept; each refusal comes back with its reason."""
     result = await talent.add_members(
-        session, user, pool_id, candidate_ids=payload.candidate_ids, note=payload.note,
+        session,
+        user,
+        pool_id,
+        candidate_ids=payload.candidate_ids,
+        note=payload.note,
         request=request,
     )
     await session.commit()

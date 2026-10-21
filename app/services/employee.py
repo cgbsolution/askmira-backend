@@ -220,25 +220,31 @@ async def directory_csv(
     if not permissions.is_hr(user):
         raise permissions.forbidden("Only HR can export the directory.")
     rows, total = await list_employees(
-        session, user, search=search, department_id=department_id,
-        location_id=location_id, manager_id=manager_id, status_filter=status_filter,
-        current_only=current_only, limit=EXPORT_LIMIT,
+        session,
+        user,
+        search=search,
+        department_id=department_id,
+        location_id=location_id,
+        manager_id=manager_id,
+        status_filter=status_filter,
+        current_only=current_only,
+        limit=EXPORT_LIMIT,
     )
     departments = dict(
-        (await session.execute(
-            tenant_scoped(select(Department.id, Department.name), Department, user)
-        )).all()
+        (
+            await session.execute(
+                tenant_scoped(select(Department.id, Department.name), Department, user)
+            )
+        ).all()
     )
     locations = dict(
-        (await session.execute(
-            tenant_scoped(select(Location.id, Location.name), Location, user)
-        )).all()
+        (
+            await session.execute(tenant_scoped(select(Location.id, Location.name), Location, user))
+        ).all()
     )
     people = {
         e.id: e
-        for e in (
-            await session.scalars(tenant_scoped(select(Employee), Employee, user))
-        ).all()
+        for e in (await session.scalars(tenant_scoped(select(Employee), Employee, user))).all()
     }
 
     def who(employee_id: uuid.UUID | None) -> tuple[str | None, str | None]:
@@ -252,22 +258,42 @@ async def directory_csv(
 
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
-    writer.writerow([
-        "Employee code", "Name", "Designation", "Department", "Location", "Work email",
-        "Status", "Manager", "Manager code", "Dotted-line manager", "Direct reports",
-    ])
+    writer.writerow(
+        [
+            "Employee code",
+            "Name",
+            "Designation",
+            "Department",
+            "Location",
+            "Work email",
+            "Status",
+            "Manager",
+            "Manager code",
+            "Dotted-line manager",
+            "Direct reports",
+        ]
+    )
     for row in rows:
         manager_name, manager_code = who(row.manager_id)
         dotted_name, _ = who(row.dotted_line_manager_id)
-        writer.writerow([
-            _cell(value)
-            for value in (
-                row.employee_code, row.full_name, row.designation,
-                departments.get(row.department_id), locations.get(row.location_id),
-                row.work_email, row.status.value, manager_name, manager_code, dotted_name,
-                reports.get(row.id, 0),
-            )
-        ])
+        writer.writerow(
+            [
+                _cell(value)
+                for value in (
+                    row.employee_code,
+                    row.full_name,
+                    row.designation,
+                    departments.get(row.department_id),
+                    locations.get(row.location_id),
+                    row.work_email,
+                    row.status.value,
+                    manager_name,
+                    manager_code,
+                    dotted_name,
+                    reports.get(row.id, 0),
+                )
+            ]
+        )
     await audit.record(
         session,
         tenant_id=user.tenant_id,

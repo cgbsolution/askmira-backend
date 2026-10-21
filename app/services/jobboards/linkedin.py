@@ -109,9 +109,7 @@ class LinkedInAdapter(JobBoardAdapter):
         }
         return payload, warnings
 
-    async def publish_job(
-        self, spec: JobSpec, credentials: BoardCredentials
-    ) -> PublishResult:
+    async def publish_job(self, spec: JobSpec, credentials: BoardCredentials) -> PublishResult:
         payload, warnings = self.build_payload(spec, credentials)
         code, body = await self._transport.request(
             "POST", "/v2/simpleJobPostings", json=payload, headers=self._headers(credentials)
@@ -136,8 +134,10 @@ class LinkedInAdapter(JobBoardAdapter):
         payload, warnings = self.build_payload(spec, credentials)
         payload["jobPostingOperationType"] = "UPDATE"
         code, body = await self._transport.request(
-            "POST", f"/v2/simpleJobPostings/{external_job_id}",
-            json=payload, headers=self._headers(credentials),
+            "POST",
+            f"/v2/simpleJobPostings/{external_job_id}",
+            json=payload,
+            headers=self._headers(credentials),
         )
         self._check(code, body)
         return PublishResult(
@@ -148,7 +148,8 @@ class LinkedInAdapter(JobBoardAdapter):
 
     async def close_job(self, external_job_id: str, credentials: BoardCredentials) -> None:
         code, body = await self._transport.request(
-            "DELETE", f"/v2/simpleJobPostings/{external_job_id}",
+            "DELETE",
+            f"/v2/simpleJobPostings/{external_job_id}",
             headers=self._headers(credentials),
         )
         self._check(code, body)

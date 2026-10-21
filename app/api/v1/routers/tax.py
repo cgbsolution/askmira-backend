@@ -458,9 +458,7 @@ async def proof_document(
     proof_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> Response:
     """The proof as uploaded. Its owner and payroll only."""
-    data, mime, name = await tax_service.proof_document(
-        session, user, proof_id, request=request
-    )
+    data, mime, name = await tax_service.proof_document(session, user, proof_id, request=request)
     await session.commit()
     return Response(content=data, media_type=mime, headers=support.attachment_headers(name))
 
@@ -517,9 +515,7 @@ async def close_proof_window(
     That is correct — the reminders sent while the window was open are what
     stop it being a surprise.
     """
-    locked = await tax_service.close_proof_window(
-        session, user, financial_year, request=request
-    )
+    locked = await tax_service.close_proof_window(session, user, financial_year, request=request)
     return {"declarations_locked": locked}
 
 
@@ -579,9 +575,7 @@ async def form_12bb_preview(
     from app.services.tax.form_12bb import build_claims_table
 
     target = _resolve_employee(user, employee_id)
-    return {
-        "claims_table": await build_claims_table(session, user, target, financial_year)
-    }
+    return {"claims_table": await build_claims_table(session, user, target, financial_year)}
 
 
 @router.post(
@@ -686,7 +680,6 @@ async def form_16_pdf(
 __all__ = ["WindowType", "router"]
 
 
-
 # ── Form 16 Part A (from TRACES) ────────────────────────────────────────────
 
 
@@ -703,8 +696,13 @@ async def upload_form16_part_a(
     data = await file.read(form16_part_a.MAX_ZIP_BYTES + 1)
     if employee_id is not None:
         return await form16_part_a.upload_one(
-            session, user, employee_id=employee_id, financial_year=financial_year,
-            data=data, filename=file.filename, request=request,
+            session,
+            user,
+            employee_id=employee_id,
+            financial_year=financial_year,
+            data=data,
+            filename=file.filename,
+            request=request,
         )
     return await form16_part_a.upload_zip(
         session, user, financial_year=financial_year, data=data, request=request

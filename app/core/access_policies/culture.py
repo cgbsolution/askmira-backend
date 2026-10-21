@@ -40,12 +40,9 @@ ENDPOINTS: dict[str, str] = {
     ),
     # ── Clubs ───────────────────────────────────────────────────────────────
     "GET /culture/clubs": (
-        "scoped:is_private: public clubs for everybody; a private club only for "
-        "its members."
+        "scoped:is_private: public clubs for everybody; a private club only for its members."
     ),
-    "POST /culture/clubs": (
-        "permissions: created by the caller, who becomes its organiser."
-    ),
+    "POST /culture/clubs": ("permissions: created by the caller, who becomes its organiser."),
     "POST /culture/clubs/{club_id}/join": (
         "permissions: the caller joins; a private club is invisible to non-members."
     ),
@@ -70,8 +67,7 @@ ENDPOINTS: dict[str, str] = {
         "permissions: active programmes for everybody; inactive ones for HR."
     ),
     "GET /culture/award-cycles": (
-        "permissions: open and decided cycles for everybody; drafts and cancelled "
-        "cycles for HR."
+        "permissions: open and decided cycles for everybody; drafts and cancelled cycles for HR."
     ),
     "GET /culture/award-cycles/{cycle_id}/nominations": (
         "permissions: every nomination for the cycle's jurors and HR; otherwise "
@@ -89,13 +85,10 @@ ENDPOINTS: dict[str, str] = {
         "submitting your own."
     ),
     "GET /culture/award-results": (
-        "scoped:announced_at: only results that have been announced - public "
-        "recognition."
+        "scoped:announced_at: only results that have been announced - public recognition."
     ),
     # ── Surveys and action plans ────────────────────────────────────────────
-    "GET /culture/surveys/mine": (
-        "permissions: surveys sent to the caller's own record."
-    ),
+    "GET /culture/surveys/mine": ("permissions: surveys sent to the caller's own record."),
     "POST /culture/surveys/{survey_id}/responses": (
         "permissions: only the person the survey was sent to - HR included - once, "
         "while it is open."
@@ -104,19 +97,14 @@ ENDPOINTS: dict[str, str] = {
         "scoped:min_responses: aggregates only, suppressed below the reporting floor."
     ),
     "GET /culture/action-plans": (
-        "permissions: every plan for HR; otherwise plans the caller owns or holds "
-        "an item in."
+        "permissions: every plan for HR; otherwise plans the caller owns or holds an item in."
     ),
     "POST /culture/action-plans": "permissions: managers and HR create action plans.",
     "PATCH /culture/action-plan-items/{item_id}": (
         "permissions: the item's owner, the plan's owner or HR."
     ),
-    "POST /culture/action-plans/{plan_id}/notes": (
-        "permissions: the plan's owner or HR."
-    ),
-    "POST /culture/action-plans/{plan_id}/complete": (
-        "permissions: the plan's owner or HR."
-    ),
+    "POST /culture/action-plans/{plan_id}/notes": ("permissions: the plan's owner or HR."),
+    "POST /culture/action-plans/{plan_id}/complete": ("permissions: the plan's owner or HR."),
     # ── Announcements and celebrations ──────────────────────────────────────
     "GET /culture/announcements": (
         "scoped:_includes: only live announcements whose audience includes the caller."
@@ -127,8 +115,7 @@ ENDPOINTS: dict[str, str] = {
     ),
     "GET /culture/event-privacy": "permissions: your own celebration settings.",
     "PUT /culture/event-privacy": (
-        "permissions: your own celebration settings only - nobody consents on "
-        "anybody's behalf."
+        "permissions: your own celebration settings only - nobody consents on anybody's behalf."
     ),
     "GET /culture/calendar": (
         "scoped:EventPrivacyPreference: birthdays and anniversaries pass through "

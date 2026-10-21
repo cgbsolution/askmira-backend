@@ -367,8 +367,7 @@ def verify_irreversible(
 
     if str(subject_id).lower() in haystack:
         leaks.append(
-            "the subject id survives in the output, so every row joins straight "
-            "back to the person"
+            "the subject id survives in the output, so every row joins straight back to the person"
         )
 
     dob = original.get("date_of_birth")
@@ -458,9 +457,7 @@ def check_k_anonymity(
         )
     )
 
-    groups = Counter(
-        tuple(record.get(field) for field in fields) for record in records
-    )
+    groups = Counter(tuple(record.get(field) for field in fields) for record in records)
     failing = tuple(
         sorted(
             ((values, count) for values, count in groups.items() if count < k),
@@ -498,7 +495,6 @@ def suppress_failing_groups(
     kept = [
         record
         for record in records
-        if tuple(record.get(f) for f in report.quasi_identifiers_used)
-        not in failing_values
+        if tuple(record.get(f) for f in report.quasi_identifiers_used) not in failing_values
     ]
     return kept, report

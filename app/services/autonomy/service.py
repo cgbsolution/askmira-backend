@@ -87,17 +87,13 @@ async def configure(
     saying "invalid configuration" means they ask again next quarter.
     """
     try:
-        validated = validate_autonomy(
-            action_key, autonomy, threshold=threshold_value
-        )
+        validated = validate_autonomy(action_key, autonomy, threshold=threshold_value)
     except AutonomyError as exc:
         raise _bad_request(str(exc)) from exc
 
     spec = action(action_key)
     stmt = tenant_scoped(
-        select(AgentAutonomyConfig).where(
-            AgentAutonomyConfig.action_key == action_key
-        ),
+        select(AgentAutonomyConfig).where(AgentAutonomyConfig.action_key == action_key),
         AgentAutonomyConfig,
         user,
     )
@@ -151,17 +147,13 @@ async def effective_autonomy(
     """
     spec = action(action_key)
     stmt = tenant_scoped(
-        select(AgentAutonomyConfig).where(
-            AgentAutonomyConfig.action_key == action_key
-        ),
+        select(AgentAutonomyConfig).where(AgentAutonomyConfig.action_key == action_key),
         AgentAutonomyConfig,
         user,
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
 
-    configured = (
-        AutonomyLevel(row.autonomy.value) if row else spec.default_autonomy
-    )
+    configured = AutonomyLevel(row.autonomy.value) if row else spec.default_autonomy
     ceiling = ceiling_for(action_key)
     if configured.rank > ceiling.rank:
         return (
@@ -173,9 +165,7 @@ async def effective_autonomy(
                 "was lowered after this was configured."
             ),
         )
-    threshold = (
-        Decimal(str(row.threshold_value)) if row and row.threshold_value else None
-    )
+    threshold = Decimal(str(row.threshold_value)) if row and row.threshold_value else None
     source = "configured by this tenant" if row else "platform default"
     return configured, threshold, source
 
@@ -196,19 +186,13 @@ async def list_configuration(session: AsyncSession, user: User) -> dict[str, Any
         out.append(
             {
                 **spec.as_dict(),
-                "configured_autonomy": (
-                    row.autonomy.value if row else spec.default_autonomy.value
-                ),
+                "configured_autonomy": (row.autonomy.value if row else spec.default_autonomy.value),
                 "is_tenant_configured": row is not None,
                 "threshold_value": (
-                    float(row.threshold_value)
-                    if row and row.threshold_value is not None
-                    else None
+                    float(row.threshold_value) if row and row.threshold_value is not None else None
                 ),
                 "approver_roles": row.approver_roles if row else [],
-                "configured_at": (
-                    row.configured_at.isoformat() if row else None
-                ),
+                "configured_at": (row.configured_at.isoformat() if row else None),
             }
         )
     return {
@@ -270,9 +254,7 @@ async def propose(
     except AutonomyError as exc:
         raise _bad_request(str(exc)) from exc
 
-    configured, threshold, _source = await effective_autonomy(
-        session, user, action_key=action_key
-    )
+    configured, threshold, _source = await effective_autonomy(session, user, action_key=action_key)
     routing = proposal_engine.route(
         action_key,
         configured=configured,
@@ -383,11 +365,7 @@ async def queue(
         stmt = stmt.where(AgentProposal.impact == impact)
 
     rows = (
-        (
-            await session.execute(
-                stmt.order_by(AgentProposal.expires_at).limit(limit)
-            )
-        )
+        (await session.execute(stmt.order_by(AgentProposal.expires_at).limit(limit)))
         .scalars()
         .all()
     )
@@ -482,9 +460,7 @@ async def decide_proposal(
         previous_state=row.previous_state,
     )
     try:
-        decided = proposal_engine.decide(
-            engine_proposal, approve=approve, now=moment, note=note
-        )
+        decided = proposal_engine.decide(engine_proposal, approve=approve, now=moment, note=note)
     except AutonomyError as exc:
         raise _bad_request(str(exc)) from exc
 
@@ -574,9 +550,7 @@ async def expire_stale(
             action=AuditAction.UPDATE,
             entity_type="agent_proposal",
             actor=user,
-            summary=(
-                f"{len(rows)} proposal(s) expired unread. None was applied."
-            ),
+            summary=(f"{len(rows)} proposal(s) expired unread. None was applied."),
             request=request,
         )
     await session.commit()
@@ -649,9 +623,7 @@ async def revert(
 
     existing = (
         await session.execute(
-            select(ProposalReversal).where(
-                ProposalReversal.proposal_id == proposal_id
-            )
+            select(ProposalReversal).where(ProposalReversal.proposal_id == proposal_id)
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -721,8 +693,9 @@ async def decision_stats(session: AsyncSession, user: User) -> dict[str, Any]:
     and mention it at renewal.
     """
     stmt = tenant_scoped(
-        select(AgentProposal.action_key, AgentProposal.status, func.count())
-        .group_by(AgentProposal.action_key, AgentProposal.status),
+        select(AgentProposal.action_key, AgentProposal.status, func.count()).group_by(
+            AgentProposal.action_key, AgentProposal.status
+        ),
         AgentProposal,
         user,
     )
@@ -769,8 +742,7 @@ async def transparency_surface(
         user,
     )
     counts = {
-        row_status.value: count
-        for row_status, count in (await session.execute(counts_stmt)).all()
+        row_status.value: count for row_status, count in (await session.execute(counts_stmt)).all()
     }
 
     reversals_stmt = tenant_scoped(
@@ -795,9 +767,7 @@ async def transparency_surface(
         # somebody's salary, somebody's rating. Counts are for everybody; the
         # queue and the decision record are for the people who decide.
         "pending_queue": (
-            (await queue(session, user, now=moment))["proposals"]
-            if permissions.is_hr(user)
-            else []
+            (await queue(session, user, now=moment))["proposals"] if permissions.is_hr(user) else []
         ),
         "decision_stats": (
             await decision_stats(session, user) if permissions.is_hr(user) else None

@@ -96,9 +96,7 @@ def _bucket_for(days: int | None) -> str:
     return AGEING_BUCKETS[-1][1]  # pragma: no cover - the None bound catches all
 
 
-def ageing(
-    snapshots: list[OccupancySnapshot], *, as_of: date
-) -> list[VacancyAge]:
+def ageing(snapshots: list[OccupancySnapshot], *, as_of: date) -> list[VacancyAge]:
     """Every empty seat, oldest first.
 
     Measured from `vacated_on` where the seat was filled and emptied, and from
@@ -131,25 +129,20 @@ def ageing(
                 days_vacant=days,
                 since=since,
                 bucket=_bucket_for(days),
-                covered_by=tuple(
-                    h.employee_label or h.employee_id for h in snapshot.holders
-                ),
+                covered_by=tuple(h.employee_label or h.employee_id for h in snapshot.holders),
                 budgeted_ctc_max=position.budgeted_ctc_max,
             )
         )
 
     # Oldest first: the list is read from the top and the top is where the
     # problem is.
-    return sorted(
-        out, key=lambda v: (v.days_vacant is None, -(v.days_vacant or 0), v.code)
-    )
+    return sorted(out, key=lambda v: (v.days_vacant is None, -(v.days_vacant or 0), v.code))
 
 
 def age_buckets(vacancies: list[VacancyAge]) -> dict[str, dict[str, Any]]:
     """Vacancies grouped by how long they have been open."""
     buckets: dict[str, dict[str, Any]] = {
-        label: {"count": 0, "fte": Decimal(0), "positions": []}
-        for _, label in AGEING_BUCKETS
+        label: {"count": 0, "fte": Decimal(0), "positions": []} for _, label in AGEING_BUCKETS
     }
     buckets["Unknown"] = {"count": 0, "fte": Decimal(0), "positions": []}
 
@@ -273,9 +266,7 @@ def budget_gap(
         holder = snapshot.primary_holder
         if holder is not None:
             bucket["filled_fte"] += position.fte
-            bucket["actual"] += actual_cost_by_employee.get(
-                holder.employee_id, Decimal(0)
-            )
+            bucket["actual"] += actual_cost_by_employee.get(holder.employee_id, Decimal(0))
 
     return [
         BudgetGap(

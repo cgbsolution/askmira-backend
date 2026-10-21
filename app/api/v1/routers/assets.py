@@ -245,9 +245,7 @@ async def fulfil_request(
 # ── Assignments ─────────────────────────────────────────────────────────────
 
 
-@router.post(
-    "/assignments/{assignment_id}/return", response_model=AssignmentRead, dependencies=_hr
-)
+@router.post("/assignments/{assignment_id}/return", response_model=AssignmentRead, dependencies=_hr)
 async def return_asset(
     assignment_id: uuid.UUID,
     payload: ReturnIn,
@@ -269,9 +267,7 @@ async def return_asset(
     return await _assignment_read(session, user, row)
 
 
-@router.post(
-    "/assignments/{assignment_id}/remind", response_model=ReminderResult, dependencies=_hr
-)
+@router.post("/assignments/{assignment_id}/remind", response_model=ReminderResult, dependencies=_hr)
 async def remind(
     assignment_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> ReminderResult:
@@ -280,9 +276,7 @@ async def remind(
     return ReminderResult(reminded=sent)
 
 
-@router.get(
-    "/employees/{employee_id}", response_model=list[AssignmentRead], dependencies=_managers
-)
+@router.get("/employees/{employee_id}", response_model=list[AssignmentRead], dependencies=_managers)
 async def employee_assets(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[AssignmentRead]:

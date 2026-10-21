@@ -132,9 +132,7 @@ class ExposedEntity:
 
 
 def _f(name: str, entity_key: str, source: str, description: str) -> ExposedField:
-    return ExposedField(
-        name=name, entity_key=entity_key, source=source, description=description
-    )
+    return ExposedField(name=name, entity_key=entity_key, source=source, description=description)
 
 
 EXPOSED_SCHEMA: dict[str, ExposedEntity] = {
@@ -273,9 +271,7 @@ def visible_columns(entity_name: str, role: str) -> list[ExposedField]:
     connector and the report builder cannot disagree about who may see a salary.
     """
     return [
-        field
-        for field in exposed_entity(entity_name).fields
-        if may_see(role, field.sensitivity)
+        field for field in exposed_entity(entity_name).fields if may_see(role, field.sensitivity)
     ]
 
 

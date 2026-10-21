@@ -272,9 +272,7 @@ def advance_block(
     blocking = tuple(
         a
         for a in advances
-        if not a.is_settled
-        and a.outstanding > 0
-        and a.age_days(today) > block_after_days
+        if not a.is_settled and a.outstanding > 0 and a.age_days(today) > block_after_days
     )
 
     if not blocking:
@@ -346,19 +344,13 @@ def ageing_report(
     return {
         "as_of": today.isoformat(),
         "block_after_days": block_after_days,
-        "total_outstanding": str(
-            money(sum((a.outstanding for a in live), Decimal("0")))
-        ),
+        "total_outstanding": str(money(sum((a.outstanding for a in live), Decimal("0")))),
         "buckets": {
             name: {
                 "count": len(rows),
-                "amount": str(
-                    money(sum((a.outstanding for a in rows), Decimal("0")))
-                ),
+                "amount": str(money(sum((a.outstanding for a in rows), Decimal("0")))),
             }
             for name, rows in buckets.items()
         },
-        "blocking_count": sum(
-            1 for a in live if a.age_days(today) > block_after_days
-        ),
+        "blocking_count": sum(1 for a in live if a.age_days(today) > block_after_days),
     }

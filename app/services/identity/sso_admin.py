@@ -124,9 +124,7 @@ def _token_dict(row: ScimToken) -> dict[str, Any]:
 async def list_tokens(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     rows = (
         await session.scalars(
-            tenant_scoped(select(ScimToken), ScimToken, user).order_by(
-                ScimToken.created_at.desc()
-            )
+            tenant_scoped(select(ScimToken), ScimToken, user).order_by(ScimToken.created_at.desc())
         )
     ).all()
     return [_token_dict(row) for row in rows]

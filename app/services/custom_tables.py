@@ -222,13 +222,18 @@ async def update_table(
                         f"Column '{column['label']}' holds values; its type cannot change."
                     )
     for key, value in changes.items():
-        if value is None and key != "tab" and key in (
-            "label",
-            "columns",
-            "is_sensitive",
-            "employee_editable",
-            "display_order",
-            "active",
+        if (
+            value is None
+            and key != "tab"
+            and key
+            in (
+                "label",
+                "columns",
+                "is_sensitive",
+                "employee_editable",
+                "display_order",
+                "active",
+            )
         ):
             continue
         setattr(row, key, value)

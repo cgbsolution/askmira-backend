@@ -225,14 +225,10 @@ async def list_users(
                 scim_type="invalidFilter",
             )
 
-    total = await session.scalar(
-        select(func.count()).select_from(stmt.subquery())
-    ) or 0
+    total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
     offset = max(0, start_index - 1)
-    rows = (
-        await session.scalars(stmt.order_by(User.created_at).offset(offset).limit(count))
-    ).all()
+    rows = (await session.scalars(stmt.order_by(User.created_at).offset(offset).limit(count))).all()
 
     return {
         "schemas": [SCIM_LIST_SCHEMA],
@@ -257,18 +253,14 @@ async def provision_user(
 
     # One login per address across the platform, not per workspace: sign-in
     # finds a person by email alone.
-    existing = await session.scalar(
-        select(User.id).where(func.lower(User.email) == email).limit(1)
-    )
+    existing = await session.scalar(select(User.id).where(func.lower(User.email) == email).limit(1))
     if existing is not None:
         raise ScimError(409, f"A user with userName {email} already exists", scim_type="uniqueness")
 
     name = payload.get("name") or {}
     full_name = (
         payload.get("displayName")
-        or " ".join(
-            part for part in (name.get("givenName"), name.get("familyName")) if part
-        )
+        or " ".join(part for part in (name.get("givenName"), name.get("familyName")) if part)
         or email
     )
 
@@ -314,9 +306,7 @@ async def get_user(session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
     return user
 
 
-async def deactivate_user(
-    session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID
-) -> User:
+async def deactivate_user(session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID) -> User:
     """De-provision. Revokes access; preserves history.
 
     See the module docstring — this is the behaviour security reviewers ask
@@ -370,7 +360,8 @@ async def apply_patch(
     """
     if SCIM_PATCH_SCHEMA not in (payload.get("schemas") or []):
         raise ScimError(
-            400, f"A PATCH body must declare the {SCIM_PATCH_SCHEMA} schema",
+            400,
+            f"A PATCH body must declare the {SCIM_PATCH_SCHEMA} schema",
             scim_type="invalidSyntax",
         )
 

@@ -38,8 +38,7 @@ async def create_rule(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Step {values['sequence']} already exists for "
-                f"{values['scope'].value} approvals."
+                f"Step {values['sequence']} already exists for {values['scope'].value} approvals."
             ),
         )
     if values.get("ctc_max") is not None and values["ctc_max"] <= values.get("ctc_min", 0):

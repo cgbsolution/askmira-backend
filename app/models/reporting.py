@@ -114,7 +114,8 @@ class Report(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     chart_type: Mapped[ChartType] = mapped_column(
         Enum(ChartType, name="report_chart_type"),
-        default=ChartType.TABLE, nullable=False,
+        default=ChartType.TABLE,
+        nullable=False,
     )
     # No `index=True` here: the composite index above already leads with
     # tenant_id and covers every lookup this column takes part in. Both would
@@ -122,11 +123,10 @@ class Report(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # permanent drift in `alembic check` rather than as an error.
     visibility: Mapped[ReportVisibility] = mapped_column(
         Enum(ReportVisibility, name="report_visibility"),
-        default=ReportVisibility.PRIVATE, nullable=False,
+        default=ReportVisibility.PRIVATE,
+        nullable=False,
     )
-    shared_with_user_ids: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    shared_with_user_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -136,26 +136,22 @@ class Report(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: clones can be retired.
     created_from_starter: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    last_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ReportSchedule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A standing instruction to send a report to a list of people."""
 
     __tablename__ = "report_schedules"
-    __table_args__ = (
-        CheckConstraint("hour_of_day BETWEEN 0 AND 23", name="ck_schedule_hour"),
-    )
+    __table_args__ = (CheckConstraint("hour_of_day BETWEEN 0 AND 23", name="ck_schedule_hour"),)
 
     report_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("reports.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
-    cadence: Mapped[Cadence] = mapped_column(
-        Enum(Cadence, name="report_cadence"), nullable=False
-    )
+    cadence: Mapped[Cadence] = mapped_column(Enum(Cadence, name="report_cadence"), nullable=False)
     #: Local to `timezone_name`, which is the recipient's, not the server's. A
     #: "Monday 9am" report that arrives at 3:30am because the server is in UTC
     #: is a report people learn to ignore.
@@ -164,29 +160,25 @@ class ReportSchedule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     day_of_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Only meaningful for MONTHLY and QUARTERLY.
     day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    timezone_name: Mapped[str] = mapped_column(
-        String(64), default="Asia/Kolkata", nullable=False
-    )
+    timezone_name: Mapped[str] = mapped_column(String(64), default="Asia/Kolkata", nullable=False)
 
-    recipient_user_ids: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    recipient_user_ids: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     export_format: Mapped[ExportFormat] = mapped_column(
         Enum(ExportFormat, name="report_export_format"),
-        default=ExportFormat.CSV, nullable=False,
+        default=ExportFormat.CSV,
+        nullable=False,
     )
     on_empty: Mapped[EmptyBehaviour] = mapped_column(
         Enum(EmptyBehaviour, name="report_empty_behaviour"),
-        default=EmptyBehaviour.SEND_ANYWAY, nullable=False,
+        default=EmptyBehaviour.SEND_ANYWAY,
+        nullable=False,
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     next_run_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    last_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -201,16 +193,17 @@ class ReportRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "report_runs"
-    __table_args__ = (
-        Index("ix_report_runs_lookup", "tenant_id", "report_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_report_runs_lookup", "tenant_id", "report_id", "created_at"),)
 
     report_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("reports.id", ondelete="SET NULL"),
-        nullable=True, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("reports.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     schedule_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("report_schedules.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("report_schedules.id", ondelete="SET NULL"),
         nullable=True,
     )
     run_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -235,9 +228,7 @@ class ReportRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: The definition as it ran, snapshotted. A report edited afterwards must not
     #: rewrite what an old run means.
-    definition_snapshot: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    definition_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     export_format: Mapped[ExportFormat | None] = mapped_column(
         Enum(ExportFormat, name="report_export_format", create_type=False), nullable=True
     )
@@ -252,16 +243,17 @@ class ReportDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "report_deliveries"
-    __table_args__ = (
-        Index("ix_report_deliveries_recipient", "tenant_id", "recipient_user_id"),
-    )
+    __table_args__ = (Index("ix_report_deliveries_recipient", "tenant_id", "recipient_user_id"),)
 
     run_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("report_runs.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("report_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     schedule_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("report_schedules.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("report_schedules.id", ondelete="SET NULL"),
         nullable=True,
     )
     recipient_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -269,9 +261,7 @@ class ReportDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: Snapshotted: an address that is deleted later must still be answerable.
     recipient_email: Mapped[str] = mapped_column(String(320), nullable=False)
-    sent_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     export_format: Mapped[ExportFormat] = mapped_column(
         Enum(ExportFormat, name="report_export_format", create_type=False),
         nullable=False,
@@ -295,7 +285,9 @@ class DashboardWidget(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     report_id: Mapped[uuid.UUID] = mapped_column(

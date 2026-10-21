@@ -89,9 +89,7 @@ def _read(target: User, caller: User, tenant: Tenant, emp: Employee | None) -> M
 
 
 async def _target(session: AsyncSession, user: User, user_id: uuid.UUID) -> User:
-    target = await session.scalar(
-        tenant_scoped(select(User).where(User.id == user_id), User, user)
-    )
+    target = await session.scalar(tenant_scoped(select(User).where(User.id == user_id), User, user))
     if target is None:
         # Another tenant's login is not found, not forbidden.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -203,9 +201,7 @@ async def create_user(
     )
     await session.commit()
     await session.refresh(target)
-    return ManagedUserCreated(
-        user=_read(target, user, tenant, emp), temporary_password=temporary
-    )
+    return ManagedUserCreated(user=_read(target, user, tenant, emp), temporary_password=temporary)
 
 
 async def link_employee(

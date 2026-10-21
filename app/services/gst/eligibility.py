@@ -121,9 +121,7 @@ class BlockedCategoryRule:
                 "challenge and will eventually stop trusting."
             )
         if self.reviewed and not self.reviewed_by.strip():
-            raise EligibilityError(
-                "A rule marked reviewed has to name who reviewed it."
-            )
+            raise EligibilityError("A rule marked reviewed has to name who reviewed it.")
 
 
 #: A reading of Section 17(5), every entry unreviewed. These are a starting
@@ -131,10 +129,7 @@ class BlockedCategoryRule:
 DEFAULT_BLOCKED_CATEGORIES: tuple[BlockedCategoryRule, ...] = (
     BlockedCategoryRule(
         category_key="food_and_beverage",
-        reason=(
-            "Food and beverages are among the supplies on which input credit is "
-            "blocked."
-        ),
+        reason=("Food and beverages are among the supplies on which input credit is blocked."),
         has_exceptions=True,
         exception_note=(
             "The block lifts where the supply is used to make an outward supply "
@@ -177,10 +172,7 @@ DEFAULT_BLOCKED_CATEGORIES: tuple[BlockedCategoryRule, ...] = (
     ),
     BlockedCategoryRule(
         category_key="health_insurance",
-        reason=(
-            "Health insurance and health services for employees are in the "
-            "blocked list."
-        ),
+        reason=("Health insurance and health services for employees are in the blocked list."),
         has_exceptions=True,
         exception_note=(
             "The block lifts where the employer is obliged to provide the cover "
@@ -204,8 +196,7 @@ DEFAULT_BLOCKED_CATEGORIES: tuple[BlockedCategoryRule, ...] = (
         ),
         has_exceptions=False,
         exception_note=(
-            "Business travel is a different thing entirely and is not covered "
-            "by this rule."
+            "Business travel is a different thing entirely and is not covered by this rule."
         ),
     ),
     BlockedCategoryRule(
@@ -341,9 +332,7 @@ def assess(
             needs_review=False,
         )
 
-    rule = next(
-        (r for r in blocked if r.category_key == invoice.category_key), None
-    )
+    rule = next((r for r in blocked if r.category_key == invoice.category_key), None)
     if rule is not None:
         if rule.has_exceptions:
             return EligibilityVerdict(
@@ -410,9 +399,7 @@ def assess(
             needs_review=False,
         )
 
-    if split is TaxSplit.IGST and invoice.igst <= 0 and (
-        invoice.cgst > 0 or invoice.sgst > 0
-    ):
+    if split is TaxSplit.IGST and invoice.igst <= 0 and (invoice.cgst > 0 or invoice.sgst > 0):
         return EligibilityVerdict(
             eligibility=Eligibility.UNCERTAIN,
             reason=(

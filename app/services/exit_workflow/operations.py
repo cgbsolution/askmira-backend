@@ -165,9 +165,7 @@ async def require_item_permission(
 ) -> ExitRecord:
     record = await _record(session, user, item.exit_record_id)
     if user.employee_id is not None and record.employee_id == user.employee_id:
-        raise permissions.forbidden(
-            "This is your own exit. Somebody else signs its clearance off."
-        )
+        raise permissions.forbidden("This is your own exit. Somebody else signs its clearance off.")
     if not await can_update_item(session, user, item, record):
         raise permissions.forbidden(
             f"The {item.department} item '{item.description}' is signed off by its owner or HR."
@@ -322,7 +320,11 @@ async def cancel_exit(
     if user.employee_id is not None and record.employee_id == user.employee_id:
         raise permissions.forbidden("This is your own exit. Somebody else has to cancel it.")
     return await cancel_record(
-        session, user, record, reason=reason, summary=f"Cancelled the exit: {reason}",
+        session,
+        user,
+        record,
+        reason=reason,
+        summary=f"Cancelled the exit: {reason}",
         request=request,
     )
 
@@ -347,8 +349,7 @@ async def cancel_record(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "An exit that is settled, cancelled or has had access revoked cannot be "
-                "cancelled."
+                "An exit that is settled, cancelled or has had access revoked cannot be cancelled."
             ),
         )
     settlement = await _settlement_for(session, user, exit_id)
@@ -408,9 +409,7 @@ async def waive_notice(
         action=AuditAction.APPROVE,
         entity_type="exit_record",
         entity_id=record.id,
-        summary=(
-            f"Waived {record.notice_shortfall_days} day(s) of notice shortfall: {reason}"
-        ),
+        summary=(f"Waived {record.notice_shortfall_days} day(s) of notice shortfall: {reason}"),
         changes={"notice_waiver_reason": reason},
         request=request,
     )
@@ -687,9 +686,7 @@ async def list_settlements(
     return await settlement_reads(session, user, list(rows))
 
 
-async def settlement_for_exit(
-    session: AsyncSession, user: User, exit_id: uuid.UUID
-) -> Settlement:
+async def settlement_for_exit(session: AsyncSession, user: User, exit_id: uuid.UUID) -> Settlement:
     await _record(session, user, exit_id)
     row = await _settlement_for(session, user, exit_id)
     if row is None:
@@ -769,7 +766,12 @@ def _claims_total(flexi: list[ReimbursementClaim], expenses: list[ExpenseClaim])
 
 
 def _suggest(
-    field: str, basis_field: str, label: str, amount: Decimal, basis: str, source: str,
+    field: str,
+    basis_field: str,
+    label: str,
+    amount: Decimal,
+    basis: str,
+    source: str,
     source_id: uuid.UUID | None,
 ) -> dict[str, Any]:
     return {
@@ -809,7 +811,10 @@ async def settlement_sources(
     if payout is not None and _amount(payout.gross_amount) > ZERO:
         suggestions.append(
             _suggest(
-                "gratuity", "gratuity_basis", "Gratuity", _amount(payout.gross_amount),
+                "gratuity",
+                "gratuity_basis",
+                "Gratuity",
+                _amount(payout.gross_amount),
                 (
                     f"{payout.service_years} years of service on monthly wages of "
                     f"{_amount(payout.monthly_wages)}, exit {payout.exit_date.isoformat()}"
@@ -817,7 +822,8 @@ async def settlement_sources(
                     f"{_amount(payout.exempt_amount)} exempt, "
                     f"{_amount(payout.taxable_amount)} taxable."
                 ),
-                "exit_benefits", payout.id,
+                "exit_benefits",
+                payout.id,
             )
         )
     else:
@@ -849,8 +855,13 @@ async def settlement_sources(
         )
         suggestions.append(
             _suggest(
-                "leave_encashment", "leave_encashment_basis", "Leave encashment", total,
-                basis + ".", "exit_benefits", encashments[0].id,
+                "leave_encashment",
+                "leave_encashment_basis",
+                "Leave encashment",
+                total,
+                basis + ".",
+                "exit_benefits",
+                encashments[0].id,
             )
         )
 
@@ -868,7 +879,9 @@ async def settlement_sources(
         ]
         suggestions.append(
             _suggest(
-                "pending_reimbursements", "reimbursement_basis", "Pending reimbursements",
+                "pending_reimbursements",
+                "reimbursement_basis",
+                "Pending reimbursements",
                 _claims_total(flexi, expenses),
                 f"{len(parts)} approved claim(s) not yet paid: " + "; ".join(parts) + ". "
                 "Approving the settlement marks them paid here, so payroll does not pay "
@@ -883,14 +896,18 @@ async def settlement_sources(
         total = sum((_amount(row["net_payable"]) for row in arrears), ZERO)
         suggestions.append(
             _suggest(
-                "pending_arrears", "arrears_basis", "Pending arrears", total,
+                "pending_arrears",
+                "arrears_basis",
+                "Pending arrears",
+                total,
                 "Approved arrears not yet paid: "
                 + "; ".join(
                     f"{row['from_period']} to {row['to_period']} ({row['net_payable']})"
                     for row in arrears
                 )
                 + ".",
-                "arrears", arrears[0]["batch_id"],
+                "arrears",
+                arrears[0]["batch_id"],
             )
         )
 
@@ -910,7 +927,10 @@ async def settlement_sources(
         total = sum((_amount(row.outstanding_principal) for row in loans), ZERO)
         suggestions.append(
             _suggest(
-                "loan_outstanding", "loan_basis", "Outstanding loans", total,
+                "loan_outstanding",
+                "loan_basis",
+                "Outstanding loans",
+                total,
                 "; ".join(
                     f"Principal outstanding {_amount(row.outstanding_principal)} on a loan of "
                     f"{_amount(row.principal)}"
@@ -922,7 +942,8 @@ async def settlement_sources(
                     for row in loans
                 )
                 + ".",
-                "loans", loans[0].id,
+                "loans",
+                loans[0].id,
             )
         )
 
@@ -1127,8 +1148,7 @@ async def approve_settlement(
         EVENT_SETTLEMENT_APPROVED,
         {
             "outcome": (
-                f"a demand for {_rupees(-_amount(settlement.net_amount))} that you owe the "
-                "company"
+                f"a demand for {_rupees(-_amount(settlement.net_amount))} that you owe the company"
                 if is_demand
                 else f"{_rupees(settlement.net_amount)} due to you"
             ),

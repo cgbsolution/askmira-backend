@@ -131,9 +131,8 @@ class CheckIn:
 
     @property
     def has_employee_voice(self) -> bool:
-        return (
-            self.employee_input_state is EmployeeInputState.GIVEN
-            and bool(self.employee_comments.strip())
+        return self.employee_input_state is EmployeeInputState.GIVEN and bool(
+            self.employee_comments.strip()
         )
 
     @property
@@ -144,9 +143,8 @@ class CheckIn:
             return False
         if self.has_employee_voice:
             return True
-        return (
-            self.employee_input_state is EmployeeInputState.DECLINED
-            and bool(self.decline_reason.strip())
+        return self.employee_input_state is EmployeeInputState.DECLINED and bool(
+            self.decline_reason.strip()
         )
 
 
@@ -177,16 +175,12 @@ def record_check_in(
             "A check-in needs the manager's account of it. A dated row with no "
             "content evidences that a calendar entry existed."
         )
-    if employee_input_state is EmployeeInputState.GIVEN and not (
-        employee_comments.strip()
-    ):
+    if employee_input_state is EmployeeInputState.GIVEN and not (employee_comments.strip()):
         raise PipError(
             "The employee's input is marked as given and is empty. Record what "
             "they said, or record that they declined and why."
         )
-    if employee_input_state is EmployeeInputState.DECLINED and not (
-        decline_reason.strip()
-    ):
+    if employee_input_state is EmployeeInputState.DECLINED and not (decline_reason.strip()):
         raise PipError(
             "An employee declining to comment is a real thing and it has to say "
             "so in their words or in the manager's account of what they said. "
@@ -306,9 +300,7 @@ class TrailAssessment:
         }
 
 
-def trail_quality(
-    pip: PipFacts, *, minimum_check_ins: int = MIN_CHECK_INS
-) -> TrailAssessment:
+def trail_quality(pip: PipFacts, *, minimum_check_ins: int = MIN_CHECK_INS) -> TrailAssessment:
     """What is missing before this could be handed to employment counsel.
 
     Reported as a list of gaps rather than a score. "72% complete" tells nobody
@@ -512,8 +504,7 @@ def close_pip(
             trail=trail,
             new_end_date=None,
             message=(
-                f"Abandoned: {reason} This is not a failure by the employee and "
-                "the record says so."
+                f"Abandoned: {reason} This is not a failure by the employee and the record says so."
             ),
         )
 

@@ -42,9 +42,7 @@ ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 @router.post("/lifecycle/preview", dependencies=[Depends(require_roles(*HR_ROLES))])
-async def preview(
-    payload: EventRaise, user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
+async def preview(payload: EventRaise, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """What this event would do, what it drags with it, and which letter it issues."""
     return await lifecycle_service.preview_event(
         session,
@@ -100,8 +98,12 @@ async def decide(
     """Approve or reject the current step: its approver, their delegate, or an admin.
     Effecting is separate, and happens on its own date."""
     result = await lifecycle_service.approve_event(
-        session, user, event_id=event_id, approve=payload.approve,
-        note=payload.note, request=request,
+        session,
+        user,
+        event_id=event_id,
+        approve=payload.approve,
+        note=payload.note,
+        request=request,
     )
     await session.commit()
     return result
@@ -188,13 +190,9 @@ async def list_events(
     "/lifecycle/employees/{employee_id}/history",
     dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
-async def history(
-    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
+async def history(employee_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """Every event, effective date, approver and letter — failures included."""
-    return await lifecycle_service.employee_history(
-        session, user, employee_id=employee_id
-    )
+    return await lifecycle_service.employee_history(session, user, employee_id=employee_id)
 
 
 @router.get(
@@ -205,9 +203,7 @@ async def state_on(
     employee_id: uuid.UUID, on: date, user: CurrentUser, session: DbSession
 ) -> dict[str, Any]:
     """The employee record as it stood on a date, rebuilt from effected events."""
-    return await lifecycle_service.state_on(
-        session, user, employee_id=employee_id, on=on
-    )
+    return await lifecycle_service.state_on(session, user, employee_id=employee_id, on=on)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -257,23 +253,17 @@ async def get_probation_policy(user: CurrentUser, session: DbSession) -> Probati
     return await lifecycle_service.get_probation_policy(session, user)
 
 
-@router.put(
-    "/lifecycle/probation/policy", dependencies=[Depends(require_roles(*ADMIN_ROLES))]
-)
+@router.put("/lifecycle/probation/policy", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def set_probation_policy(
     payload: ProbationPolicyIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
     """Choose what silence means. There is no default and there will not be one."""
-    result = await lifecycle_service.set_probation_policy(
-        session, user, payload, request=request
-    )
+    result = await lifecycle_service.set_probation_policy(session, user, payload, request=request)
     await session.commit()
     return result
 
 
-@router.post(
-    "/lifecycle/probation/remind", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.post("/lifecycle/probation/remind", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def send_reminders(
     user: CurrentUser, session: DbSession, on: date | None = None
 ) -> dict[str, Any]:
@@ -283,11 +273,7 @@ async def send_reminders(
     return result
 
 
-@router.get(
-    "/lifecycle/probation/drift", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
-async def drift(
-    user: CurrentUser, session: DbSession, on: date | None = None
-) -> dict[str, Any]:
+@router.get("/lifecycle/probation/drift", dependencies=[Depends(require_roles(*HR_ROLES))])
+async def drift(user: CurrentUser, session: DbSession, on: date | None = None) -> dict[str, Any]:
     """Reviews nobody decided, and what this tenant's policy says happens."""
     return await lifecycle_service.resolve_probation_drift(session, user, on=on)

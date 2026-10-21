@@ -185,8 +185,7 @@ async def capture_credit(
         )
         if body.expense_claim_id is None:
             raise permissions.forbidden(
-                "Outside finance, a GST invoice is captured against one of your "
-                "own expense claims."
+                "Outside finance, a GST invoice is captured against one of your own expense claims."
             )
         await gst.require_own_expense_claim(session, user, body.expense_claim_id)
     return await gst.capture_credit(

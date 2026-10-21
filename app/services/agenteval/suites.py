@@ -177,8 +177,7 @@ FIT_SCORE_SUITE = EvalSuite(
         EvalCase(
             name="fit_score_carries_its_signals",
             description=(
-                "FS-ANL-02: no AI score without its contributing signals and a "
-                "confidence value."
+                "FS-ANL-02: no AI score without its contributing signals and a confidence value."
             ),
             inputs=(_FIT_SPREAD[0],),
             tags=("scoring", "explainability"),
@@ -456,9 +455,7 @@ EXPENSE_SUITE = EvalSuite(
             inputs=(
                 {
                     "receipt_text": (
-                        "Blue Tokai Coffee Roasters\n"
-                        "2 x Filter Coffee  240.00\n"
-                        "Total 480.00\n"
+                        "Blue Tokai Coffee Roasters\n2 x Filter Coffee  240.00\nTotal 480.00\n"
                     )
                 },
             ),
@@ -518,8 +515,7 @@ def suite_for(agent_key: str) -> EvalSuite:
         return SUITES[agent_key]
     except KeyError:
         raise KeyError(
-            f"No eval suite for {agent_key!r}. Suites exist for: "
-            f"{', '.join(sorted(SUITES))}."
+            f"No eval suite for {agent_key!r}. Suites exist for: {', '.join(sorted(SUITES))}."
         ) from None
 
 

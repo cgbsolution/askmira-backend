@@ -268,19 +268,14 @@ def feedback_quality(
         }
 
     coverage = statistics.fmean(
-        [
-            min(1.0, len(f.competency_ratings) / expected_competencies)
-            for f in mine
-        ]
+        [min(1.0, len(f.competency_ratings) / expected_competencies) for f in mine]
     )
     incoherent = [f for f in mine if f.is_incoherent]
 
     return {
         "interviewer_id": interviewer_id,
         "interviews": len(mine),
-        "median_comment_length": round(
-            statistics.median([f.comment_length for f in mine]), 1
-        ),
+        "median_comment_length": round(statistics.median([f.comment_length for f in mine]), 1),
         "competency_coverage": round(coverage, 2),
         "incoherent_count": len(incoherent),
         "incoherent_feedback_ids": [f.feedback_id for f in incoherent],

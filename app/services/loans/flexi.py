@@ -138,8 +138,12 @@ async def set_pot(
     row = await _row(session, user, employee_id, financial_year)
     if row is None:
         row = FlexiDeclaration(
-            tenant_id=user.tenant_id, employee_id=employee_id,
-            financial_year=financial_year, pot=pot, allocations={}, status="draft",
+            tenant_id=user.tenant_id,
+            employee_id=employee_id,
+            financial_year=financial_year,
+            pot=pot,
+            allocations={},
+            status="draft",
         )
         session.add(row)
     else:
@@ -153,8 +157,12 @@ async def set_pot(
         row.pot = pot
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.UPDATE,
-        entity_type="flexi_declaration", entity_id=row.id, actor=user,
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="flexi_declaration",
+        entity_id=row.id,
+        actor=user,
         changes={"pot": str(pot), "financial_year": financial_year},
         summary=f"Set the {financial_year} flexi pot of {employee.employee_code} to {pot}",
         request=request,
@@ -208,8 +216,12 @@ async def declare(
     row.decision_note = None
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.UPDATE,
-        entity_type="flexi_declaration", entity_id=row.id, actor=user,
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="flexi_declaration",
+        entity_id=row.id,
+        actor=user,
         changes={"allocations": clean, "status": row.status},
         summary=f"{'Submitted' if submit else 'Saved'} the {financial_year} flexi declaration",
         request=request,
@@ -254,9 +266,12 @@ async def decide(
     row.decided_at = datetime.now(UTC)
     row.decision_note = (note or "").strip() or None
     await audit.record(
-        session, tenant_id=user.tenant_id,
+        session,
+        tenant_id=user.tenant_id,
         action=AuditAction.APPROVE if approve else AuditAction.UPDATE,
-        entity_type="flexi_declaration", entity_id=row.id, actor=user,
+        entity_type="flexi_declaration",
+        entity_id=row.id,
+        actor=user,
         changes={"status": row.status, "note": row.decision_note},
         summary=f"Flexi declaration for {row.financial_year} {row.status}",
         request=request,

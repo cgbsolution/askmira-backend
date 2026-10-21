@@ -86,12 +86,10 @@ def _body_html(body: str) -> str:
 
 def render_html(title: str, sections: list[dict[str, str]], *, version: int) -> str:
     """The handbook's body, contents first, as the PDF lays it out."""
-    contents = "".join(
-        f"<li>{escape(s.get('heading', ''))}</li>" for s in sections
-    )
+    contents = "".join(f"<li>{escape(s.get('heading', ''))}</li>" for s in sections)
     parts = [
         f"<h1>{escape(title)}</h1>",
-        f"<p style=\"color:#6b788d\">Version {version}</p>",
+        f'<p style="color:#6b788d">Version {version}</p>',
         f"<h3>Contents</h3><ol>{contents}</ol>" if sections else "",
     ]
     for number, section in enumerate(sections, start=1):
@@ -142,9 +140,14 @@ async def create_handbook(
     session.add(row)
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.CREATE, entity_type="handbook",
-        entity_id=row.id, actor=user, changes={"title": row.title,
-        "sections": len(row.sections)}, summary=f"Started the handbook '{row.title}'",
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="handbook",
+        entity_id=row.id,
+        actor=user,
+        changes={"title": row.title, "sections": len(row.sections)},
+        summary=f"Started the handbook '{row.title}'",
         request=request,
     )
     await session.commit()
@@ -168,9 +171,14 @@ async def update_handbook(
     row.has_unpublished_changes = True
     row.updated_by_user_id = user.id
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.UPDATE, entity_type="handbook",
-        entity_id=row.id, actor=user, changes={"title": row.title,
-        "sections": len(row.sections)}, summary=f"Edited the handbook '{row.title}'",
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="handbook",
+        entity_id=row.id,
+        actor=user,
+        changes={"title": row.title, "sections": len(row.sections)},
+        summary=f"Edited the handbook '{row.title}'",
         request=request,
     )
     await session.commit()
@@ -247,10 +255,17 @@ async def publish_handbook(
     row.published_at = datetime.now(UTC)
     row.has_unpublished_changes = False
     await audit.record(
-        session, tenant_id=user.tenant_id, action=AuditAction.UPDATE, entity_type="handbook",
-        entity_id=row.id, actor=user,
-        changes={"version": version, "document_id": str(document.id),
-                 "content_sha256": document.content_sha256},
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="handbook",
+        entity_id=row.id,
+        actor=user,
+        changes={
+            "version": version,
+            "document_id": str(document.id),
+            "content_sha256": document.content_sha256,
+        },
         summary=f"Published version {version} of the handbook '{row.title}'",
         request=request,
     )

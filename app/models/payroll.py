@@ -672,9 +672,7 @@ class EsiCoveragePeriod(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "esi_coverage_periods"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "employee_id", "period_label", name="uq_esi_coverage_period"
-        ),
+        UniqueConstraint("tenant_id", "employee_id", "period_label", name="uq_esi_coverage_period"),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(

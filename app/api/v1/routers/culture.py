@@ -118,9 +118,7 @@ async def list_clubs(user: CurrentUser, session: DbSession) -> list[ClubRead]:
     return await feed.list_clubs(session, user)
 
 
-@router.get(
-    "/clubs/participation", response_model=ClubParticipationRead, dependencies=HR_ONLY
-)
+@router.get("/clubs/participation", response_model=ClubParticipationRead, dependencies=HR_ONLY)
 async def club_participation(user: CurrentUser, session: DbSession) -> ClubParticipationRead:
     """Participation in aggregate. Never who joined what."""
     return await feed.club_participation(session, user)
@@ -160,15 +158,16 @@ async def club_posts(club_id: uuid.UUID, user: CurrentUser, session: DbSession) 
 
 @router.post("/clubs/{club_id}/posts", status_code=status.HTTP_201_CREATED)
 async def add_club_post(
-    club_id: uuid.UUID, payload: ClubPostIn, user: CurrentUser, session: DbSession,
+    club_id: uuid.UUID,
+    payload: ClubPostIn,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> dict:
     return await feed.add_club_post(session, user, club_id, payload.body, request=request)
 
 
-@router.delete(
-    "/club-posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
-)
+@router.delete("/club-posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_club_post(
     post_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> None:
@@ -216,7 +215,6 @@ async def save_milestone_rules(
     )
     await session.commit()
     return result
-
 
 
 # ── Polls and events ────────────────────────────────────────────────────────

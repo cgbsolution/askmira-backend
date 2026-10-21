@@ -91,7 +91,8 @@ class RatingScaleLevel(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     scale_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("rating_scales.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("rating_scales.id", ondelete="CASCADE"),
         nullable=False,
     )
     value: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
@@ -114,7 +115,8 @@ class Competency(Base, UUIDMixin, TenantMixin, TimestampMixin):
         Enum(CompetencyCategory, name="competency_category"), nullable=False
     )
     scale_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("rating_scales.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("rating_scales.id", ondelete="RESTRICT"),
         nullable=False,
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -140,7 +142,8 @@ class CompetencyLevelIndicator(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     competency_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competencies.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competencies.id", ondelete="CASCADE"),
         nullable=False,
     )
     scale_value: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
@@ -153,9 +156,7 @@ class CompetencyTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A set of competencies for a kind of role."""
 
     __tablename__ = "competency_templates"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_competency_template_name"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_competency_template_name"),)
 
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -177,11 +178,13 @@ class CompetencyTemplateItem(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     template_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competency_templates.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competency_templates.id", ondelete="CASCADE"),
         nullable=False,
     )
     competency_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competencies.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competencies.id", ondelete="RESTRICT"),
         nullable=False,
     )
     weight: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
@@ -205,15 +208,18 @@ class AppraisalTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     rating_scale_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("rating_scales.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("rating_scales.id", ondelete="RESTRICT"),
         nullable=False,
     )
     competency_template_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competency_templates.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competency_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -250,13 +256,12 @@ class CompetencyValueLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "competency_value_links"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "competency_id", "value_code", name="uq_competency_value"
-        ),
+        UniqueConstraint("tenant_id", "competency_id", "value_code", name="uq_competency_value"),
     )
 
     competency_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competencies.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competencies.id", ondelete="CASCADE"),
         nullable=False,
     )
     # The company value's code, as the Culture module knows it.

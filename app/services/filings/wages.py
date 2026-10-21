@@ -149,9 +149,7 @@ def compute_ecr_wages(
     # ── EPF wages ───────────────────────────────────────────────────────────
     if pf_on_actual_wage:
         epf_wages = pf_wage_base
-        notes.append(
-            "This employee has elected PF on actual wages, so EPF wages are not capped."
-        )
+        notes.append("This employee has elected PF on actual wages, so EPF wages are not capped.")
     else:
         epf_wages = min(pf_wage_base, epf_ceiling)
 

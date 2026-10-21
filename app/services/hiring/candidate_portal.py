@@ -73,28 +73,36 @@ async def public_jobs(session: AsyncSession, slug: str, **filters: Any) -> dict[
 
     department_ids = {j["department_id"] for j in payload["jobs"] if j["department_id"]}
     location_ids = {j["location_id"] for j in payload["jobs"] if j["location_id"]}
-    departments = {
-        str(d.id): d.name
-        for d in (
-            await session.scalars(
-                select(Department).where(
-                    tenant_filter(Department, tenant_id),
-                    Department.id.in_([uuid.UUID(i) for i in department_ids]),
+    departments = (
+        {
+            str(d.id): d.name
+            for d in (
+                await session.scalars(
+                    select(Department).where(
+                        tenant_filter(Department, tenant_id),
+                        Department.id.in_([uuid.UUID(i) for i in department_ids]),
+                    )
                 )
-            )
-        ).all()
-    } if department_ids else {}
-    locations = {
-        str(loc.id): loc.name
-        for loc in (
-            await session.scalars(
-                select(Location).where(
-                    tenant_filter(Location, tenant_id),
-                    Location.id.in_([uuid.UUID(i) for i in location_ids]),
+            ).all()
+        }
+        if department_ids
+        else {}
+    )
+    locations = (
+        {
+            str(loc.id): loc.name
+            for loc in (
+                await session.scalars(
+                    select(Location).where(
+                        tenant_filter(Location, tenant_id),
+                        Location.id.in_([uuid.UUID(i) for i in location_ids]),
+                    )
                 )
-            )
-        ).all()
-    } if location_ids else {}
+            ).all()
+        }
+        if location_ids
+        else {}
+    )
 
     for job in payload["jobs"]:
         job["department"] = departments.get(job["department_id"] or "")
@@ -167,9 +175,7 @@ async def portal_overview(session: AsyncSession, token: str) -> dict[str, Any]:
         "organisation": tenant.name if tenant else "",
         "whatsapp": {
             "opted_in": bool(candidate and candidate_comms.whatsapp_on(candidate)),
-            "phone_on_file": bool(
-                candidate and candidate_comms.whatsapp_number(candidate.phone)
-            ),
+            "phone_on_file": bool(candidate and candidate_comms.whatsapp_number(candidate.phone)),
         },
         "interviews": [
             {
@@ -223,9 +229,7 @@ async def upload_document(
     config = await session.scalar(
         select(CareersPageConfig).where(tenant_filter(CareersPageConfig, row.tenant_id))
     )
-    retention_days = (
-        config.resume_retention_days if config else ingestion.DEFAULT_RETENTION_DAYS
-    )
+    retention_days = config.resume_retention_days if config else ingestion.DEFAULT_RETENTION_DAYS
     now = datetime.now(UTC)
     document = CandidateDocument(
         tenant_id=row.tenant_id,
@@ -316,7 +320,8 @@ async def request_reschedule(
     if interview.scheduled_by_user_id:
         recipients.append(interview.scheduled_by_user_id)
     team = [
-        e for e in (
+        e
+        for e in (
             requisition.hiring_manager_id if requisition else None,
             requisition.recruiter_id if requisition else None,
         )
@@ -436,9 +441,7 @@ async def _portal_offer(session: AsyncSession, token: str, offer_id: uuid.UUID):
             Offer.id == offer_id,
             tenant_filter(Offer, row.tenant_id),
             Offer.candidate_id == row.candidate_id,
-            Offer.status.in_(
-                [OfferStatus.RELEASED, OfferStatus.ACCEPTED, OfferStatus.DECLINED]
-            ),
+            Offer.status.in_([OfferStatus.RELEASED, OfferStatus.ACCEPTED, OfferStatus.DECLINED]),
         )
     )
     if offer is None:
@@ -567,9 +570,7 @@ async def respond_to_offer(
         }
     else:
         clean = (reason or "").strip()
-        result = await offer_service.decline_offer(
-            session, actor, offer_id=offer.id, reason=clean
-        )
+        result = await offer_service.decline_offer(session, actor, offer_id=offer.id, reason=clean)
     verb = "accepted" if accept else "declined"
     await audit.record(
         session,

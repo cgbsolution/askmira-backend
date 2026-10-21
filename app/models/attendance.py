@@ -143,9 +143,7 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     is_night_shift: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # ISO weekday numbers, Monday = 1 through Sunday = 7.
-    weekly_off_days: Mapped[list[int]] = mapped_column(
-        ARRAY(Integer), default=list, nullable=False
-    )
+    weekly_off_days: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list, nullable=False)
 
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

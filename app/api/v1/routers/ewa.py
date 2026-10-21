@@ -95,6 +95,10 @@ async def disbursed(
     request: Request,
 ) -> dict[str, Any]:
     return await ewa.mark_disbursed(
-        session, user, request_id, paid_on=payload.paid_on, reference=payload.reference,
+        session,
+        user,
+        request_id,
+        paid_on=payload.paid_on,
+        reference=payload.reference,
         request=request,
     )

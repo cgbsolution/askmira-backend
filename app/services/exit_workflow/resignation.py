@@ -65,8 +65,7 @@ register_event(
 register_event(
     EVENT_ACCEPTED,
     "Your resignation has been accepted",
-    "{accepted_by} accepted your resignation. Your last working day is "
-    "{last_working_day}. {note}",
+    "{accepted_by} accepted your resignation. Your last working day is {last_working_day}. {note}",
 )
 
 
@@ -92,9 +91,7 @@ async def _record(session: AsyncSession, user: User, exit_id: uuid.UUID) -> Exit
     return record
 
 
-async def _recipients(
-    session: AsyncSession, user: User, employee: Employee
-) -> list[uuid.UUID]:
+async def _recipients(session: AsyncSession, user: User, employee: Employee) -> list[uuid.UUID]:
     """The leaver's line manager and HR — never the person acting."""
     manager_logins: list[uuid.UUID] = []
     if employee.manager_id is not None:

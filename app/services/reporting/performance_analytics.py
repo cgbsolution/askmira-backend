@@ -155,9 +155,7 @@ async def _goal_attainment(
     rows = (await session.execute(tenant_scoped(stmt, Goal, user))).all()
     names = {
         d.id: d.name
-        for d in (
-            await session.scalars(tenant_scoped(select(Department), Department, user))
-        ).all()
+        for d in (await session.scalars(tenant_scoped(select(Department), Department, user))).all()
     }
 
     def summarise(goals: list[Goal]) -> dict[str, Any]:
@@ -277,4 +275,3 @@ async def performance_overview(session: AsyncSession, user: User) -> dict[str, A
     if permissions.is_hr(user):
         result["rater_spread"] = await _rater_spread(session, user, cycles)
     return result
-

@@ -150,7 +150,10 @@ def validate_ecr_lines(rows: list[dict[str, Any]]) -> ValidationResult:
         if not name:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "NAME_MISSING", subject, "member_name",
+                    Severity.BLOCKING,
+                    "NAME_MISSING",
+                    subject,
+                    "member_name",
                     "No member name.",
                 )
             )
@@ -168,8 +171,14 @@ def validate_ecr_lines(rows: list[dict[str, Any]]) -> ValidationResult:
             )
 
         for field_name in (
-            "gross_wages", "epf_wages", "eps_wages", "edli_wages",
-            "employee_share", "employer_epf_share", "eps_contribution", "ncp_days",
+            "gross_wages",
+            "epf_wages",
+            "eps_wages",
+            "edli_wages",
+            "employee_share",
+            "employer_epf_share",
+            "eps_contribution",
+            "ncp_days",
         ):
             value = row.get(field_name)
             if value is None:
@@ -177,7 +186,10 @@ def validate_ecr_lines(rows: list[dict[str, Any]]) -> ValidationResult:
             if not isinstance(value, Decimal):
                 found.append(
                     FilingException(
-                        Severity.BLOCKING, "NOT_DECIMAL", subject, field_name,
+                        Severity.BLOCKING,
+                        "NOT_DECIMAL",
+                        subject,
+                        field_name,
                         f"{field_name} is not a Decimal. Money in a statutory return "
                         "is never a float.",
                     )
@@ -185,7 +197,10 @@ def validate_ecr_lines(rows: list[dict[str, Any]]) -> ValidationResult:
             elif value < 0:
                 found.append(
                     FilingException(
-                        Severity.BLOCKING, "NEGATIVE_VALUE", subject, field_name,
+                        Severity.BLOCKING,
+                        "NEGATIVE_VALUE",
+                        subject,
+                        field_name,
                         f"{field_name} is {value}. The portal rejects negative values.",
                     )
                 )
@@ -206,7 +221,10 @@ def validate_ecr_lines(rows: list[dict[str, Any]]) -> ValidationResult:
         if isinstance(ncp, Decimal) and isinstance(paid, Decimal) and ncp > 0 and paid <= 0:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "NCP_INCONSISTENT", subject, "ncp_days",
+                    Severity.BLOCKING,
+                    "NCP_INCONSISTENT",
+                    subject,
+                    "ncp_days",
                     f"{ncp} non-contributing days with no paid days at all. Either the "
                     "employee should not be on this return or attendance is wrong.",
                 )
@@ -227,7 +245,10 @@ def validate_esic_lines(rows: list[dict[str, Any]]) -> ValidationResult:
         if not ip_number:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "IP_MISSING", subject, "ip_number",
+                    Severity.BLOCKING,
+                    "IP_MISSING",
+                    subject,
+                    "ip_number",
                     "No ESI insurance number. An employee owed a contribution with no "
                     "IP number is an enrolment that was never completed.",
                 )
@@ -235,18 +256,28 @@ def validate_esic_lines(rows: list[dict[str, Any]]) -> ValidationResult:
         elif not ip_number.isdigit():
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "IP_MALFORMED", subject, "ip_number",
+                    Severity.BLOCKING,
+                    "IP_MALFORMED",
+                    subject,
+                    "ip_number",
                     f"'{ip_number}' is not a numeric insurance number.",
                 )
             )
 
-        for field_name in ("days_worked", "wages_paid", "employee_contribution",
-                           "employer_contribution"):
+        for field_name in (
+            "days_worked",
+            "wages_paid",
+            "employee_contribution",
+            "employer_contribution",
+        ):
             value = row.get(field_name)
             if isinstance(value, Decimal) and value < 0:
                 found.append(
                     FilingException(
-                        Severity.BLOCKING, "NEGATIVE_VALUE", subject, field_name,
+                        Severity.BLOCKING,
+                        "NEGATIVE_VALUE",
+                        subject,
+                        field_name,
                         f"{field_name} is {value}.",
                     )
                 )
@@ -257,14 +288,20 @@ def validate_esic_lines(rows: list[dict[str, Any]]) -> ValidationResult:
             if days == 0 and wages > 0:
                 found.append(
                     FilingException(
-                        Severity.BLOCKING, "WAGES_WITHOUT_DAYS", subject, "days_worked",
+                        Severity.BLOCKING,
+                        "WAGES_WITHOUT_DAYS",
+                        subject,
+                        "days_worked",
                         f"Wages of {wages} against zero days worked.",
                     )
                 )
             if days > 0 and wages == 0:
                 found.append(
                     FilingException(
-                        Severity.WARNING, "DAYS_WITHOUT_WAGES", subject, "wages_paid",
+                        Severity.WARNING,
+                        "DAYS_WITHOUT_WAGES",
+                        subject,
+                        "wages_paid",
                         f"{days} days worked but no wages. Correct for unpaid leave "
                         "that still counts as service; worth confirming.",
                     )
@@ -284,7 +321,9 @@ def validate_pt_challan(
     if not registration_number:
         found.append(
             FilingException(
-                Severity.BLOCKING, "PT_REGISTRATION_MISSING", state_code,
+                Severity.BLOCKING,
+                "PT_REGISTRATION_MISSING",
+                state_code,
                 "registration_number",
                 f"No Professional Tax registration number for {state_code}. The challan "
                 "cannot be filed without the state's own registration.",
@@ -297,7 +336,10 @@ def validate_pt_challan(
         if isinstance(tax, Decimal) and tax < 0:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "NEGATIVE_VALUE", subject, "tax_deducted",
+                    Severity.BLOCKING,
+                    "NEGATIVE_VALUE",
+                    subject,
+                    "tax_deducted",
                     f"Professional Tax of {tax}.",
                 )
             )
@@ -327,7 +369,10 @@ def validate_tds_return(
     if not tan:
         found.append(
             FilingException(
-                Severity.BLOCKING, "TAN_MISSING", "deductor", "tan",
+                Severity.BLOCKING,
+                "TAN_MISSING",
+                "deductor",
+                "tan",
                 "No TAN on the legal entity. A 24Q is filed against a TAN.",
             )
         )
@@ -353,7 +398,10 @@ def validate_tds_return(
         if not pan:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "PAN_MISSING", subject, "pan",
+                    Severity.BLOCKING,
+                    "PAN_MISSING",
+                    subject,
+                    "pan",
                     "No PAN on record. A missing PAN attracts deduction at the higher "
                     "rate, which is a payroll correction and not something to file "
                     "around.",
@@ -362,7 +410,10 @@ def validate_tds_return(
         elif not PAN_PATTERN.match(pan):
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "PAN_INVALID", subject, "pan",
+                    Severity.BLOCKING,
+                    "PAN_INVALID",
+                    subject,
+                    "pan",
                     f"'{pan}' is not a valid PAN. An invalid PAN is treated as no PAN, "
                     "with the same higher-rate consequence.",
                 )
@@ -370,7 +421,10 @@ def validate_tds_return(
         elif pan in seen_pans and seen_pans[pan] != subject:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "PAN_DUPLICATE", subject, "pan",
+                    Severity.BLOCKING,
+                    "PAN_DUPLICATE",
+                    subject,
+                    "pan",
                     f"PAN {pan} is also on {seen_pans[pan]}.",
                 )
             )
@@ -382,7 +436,10 @@ def validate_tds_return(
         if isinstance(tds, Decimal) and isinstance(deposited, Decimal) and tds != deposited:
             found.append(
                 FilingException(
-                    Severity.BLOCKING, "TDS_MISMATCH", subject, "tds_deposited",
+                    Severity.BLOCKING,
+                    "TDS_MISMATCH",
+                    subject,
+                    "tds_deposited",
                     f"{tds} deducted but {deposited} mapped to challans. Every rupee "
                     "deducted has to appear against a challan.",
                 )
@@ -393,15 +450,20 @@ def validate_tds_return(
     if quarter == 4 and not details:
         found.append(
             FilingException(
-                Severity.BLOCKING, "ANNEXURE_II_MISSING", "return", "salary_details",
-                "The Q4 return carries Annexure II, the annual salary detail, and it is "
-                "empty.",
+                Severity.BLOCKING,
+                "ANNEXURE_II_MISSING",
+                "return",
+                "salary_details",
+                "The Q4 return carries Annexure II, the annual salary detail, and it is empty.",
             )
         )
     if quarter != 4 and details:
         found.append(
             FilingException(
-                Severity.BLOCKING, "ANNEXURE_II_UNEXPECTED", "return", "salary_details",
+                Severity.BLOCKING,
+                "ANNEXURE_II_UNEXPECTED",
+                "return",
+                "salary_details",
                 f"Annexure II was supplied for Q{quarter}. It belongs in the fourth "
                 "quarter's return only — the year's figures do not exist yet.",
             )

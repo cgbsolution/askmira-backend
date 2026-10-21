@@ -116,9 +116,7 @@ async def collect_personal_data(
         if predicate is None:
             continue
         stmt = (
-            select(table)
-            .where(tenant_filter(table, user.tenant_id), predicate)
-            .limit(row_cap + 1)
+            select(table).where(tenant_filter(table, user.tenant_id), predicate).limit(row_cap + 1)
         )
         rows = (await session.execute(stmt)).mappings().all()
         if not rows:
@@ -138,9 +136,7 @@ async def collect_personal_data(
             {
                 "table": table.name,
                 "label": table.name.replace("_", " ").capitalize(),
-                "categories": [
-                    {"key": key, "name": CATEGORIES[key].name} for key in category_keys
-                ],
+                "categories": [{"key": key, "name": CATEGORIES[key].name} for key in category_keys],
                 "row_count": min(len(rows), row_cap),
                 "truncated": len(rows) > row_cap,
                 "withheld_columns": withheld,

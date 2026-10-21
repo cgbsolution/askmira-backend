@@ -127,8 +127,7 @@ def validate_rules(rules: list[RuleSpec]) -> None:
     covered_to: Decimal | None = ordered[0].ctc_min
     if covered_to > 0:
         raise ApprovalChainError(
-            f"The unconditional bands start at {covered_to}. An offer below that has "
-            "no approver."
+            f"The unconditional bands start at {covered_to}. An offer below that has no approver."
         )
     for rule in ordered:
         if covered_to is None:

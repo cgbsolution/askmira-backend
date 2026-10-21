@@ -151,12 +151,10 @@ EXPORTED_CATEGORIES: dict[str, str] = {
         "before it shows up anywhere else."
     ),
     "agent_action": (
-        "Anything an AI agent did or proposed, with its confidence and its "
-        "citations."
+        "Anything an AI agent did or proposed, with its confidence and its citations."
     ),
     "payroll_operation": (
-        "Rule changes, run approvals, disbursement releases. Money and "
-        "statutory filings."
+        "Rule changes, run approvals, disbursement releases. Money and statutory filings."
     ),
 }
 
@@ -374,12 +372,8 @@ class DeliveryHealth:
             "destination": self.destination,
             "state": self.state.value,
             "needs_alert": self.state.needs_alert,
-            "last_success_at": (
-                self.last_success_at.isoformat() if self.last_success_at else None
-            ),
-            "last_failure_at": (
-                self.last_failure_at.isoformat() if self.last_failure_at else None
-            ),
+            "last_success_at": (self.last_success_at.isoformat() if self.last_success_at else None),
+            "last_failure_at": (self.last_failure_at.isoformat() if self.last_failure_at else None),
             "consecutive_failures": self.consecutive_failures,
             "minutes_since_success": self.minutes_since_success,
             "message": self.message,
@@ -401,11 +395,7 @@ def delivery_health(
     for a day looks fine on a dashboard counting failures, and the client's SOC
     believes nothing has happened in our product for a day.
     """
-    minutes_since = (
-        int((now - last_success_at).total_seconds() // 60)
-        if last_success_at
-        else None
-    )
+    minutes_since = int((now - last_success_at).total_seconds() // 60) if last_success_at else None
 
     if last_success_at is None and consecutive_failures == 0:
         return DeliveryHealth(

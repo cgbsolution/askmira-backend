@@ -510,9 +510,7 @@ async def compute_run(
     # State codes in scope, so Professional Tax resolves per location.
     states = {
         loc_state
-        for loc_state in [
-            (await _location_state(session, user, e.location_id)) for e in employees
-        ]
+        for loc_state in [(await _location_state(session, user, e.location_id)) for e in employees]
         if loc_state
     }
     rule_sets = await _resolve_rule_sets(session, user, run.effective_date, states)
@@ -574,9 +572,7 @@ async def compute_run(
             fy_end=fy_end,
             prior_input_lines=prior_lines,
         ),
-        sources=(
-            frozenset(run.included_sources) if run.included_sources is not None else None
-        ),
+        sources=(frozenset(run.included_sources) if run.included_sources is not None else None),
     )
 
     proof_window = (
@@ -672,9 +668,7 @@ async def compute_run(
         except AttendanceLockError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-        employee_rules = {
-            key: value for key, value in rule_sets.items() if ":" not in key
-        }
+        employee_rules = {key: value for key, value in rule_sets.items() if ":" not in key}
 
         # Professional Tax is a state levy. Where the employee's work state
         # cannot be established for the whole period — no location, or a
@@ -752,7 +746,8 @@ async def compute_run(
                     state_review=state_review,
                     inputs=tuple(collected.lines.get(employee.id, [])),
                     loan_recoveries=(
-                        () if supplementary is not None
+                        ()
+                        if supplementary is not None
                         else tuple(collected.loans.get(employee.id, []))
                     ),
                     tds=tds_context,
@@ -888,10 +883,7 @@ async def compute_run(
         await session.commit()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Payroll could not compute for {len(errors)} employee(s). "
-                f"First: {errors[0]}"
-            ),
+            detail=(f"Payroll could not compute for {len(errors)} employee(s). First: {errors[0]}"),
         )
 
     # Replace any prior computation for this run — recomputation is allowed
@@ -1228,9 +1220,7 @@ async def publish_run(
         entity_id=run.id,
         actor=user,
         changes={"step": "publish", "payslips": len(payslips), "recipients": len(recipients)},
-        summary=(
-            f"Published {len(payslips)} payslip(s) for {run.period_month}/{run.period_year}"
-        ),
+        summary=(f"Published {len(payslips)} payslip(s) for {run.period_month}/{run.period_year}"),
         request=request,
     )
     if recipients:
@@ -1472,9 +1462,7 @@ async def _professional_tax_state(
                     "can be determined."
                 ),
             )
-        return PtStateResolution(
-            state_code=state, needs_review=False, reason=f"Works in {state}."
-        )
+        return PtStateResolution(state_code=state, needs_review=False, reason=f"Works in {state}.")
 
     history: list[tuple[date, str]] = []
     for posting in postings:
@@ -1495,9 +1483,7 @@ async def _location_state(
     from app.models.org import Location
 
     return await session.scalar(
-        tenant_scoped(
-            select(Location.state_code).where(Location.id == location_id), Location, user
-        )
+        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
     )
 
 
@@ -1516,23 +1502,27 @@ async def _month_paid_so_far(
     if not employee_ids:
         return {}
     rows = (
-        await session.execute(
-            tenant_scoped(
-                select(Payslip)
-                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
-                .where(
-                    PayrollRun.legal_entity_id == run.legal_entity_id,
-                    PayrollRun.period_year == run.period_year,
-                    PayrollRun.period_month == run.period_month,
-                    PayrollRun.status.in_(CLOSED_STATUSES),
-                    PayrollRun.id != run.id,
-                    Payslip.employee_id.in_(employee_ids),
-                ),
-                Payslip,
-                user,
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(Payslip)
+                    .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                    .where(
+                        PayrollRun.legal_entity_id == run.legal_entity_id,
+                        PayrollRun.period_year == run.period_year,
+                        PayrollRun.period_month == run.period_month,
+                        PayrollRun.status.in_(CLOSED_STATUSES),
+                        PayrollRun.id != run.id,
+                        Payslip.employee_id.in_(employee_ids),
+                    ),
+                    Payslip,
+                    user,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     paid: dict[uuid.UUID, dict] = {}
     for payslip in rows:
         bucket = paid.setdefault(
@@ -1579,9 +1569,7 @@ async def _previous_net_by_employee(
 
     payslips = (
         await session.scalars(
-            tenant_scoped(
-                select(Payslip).where(Payslip.run_id == previous_run.id), Payslip, user
-            )
+            tenant_scoped(select(Payslip).where(Payslip.run_id == previous_run.id), Payslip, user)
         )
     ).all()
     return {p.employee_id: Decimal(str(p.net_pay)) for p in payslips}

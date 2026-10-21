@@ -85,9 +85,7 @@ class LoanScheme(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_loan_scheme_name"),)
 
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    loan_type: Mapped[LoanType] = mapped_column(
-        Enum(LoanType, name="loan_type"), nullable=False
-    )
+    loan_type: Mapped[LoanType] = mapped_column(Enum(LoanType, name="loan_type"), nullable=False)
 
     max_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     # An alternative cap: three months of salary, say. Both can apply, and the
@@ -101,9 +99,7 @@ class LoanScheme(Base, UUIDMixin, TenantMixin, TimestampMixin):
         Enum(InterestType, name="interest_type"), nullable=False
     )
     max_tenure_months: Mapped[int] = mapped_column(Integer, nullable=False)
-    eligibility_min_service_months: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    eligibility_min_service_months: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     moratorium_months: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     accrue_interest_during_moratorium: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
@@ -111,15 +107,11 @@ class LoanScheme(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     # The floor an employee must be left with after an EMI. Never zero by
     # default: a loan is not more urgent than someone's salary.
-    minimum_net_pay: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    minimum_net_pay: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     # Where a full EMI does not fit above the floor, recover what does rather
     # than skipping. Off by default, because a part-payment nobody recorded as
     # partial is how a ledger stops reconciling.
-    allow_partial_recovery: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    allow_partial_recovery: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     approver_roles: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
@@ -157,9 +149,7 @@ class LoanAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):
     tenure_months: Mapped[int] = mapped_column(Integer, nullable=False)
     emi_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
 
-    outstanding_principal: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    outstanding_principal: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     # Instalments skipped because they would have breached the net-pay floor.
     # Attempted again next month, so a good month clears the backlog rather
     # than the backlog growing forever.
@@ -207,12 +197,8 @@ class LoanRepayment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     period: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
 
     amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
-    principal_component: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
-    interest_component: Mapped[float] = mapped_column(
-        Numeric(14, 2), default=0, nullable=False
-    )
+    principal_component: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    interest_component: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     closing_balance: Mapped[float] = mapped_column(Numeric(14, 2), default=0, nullable=False)
 
     is_skipped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -251,14 +237,10 @@ class ReimbursementComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     bill_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Within the financial year only. Carrying across years would defeat the
     # year-end taxation of unclaimed entitlement.
-    carry_forward_within_year: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    carry_forward_within_year: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Months before year end to warn about unclaimed entitlement. The surprise
     # is avoidable, and warning afterwards is not a warning.
-    reminder_months_before_year_end: Mapped[int] = mapped_column(
-        Integer, default=2, nullable=False
-    )
+    reminder_months_before_year_end: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -306,7 +288,8 @@ class ReimbursementClaim(Base, UUIDMixin, TenantMixin, TimestampMixin):
     settled_in_settlement_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(
-            "settlements.id", ondelete="SET NULL",
+            "settlements.id",
+            ondelete="SET NULL",
             name="fk_reimbursement_claims_settled_in_settlement_id",
         ),
         nullable=True,
@@ -332,7 +315,9 @@ class FlexiDeclaration(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     financial_year: Mapped[str] = mapped_column(String(9), nullable=False)

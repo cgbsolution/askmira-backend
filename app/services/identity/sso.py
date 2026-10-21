@@ -69,20 +69,20 @@ async def provider_for_email(
     if not domain:
         return None
 
-    stmt = select(IdentityProvider, Tenant).join(
-        Tenant, Tenant.id == IdentityProvider.tenant_id
-    ).where(
-        IdentityProvider.enabled.is_(True),
-        Tenant.is_active.is_(True),
-        IdentityProvider.allowed_email_domains.any(domain),
+    stmt = (
+        select(IdentityProvider, Tenant)
+        .join(Tenant, Tenant.id == IdentityProvider.tenant_id)
+        .where(
+            IdentityProvider.enabled.is_(True),
+            Tenant.is_active.is_(True),
+            IdentityProvider.allowed_email_domains.any(domain),
+        )
     )
     row = (await session.execute(stmt)).first()
     return (row[0], row[1]) if row else None
 
 
-async def assert_password_login_allowed(
-    session: AsyncSession, user: User, request=None
-) -> None:
+async def assert_password_login_allowed(session: AsyncSession, user: User, request=None) -> None:
     """Refuse a password login when the tenant enforces SSO.
 
     Break-glass is the exception, and it is audited at high severity — a
@@ -124,8 +124,7 @@ async def assert_password_login_allowed(
         return
 
     raise SsoError(
-        "This workspace requires single sign-on. Sign in through your company's "
-        "identity provider."
+        "This workspace requires single sign-on. Sign in through your company's identity provider."
     )
 
 
@@ -158,9 +157,7 @@ async def provision_user(
         )
 
     user = await session.scalar(
-        select(User).where(
-            tenant_filter(User, tenant_id), func.lower(User.email) == email
-        )
+        select(User).where(tenant_filter(User, tenant_id), func.lower(User.email) == email)
     )
 
     if user is not None:
@@ -311,9 +308,7 @@ async def purge_expired_assertions(session: AsyncSession) -> int:
     keeping the id buys nothing and the table would grow without bound.
     """
     result = await session.execute(
-        delete(SamlAssertionSeen).where(
-            SamlAssertionSeen.not_on_or_after < datetime.now(UTC)
-        )
+        delete(SamlAssertionSeen).where(SamlAssertionSeen.not_on_or_after < datetime.now(UTC))
     )
     await session.commit()
     return result.rowcount or 0

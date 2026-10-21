@@ -117,11 +117,7 @@ class ChallanCreate(BaseModel):
     @model_validator(mode="after")
     def components_sum_to_total(self) -> ChallanCreate:
         parts = (
-            self.tds_amount
-            + self.surcharge
-            + self.education_cess
-            + self.interest
-            + self.late_fee
+            self.tds_amount + self.surcharge + self.education_cess + self.interest + self.late_fee
         )
         if parts != self.total_amount:
             raise ValueError(
@@ -376,9 +372,7 @@ async def reject(
     and "we filed on the 14th and it bounced" is part of the trail.
     """
     record = await session.scalar(
-        tenant_scoped(
-            select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user
-        )
+        tenant_scoped(select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user)
     )
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")
@@ -413,9 +407,7 @@ async def download(
     """The generated return, exactly as stored, as an attachment. Audited."""
     data, name = await filing_service.download_record(session, user, record_id, request=request)
     await session.commit()
-    return Response(
-        content=data, media_type="text/plain", headers=support.attachment_headers(name)
-    )
+    return Response(content=data, media_type="text/plain", headers=support.attachment_headers(name))
 
 
 # ── TDS challans ────────────────────────────────────────────────────────────
@@ -531,9 +523,7 @@ async def map_deduction(
         )
 
     payslip = await session.scalar(
-        tenant_scoped(
-            select(Payslip).where(Payslip.id == payload.payslip_id), Payslip, user
-        )
+        tenant_scoped(select(Payslip).where(Payslip.id == payload.payslip_id), Payslip, user)
     )
     if payslip is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payslip not found")
@@ -567,9 +557,7 @@ async def map_deduction(
         action=AuditAction.CREATE,
         entity_type="tds_challan_mapping",
         entity_id=mapping.id,
-        summary=(
-            f"Mapped {payload.tds_amount} of TDS to challan {challan.challan_serial}"
-        ),
+        summary=(f"Mapped {payload.tds_amount} of TDS to challan {challan.challan_serial}"),
         changes={"challan_id": str(payload.challan_id), "amount": str(payload.tds_amount)},
         request=request,
     )
@@ -609,9 +597,7 @@ async def unmapped_tds(
                     PayrollRun.period_month.in_(months),
                     PayrollRun.effective_date >= year_start,
                     PayrollRun.effective_date <= year_end,
-                    PayrollRun.status.in_(
-                        [PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]
-                    ),
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
                     Payslip.tds > 0,
                 ),
                 Payslip,

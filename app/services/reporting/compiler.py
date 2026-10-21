@@ -163,24 +163,46 @@ class Operator(str, enum.Enum):
 #: would produce a cast nobody asked for and a result nobody could explain.
 _OPERATORS_FOR: dict[DataType, tuple[Operator, ...]] = {
     DataType.STRING: (
-        Operator.EQUALS, Operator.NOT_EQUALS, Operator.IN, Operator.NOT_IN,
-        Operator.CONTAINS, Operator.IS_NULL, Operator.IS_NOT_NULL,
+        Operator.EQUALS,
+        Operator.NOT_EQUALS,
+        Operator.IN,
+        Operator.NOT_IN,
+        Operator.CONTAINS,
+        Operator.IS_NULL,
+        Operator.IS_NOT_NULL,
     ),
     DataType.ENUM: (
-        Operator.EQUALS, Operator.NOT_EQUALS, Operator.IN, Operator.NOT_IN,
-        Operator.IS_NULL, Operator.IS_NOT_NULL,
+        Operator.EQUALS,
+        Operator.NOT_EQUALS,
+        Operator.IN,
+        Operator.NOT_IN,
+        Operator.IS_NULL,
+        Operator.IS_NOT_NULL,
     ),
     DataType.BOOLEAN: (Operator.EQUALS, Operator.IS_NULL, Operator.IS_NOT_NULL),
     DataType.INTEGER: (
-        Operator.EQUALS, Operator.NOT_EQUALS, Operator.IN, Operator.NOT_IN,
-        Operator.GREATER_THAN, Operator.GREATER_OR_EQUAL, Operator.LESS_THAN,
-        Operator.LESS_OR_EQUAL, Operator.BETWEEN, Operator.IS_NULL,
+        Operator.EQUALS,
+        Operator.NOT_EQUALS,
+        Operator.IN,
+        Operator.NOT_IN,
+        Operator.GREATER_THAN,
+        Operator.GREATER_OR_EQUAL,
+        Operator.LESS_THAN,
+        Operator.LESS_OR_EQUAL,
+        Operator.BETWEEN,
+        Operator.IS_NULL,
         Operator.IS_NOT_NULL,
     ),
     DataType.DATE: (
-        Operator.EQUALS, Operator.GREATER_THAN, Operator.GREATER_OR_EQUAL,
-        Operator.LESS_THAN, Operator.LESS_OR_EQUAL, Operator.BETWEEN,
-        Operator.RELATIVE_RANGE, Operator.IS_NULL, Operator.IS_NOT_NULL,
+        Operator.EQUALS,
+        Operator.GREATER_THAN,
+        Operator.GREATER_OR_EQUAL,
+        Operator.LESS_THAN,
+        Operator.LESS_OR_EQUAL,
+        Operator.BETWEEN,
+        Operator.RELATIVE_RANGE,
+        Operator.IS_NULL,
+        Operator.IS_NOT_NULL,
     ),
 }
 _OPERATORS_FOR[DataType.DECIMAL] = _OPERATORS_FOR[DataType.INTEGER]
@@ -270,9 +292,7 @@ def _column(alias_map: dict[str, Any], table_name: str, column_name: str) -> Col
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _resolve_fields(
-    ent: Entity, keys: list[str], role: str
-) -> tuple[list[Field], list[str]]:
+def _resolve_fields(ent: Entity, keys: list[str], role: str) -> tuple[list[Field], list[str]]:
     """Look up fields and drop the ones this role may not see.
 
     Returns `(allowed, denied)`. Denied keys are named so the caller can say
@@ -352,8 +372,7 @@ def _refuse_encrypted(spec: Field, expression: ColumnElement, verb: str) -> None
 
     if isinstance(getattr(expression, "type", None), EncryptedText):
         raise CompileError(
-            f"{spec.display_name} is stored encrypted, so a report can show it but not "
-            f"{verb} it."
+            f"{spec.display_name} is stored encrypted, so a report can show it but not {verb} it."
         )
 
 
@@ -443,9 +462,7 @@ def _as_date(value: Any) -> date:
         raise CompileError(f"'{value}' is not a date this system can read.") from exc
 
 
-def _date_between(
-    expression: ColumnElement, start: date, end: date, spec: Field
-) -> ColumnElement:
+def _date_between(expression: ColumnElement, start: date, end: date, spec: Field) -> ColumnElement:
     """Inclusive of both days, for a date *or* a timestamp column.
 
     `BETWEEN` on a timestamp compares against midnight on the end date and drops
@@ -457,9 +474,7 @@ def _date_between(
     return expression.between(start, end)
 
 
-def _scope_predicate(
-    ent: Entity, base: Table, scope: Scope
-) -> ColumnElement | None:
+def _scope_predicate(ent: Entity, base: Table, scope: Scope) -> ColumnElement | None:
     """Row-level scope, or a refusal.
 
     An entity with no employee column has nothing for a reporting-tree filter to
@@ -563,9 +578,7 @@ def compile_report(
                     f"{sorted(spec.allowed_aggregations) or 'none — it is a dimension'}."
                 )
             if not spec.is_measure:
-                raise CompileError(
-                    f"{spec.display_name} is a dimension; it cannot be aggregated."
-                )
+                raise CompileError(f"{spec.display_name} is a dimension; it cannot be aggregated.")
         elif definition.group_by and selection.field_key not in definition.group_by:
             raise CompileError(
                 f"{spec.display_name} is neither grouped nor aggregated. In a grouped "
@@ -637,11 +650,7 @@ def compile_report(
     page_size = max(1, min(definition.limit or DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE))
     statement = statement.limit(page_size).offset(max(0, definition.offset))
 
-    count_statement = (
-        select(func.count())
-        .select_from(from_clause)
-        .where(and_(*predicates))
-    )
+    count_statement = select(func.count()).select_from(from_clause).where(and_(*predicates))
     if definition.group_by:
         # Counting a grouped report means counting groups, not rows.
         inner = (
@@ -656,8 +665,7 @@ def compile_report(
     notes: list[str] = []
     if denied:
         notes.append(
-            f"These columns are hidden from your role and were left off: "
-            f"{sorted(set(denied))}."
+            f"These columns are hidden from your role and were left off: {sorted(set(denied))}."
         )
 
     return CompiledReport(

@@ -103,9 +103,11 @@ def job_posting_jsonld(posting: JobPostingSeo) -> dict[str, Any]:
     if posting.valid_through:
         # Serialised with a time, because a bare date is read as midnight and
         # the job disappears a day early.
-        data["validThrough"] = datetime.combine(
-            posting.valid_through, datetime.min.time()
-        ).replace(hour=23, minute=59).isoformat()
+        data["validThrough"] = (
+            datetime.combine(posting.valid_through, datetime.min.time())
+            .replace(hour=23, minute=59)
+            .isoformat()
+        )
 
     if posting.city or posting.state:
         data["jobLocation"] = {

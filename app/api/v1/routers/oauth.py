@@ -23,9 +23,11 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
 def _oauth_response(exc: HTTPException) -> JSONResponse:
-    body = exc.detail if isinstance(exc.detail, dict) else {
-        "error": "invalid_request", "error_description": str(exc.detail)
-    }
+    body = (
+        exc.detail
+        if isinstance(exc.detail, dict)
+        else {"error": "invalid_request", "error_description": str(exc.detail)}
+    )
     return JSONResponse(body, status_code=exc.status_code, headers=_NO_STORE)
 
 

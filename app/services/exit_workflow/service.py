@@ -57,9 +57,7 @@ __all__ = [
 ZERO = Decimal(0)
 
 
-async def _exit_record(
-    session: AsyncSession, user: User, exit_id: uuid.UUID
-) -> ExitRecord:
+async def _exit_record(session: AsyncSession, user: User, exit_id: uuid.UUID) -> ExitRecord:
     record = await session.scalar(
         tenant_scoped(select(ExitRecord).where(ExitRecord.id == exit_id), ExitRecord, user)
     )
@@ -181,9 +179,7 @@ async def open_exit(
         )
 
     notice_days = (
-        notice_period_days
-        if notice_period_days is not None
-        else (employee.notice_period_days or 0)
+        notice_period_days if notice_period_days is not None else (employee.notice_period_days or 0)
     )
 
     last_day = approved_last_working_day or requested_last_working_day
@@ -195,9 +191,7 @@ async def open_exit(
         exit_type=exit_type,
         # A resignation the employee submitted waits in `initiated` for somebody
         # to accept it, whatever its notice arithmetic says.
-        status=(
-            ExitStatus.INITIATED if initiated_by_employee else status_for_shortfall(shortfall)
-        ),
+        status=(ExitStatus.INITIATED if initiated_by_employee else status_for_shortfall(shortfall)),
         resignation_date=resignation_date,
         requested_last_working_day=requested_last_working_day,
         approved_last_working_day=approved_last_working_day,
@@ -284,9 +278,7 @@ async def clear_item(
 ) -> ClearanceItem:
     """Sign off one department's clearance, or name what is owed."""
     item = await session.scalar(
-        tenant_scoped(
-            select(ClearanceItem).where(ClearanceItem.id == item_id), ClearanceItem, user
-        )
+        tenant_scoped(select(ClearanceItem).where(ClearanceItem.id == item_id), ClearanceItem, user)
     )
     if item is None:
         raise HTTPException(
@@ -319,8 +311,7 @@ async def clear_item(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "A clearance with recovery needs an amount. If nothing is owed, clear it "
-                "outright."
+                "A clearance with recovery needs an amount. If nothing is owed, clear it outright."
             ),
         )
 
@@ -460,9 +451,7 @@ async def compute_settlement(
             )
         )
     ).all()
-    asset_recovery = sum(
-        (Decimal(str(item.recovery_amount)) for item in cleared), start=ZERO
-    )
+    asset_recovery = sum((Decimal(str(item.recovery_amount)) for item in cleared), start=ZERO)
     recovery_sources = [
         f"{item.department}: {item.description} ({item.recovery_amount})"
         for item in cleared
@@ -527,9 +516,7 @@ async def compute_settlement(
         previous = (
             await session.scalars(
                 tenant_scoped(
-                    select(SettlementLine).where(
-                        SettlementLine.settlement_id == existing.id
-                    ),
+                    select(SettlementLine).where(SettlementLine.settlement_id == existing.id),
                     SettlementLine,
                     user,
                 )
@@ -618,9 +605,7 @@ async def hold_settlement(
         )
 
     settlement = await session.scalar(
-        tenant_scoped(
-            select(Settlement).where(Settlement.id == settlement_id), Settlement, user
-        )
+        tenant_scoped(select(Settlement).where(Settlement.id == settlement_id), Settlement, user)
     )
     if settlement is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settlement not found")
@@ -689,9 +674,7 @@ async def revoke_access(
             detail="You cannot revoke your own access. Somebody else does that.",
         )
     employee = await session.scalar(
-        tenant_scoped(
-            select(Employee).where(Employee.id == record.employee_id), Employee, user
-        )
+        tenant_scoped(select(Employee).where(Employee.id == record.employee_id), Employee, user)
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -701,9 +684,7 @@ async def revoke_access(
     # is a query rather than an attribute walk.
     accounts = (
         await session.scalars(
-            tenant_scoped(
-                select(User).where(User.employee_id == employee.id), User, user
-            )
+            tenant_scoped(select(User).where(User.employee_id == employee.id), User, user)
         )
     ).all()
     for account in accounts:

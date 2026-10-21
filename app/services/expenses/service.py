@@ -129,8 +129,7 @@ register_event(
 register_event(
     EVENT_CLAIM_DECIDED,
     "Your {category} claim was {decision}",
-    "Finance {decision} your claim for {amount} ({category}, {incurred_on}).{next_line}"
-    "{note_line}",
+    "Finance {decision} your claim for {amount} ({category}, {incurred_on}).{next_line}{note_line}",
 )
 register_event(
     EVENT_TRAVEL_AWAITING_MANAGER,
@@ -141,8 +140,7 @@ register_event(
 register_event(
     EVENT_TRAVEL_DECIDED,
     "Your travel request was {decision}",
-    "Your trip from {from_date} to {to_date} was {decision} by {decided_by}.{next_line}"
-    "{note_line}",
+    "Your trip from {from_date} to {to_date} was {decision} by {decided_by}.{next_line}{note_line}",
 )
 
 
@@ -201,9 +199,7 @@ async def line_manager_login(
         tenant_scoped(
             # They manage this employee, so they can take a manager's decision
             # whatever their login role.
-            select(User).where(
-                User.employee_id == employee.manager_id, User.is_active.is_(True)
-            ),
+            select(User).where(User.employee_id == employee.manager_id, User.is_active.is_(True)),
             User,
             user,
         )
@@ -657,9 +653,7 @@ async def _convert_if_foreign(
     if currency.upper() == reporting:
         return policy_engine.money(amount), None
 
-    convention = rate_engine.ConversionConvention(
-        settings.conversion_convention.value
-    )
+    convention = rate_engine.ConversionConvention(settings.conversion_convention.value)
     rate_date = (
         settlement_date
         if convention is rate_engine.ConversionConvention.SETTLEMENT_DATE
@@ -745,9 +739,7 @@ async def capture_claim(
     storing it would throw away the strongest signal finance has about where a
     limit is wrong.
     """
-    emp_stmt = tenant_scoped(
-        select(Employee).where(Employee.id == employee_id), Employee, user
-    )
+    emp_stmt = tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
     employee = (await session.execute(emp_stmt)).scalar_one_or_none()
     if employee is None:
         raise _not_found("No such employee in this tenant.")
@@ -850,16 +842,10 @@ async def capture_claim(
                 "them there is nothing to value and nothing to check."
             )
         rate_rows = list(
-            (
-                await session.execute(
-                    tenant_scoped(select(MileageRate), MileageRate, user)
-                )
-            ).scalars()
+            (await session.execute(tenant_scoped(select(MileageRate), MileageRate, user))).scalars()
         )
         try:
-            rate_row = rate_engine.rate_on(
-                rate_rows, incurred_on, vehicle_type=vehicle_type
-            )
+            rate_row = rate_engine.rate_on(rate_rows, incurred_on, vehicle_type=vehicle_type)
             mileage = rate_engine.mileage_claim(
                 distance_km=_d(distance_km),
                 rate=rate_engine.MileageRate(
@@ -878,11 +864,7 @@ async def capture_claim(
         if per_diem_days is None or per_diem_days < 1:
             raise _bad_request("A per-diem claim needs at least one day.")
         pd_rows = list(
-            (
-                await session.execute(
-                    tenant_scoped(select(PerDiemRate), PerDiemRate, user)
-                )
-            ).scalars()
+            (await session.execute(tenant_scoped(select(PerDiemRate), PerDiemRate, user))).scalars()
         )
         try:
             pd_row = rate_engine.rate_on(
@@ -909,9 +891,7 @@ async def capture_claim(
         #: because there is nothing to receipt.
         has_receipt = True
 
-    _, rule_rows = await _applicable_rules(
-        session, user, employee=employee, as_of=incurred_on
-    )
+    _, rule_rows = await _applicable_rules(session, user, employee=employee, as_of=incurred_on)
     engine_rules = [_to_engine_rule(r) for r in rule_rows]
 
     claim_facts = policy_engine.ClaimFacts(
@@ -924,12 +904,8 @@ async def capture_claim(
         trip_id=str(travel_request_id) if travel_request_id else None,
         pre_approved=bool(trip and trip.status is TravelRequestStatusEnum.APPROVED),
     )
-    priors = await _prior_claims(
-        session, user, employee_id=employee_id, category_key=category_key
-    )
-    verdict = policy_engine.evaluate(
-        claim_facts, rules=engine_rules, priors=priors
-    )
+    priors = await _prior_claims(session, user, employee_id=employee_id, category_key=category_key)
+    verdict = policy_engine.evaluate(claim_facts, rules=engine_rules, priors=priors)
 
     matched_rule_id: uuid.UUID | None = None
     if verdict.rule is not None:
@@ -952,9 +928,7 @@ async def capture_claim(
         kind=kind,
         amount=reported,
         original_amount=converted.original_amount if converted else reported,
-        original_currency=(
-            converted.original_currency if converted else currency.upper()
-        ),
+        original_currency=(converted.original_currency if converted else currency.upper()),
         exchange_rate=converted.rate if converted else None,
         exchange_rate_date=converted.rate_date if converted else None,
         conversion_convention=(
@@ -1013,10 +987,7 @@ async def capture_claim(
         entity_type="expense_claim",
         entity_id=claim.id,
         actor=user,
-        summary=(
-            f"Claim captured: {category_key} {reported} — "
-            f"{verdict.kind.value}."
-        ),
+        summary=(f"Claim captured: {category_key} {reported} — {verdict.kind.value}."),
         request=request,
     )
     await session.commit()
@@ -1084,9 +1055,7 @@ async def submit_claim(
         # point of REQUIRE_JUSTIFICATION rather than BLOCK.
         claim.flagged_for_approver = True
     elif not verdict.permits_submission:
-        raise _bad_request(
-            f"This claim cannot be submitted. {claim.verdict_message}"
-        )
+        raise _bad_request(f"This claim cannot be submitted. {claim.verdict_message}")
 
     from app.models.approval_rules import ApprovalProcess
     from app.services.approvals import rules
@@ -1164,8 +1133,7 @@ async def _claim_for_decision(
         raise _not_found("No such claim in this tenant.")
     if claim.employee_id == getattr(user, "employee_id", None):
         raise permissions.forbidden(
-            "A claim cannot be decided by the person who made it. It goes to "
-            "somebody else."
+            "A claim cannot be decided by the person who made it. It goes to somebody else."
         )
     return claim
 
@@ -1225,8 +1193,12 @@ async def decide_claim_as_manager(
                 "Only they, somebody standing in for them, or HR can decide it."
             )
         chain, outcome = chain_engine.apply_decision(
-            chain, approve=approve, actor_user_id=user.id, actor_name=user.full_name,
-            note=note, at=now,
+            chain,
+            approve=approve,
+            actor_user_id=user.id,
+            actor_name=user.full_name,
+            note=note,
+            at=now,
         )
         claim.approval_chain = chain
     else:
@@ -1260,13 +1232,20 @@ async def decide_claim_as_manager(
         entity_type="expense_claim",
         entity_id=claim.id,
         actor=user,
-        changes={"stage": "manager", "status": claim.status.value, "note": note,
-                 "outcome": outcome},
+        changes={
+            "stage": "manager",
+            "status": claim.status.value,
+            "note": note,
+            "outcome": outcome,
+        },
         summary=(
             f"Approver {'approved' if approve else 'rejected'} the claim"
             + (
-                " and passed it to the next approver" if outcome == "advanced"
-                else " and sent it to finance" if approve else ""
+                " and passed it to the next approver"
+                if outcome == "advanced"
+                else " and sent it to finance"
+                if approve
+                else ""
             )
             + (f": {note}" if note else ".")
         ),
@@ -1340,13 +1319,10 @@ async def decide_claim(
         )
     if claim.status is not ExpenseClaimStatusEnum.SUBMITTED:
         raise _bad_request(
-            f"Only a claim with finance can be decided here; this one is "
-            f"{claim.status.value}."
+            f"Only a claim with finance can be decided here; this one is {claim.status.value}."
         )
 
-    claim.status = (
-        ExpenseClaimStatusEnum.APPROVED if approve else ExpenseClaimStatusEnum.REJECTED
-    )
+    claim.status = ExpenseClaimStatusEnum.APPROVED if approve else ExpenseClaimStatusEnum.REJECTED
     claim.decided_by_user_id = user.id
     claim.decided_at = datetime.now(UTC)
     claim.decision_note = note
@@ -1426,9 +1402,7 @@ async def violation_rates(
         "category": ExpenseClaim.category_key,
     }[scope]
 
-    total_stmt = tenant_scoped(
-        select(column, func.count()).group_by(column), ExpenseClaim, user
-    )
+    total_stmt = tenant_scoped(select(column, func.count()).group_by(column), ExpenseClaim, user)
     totals = {str(k): int(v) for k, v in (await session.execute(total_stmt)).all()}
 
     viol_column = {
@@ -1455,9 +1429,7 @@ async def violation_rates(
 
     overall_total = sum(r.total_claims for r in rows)
     overall_violations = sum(r.violations for r in rows)
-    peer_rate = (
-        overall_violations / overall_total if overall_total >= 10 else None
-    )
+    peer_rate = overall_violations / overall_total if overall_total >= 10 else None
 
     return {
         "scope": scope,
@@ -1657,9 +1629,7 @@ async def decide_travel_request_as_manager(
         row.employee_id,
         detail="Only the traveller's line manager, or HR, decides this request.",
     )
-    row.status = (
-        TravelRequestStatusEnum.SUBMITTED if approve else TravelRequestStatusEnum.REJECTED
-    )
+    row.status = TravelRequestStatusEnum.SUBMITTED if approve else TravelRequestStatusEnum.REJECTED
     await _record_trip_decision(
         session, user, row, stage="manager", approve=approve, note=note, request=request
     )
@@ -1686,13 +1656,10 @@ async def decide_travel_request(
         )
     if row.status is not TravelRequestStatusEnum.SUBMITTED:
         raise _bad_request(
-            f"Only a trip with finance can be decided here; this one is "
-            f"{row.status.value}."
+            f"Only a trip with finance can be decided here; this one is {row.status.value}."
         )
 
-    row.status = (
-        TravelRequestStatusEnum.APPROVED if approve else TravelRequestStatusEnum.REJECTED
-    )
+    row.status = TravelRequestStatusEnum.APPROVED if approve else TravelRequestStatusEnum.REJECTED
     await _record_trip_decision(
         session, user, row, stage="finance", approve=approve, note=note, request=request
     )
@@ -1771,9 +1738,7 @@ async def issue_advance(
         block_after_days=settings.advance_block_after_days,
     )
     if not decision.permitted:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=decision.message
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=decision.message)
 
     row = TravelAdvance(
         tenant_id=user.tenant_id,
@@ -1843,9 +1808,7 @@ async def settle_advance(
         user,
     )
     claims = list((await session.execute(claim_stmt)).scalars())
-    claims_total = policy_engine.money(
-        sum((_d(c.amount) for c in claims), Decimal("0"))
-    )
+    claims_total = policy_engine.money(sum((_d(c.amount) for c in claims), Decimal("0")))
 
     facts = advance_engine.AdvanceFacts(
         advance_id=str(row.id),
@@ -2023,9 +1986,7 @@ def derive_report_status(
     return ExpenseReportStatusEnum.PARTIALLY_APPROVED
 
 
-async def _refresh_report_status(
-    session: AsyncSession, user: User, report_id: uuid.UUID
-) -> None:
+async def _refresh_report_status(session: AsyncSession, user: User, report_id: uuid.UUID) -> None:
     report = (
         await session.execute(
             tenant_scoped(

@@ -91,9 +91,7 @@ class AnchorEvent(str, enum.Enum):
         return {
             AnchorEvent.RECORD_CREATED: "the day the record was created",
             AnchorEvent.EMPLOYMENT_ENDED: "the employee's last working day",
-            AnchorEvent.FINANCIAL_YEAR_END: (
-                "31 March of the financial year the record falls in"
-            ),
+            AnchorEvent.FINANCIAL_YEAR_END: ("31 March of the financial year the record falls in"),
             AnchorEvent.LAST_ACCESSED: "the last time the record was read",
         }[self]
 

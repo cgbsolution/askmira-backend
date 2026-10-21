@@ -232,9 +232,7 @@ async def export_csv(
                     for value in (
                         employee.employee_code,
                         _name(employee),
-                        departments.get(employee.department_id)
-                        if employee.department_id
-                        else None,
+                        departments.get(employee.department_id) if employee.department_id else None,
                         employee.designation,
                         line.leave_type.name,
                         line.leave_type.code,

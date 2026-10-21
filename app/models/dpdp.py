@@ -195,9 +195,7 @@ class DataPrincipalRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     due_by: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     escalate_at: Mapped[date] = mapped_column(Date, nullable=False)
     sla_days: Mapped[int] = mapped_column(Integer, nullable=False)
-    responded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     #: The answer. For ACCESS, the export manifest; for ERASURE, the plan with
     #: every category's decision and the statute behind each retention.
@@ -222,9 +220,7 @@ class BreachIncident(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "breach_incidents"
     __table_args__ = (
         Index("ix_breach_open", "tenant_id", "became_aware_at"),
-        CheckConstraint(
-            "affected_principal_count >= 0", name="ck_breach_affected_count"
-        ),
+        CheckConstraint("affected_principal_count >= 0", name="ck_breach_affected_count"),
     )
 
     reference: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -234,28 +230,18 @@ class BreachIncident(Base, UUIDMixin, TenantMixin, TimestampMixin):
     became_aware_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
-    detected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
 
     #: Category keys from the catalogue.
-    affected_data_categories: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
-    affected_principal_count: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
-    data_left_our_control: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    affected_data_categories: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    affected_principal_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    data_left_our_control: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     severity: Mapped[BreachSeverityLevel] = mapped_column(
         Enum(BreachSeverityLevel, name="dpdp_breach_severity"), nullable=False
     )
 
-    board_report_due_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    board_report_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reported_to_board_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -265,21 +251,15 @@ class BreachIncident(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: What was actually sent, kept verbatim. Regenerating it from today's
     #: template later would answer "what would we say" rather than "what did we
     #: say", and only the second is evidence.
-    notification_sent: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    notification_sent: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
-    closed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: True for a rehearsal. Kept in the same table as real incidents so a
     #: rehearsal exercises the real code path, and flagged so it can never be
     #: counted in a breach history shown to a customer or a regulator.
-    is_rehearsal: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, index=True
-    )
+    is_rehearsal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
     raised_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -326,30 +306,22 @@ class DpdpConfiguration(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "dpdp_configurations"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", name="uq_dpdp_config_per_tenant"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_dpdp_config_per_tenant"),)
 
     #: The tenant is the Data Fiduciary; we are the Data Processor. This is
     #: their DPO or grievance officer, not ours.
     grievance_contact: Mapped[str] = mapped_column(String(200), nullable=False)
-    data_protection_officer_name: Mapped[str | None] = mapped_column(
-        String(200), nullable=True
-    )
+    data_protection_officer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     #: Their published response periods, per request type. Validated against the
     #: statutory outer bound on write, so a configuration screen cannot commit
     #: the tenant to something unlawful.
     sla_days: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     #: Default language for notices. An Eighth Schedule code or "en".
-    default_notice_language: Mapped[str] = mapped_column(
-        String(8), default="en", nullable=False
-    )
+    default_notice_language: Mapped[str] = mapped_column(String(8), default="en", nullable=False)
     #: Whether this tenant has elected optional AI processing at all. Distinct
     #: from any individual's consent: the tenant switching it off means nobody
     #: is even asked.
-    ai_processing_enabled: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    ai_processing_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

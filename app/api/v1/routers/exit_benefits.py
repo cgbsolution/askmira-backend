@@ -224,9 +224,7 @@ def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
 async def get_config(user: CurrentUser, session: DbSession) -> GratuityConfigRead | None:
-    config = await session.scalar(
-        tenant_scoped(select(GratuityConfig), GratuityConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(GratuityConfig), GratuityConfig, user))
     return GratuityConfigRead.model_validate(config) if config else None
 
 
@@ -244,9 +242,7 @@ async def upsert_config(
     ceiling is a new set of rules and needs signing off again. Carrying the old
     approval forward would make the gate meaningless.
     """
-    config = await session.scalar(
-        tenant_scoped(select(GratuityConfig), GratuityConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(GratuityConfig), GratuityConfig, user))
     if config is None:
         config = GratuityConfig(tenant_id=user.tenant_id, **payload.model_dump())
         session.add(config)
@@ -287,9 +283,7 @@ async def approve_config(
     """
     from datetime import UTC
 
-    config = await session.scalar(
-        tenant_scoped(select(GratuityConfig), GratuityConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(GratuityConfig), GratuityConfig, user))
     if config is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No gratuity configuration exists"
@@ -350,9 +344,7 @@ async def run_accrual(
     response_model=list[AccrualRead],
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
-async def list_accruals(
-    user: CurrentUser, session: DbSession, as_of: date
-) -> list[AccrualRead]:
+async def list_accruals(user: CurrentUser, session: DbSession, as_of: date) -> list[AccrualRead]:
     stmt = tenant_scoped(
         select(GratuityAccrual)
         .where(GratuityAccrual.as_of_date == as_of)
@@ -439,9 +431,7 @@ async def list_policies(user: CurrentUser, session: DbSession) -> list[Encashmen
         EncashmentPolicy,
         user,
     )
-    return [
-        EncashmentPolicyRead.model_validate(row) for row in (await session.scalars(stmt)).all()
-    ]
+    return [EncashmentPolicyRead.model_validate(row) for row in (await session.scalars(stmt)).all()]
 
 
 @router.put(

@@ -102,9 +102,7 @@ def compute_encashment(
     if approved > available_balance:
         approved = available_balance
         limiting = "available_balance"
-        notes.append(
-            f"Requested {days_requested} days against a balance of {available_balance}."
-        )
+        notes.append(f"Requested {days_requested} days against a balance of {available_balance}.")
 
     # ── Minimum retained balance, in-service only ───────────────────────────
     if not is_exit and policy.min_balance_after_encashment > 0:
@@ -114,8 +112,7 @@ def compute_encashment(
             approved = allowed
             limiting = "min_balance_after_encashment"
             notes.append(
-                f"This policy requires {floor} days to remain after an in-service "
-                "encashment."
+                f"This policy requires {floor} days to remain after an in-service encashment."
             )
 
     # ── Annual cap, in-service only ─────────────────────────────────────────

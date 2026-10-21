@@ -188,8 +188,7 @@ def parse_and_validate(
         )
     if expected_audience not in audiences:
         raise SamlValidationError(
-            f"The assertion is addressed to {', '.join(audiences)}, not to "
-            f"{expected_audience}"
+            f"The assertion is addressed to {', '.join(audiences)}, not to {expected_audience}"
         )
 
     # ── 3 and 4. Subject confirmation, recipient and validity window ────────
@@ -201,22 +200,16 @@ def parse_and_validate(
 
     not_on_or_after_raw = confirmation.get("NotOnOrAfter")
     if not not_on_or_after_raw:
-        raise SamlValidationError(
-            "The assertion has no NotOnOrAfter, so it would never expire"
-        )
+        raise SamlValidationError("The assertion has no NotOnOrAfter, so it would never expire")
     not_on_or_after = _parse_instant(not_on_or_after_raw)
     if moment >= not_on_or_after + CLOCK_SKEW:
-        raise SamlValidationError(
-            f"The assertion expired at {not_on_or_after.isoformat()}"
-        )
+        raise SamlValidationError(f"The assertion expired at {not_on_or_after.isoformat()}")
 
     conditions = assertion.find("saml:Conditions", NS)
     if conditions is not None and conditions.get("NotBefore"):
         not_before = _parse_instant(conditions.get("NotBefore"))
         if moment < not_before - CLOCK_SKEW:
-            raise SamlValidationError(
-                f"The assertion is not valid until {not_before.isoformat()}"
-            )
+            raise SamlValidationError(f"The assertion is not valid until {not_before.isoformat()}")
 
     recipient = confirmation.get("Recipient")
     if expected_destination and recipient and recipient != expected_destination:
@@ -248,8 +241,7 @@ def parse_and_validate(
         if not name:
             continue
         values = [
-            (value.text or "").strip()
-            for value in attribute.findall("saml:AttributeValue", NS)
+            (value.text or "").strip() for value in attribute.findall("saml:AttributeValue", NS)
         ]
         attributes[name] = [v for v in values if v]
         friendly = attribute.get("FriendlyName")

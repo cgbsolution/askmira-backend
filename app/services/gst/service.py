@@ -189,17 +189,13 @@ async def set_blocked_category(
         raise _bad_request(str(exc)) from exc
 
     stmt = tenant_scoped(
-        select(GstBlockedCategory).where(
-            GstBlockedCategory.category_key == category_key
-        ),
+        select(GstBlockedCategory).where(GstBlockedCategory.category_key == category_key),
         GstBlockedCategory,
         user,
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
-        row = GstBlockedCategory(
-            tenant_id=user.tenant_id, category_key=category_key, reason=reason
-        )
+        row = GstBlockedCategory(tenant_id=user.tenant_id, category_key=category_key, reason=reason)
         session.add(row)
     row.reason = reason
     row.reference = reference
@@ -252,9 +248,7 @@ async def _blocked_rules(
     )
     covered = {r.category_key for r in configured}
     return configured + tuple(
-        r
-        for r in elig_engine.DEFAULT_BLOCKED_CATEGORIES
-        if r.category_key not in covered
+        r for r in elig_engine.DEFAULT_BLOCKED_CATEGORIES if r.category_key not in covered
     )
 
 
@@ -299,16 +293,12 @@ async def capture_credit(
     # scale. A single-registration company is the common case and must not have
     # every line routed to review.
     reg_stmt = tenant_scoped(
-        select(GstEntityRegistration).where(
-            GstEntityRegistration.is_active.is_(True)
-        ),
+        select(GstEntityRegistration).where(GstEntityRegistration.is_active.is_(True)),
         GstEntityRegistration,
         user,
     )
     if legal_entity_id is not None:
-        reg_stmt = reg_stmt.where(
-            GstEntityRegistration.legal_entity_id == legal_entity_id
-        )
+        reg_stmt = reg_stmt.where(GstEntityRegistration.legal_entity_id == legal_entity_id)
     registrations = list((await session.execute(reg_stmt)).scalars())
 
     recipient_state = None
@@ -371,11 +361,7 @@ async def capture_credit(
         supplier_state_code=supplier_state or None,
         place_of_supply_state_code=place_of_supply_state_code,
         recipient_state_code=recipient_state,
-        tax_split=(
-            GstTaxSplitEnum(assessment.tax_split.value)
-            if assessment.tax_split
-            else None
-        ),
+        tax_split=(GstTaxSplitEnum(assessment.tax_split.value) if assessment.tax_split else None),
         eligibility=GstEligibilityEnum(assessment.eligibility.value),
         eligibility_reason=assessment.reason,
         eligibility_reference=assessment.reference,
@@ -408,10 +394,7 @@ async def capture_credit(
         entity_type="gst_input_credit",
         entity_id=row.id,
         actor=user,
-        summary=(
-            f"Input credit captured for {invoice_number}: "
-            f"{assessment.eligibility.value}."
-        ),
+        summary=(f"Input credit captured for {invoice_number}: {assessment.eligibility.value}."),
         request=request,
     )
     await session.commit()
@@ -458,8 +441,7 @@ async def review_credit(
         )
     if decision is GstEligibilityEnum.UNCERTAIN:
         raise _bad_request(
-            "A review has to reach a decision. Leaving it uncertain is what the "
-            "queue already says."
+            "A review has to reach a decision. Leaving it uncertain is what the queue already says."
         )
 
     row = (
@@ -497,9 +479,7 @@ async def review_credit(
     )
     row.eligibility_reference = "Finance review"
     row.claimable_amount = (
-        _d(row.amount_at_stake)
-        if decision is GstEligibilityEnum.ELIGIBLE
-        else Decimal("0.00")
+        _d(row.amount_at_stake) if decision is GstEligibilityEnum.ELIGIBLE else Decimal("0.00")
     )
 
     await audit.record(
@@ -523,9 +503,7 @@ async def review_credit(
     }
 
 
-async def review_queue(
-    session: AsyncSession, user: User
-) -> dict[str, Any]:
+async def review_queue(session: AsyncSession, user: User) -> dict[str, Any]:
     """Undecided lines, largest amount at stake first.
 
     Prioritised by money rather than by date, because the queue is worked
@@ -547,9 +525,7 @@ async def review_queue(
     )
     return {
         "count": len(rows),
-        "total_at_stake": str(
-            sum((_d(r.amount_at_stake) for r in rows), Decimal("0"))
-        ),
+        "total_at_stake": str(sum((_d(r.amount_at_stake) for r in rows), Decimal("0"))),
         "lines": [
             {
                 "credit_id": str(r.id),
@@ -878,17 +854,13 @@ async def credit_dashboard(
     figure that turns out to be optimistic destroys the conversation this
     dashboard exists to have.
     """
-    captured = await _captured(
-        session, user, period_start=period_start, period_end=period_end
-    )
+    captured = await _captured(session, user, period_start=period_start, period_end=period_end)
     recon_row = None
     if period_label:
         recon_row = (
             await session.execute(
                 tenant_scoped(
-                    select(GstReconciliation).where(
-                        GstReconciliation.period_label == period_label
-                    ),
+                    select(GstReconciliation).where(GstReconciliation.period_label == period_label),
                     GstReconciliation,
                     user,
                 )
@@ -964,10 +936,7 @@ async def register_export(
         "eligible": [line(r) for r in eligible],
         "eligible_total_tax": str(
             sum(
-                (
-                    _d(r.cgst) + _d(r.sgst) + _d(r.igst)
-                    for r in eligible
-                ),
+                (_d(r.cgst) + _d(r.sgst) + _d(r.igst) for r in eligible),
                 Decimal("0"),
             )
         ),
@@ -991,8 +960,7 @@ def gst_posture() -> dict[str, Any]:
             "categories routed to a person rather than decided.",
             "Place-of-supply logic, including intra-state supply in a state the "
             "entity is not registered in - the hotel-bill case.",
-            "Uncertain lines stay uncertain until a person records a decision "
-            "and a rationale.",
+            "Uncertain lines stay uncertain until a person records a decision and a rationale.",
             "GSTR-2B matching on normalised invoice numbers, reporting matched, "
             "missing-in-2B and missing-in-register separately.",
             "Duplicate detection across the whole tenant, not per employee.",

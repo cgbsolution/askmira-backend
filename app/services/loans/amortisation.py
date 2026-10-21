@@ -325,8 +325,7 @@ def recompute_after_prepayment(
     reduced = _money(outstanding_principal - prepayment)
     if reduced == ZERO:
         raise AmortisationError(
-            "The prepayment clears the loan. Close the account rather than "
-            "rescheduling it."
+            "The prepayment clears the loan. Close the account rather than rescheduling it."
         )
 
     if mode == PrepaymentMode.REDUCE_EMI:
@@ -457,9 +456,7 @@ def concessional_loan_perquisite(
     actual_interest = _check("The interest actually charged", actual_interest_charged)
 
     if not outstanding_by_month:
-        raise AmortisationError(
-            "No monthly balances were supplied, so there is nothing to value."
-        )
+        raise AmortisationError("No monthly balances were supplied, so there is nothing to value.")
     for balance in outstanding_by_month:
         _check("A monthly outstanding balance", balance)
 
@@ -477,9 +474,7 @@ def concessional_loan_perquisite(
         )
 
     monthly_rate = notional_rate / PERCENT / MONTHS_IN_YEAR
-    notional = _money(
-        sum((balance * monthly_rate for balance in outstanding_by_month), start=ZERO)
-    )
+    notional = _money(sum((balance * monthly_rate for balance in outstanding_by_month), start=ZERO))
     value = notional - actual_interest
 
     if value <= ZERO:

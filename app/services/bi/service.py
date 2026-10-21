@@ -180,9 +180,7 @@ async def create_connection(
 
 
 async def list_connections(session: AsyncSession, user: User) -> list[dict[str, Any]]:
-    stmt = tenant_scoped(select(BiConnection), BiConnection, user).order_by(
-        BiConnection.name
-    )
+    stmt = tenant_scoped(select(BiConnection), BiConnection, user).order_by(BiConnection.name)
     rows = (await session.execute(stmt)).scalars().all()
     return [
         {
@@ -193,9 +191,7 @@ async def list_connections(session: AsyncSession, user: User) -> list[dict[str, 
             "destination_ref": row.destination_ref,
             "export_role": row.export_role,
             "schema_version": row.schema_version,
-            "last_watermark": (
-                row.last_watermark.isoformat() if row.last_watermark else None
-            ),
+            "last_watermark": (row.last_watermark.isoformat() if row.last_watermark else None),
             "is_active": row.is_active,
         }
         for row in rows
@@ -363,9 +359,7 @@ async def export_file(
             user,
             Definition(
                 entity_key=entity.entity_key,
-                selections=tuple(
-                    Selection(field_key=f.source, label=f.name) for f in plan.fields
-                ),
+                selections=tuple(Selection(field_key=f.source, label=f.name) for f in plan.fields),
                 limit=MAX_PAGE_SIZE,
                 offset=offset,
             ),
@@ -393,10 +387,14 @@ async def export_file(
     rows = [[row.get(name) for name in plan.field_names] for row in payload["rows"]]
     content = reporting.to_csv(columns, rows)
     filename = f"{connection.entity_name}-{datetime.now(UTC):%Y%m%d-%H%M}.csv"
-    return content, filename, {
-        "export_run_id": payload["export_run_id"],
-        "row_count": len(rows),
-    }
+    return (
+        content,
+        filename,
+        {
+            "export_run_id": payload["export_run_id"],
+            "row_count": len(rows),
+        },
+    )
 
 
 async def list_export_runs(
@@ -473,12 +471,14 @@ async def set_consent(
         row.revoked_at = now
         row.revoked_by_user_id = user.id
         contributions = (
-            await session.execute(
-                tenant_scoped(
-                    select(BenchmarkContribution), BenchmarkContribution, user
+            (
+                await session.execute(
+                    tenant_scoped(select(BenchmarkContribution), BenchmarkContribution, user)
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         removed = len(contributions)
         for contribution in contributions:
             await session.delete(contribution)
@@ -493,8 +493,7 @@ async def set_consent(
         summary=(
             "Opted in to contribute anonymised benchmark aggregates."
             if is_contributor
-            else f"Opted out of benchmark contribution; {removed} "
-            "contribution(s) deleted."
+            else f"Opted out of benchmark contribution; {removed} contribution(s) deleted."
         ),
         changes={"is_contributor": is_contributor},
         request=request,
@@ -539,18 +538,22 @@ async def record_contribution(
         )
 
     existing = (
-        await session.execute(
-            tenant_scoped(
-                select(BenchmarkContribution).where(
-                    BenchmarkContribution.metric == metric,
-                    BenchmarkContribution.dimension_key == dimension_key,
-                    BenchmarkContribution.period == period,
-                ),
-                BenchmarkContribution,
-                user,
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(BenchmarkContribution).where(
+                        BenchmarkContribution.metric == metric,
+                        BenchmarkContribution.dimension_key == dimension_key,
+                        BenchmarkContribution.period == period,
+                    ),
+                    BenchmarkContribution,
+                    user,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if existing is None:
         existing = BenchmarkContribution(
             tenant_id=user.tenant_id,
@@ -609,9 +612,7 @@ async def benchmark_position(
     stmt = tenant_scoped(select(BenchmarkConsent), BenchmarkConsent, user)
     consent = (await session.execute(stmt)).scalars().first()
     is_contributor = bool(
-        consent is not None
-        and consent.is_contributor
-        and consent.revoked_at is None
+        consent is not None and consent.is_contributor and consent.revoked_at is None
     )
     if source is BenchmarkSourceEnum.OWN_CLIENT_BASE and not is_contributor:
         raise _bad_request(

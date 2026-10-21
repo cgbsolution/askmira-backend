@@ -169,9 +169,7 @@ async def branding(session: AsyncSession, tenant: Tenant) -> Branding:
             "required": provider.enforce_sso,
             "start_url": f"{settings.API_V1_PREFIX}/sso/start/{provider.id}",
         }
-    return Branding(
-        name=tenant.name, workspace=tenant.slug, logo_url=logo_url(tenant), sso=sso
-    )
+    return Branding(name=tenant.name, workspace=tenant.slug, logo_url=logo_url(tenant), sso=sso)
 
 
 def suspended() -> HTTPException:

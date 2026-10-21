@@ -42,9 +42,7 @@ ENDPOINTS: dict[str, str] = {
     ),
     "GET /gst/posture": "reference: what the module enforces.",
     "GET /gst/validate-gstin": "reference: a checksum on a string.",
-    "POST /gst/credits": (
-        "permissions: outside finance, only against your own expense claim."
-    ),
+    "POST /gst/credits": ("permissions: outside finance, only against your own expense claim."),
     "GET /gst/claims/{claim_id}/credits": (
         "permissions: GST invoices on your own expense claim, or any claim for finance."
     ),

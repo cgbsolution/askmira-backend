@@ -102,8 +102,9 @@ class ExitRecord(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "exit_records"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "employee_id", "resignation_date",
-                         name="uq_exit_employee_date"),
+        UniqueConstraint(
+            "tenant_id", "employee_id", "resignation_date", name="uq_exit_employee_date"
+        ),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -246,8 +247,9 @@ class ClearanceTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "clearance_templates"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "department", "description",
-                         name="uq_clearance_template_item"),
+        UniqueConstraint(
+            "tenant_id", "department", "description", name="uq_clearance_template_item"
+        ),
     )
 
     department: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -273,9 +275,7 @@ class Settlement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "settlements"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "exit_record_id", name="uq_settlement_exit"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "exit_record_id", name="uq_settlement_exit"),)
 
     exit_record_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("exit_records.id", ondelete="CASCADE"), nullable=False
@@ -406,7 +406,9 @@ class ExitInterview(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("exit_records.id", ondelete="CASCADE"), nullable=False
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     #: "conversation" (HR recorded it) or "self" (the leaver filled it in).

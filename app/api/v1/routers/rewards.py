@@ -346,9 +346,7 @@ async def movement(
     _finance=Depends(require_roles(*FINANCE_ROLES)),
 ) -> dict[str, Any]:
     """Opening, awarded, redeemed, expired, adjusted, closing - checked."""
-    return await rewards.movement(
-        session, user, period_start=period_start, period_end=period_end
-    )
+    return await rewards.movement(session, user, period_start=period_start, period_end=period_end)
 
 
 @router.get("/rewards/perquisites/{employee_id}")
@@ -447,7 +445,6 @@ async def run_reconciliation(
     )
 
 
-
 # ── Catalogue ───────────────────────────────────────────────────────────────
 
 
@@ -470,9 +467,7 @@ async def create_catalogue_item(
     return await catalogue.create_item(session, user, body, request=request)
 
 
-@router.patch(
-    "/rewards/catalogue/{item_id}", dependencies=[Depends(require_roles(*ADMIN_ROLES))]
-)
+@router.patch("/rewards/catalogue/{item_id}", dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def update_catalogue_item(
     item_id: uuid.UUID,
     body: catalogue.CatalogueItemUpdate,

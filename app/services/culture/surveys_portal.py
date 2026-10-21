@@ -84,10 +84,7 @@ def _instrument(key: str | None) -> dict[str, Any] | None:
 
 
 def _is_open_now(survey: Survey, today: date) -> bool:
-    return (
-        survey.status is SurveyStatusEnum.OPEN
-        and survey.opens_on <= today <= survey.closes_on
-    )
+    return survey.status is SurveyStatusEnum.OPEN and survey.opens_on <= today <= survey.closes_on
 
 
 # ── Answering ───────────────────────────────────────────────────────────────

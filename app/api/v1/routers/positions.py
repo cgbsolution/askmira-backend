@@ -133,9 +133,7 @@ async def change_status(
     return PositionRead.model_validate(position)
 
 
-@router.post(
-    "/positions/{position_id}/assign", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.post("/positions/{position_id}/assign", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def assign_to_position(
     position_id: uuid.UUID,
     payload: AssignRequest,
@@ -167,9 +165,7 @@ async def assign_to_position(
     }
 
 
-@router.post(
-    "/positions/{position_id}/vacate", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.post("/positions/{position_id}/vacate", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def vacate_position(
     position_id: uuid.UUID,
     payload: VacateRequest,
@@ -179,8 +175,12 @@ async def vacate_position(
 ) -> dict[str, Any]:
     """Empty a seat. The seat survives — this is the exit path."""
     result = await position_service.vacate(
-        session, user, position_id=position_id, on=payload.on,
-        reason=payload.reason, request=request,
+        session,
+        user,
+        position_id=position_id,
+        on=payload.on,
+        reason=payload.reason,
+        request=request,
     )
     await session.commit()
     return result
@@ -396,9 +396,7 @@ async def add_change(
     "/positions/scenarios/{scenario_id}",
     dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
-async def project(
-    scenario_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> dict[str, Any]:
+async def project(scenario_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     """What this scenario would do, computed by a pure function with no session."""
     return await position_service.project_scenario(session, user, scenario_id=scenario_id)
 

@@ -32,9 +32,7 @@ from app.services.payroll import service as salary_service
 
 router = APIRouter(
     tags=["payroll"],
-    dependencies=[
-        Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN))
-    ],
+    dependencies=[Depends(require_roles(UserRole.ADMIN, UserRole.SUB_ADMIN))],
 )
 
 
@@ -187,7 +185,6 @@ async def salary_history(
 ) -> list[EmployeeSalaryRead]:
     rows = await salary_service.salary_history(session, user, employee_id)
     return [EmployeeSalaryRead.model_validate(row) for row in rows]
-
 
 
 # ── Grades and pay bands ────────────────────────────────────────────────────

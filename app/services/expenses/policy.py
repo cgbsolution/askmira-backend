@@ -269,9 +269,7 @@ class PolicyVerdict:
             "permits_submission": self.permits_submission,
             "is_violation": self.is_violation,
             "limit_amount": (
-                str(money(self.limit_amount))
-                if self.limit_amount is not None
-                else None
+                str(money(self.limit_amount)) if self.limit_amount is not None else None
             ),
             "already_claimed": str(money(self.already_claimed)),
             "this_claim": str(money(self.this_claim)),
@@ -281,9 +279,7 @@ class PolicyVerdict:
         }
 
 
-def _match_rule(
-    rules: list[ExpenseRule], claim: ClaimFacts
-) -> ExpenseRule | None:
+def _match_rule(rules: list[ExpenseRule], claim: ClaimFacts) -> ExpenseRule | None:
     """The rule for this category and tier, if there is one.
 
     Exact match on both. No fallback to a "default" tier: a policy that silently
@@ -422,10 +418,7 @@ def evaluate(
                 already_claimed=already,
                 this_claim=amount,
                 overage=overage,
-                message=(
-                    f"{context} Your reason will be shown to the approver with "
-                    "the claim."
-                ),
+                message=(f"{context} Your reason will be shown to the approver with the claim."),
             )
         return PolicyVerdict(
             kind=VerdictKind.NEEDS_JUSTIFICATION,

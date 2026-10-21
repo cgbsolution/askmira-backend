@@ -109,11 +109,7 @@ class PeriodArrear:
         owes and overstates what the employee receives.
         """
         return sum(
-            (
-                d.difference
-                for d in self.diffs
-                if d.component_type == "employer_contribution"
-            ),
+            (d.difference for d in self.diffs if d.component_type == "employer_contribution"),
             start=ZERO,
         )
 
@@ -223,8 +219,7 @@ def recompute_period(
         period=period,
         diffs=diffs,
         rule_set_ids={
-            rule_type: str(rule_set.id)
-            for rule_type, rule_set in historical_rule_sets.items()
+            rule_type: str(rule_set.id) for rule_type, rule_set in historical_rule_sets.items()
         },
         notes=notes,
     )

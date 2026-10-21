@@ -85,9 +85,7 @@ async def create_template(
     return TemplateDetail.model_validate(template)
 
 
-@router.post(
-    "/letter-templates/preview", response_model=PreviewRead, dependencies=HR_ONLY
-)
+@router.post("/letter-templates/preview", response_model=PreviewRead, dependencies=HR_ONLY)
 async def preview_draft(
     payload: DraftPreviewRequest, user: CurrentUser, session: DbSession
 ) -> PreviewRead:
@@ -113,9 +111,7 @@ async def seed_templates(
     return [TemplateRead.model_validate(row) for row in rows]
 
 
-@router.get(
-    "/letter-templates/{template_id}", response_model=TemplateDetail, dependencies=HR_ONLY
-)
+@router.get("/letter-templates/{template_id}", response_model=TemplateDetail, dependencies=HR_ONLY)
 async def get_template(
     template_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> TemplateDetail:
@@ -136,9 +132,7 @@ async def template_versions(
     return [TemplateVersionRead.model_validate(row) for row in rows]
 
 
-@router.put(
-    "/letter-templates/{template_id}", response_model=TemplateDetail, dependencies=HR_ONLY
-)
+@router.put("/letter-templates/{template_id}", response_model=TemplateDetail, dependencies=HR_ONLY)
 async def update_template(
     template_id: uuid.UUID,
     payload: TemplateUpdate,
@@ -256,9 +250,7 @@ async def verify(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) ->
     return await letter_service.letter_verify(session, user, letter_id)
 
 
-@router.post(
-    "/letters/{letter_id}/approve", response_model=LetterRead, dependencies=ADMIN_ONLY
-)
+@router.post("/letters/{letter_id}/approve", response_model=LetterRead, dependencies=ADMIN_ONLY)
 async def approve(
     letter_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> LetterRead:
@@ -307,9 +299,7 @@ async def request_acknowledgement(
     letter_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> LetterRead:
     """Ask the employee to read and acknowledge the letter. Asking again reminds them."""
-    return await acknowledgement.request_acknowledgement(
-        session, user, letter_id, request=request
-    )
+    return await acknowledgement.request_acknowledgement(session, user, letter_id, request=request)
 
 
 @router.post("/letters/{letter_id}/acknowledge", response_model=LetterRead)

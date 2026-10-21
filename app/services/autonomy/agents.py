@@ -503,7 +503,11 @@ async def apply_shift_cover(
         entity_type="shift_assignment",
         entity_id=row.id,
         actor=user,
-        changes={"employee_id": str(employee.id), "shift_id": str(shift.id),
-                 "date": day.isoformat(), "via": "schedule agent proposal"},
+        changes={
+            "employee_id": str(employee.id),
+            "shift_id": str(shift.id),
+            "date": day.isoformat(),
+            "via": "schedule agent proposal",
+        },
         summary=f"{employee.employee_code} covers {shift.code} on {day} (schedule agent)",
     )

@@ -145,9 +145,14 @@ async def create_legal_entity(
     session.add(entity)
     await session.flush()
     await _record(
-        session, user, action=AuditAction.CREATE, entity_type="legal_entity",
-        entity_id=entity.id, summary=f"Created legal entity {entity.code}",
-        changes=payload.model_dump(mode="json"), request=request,
+        session,
+        user,
+        action=AuditAction.CREATE,
+        entity_type="legal_entity",
+        entity_id=entity.id,
+        summary=f"Created legal entity {entity.code}",
+        changes=payload.model_dump(mode="json"),
+        request=request,
     )
     await session.commit()
     await session.refresh(entity)
@@ -175,9 +180,14 @@ async def update_legal_entity(
     for key, value in changes.items():
         setattr(entity, key, value)
     await _record(
-        session, user, action=AuditAction.UPDATE, entity_type="legal_entity",
-        entity_id=entity.id, summary=f"Updated legal entity {entity.code}",
-        changes=diff, request=request,
+        session,
+        user,
+        action=AuditAction.UPDATE,
+        entity_type="legal_entity",
+        entity_id=entity.id,
+        summary=f"Updated legal entity {entity.code}",
+        changes=diff,
+        request=request,
     )
     await session.commit()
     await session.refresh(entity)
@@ -206,10 +216,14 @@ async def create_location(
     session.add(location)
     await session.flush()
     await _record(
-        session, user, action=AuditAction.CREATE, entity_type="location",
+        session,
+        user,
+        action=AuditAction.CREATE,
+        entity_type="location",
         entity_id=location.id,
         summary=f"Created location {location.code} in state {location.state_code}",
-        changes=payload.model_dump(mode="json"), request=request,
+        changes=payload.model_dump(mode="json"),
+        request=request,
     )
     await session.commit()
     await session.refresh(location)
@@ -243,8 +257,14 @@ async def update_location(
             "which changes Professional Tax and the holiday calendar for everyone here"
         )
     await _record(
-        session, user, action=AuditAction.UPDATE, entity_type="location",
-        entity_id=location.id, summary=summary, changes=diff, request=request,
+        session,
+        user,
+        action=AuditAction.UPDATE,
+        entity_type="location",
+        entity_id=location.id,
+        summary=summary,
+        changes=diff,
+        request=request,
     )
     await session.commit()
     await session.refresh(location)
@@ -302,9 +322,14 @@ async def create_department(
     session.add(department)
     await session.flush()
     await _record(
-        session, user, action=AuditAction.CREATE, entity_type="department",
-        entity_id=department.id, summary=f"Created department {department.code}",
-        changes=payload.model_dump(mode="json"), request=request,
+        session,
+        user,
+        action=AuditAction.CREATE,
+        entity_type="department",
+        entity_id=department.id,
+        summary=f"Created department {department.code}",
+        changes=payload.model_dump(mode="json"),
+        request=request,
     )
     await session.commit()
     await session.refresh(department)
@@ -334,9 +359,14 @@ async def update_department(
     for key, value in changes.items():
         setattr(department, key, value)
     await _record(
-        session, user, action=AuditAction.UPDATE, entity_type="department",
-        entity_id=department.id, summary=f"Updated department {department.code}",
-        changes=diff, request=request,
+        session,
+        user,
+        action=AuditAction.UPDATE,
+        entity_type="department",
+        entity_id=department.id,
+        summary=f"Updated department {department.code}",
+        changes=diff,
+        request=request,
     )
     await session.commit()
     await session.refresh(department)

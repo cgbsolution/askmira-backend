@@ -250,10 +250,7 @@ def free_slots(
     step = timedelta(minutes=step_minutes)
     padding = timedelta(minutes=buffer_minutes)
 
-    padded = [
-        BusyInterval(start=b.start - padding, end=b.end + padding)
-        for b in busy
-    ]
+    padded = [BusyInterval(start=b.start - padding, end=b.end + padding) for b in busy]
     blocks = merge_intervals(padded)
 
     out: list[tuple[datetime, datetime]] = []

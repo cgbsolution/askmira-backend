@@ -99,9 +99,7 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     #: approval rights — leave, expenses and reviews still go to `manager_id`.
     dotted_line_manager_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
-        ForeignKey(
-            "employees.id", ondelete="SET NULL", name="fk_employees_dotted_line_manager_id"
-        ),
+        ForeignKey("employees.id", ondelete="SET NULL", name="fk_employees_dotted_line_manager_id"),
         nullable=True,
     )
 
@@ -234,7 +232,10 @@ class EmployeeDocument(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # employee uploaded themselves, until HR verifies or rejects it. A
     # self-uploaded degree certificate is a claim until somebody has looked.
     verification_status: Mapped[str] = mapped_column(
-        String(16), default="not_required", server_default="not_required", nullable=False,
+        String(16),
+        default="not_required",
+        server_default="not_required",
+        nullable=False,
         index=True,
     )
     verified_by_user_id: Mapped[uuid.UUID | None] = mapped_column(

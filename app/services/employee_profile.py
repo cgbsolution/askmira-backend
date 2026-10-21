@@ -597,14 +597,17 @@ async def read_profile(
         employee_id=employee_id,
         personal=_parse(PersonalDetails, stored.personal, PersonalDetails()),
         addresses=_parse(Addresses, stored.addresses, Addresses()),
-        emergency_contacts=_parse(_LIST_SECTIONS[ProfileSection.EMERGENCY_CONTACTS],
-                                  stored.emergency_contacts, []),
-        family_members=_parse(_LIST_SECTIONS[ProfileSection.FAMILY_MEMBERS],
-                              stored.family_members, []),
+        emergency_contacts=_parse(
+            _LIST_SECTIONS[ProfileSection.EMERGENCY_CONTACTS], stored.emergency_contacts, []
+        ),
+        family_members=_parse(
+            _LIST_SECTIONS[ProfileSection.FAMILY_MEMBERS], stored.family_members, []
+        ),
         nominees=_parse(_LIST_SECTIONS[ProfileSection.NOMINEES], stored.nominees, []),
         education=_parse(_LIST_SECTIONS[ProfileSection.EDUCATION], stored.education, []),
-        previous_employment=_parse(_LIST_SECTIONS[ProfileSection.PREVIOUS_EMPLOYMENT],
-                                   stored.previous_employment, []),
+        previous_employment=_parse(
+            _LIST_SECTIONS[ProfileSection.PREVIOUS_EMPLOYMENT], stored.previous_employment, []
+        ),
         statutory=_statutory_read(employee, hr=hr and not is_self),
         bank_account=_bank_summary(account, user.tenant_id),
         pending_requests=pending,
@@ -766,9 +769,7 @@ async def list_change_requests(
         stmt = stmt.where(ProfileChangeRequest.employee_id == own)
     if status_filter is not None:
         stmt = stmt.where(ProfileChangeRequest.status == status_filter)
-    rows = (
-        await session.scalars(tenant_scoped(stmt.limit(500), ProfileChangeRequest, user))
-    ).all()
+    rows = (await session.scalars(tenant_scoped(stmt.limit(500), ProfileChangeRequest, user))).all()
     return await _reads(session, user, list(rows))
 
 
@@ -856,10 +857,14 @@ async def create_change_request(
 
 def _unchanged(section: ProfileSection, proposed: Any, current: Any) -> bool:
     if section is ProfileSection.BANK_ACCOUNT:
-        return bool(current) and all(
-            current.get(key) == proposed.get(key)
-            for key in ("account_number_last4", "ifsc", "account_holder_name")
-        ) and current.get("bank_name") == proposed.get("bank_name")
+        return (
+            bool(current)
+            and all(
+                current.get(key) == proposed.get(key)
+                for key in ("account_number_last4", "ifsc", "account_holder_name")
+            )
+            and current.get("bank_name") == proposed.get("bank_name")
+        )
     if section is ProfileSection.STATUTORY:
         return all(current.get(key) == value for key, value in proposed.items())
     return proposed == current

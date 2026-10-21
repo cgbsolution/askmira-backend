@@ -132,8 +132,7 @@ async def send_attendance_reminders(
                     payload={
                         "month": f"{start:%B %Y}",
                         "pending_line": (
-                            f" {open_in_month} correction(s) for that month are still "
-                            "undecided."
+                            f" {open_in_month} correction(s) for that month are still undecided."
                             if open_in_month
                             else ""
                         ),

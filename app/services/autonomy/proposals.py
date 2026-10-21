@@ -163,9 +163,7 @@ class Proposal:
             "reversible": self.reversible,
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
-            "expires_at": expires_at(
-                self.action_key, created_at=self.created_at
-            ).isoformat(),
+            "expires_at": expires_at(self.action_key, created_at=self.created_at).isoformat(),
             "decision_note": self.decision_note,
         }
         if now is not None:
@@ -197,9 +195,7 @@ def assert_evaluable(proposal: Proposal) -> None:
             "to disagree with it."
         )
     if not 0.0 <= proposal.confidence <= 1.0:
-        raise AutonomyError(
-            f"Confidence {proposal.confidence} is outside 0 to 1."
-        )
+        raise AutonomyError(f"Confidence {proposal.confidence} is outside 0 to 1.")
     if proposal.reversible and not proposal.previous_state:
         raise AutonomyError(
             f"{proposal.action_key!r} is reversible and the proposal captured no "
@@ -272,18 +268,16 @@ def route(
         else:
             reason_parts.append(
                 f"{magnitude} is below the configured threshold of {threshold} "
-                f"{spec.threshold_unit or ''}".strip() + "."
+                f"{spec.threshold_unit or ''}".strip()
+                + "."
             )
 
     if effective.applies_automatically:
         reason_parts.append(
-            f"This tenant has {spec.description.lower().rstrip('.')} set to "
-            f"{effective.label!r}."
+            f"This tenant has {spec.description.lower().rstrip('.')} set to {effective.label!r}."
         )
     else:
-        reason_parts.append(
-            f"This tenant has it set to {effective.label!r}."
-        )
+        reason_parts.append(f"This tenant has it set to {effective.label!r}.")
 
     return Routing(
         autonomy=effective,
@@ -414,13 +408,9 @@ class ActionStats:
             "reverted": self.reverted,
             "decided": self.decided,
             "rejection_rate": (
-                round(self.rejection_rate, 3)
-                if self.rejection_rate is not None
-                else None
+                round(self.rejection_rate, 3) if self.rejection_rate is not None else None
             ),
-            "revert_rate": (
-                round(self.revert_rate, 3) if self.revert_rate is not None else None
-            ),
+            "revert_rate": (round(self.revert_rate, 3) if self.revert_rate is not None else None),
             "looks_defective": self.is_defective_signal,
             "note": (
                 "Rejected far more often than not. This is a signal about the "
@@ -432,9 +422,7 @@ class ActionStats:
         }
 
 
-def stats_for(
-    action_key: str, statuses: list[ProposalStatus]
-) -> ActionStats:
+def stats_for(action_key: str, statuses: list[ProposalStatus]) -> ActionStats:
     """Fold a list of outcomes into the rates.
 
     Expiries are counted and excluded from the rejection rate. Counting them as

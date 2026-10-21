@@ -261,11 +261,7 @@ def reconcile_2b(
     def total(state: MatchState, use_portal: bool = False) -> Decimal:
         return money(
             sum(
-                (
-                    (r.portal_tax if use_portal else r.our_tax)
-                    for r in results
-                    if r.state is state
-                ),
+                ((r.portal_tax if use_portal else r.our_tax) for r in results if r.state is state),
                 Decimal("0"),
             )
         )
@@ -295,13 +291,9 @@ def reconcile_2b(
         "counts": counts,
         "matched_tax": str(total(MatchState.MATCHED)),
         "missing_in_2b_tax": str(total(MatchState.MISSING_IN_2B)),
-        "missing_in_register_tax": str(
-            total(MatchState.MISSING_IN_REGISTER, use_portal=True)
-        ),
+        "missing_in_register_tax": str(total(MatchState.MISSING_IN_REGISTER, use_portal=True)),
         "mismatched_our_tax": str(total(MatchState.VALUE_MISMATCH)),
-        "mismatched_portal_tax": str(
-            total(MatchState.VALUE_MISMATCH, use_portal=True)
-        ),
+        "mismatched_portal_tax": str(total(MatchState.VALUE_MISMATCH, use_portal=True)),
         "at_risk_from_unfiled_vendors": str(at_risk),
         "lines": [r.as_dict() for r in results],
         "note": (
@@ -343,9 +335,7 @@ def duplicates(captured: list[CapturedInvoice]) -> list[dict[str, Any]]:
                 "claim_count": len(group),
                 "credit_ids": sorted(inv.credit_id for inv in group),
                 "employee_ids": employees,
-                "total_tax": str(
-                    money(sum((inv.total_tax for inv in group), Decimal("0")))
-                ),
+                "total_tax": str(money(sum((inv.total_tax for inv in group), Decimal("0")))),
                 "across_employees": len(employees) > 1,
                 "detail": (
                     f"The same invoice was claimed by {len(employees)} different "
@@ -390,9 +380,7 @@ def value_dashboard(
         if reconciliation
         else Decimal("0.00")
     )
-    matched = (
-        Decimal(reconciliation["matched_tax"]) if reconciliation else Decimal("0.00")
-    )
+    matched = Decimal(reconciliation["matched_tax"]) if reconciliation else Decimal("0.00")
 
     return {
         "period": period_label,

@@ -127,33 +127,23 @@ async def load_facts(
     code does can reach a database row — which is what makes the scenario
     isolation a property of the code's shape rather than of anybody's care.
     """
-    positions = (
-        await session.scalars(tenant_scoped(select(Position), Position, user))
-    ).all()
+    positions = (await session.scalars(tenant_scoped(select(Position), Position, user))).all()
 
     departments = {
         d.id: d.name
-        for d in (
-            await session.scalars(tenant_scoped(select(Department), Department, user))
-        ).all()
+        for d in (await session.scalars(tenant_scoped(select(Department), Department, user))).all()
     }
     locations = {
         loc.id: loc.name
-        for loc in (
-            await session.scalars(tenant_scoped(select(Location), Location, user))
-        ).all()
+        for loc in (await session.scalars(tenant_scoped(select(Location), Location, user))).all()
     }
     cost_centres = {
         c.id: c.name
-        for c in (
-            await session.scalars(tenant_scoped(select(CostCentre), CostCentre, user))
-        ).all()
+        for c in (await session.scalars(tenant_scoped(select(CostCentre), CostCentre, user))).all()
     }
 
     assignments = (
-        await session.scalars(
-            tenant_scoped(select(PositionAssignment), PositionAssignment, user)
-        )
+        await session.scalars(tenant_scoped(select(PositionAssignment), PositionAssignment, user))
     ).all()
     labels = await _employee_labels(session, user, {a.employee_id for a in assignments})
 
@@ -208,18 +198,14 @@ async def _employee_labels(
             tenant_scoped(select(Employee).where(Employee.id.in_(employee_ids)), Employee, user)
         )
     ).all()
-    return {
-        p.id: p.display_name or f"{p.first_name} {p.last_name or ''}".strip() for p in people
-    }
+    return {p.id: p.display_name or f"{p.first_name} {p.last_name or ''}".strip() for p in people}
 
 
 async def snapshots_on(
     session: AsyncSession, user: User, *, on: date
 ) -> list[headcount_engine.OccupancySnapshot]:
     positions, assignments = await load_facts(session, user)
-    return headcount_engine.occupancy_on(
-        positions=positions, assignments=assignments, on=on
-    )
+    return headcount_engine.occupancy_on(positions=positions, assignments=assignments, on=on)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -366,9 +352,13 @@ async def _check_references(
         ("cost_centre_id", CostCentre, "cost centre"),
     ):
         value = values.get(key)
-        if value is not None and await session.scalar(
-            tenant_scoped(select(model.id).where(model.id == value), model, user)
-        ) is None:
+        if (
+            value is not None
+            and await session.scalar(
+                tenant_scoped(select(model.id).where(model.id == value), model, user)
+            )
+            is None
+        ):
             raise _unprocessable(f"That {label} is not part of this workspace.")
 
     parent = values.get("reports_to_position_id")
@@ -417,9 +407,12 @@ async def create_position(
     request: Request | None = None,
 ) -> Position:
     """Approve a new seat, inside the headcount budget."""
-    if await session.scalar(
-        tenant_scoped(select(Position.id).where(Position.code == payload.code), Position, user)
-    ) is not None:
+    if (
+        await session.scalar(
+            tenant_scoped(select(Position.id).where(Position.code == payload.code), Position, user)
+        )
+        is not None
+    ):
         raise _conflict(f"A position with code {payload.code} already exists")
     values = payload.model_dump()
     await _check_references(session, user, values)
@@ -953,8 +946,7 @@ async def off_budget_flags(
                 "kind": "position_abolished",
                 "severity": "blocking_attention",
                 "message": (
-                    f"Position {position.code} has been abolished. There is no seat to "
-                    "fill."
+                    f"Position {position.code} has been abolished. There is no seat to fill."
                 ),
             }
         )
@@ -1038,9 +1030,10 @@ async def budget_view(
         "grouped_by": by,
         "totals": {key: value.as_dict() for key, value in totals.items()},
         "cost": (
-            [gap.as_dict() for gap in vacancy.budget_gap(
-                snapshots, actual_cost_by_employee=actual, by=by
-            )]
+            [
+                gap.as_dict()
+                for gap in vacancy.budget_gap(snapshots, actual_cost_by_employee=actual, by=by)
+            ]
             if include_cost
             else None
         ),
@@ -1110,9 +1103,7 @@ async def org_chart(
 
     return {
         "as_of": as_of.isoformat(),
-        "roots": (
-            orgchart.flatten(roots) if flat else [node.as_dict() for node in roots]
-        ),
+        "roots": (orgchart.flatten(roots) if flat else [node.as_dict() for node in roots]),
         "problems": problems,
         "vacant_seats": sum(1 for s in snapshots if not s.is_occupied),
         "total_seats": len(snapshots),
@@ -1136,17 +1127,24 @@ async def create_cost_centre(
     *,
     request: Request | None = None,
 ) -> CostCentre:
-    if await session.scalar(
-        tenant_scoped(
-            select(CostCentre.id).where(CostCentre.code == payload.code), CostCentre, user
+    if (
+        await session.scalar(
+            tenant_scoped(
+                select(CostCentre.id).where(CostCentre.code == payload.code), CostCentre, user
+            )
         )
-    ) is not None:
+        is not None
+    ):
         raise _conflict(f"A cost centre with code {payload.code} already exists")
-    if payload.owner_employee_id is not None and await session.scalar(
-        tenant_scoped(
-            select(Employee.id).where(Employee.id == payload.owner_employee_id), Employee, user
+    if (
+        payload.owner_employee_id is not None
+        and await session.scalar(
+            tenant_scoped(
+                select(Employee.id).where(Employee.id == payload.owner_employee_id), Employee, user
+            )
         )
-    ) is None:
+        is None
+    ):
         raise _unprocessable("The owner is not an employee in this workspace.")
     centre = CostCentre(tenant_id=user.tenant_id, **payload.model_dump())
     session.add(centre)
@@ -1193,9 +1191,13 @@ async def upsert_budget(
         ("cost_centre_id", CostCentre, "cost centre"),
     ):
         value = getattr(payload, key)
-        if value is not None and await session.scalar(
-            tenant_scoped(select(model.id).where(model.id == value), model, user)
-        ) is None:
+        if (
+            value is not None
+            and await session.scalar(
+                tenant_scoped(select(model.id).where(model.id == value), model, user)
+            )
+            is None
+        ):
             raise _unprocessable(f"That {label} is not part of this workspace.")
 
     stmt = select(HeadcountBudget).where(HeadcountBudget.financial_year == payload.financial_year)
@@ -1292,9 +1294,7 @@ def _to_changes(rows: list[ScenarioChange]) -> list[scenario_engine.ScenarioChan
     ]
 
 
-async def _scenario(
-    session: AsyncSession, user: User, scenario_id: uuid.UUID
-) -> PositionScenario:
+async def _scenario(session: AsyncSession, user: User, scenario_id: uuid.UUID) -> PositionScenario:
     row = await session.scalar(
         tenant_scoped(
             select(PositionScenario).where(PositionScenario.id == scenario_id),
@@ -1346,13 +1346,16 @@ async def create_scenario(
     request: Request | None = None,
 ) -> ScenarioSummary:
     """Start a draft. Nothing here touches a live position."""
-    if await session.scalar(
-        tenant_scoped(
-            select(PositionScenario.id).where(PositionScenario.name == payload.name),
-            PositionScenario,
-            user,
+    if (
+        await session.scalar(
+            tenant_scoped(
+                select(PositionScenario.id).where(PositionScenario.name == payload.name),
+                PositionScenario,
+                user,
+            )
         )
-    ) is not None:
+        is not None
+    ):
         raise _conflict(f"A scenario called '{payload.name}' already exists")
     for change in payload.changes:
         await _check_change(session, user, change)
@@ -1445,9 +1448,7 @@ async def project_scenario(
     """
     row = await _scenario(session, user, scenario_id)
     positions, assignments = await load_facts(session, user)
-    live = headcount_engine.occupancy_on(
-        positions=positions, assignments=assignments, on=row.as_of
-    )
+    live = headcount_engine.occupancy_on(positions=positions, assignments=assignments, on=row.as_of)
 
     try:
         result = scenario_engine.apply_changes(
@@ -1467,13 +1468,13 @@ async def project_scenario(
         "as_of": row.as_of.isoformat(),
         "changes": [c.as_dict() for c in result.changes],
         "warnings": list(result.warnings),
-        "live_totals": {k: v.as_dict() for k, v in
-                        headcount_engine.aggregate(live, by="department").items()},
+        "live_totals": {
+            k: v.as_dict() for k, v in headcount_engine.aggregate(live, by="department").items()
+        },
         "projected_totals": result.totals(by="department"),
         "comparison": [c.as_dict() for c in comparison],
         "vacancies_after": [
-            v.as_dict()
-            for v in vacancy.ageing(list(result.snapshots), as_of=row.as_of)
+            v.as_dict() for v in vacancy.ageing(list(result.snapshots), as_of=row.as_of)
         ],
     }
 
@@ -1574,7 +1575,9 @@ async def commit_scenario(
 
         if kind is scenario_engine.ChangeKind.MOVE:
             for field_name in (
-                "department_id", "location_id", "cost_centre_id",
+                "department_id",
+                "location_id",
+                "cost_centre_id",
                 "reports_to_position_id",
             ):
                 if field_name in (change.values or {}):
@@ -1614,8 +1617,7 @@ async def commit_scenario(
         entity_type="position_scenario",
         entity_id=row.id,
         summary=(
-            f"Scenario '{row.name}' committed: {len(applied)} change(s) applied to "
-            "live positions."
+            f"Scenario '{row.name}' committed: {len(applied)} change(s) applied to live positions."
         ),
         changes={"applied": applied},
         request=request,

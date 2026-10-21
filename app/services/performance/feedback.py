@@ -717,9 +717,7 @@ async def get_request(
     )
 
 
-def _by_relationship(
-    reviewers: list[FeedbackReviewer], threshold: int
-) -> list[dict[str, Any]]:
+def _by_relationship(reviewers: list[FeedbackReviewer], threshold: int) -> list[dict[str, Any]]:
     """Overall average per relationship, only for a group large enough to stay anonymous."""
     groups: dict[str, list[Decimal]] = {}
     for r in reviewers:
@@ -1016,9 +1014,7 @@ async def inbox_items(session: AsyncSession, user: User) -> list[dict[str, Any]]
             "id": item.reviewer_id,
             "title": f"Feedback on {item.subject_name}",
             "subject_name": item.subject_name,
-            "detail": (
-                f"Asked by {item.requested_by_name}" if item.requested_by_name else None
-            ),
+            "detail": (f"Asked by {item.requested_by_name}" if item.requested_by_name else None),
             "submitted_at": item.created_at,
             "due_on": item.due_on,
         }

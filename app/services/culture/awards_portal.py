@@ -346,8 +346,7 @@ async def set_cycle_status(
             entity_id=cycle.id,
             actor=user,
             summary=(
-                f"Award cycle {cycle.label!r} moved from {previous.value} to "
-                f"{new_status.value}."
+                f"Award cycle {cycle.label!r} moved from {previous.value} to {new_status.value}."
             ),
             request=request,
         )
@@ -397,9 +396,7 @@ async def _nomination_reads(
         own = user.employee_id is not None and row.nominator_employee_id == user.employee_id
         my_score = None
         if is_juror:
-            my_score = (
-                ("submitted" if mine[row.id] else "draft") if row.id in mine else "none"
-            )
+            my_score = ("submitted" if mine[row.id] else "draft") if row.id in mine else "none"
         out.append(
             NominationRead(
                 id=row.id,
@@ -494,9 +491,7 @@ async def list_nominations(
 # ── Standings and results ───────────────────────────────────────────────────
 
 
-async def standings(
-    session: AsyncSession, user: User, cycle_id: uuid.UUID
-) -> dict[str, Any]:
+async def standings(session: AsyncSession, user: User, cycle_id: uuid.UUID) -> dict[str, Any]:
     """Per category, the nominations ranked on submitted jury scores."""
     permissions.require_hr(user, detail="Award standings are for HR.")
     cycle, programme = await _cycle(session, user, cycle_id)

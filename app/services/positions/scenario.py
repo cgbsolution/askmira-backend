@@ -94,8 +94,9 @@ class ScenarioChange:
         return {
             "kind": self.kind.value,
             "position_id": self.position_id,
-            "values": {k: str(v) if isinstance(v, Decimal | date) else v
-                       for k, v in self.values.items()},
+            "values": {
+                k: str(v) if isinstance(v, Decimal | date) else v for k, v in self.values.items()
+            },
             "reason": self.reason,
         }
 
@@ -104,8 +105,15 @@ class ScenarioChange:
 #: the budget is not a move — it is an edit wearing a move's name, and it would
 #: hide a pay rise inside a reorg.
 _MOVABLE = frozenset(
-    {"department_id", "department_name", "location_id", "location_name",
-     "cost_centre_id", "cost_centre_name", "reports_to_position_id"}
+    {
+        "department_id",
+        "department_name",
+        "location_id",
+        "location_name",
+        "cost_centre_id",
+        "cost_centre_name",
+        "reports_to_position_id",
+    }
 )
 
 #: What CREATE needs. A seat with no title and no cost is not a plan.
@@ -199,14 +207,10 @@ def _apply_one(
     elif change.kind is ChangeKind.UNFREEZE:
         # Back to whichever open state it belongs in: a seat that was emptied
         # returns to VACANT, one never filled returns to APPROVED.
-        restored = (
-            PositionStatus.VACANT if current.vacated_on else PositionStatus.APPROVED
-        )
+        restored = PositionStatus.VACANT if current.vacated_on else PositionStatus.APPROVED
         updated[change.position_id] = replace(current, status=restored)
     elif change.kind is ChangeKind.ABOLISH:
-        updated[change.position_id] = replace(
-            current, status=PositionStatus.ABOLISHED
-        )
+        updated[change.position_id] = replace(current, status=PositionStatus.ABOLISHED)
     return updated
 
 
@@ -221,8 +225,7 @@ class ScenarioResult:
 
     def totals(self, by: str | None = None) -> dict[str, Any]:
         return {
-            key: totals.as_dict()
-            for key, totals in aggregate(list(self.snapshots), by=by).items()
+            key: totals.as_dict() for key, totals in aggregate(list(self.snapshots), by=by).items()
         }
 
 
@@ -335,8 +338,7 @@ def compare(
                 live=live.as_dict() if live else {},
                 projected=projected.as_dict() if projected else {},
                 fte_delta=projected_fte - live_fte,
-                cost_delta=projected_cost.get(scope, Decimal(0))
-                - live_cost.get(scope, Decimal(0)),
+                cost_delta=projected_cost.get(scope, Decimal(0)) - live_cost.get(scope, Decimal(0)),
             )
         )
     return out

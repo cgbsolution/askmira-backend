@@ -244,9 +244,7 @@ async def manages(session: AsyncSession, user: User, employee_id: uuid.UUID) -> 
     return employee_id in await reporting_line(session, user)
 
 
-async def is_line_manager_of(
-    session: AsyncSession, user: User, employee_id: uuid.UUID
-) -> bool:
+async def is_line_manager_of(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
     """This person is somewhere in the caller's reporting line."""
     return await manages(session, user, employee_id)
 
@@ -269,8 +267,7 @@ async def require_manager_or_hr(
         if allow_self:
             return
         raise forbidden(
-            "This cannot be done for yourself. It needs somebody in your "
-            "reporting line or in HR."
+            "This cannot be done for yourself. It needs somebody in your reporting line or in HR."
         )
     if is_hr(user):
         return
@@ -279,9 +276,7 @@ async def require_manager_or_hr(
     raise forbidden(detail)
 
 
-async def visible_employee_ids(
-    session: AsyncSession, user: User
-) -> set[uuid.UUID] | None:
+async def visible_employee_ids(session: AsyncSession, user: User) -> set[uuid.UUID] | None:
     """Whose records a list may return to this caller.
 
     `None` means everybody in the tenant (HR). Otherwise the caller's own record

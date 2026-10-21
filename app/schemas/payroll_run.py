@@ -304,8 +304,15 @@ class RegisterRead(BaseModel):
 # ── Rule sets ───────────────────────────────────────────────────────────────
 
 RuleType = Literal[
-    "pf", "esi", "professional_tax", "tds", "gratuity", "bonus", "labour_welfare_fund",
-    "tds_non_salary", "wage_deductions",
+    "pf",
+    "esi",
+    "professional_tax",
+    "tds",
+    "gratuity",
+    "bonus",
+    "labour_welfare_fund",
+    "tds_non_salary",
+    "wage_deductions",
 ]
 
 

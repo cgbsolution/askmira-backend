@@ -76,6 +76,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if not settings.is_production else None,
 )
 
+
 class SecurityHeadersMiddleware:
     """Hardening headers on every response.
 

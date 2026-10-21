@@ -157,9 +157,7 @@ async def _current_employee(
     return row
 
 
-async def _login_for(
-    session: AsyncSession, user: User, employee_id: uuid.UUID
-) -> uuid.UUID | None:
+async def _login_for(session: AsyncSession, user: User, employee_id: uuid.UUID) -> uuid.UUID | None:
     return await session.scalar(
         tenant_scoped(
             select(User.id).where(User.employee_id == employee_id, User.is_active.is_(True)),
@@ -174,9 +172,7 @@ async def _login_for(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def visibility_clause(
-    session: AsyncSession, user: User, *, is_hr: bool | None = None
-):
+async def visibility_clause(session: AsyncSession, user: User, *, is_hr: bool | None = None):
     """Which shoutouts this person may see, as a SQL condition.
 
     COMPANY is everybody's. DEPARTMENT is the recipient's department, the two
@@ -190,9 +186,7 @@ async def visibility_clause(
         conditions.append(Shoutout.visibility == ShoutoutVisibility.DEPARTMENT)
     elif me is not None:
         department = await session.scalar(
-            tenant_scoped(
-                select(Employee.department_id).where(Employee.id == me), Employee, user
-            )
+            tenant_scoped(select(Employee.department_id).where(Employee.id == me), Employee, user)
         )
         if department is not None:
             colleagues = tenant_scoped(
@@ -209,16 +203,12 @@ async def visibility_clause(
     return or_(*conditions)
 
 
-async def _visible_shoutout(
-    session: AsyncSession, user: User, shoutout_id: uuid.UUID
-) -> Shoutout:
+async def _visible_shoutout(session: AsyncSession, user: User, shoutout_id: uuid.UUID) -> Shoutout:
     """The shoutout, if this person may see it. Otherwise 404 - not 403, which
     would confirm that a private shoutout with this id exists."""
     clause = await visibility_clause(session, user)
     row = await session.scalar(
-        tenant_scoped(
-            select(Shoutout).where(Shoutout.id == shoutout_id, clause), Shoutout, user
-        )
+        tenant_scoped(select(Shoutout).where(Shoutout.id == shoutout_id, clause), Shoutout, user)
     )
     if row is None:
         raise _not_found("No such shoutout.")
@@ -295,9 +285,7 @@ async def _award_refs(
     return out
 
 
-async def _read_many(
-    session: AsyncSession, user: User, rows: list[Shoutout]
-) -> list[ShoutoutRead]:
+async def _read_many(session: AsyncSession, user: User, rows: list[Shoutout]) -> list[ShoutoutRead]:
     if not rows:
         return []
     people = await person_refs(
@@ -333,9 +321,7 @@ async def _read_many(
         ShoutoutRead(
             id=row.id,
             kind=(
-                "award" if row.award_result_id
-                else "milestone" if row.milestone_years
-                else "peer"
+                "award" if row.award_result_id else "milestone" if row.milestone_years else "peer"
             ),
             milestone_years=row.milestone_years,
             from_employee_id=row.from_employee_id,
@@ -579,9 +565,7 @@ async def delete_shoutout(
     shoutout = await _visible_shoutout(session, user, shoutout_id)
     is_sender = user.employee_id is not None and shoutout.from_employee_id == user.employee_id
     if not (is_sender or permissions.is_hr(user)):
-        raise permissions.forbidden(
-            "Only the person who posted a shoutout, or HR, can delete it."
-        )
+        raise permissions.forbidden("Only the person who posted a shoutout, or HR, can delete it.")
     tenant_id = user.tenant_id
     target = shoutout.id
     was_award = shoutout.award_result_id is not None
@@ -707,9 +691,7 @@ async def _visible_club(session: AsyncSession, user: User, club_id: uuid.UUID) -
     """An active club this person may see: public, or private and a member."""
     mine = await _my_memberships(session, user)
     club = await session.scalar(
-        tenant_scoped(
-            select(Club).where(Club.id == club_id, Club.is_active.is_(True)), Club, user
-        )
+        tenant_scoped(select(Club).where(Club.id == club_id, Club.is_active.is_(True)), Club, user)
     )
     if club is None or (club.is_private and club.id not in mine):
         raise _not_found("No such club.")
@@ -746,9 +728,7 @@ async def create_club(
     taken = set(
         (
             await session.scalars(
-                tenant_scoped(
-                    select(Club.slug).where(Club.slug.like(f"{base}%")), Club, user
-                )
+                tenant_scoped(select(Club.slug).where(Club.slug.like(f"{base}%")), Club, user)
             )
         ).all()
     )
@@ -778,8 +758,7 @@ async def create_club(
         entity_id=club.id,
         actor=user,
         summary=(
-            f"Created the {'private' if payload.is_private else 'public'} club "
-            f"{payload.name!r}."
+            f"Created the {'private' if payload.is_private else 'public'} club {payload.name!r}."
         ),
         request=request,
     )
@@ -836,9 +815,7 @@ async def leave_club(
     club = await _visible_club(session, user, club_id)
     membership = await session.scalar(
         tenant_scoped(
-            select(ClubMember).where(
-                ClubMember.club_id == club.id, ClubMember.employee_id == me
-            ),
+            select(ClubMember).where(ClubMember.club_id == club.id, ClubMember.employee_id == me),
             ClubMember,
             user,
         )
@@ -932,9 +909,7 @@ async def club_participation(session: AsyncSession, user: User) -> ClubParticipa
         )
     ).all()
     by_privacy = {bool(private): count for private, count in clubs}
-    active_club_ids = tenant_scoped(
-        select(Club.id).where(Club.is_active.is_(True)), Club, user
-    )
+    active_club_ids = tenant_scoped(select(Club.id).where(Club.is_active.is_(True)), Club, user)
     memberships = await session.scalar(
         tenant_scoped(
             select(func.count(ClubMember.id)).where(ClubMember.club_id.in_(active_club_ids)),
@@ -967,9 +942,7 @@ async def club_participation(session: AsyncSession, user: User) -> ClubParticipa
         total_memberships=memberships or 0,
         distinct_members=distinct or 0,
         active_headcount=headcount or 0,
-        participation_rate=(
-            round((distinct or 0) / headcount, 3) if headcount else None
-        ),
+        participation_rate=(round((distinct or 0) / headcount, 3) if headcount else None),
         note=(
             "Counts only. Which person is in which club is visible to that "
             "club's members and to nobody else, HR included."

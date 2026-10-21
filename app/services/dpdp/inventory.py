@@ -158,8 +158,7 @@ def coverage_gaps(schema: SchemaShape) -> list[CoverageGap]:
                 table=table_name,
                 column=None,
                 detail=(
-                    "Classified in schema_map.TABLES but no longer in the "
-                    "schema. Remove the entry."
+                    "Classified in schema_map.TABLES but no longer in the schema. Remove the entry."
                 ),
             )
         )
@@ -179,8 +178,7 @@ def coverage_gaps(schema: SchemaShape) -> list[CoverageGap]:
                         table=table_name,
                         column=None,
                         detail=(
-                            f"names category {key!r}, which categories.CATEGORIES "
-                            "does not define."
+                            f"names category {key!r}, which categories.CATEGORIES does not define."
                         ),
                     )
                 )
@@ -315,20 +313,15 @@ class Inventory:
             "tables_holding_personal_data": self.tables_holding_personal_data,
             "tables_not_personal": self.tables_not_personal,
             "personal_data_columns": len(self.columns),
-            "direct_identifiers": sum(
-                1 for c in self.columns if c.is_direct_identifier
-            ),
+            "direct_identifiers": sum(1 for c in self.columns if c.is_direct_identifier),
             "categories_declared_but_absent": [
-                {"key": c.key, "name": c.name}
-                for c in self.categories_declared_but_absent
+                {"key": c.key, "name": c.name} for c in self.categories_declared_but_absent
             ],
             "categories": [
                 {
                     **cat.as_dict(),
                     "column_count": len(grouped.get(cat.key, ())),
-                    "tables": sorted(
-                        {c.table for c in grouped.get(cat.key, ())}
-                    ),
+                    "tables": sorted({c.table for c in grouped.get(cat.key, ())}),
                 }
                 for cat in self.categories_present
             ],
@@ -379,9 +372,7 @@ def build_inventory(schema: SchemaShape) -> Inventory:
     present = {c.category_key for c in columns}
     return Inventory(
         columns=tuple(columns),
-        categories_present=tuple(
-            CATEGORIES[key] for key in CATEGORIES if key in present
-        ),
+        categories_present=tuple(CATEGORIES[key] for key in CATEGORIES if key in present),
         categories_declared_but_absent=tuple(
             CATEGORIES[key] for key in CATEGORIES if key not in present
         ),
@@ -447,9 +438,7 @@ def record_of_processing(schema: SchemaShape) -> list[ProcessingActivity]:
 
     activities: list[ProcessingActivity] = []
     for spec in PURPOSES.values():
-        categories = tuple(
-            category(key) for key in spec.data_categories if key in CATEGORIES
-        )
+        categories = tuple(category(key) for key in spec.data_categories if key in CATEGORIES)
         relevant = [c for key in spec.data_categories for c in grouped.get(key, ())]
         retentions = [cat.retention for cat in categories]
 
@@ -458,17 +447,13 @@ def record_of_processing(schema: SchemaShape) -> list[ProcessingActivity]:
                 purpose=spec,
                 categories=categories,
                 principals=tuple(
-                    dict.fromkeys(
-                        kind for cat in categories for kind in cat.principal_kinds
-                    )
+                    dict.fromkeys(kind for cat in categories for kind in cat.principal_kinds)
                 ),
                 tables=tuple(sorted({c.table for c in relevant})),
                 column_count=len(relevant),
                 max_retention_months=max((r.months for r in retentions), default=0),
                 statutory_retentions=tuple(
-                    dict.fromkeys(
-                        r.statutory_reference for r in retentions if r.is_statutory
-                    )
+                    dict.fromkeys(r.statutory_reference for r in retentions if r.is_statutory)
                 ),
                 sub_processors=spec.sub_processors,
             )

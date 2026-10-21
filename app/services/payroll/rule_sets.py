@@ -43,8 +43,12 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     # The ECR splits the employer's share into EPF and EPS, each with its own
     # ceiling, and reports EDLI wages: refused at entry, not at filing time.
     "pf": (
-        "wage_ceiling", "employee_rate", "employer_rate",
-        "eps_wage_ceiling", "edli_wage_ceiling", "eps_rate",
+        "wage_ceiling",
+        "employee_rate",
+        "employer_rate",
+        "eps_wage_ceiling",
+        "edli_wage_ceiling",
+        "eps_rate",
     ),
     "esi": ("wage_threshold", "employee_rate", "employer_rate"),
     "professional_tax": ("slabs",),

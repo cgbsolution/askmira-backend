@@ -204,9 +204,7 @@ class RetentionPlan:
             "total_evaluated": len(self.actions),
             "to_act": len(self.to_act),
             "held_under_legal_hold": len(self.held),
-            "not_yet_due": sum(
-                1 for a in self.actions if a.disposition is Disposition.NOT_YET_DUE
-            ),
+            "not_yet_due": sum(1 for a in self.actions if a.disposition is Disposition.NOT_YET_DUE),
             "blocked": len(self.blocked),
             "counts_by_action": self.counts_by_action(),
             "approval_threshold": self.approval_threshold,
@@ -317,8 +315,7 @@ def plan(
                     action=policy.action,
                     due_on=expiry,
                     reason=(
-                        f"Due on {expiry.isoformat()}, "
-                        f"{(expiry - today).days} day(s) from now."
+                        f"Due on {expiry.isoformat()}, {(expiry - today).days} day(s) from now."
                     ),
                 )
             )

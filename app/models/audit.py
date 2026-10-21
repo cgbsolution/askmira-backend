@@ -115,9 +115,7 @@ class RoleModulePermission(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "role_module_permissions"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "role", "module", name="uq_role_module_once"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "role", "module", name="uq_role_module_once"),)
 
     role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     # core_hr | leave | payroll | culture | hiring | analytics | admin | benefits

@@ -111,9 +111,7 @@ async def seed_suites(
     _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
     """Register the canonical suites for every agent named in the brief."""
-    written = await eval_service.seed_canonical_suites(
-        session, user, request=request
-    )
+    written = await eval_service.seed_canonical_suites(session, user, request=request)
     return {"registered": written}
 
 
@@ -176,9 +174,7 @@ async def run_history(
     The diff is the useful column: a slow degradation is a series of green runs
     whose measurements are sliding, and a pass rate does not show it.
     """
-    return await eval_service.run_history(
-        session, user, agent_key=agent_key, limit=limit
-    )
+    return await eval_service.run_history(session, user, agent_key=agent_key, limit=limit)
 
 
 # ── Feedback ────────────────────────────────────────────────────────────────
@@ -231,11 +227,7 @@ async def list_feedback(
     if unpromoted_only:
         stmt = stmt.where(AgentFeedback.promoted_to_case_id.is_(None))
     rows = (
-        (
-            await session.execute(
-                stmt.order_by(AgentFeedback.created_at.desc()).limit(limit)
-            )
-        )
+        (await session.execute(stmt.order_by(AgentFeedback.created_at.desc()).limit(limit)))
         .scalars()
         .all()
     )
@@ -248,9 +240,7 @@ async def list_feedback(
                 "comment": row.comment,
                 "created_at": row.created_at.isoformat(),
                 "promoted_to_case_id": (
-                    str(row.promoted_to_case_id)
-                    if row.promoted_to_case_id
-                    else None
+                    str(row.promoted_to_case_id) if row.promoted_to_case_id else None
                 ),
             }
             for row in rows

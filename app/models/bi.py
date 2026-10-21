@@ -133,19 +133,16 @@ class BiConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Null means "every field this role may see". A list narrows it further.
     field_names: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
-    last_watermark: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "name", name="uq_bi_connections_tenant_name"
-        ),
+        UniqueConstraint("tenant_id", "name", name="uq_bi_connections_tenant_name"),
         CheckConstraint(
             "length(trim(destination_ref)) > 0",
             name="ck_bi_connections_destination_ref_present",
@@ -181,12 +178,8 @@ class BiExportRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     destination_ref: Mapped[str] = mapped_column(String(500), nullable=False)
     export_role: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
-    since: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    next_watermark: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     #: The names that left. Not a summary, not a count - the list.
     field_names: Mapped[list] = mapped_column(JSONB, nullable=False)
@@ -202,12 +195,11 @@ class BiExportRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     initiated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         CheckConstraint("row_count >= 0", name="ck_bi_export_runs_row_count"),
@@ -235,17 +227,15 @@ class BenchmarkConsent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: checkbox is consent nobody can evidence.
     contract_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     accepted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    accepted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -294,9 +284,7 @@ class BenchmarkContribution(Base, UUIDMixin, TenantMixin, TimestampMixin):
             "period",
             name="uq_benchmark_contributions_cell",
         ),
-        CheckConstraint(
-            "employee_count > 0", name="ck_benchmark_contributions_employee_count"
-        ),
+        CheckConstraint("employee_count > 0", name="ck_benchmark_contributions_employee_count"),
         Index(
             "ix_benchmark_contributions_cell",
             "metric",
@@ -337,9 +325,7 @@ class BenchmarkDataset(Base, UUIDMixin, TimestampMixin):
     p50: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     p75: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     note: Mapped[str] = mapped_column(Text, nullable=False)
-    computed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(
@@ -357,8 +343,7 @@ class BenchmarkDataset(Base, UUIDMixin, TimestampMixin):
             name="ck_benchmark_datasets_suppressed_cells_are_empty",
         ),
         CheckConstraint(
-            "NOT published OR (p25 IS NOT NULL AND p50 IS NOT NULL "
-            "AND p75 IS NOT NULL)",
+            "NOT published OR (p25 IS NOT NULL AND p50 IS NOT NULL AND p75 IS NOT NULL)",
             name="ck_benchmark_datasets_published_cells_are_complete",
         ),
         CheckConstraint("contributors >= 0", name="ck_benchmark_datasets_contributors"),

@@ -96,8 +96,7 @@ async def identify(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This mobile number belongs to more than one login. Use your work "
-                "email instead."
+                "This mobile number belongs to more than one login. Use your work email instead."
             ),
         ) from exc
     if user is None:

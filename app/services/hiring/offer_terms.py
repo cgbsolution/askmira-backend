@@ -119,11 +119,7 @@ def canonical_terms(terms: dict[str, Any]) -> dict[str, Any]:
     whole offer payloads, and an offer legitimately carries plenty that does not
     bear on the approval.
     """
-    return {
-        key: _normalise(terms.get(key))
-        for key in sorted(MATERIAL_TERMS)
-        if key in terms
-    }
+    return {key: _normalise(terms.get(key)) for key in sorted(MATERIAL_TERMS) if key in terms}
 
 
 def terms_fingerprint(terms: dict[str, Any]) -> str:
@@ -218,9 +214,7 @@ def budget_deviation(
     amount_over = _money(offered_ctc - band_max) if over else Decimal("0.00")
     percent_over = Decimal("0.00")
     if over and band_max and band_max > 0:
-        percent_over = ((offered_ctc - band_max) / band_max * 100).quantize(
-            Decimal("0.01")
-        )
+        percent_over = ((offered_ctc - band_max) / band_max * 100).quantize(Decimal("0.01"))
 
     headline = ""
     if over:
@@ -281,9 +275,7 @@ class ParityView:
             "maximum": str(self.maximum) if self.maximum is not None else None,
             "above_every_comparable": self.above_every_comparable,
             "percent_above_median": (
-                str(self.percent_above_median)
-                if self.percent_above_median is not None
-                else None
+                str(self.percent_above_median) if self.percent_above_median is not None else None
             ),
             "headline": self.headline,
             "is_indicative_only": self.is_indicative_only,
@@ -327,19 +319,13 @@ def internal_parity(
         )
 
     middle = len(values) // 2
-    median = (
-        values[middle]
-        if len(values) % 2
-        else ((values[middle - 1] + values[middle]) / 2)
-    )
+    median = values[middle] if len(values) % 2 else ((values[middle - 1] + values[middle]) / 2)
     maximum = values[-1]
     above_all = offered_ctc > maximum
 
     percent_above_median = None
     if median > 0:
-        percent_above_median = ((offered_ctc - median) / median * 100).quantize(
-            Decimal("0.01")
-        )
+        percent_above_median = ((offered_ctc - median) / median * 100).quantize(Decimal("0.01"))
 
     if above_all:
         headline = (
@@ -353,8 +339,7 @@ def internal_parity(
         )
     else:
         headline = (
-            f"At or below the median for {label} "
-            f"({_money(median)} across {len(values)} employees)."
+            f"At or below the median for {label} ({_money(median)} across {len(values)} employees)."
         )
 
     return ParityView(

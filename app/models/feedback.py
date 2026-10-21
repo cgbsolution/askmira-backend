@@ -141,7 +141,8 @@ class FeedbackReviewer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     request_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("feedback_requests.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("feedback_requests.id", ondelete="CASCADE"),
         nullable=False,
     )
     reviewer_employee_id: Mapped[uuid.UUID] = mapped_column(

@@ -313,10 +313,24 @@ async def register_csv(
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     headings = [
-        "Employee code", "Employee", "Working days", "Paid days", "LOP days",
-        "Not employed days", "Gross earnings", "Other earnings", "PF (employee)",
-        "ESI (employee)", "Professional tax", "LWF (employee)", "VPF", "TDS",
-        "Other deductions", "Total deductions", "Net pay", "Employer cost",
+        "Employee code",
+        "Employee",
+        "Working days",
+        "Paid days",
+        "LOP days",
+        "Not employed days",
+        "Gross earnings",
+        "Other earnings",
+        "PF (employee)",
+        "ESI (employee)",
+        "Professional tax",
+        "LWF (employee)",
+        "VPF",
+        "TDS",
+        "Other deductions",
+        "Total deductions",
+        "Net pay",
+        "Employer cost",
     ]
     writer.writerow(headings)
     for row in data.rows:
@@ -324,11 +338,23 @@ async def register_csv(
             [
                 _csv_cell(v)
                 for v in (
-                    row.employee_code, row.employee_name, row.working_days, row.paid_days,
-                    row.lop_days, row.not_employed_days, row.gross_earnings,
-                    row.other_earnings, row.pf_employee, row.esi_employee,
-                    row.professional_tax, row.lwf_employee, row.vpf, row.tds,
-                    row.other_deductions, row.total_deductions, row.net_pay,
+                    row.employee_code,
+                    row.employee_name,
+                    row.working_days,
+                    row.paid_days,
+                    row.lop_days,
+                    row.not_employed_days,
+                    row.gross_earnings,
+                    row.other_earnings,
+                    row.pf_employee,
+                    row.esi_employee,
+                    row.professional_tax,
+                    row.lwf_employee,
+                    row.vpf,
+                    row.tds,
+                    row.other_deductions,
+                    row.total_deductions,
+                    row.net_pay,
                     row.employer_cost,
                 )
             ]
@@ -346,8 +372,7 @@ async def register_csv(
         actor=user,
         changes={"export": "register_csv", "rows": len(data.rows)},
         summary=(
-            f"Downloaded the payroll register for "
-            f"{data.run.period_month}/{data.run.period_year}"
+            f"Downloaded the payroll register for {data.run.period_month}/{data.run.period_year}"
         ),
         request=request,
     )

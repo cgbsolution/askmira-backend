@@ -69,16 +69,17 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     permissions.require_hr(user, detail="Milestone rules are HR's.")
     rows = (
         await session.scalars(
-            tenant_scoped(
-                select(MilestoneRule).order_by(MilestoneRule.years), MilestoneRule, user
-            )
+            tenant_scoped(select(MilestoneRule).order_by(MilestoneRule.years), MilestoneRule, user)
         )
     ).all()
     return [_read(r) for r in rows]
 
 
 async def save_rules(
-    session: AsyncSession, user: User, rules: list[dict[str, Any]], *,
+    session: AsyncSession,
+    user: User,
+    rules: list[dict[str, Any]],
+    *,
     request: Request | None = None,
 ) -> list[dict[str, Any]]:
     """Replace the set of marked anniversaries."""
@@ -110,10 +111,15 @@ async def save_rules(
     await session.flush()
     after = await list_rules(session, user)
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="milestone_rules", entity_id=None,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="milestone_rules",
+        entity_id=None,
         summary="Work anniversary milestones changed",
-        changes={"from": before, "to": after}, request=request,
+        changes={"from": before, "to": after},
+        request=request,
     )
     return after
 
@@ -222,8 +228,9 @@ async def celebrate_due(session: AsyncSession, actor: User, *, today: date) -> d
         if (person.id, years) in already:
             continue
         rule = rules[years]
-        message = _render(rule.message, name=person.first_name or person.full_name,
-                          years=years, company=company)
+        message = _render(
+            rule.message, name=person.first_name or person.full_name, years=years, company=company
+        )
         post = Shoutout(
             tenant_id=actor.tenant_id,
             from_employee_id=None,
@@ -244,8 +251,13 @@ async def celebrate_due(session: AsyncSession, actor: User, *, today: date) -> d
             try:
                 async with session.begin_nested():
                     await rewards.award_points(
-                        session, actor, employee_id=person.id, points=rule.points,
-                        awarded_on=today, source_type="milestone", source_id=post.id,
+                        session,
+                        actor,
+                        employee_id=person.id,
+                        points=rule.points,
+                        awarded_on=today,
+                        source_type="milestone",
+                        source_id=post.id,
                     )
                 post.points_awarded = rule.points
                 rewarded += 1
@@ -254,19 +266,25 @@ async def celebrate_due(session: AsyncSession, actor: User, *, today: date) -> d
                 # No valuation or no budget: the post still goes; the points do not.
                 points_line = ""
         await audit.record(
-            session, tenant_id=actor.tenant_id, actor=actor, actor_type="system",
-            action=AuditAction.CREATE, entity_type="shoutout", entity_id=post.id,
+            session,
+            tenant_id=actor.tenant_id,
+            actor=actor,
+            actor_type="system",
+            action=AuditAction.CREATE,
+            entity_type="shoutout",
+            entity_id=post.id,
             summary=f"{years}-year work anniversary marked"
             + (f" with {post.points_awarded} points" if post.points_awarded else ""),
         )
         login = logins.get(person.id)
         if login is not None:
             await notify(
-                session, tenant_id=actor.tenant_id, event_key="culture.milestone",
+                session,
+                tenant_id=actor.tenant_id,
+                event_key="culture.milestone",
                 recipient_user_ids=[login],
                 payload={"message": message, "points_line": points_line},
                 commit=False,
             )
     await session.commit()
     return {"posted": posted, "rewarded": rewarded}
-

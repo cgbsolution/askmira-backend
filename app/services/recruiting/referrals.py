@@ -104,9 +104,7 @@ class BonusMilestone:
                 "a date somebody is waiting for with no reason."
             )
         if self.days_after_joining < 0:
-            raise ReferralError(
-                f"Milestone {self.key!r} pays before the candidate joins."
-            )
+            raise ReferralError(f"Milestone {self.key!r} pays before the candidate joins.")
 
 
 #: Half on joining and half at ninety days. Paying the whole bonus on joining
@@ -200,12 +198,9 @@ def check_eligibility(
         return EligibilityCheck(
             False,
             IneligibilityReason.ROLE_NOT_ELIGIBLE,
-            f"This programme covers {sorted(eligible_roles)} and this role is "
-            f"{role_key!r}.",
+            f"This programme covers {sorted(eligible_roles)} and this role is {role_key!r}.",
         )
-    return EligibilityCheck(
-        True, IneligibilityReason.NONE, "Eligible to refer for this role."
-    )
+    return EligibilityCheck(True, IneligibilityReason.NONE, "Eligible to refer for this role.")
 
 
 def programme_terms(
@@ -300,9 +295,7 @@ class ReferralFacts:
     status: ReferralStatus = ReferralStatus.SUBMITTED
 
 
-def resolve_duplicate(
-    existing: list[ReferralFacts], *, incoming: ReferralFacts
-) -> dict[str, Any]:
+def resolve_duplicate(existing: list[ReferralFacts], *, incoming: ReferralFacts) -> dict[str, Any]:
     """First submission wins, by timestamp, with the rule restated.
 
     Not "the better-prepared candidate", not "split it". A tie-break requiring
@@ -367,9 +360,7 @@ def payout_schedule(
         raise ReferralError("A referral bonus of zero is not a bonus.")
     total_share = sum((m.share_percent for m in milestones), Decimal("0"))
     if total_share != Decimal("100"):
-        raise ReferralError(
-            f"The milestones pay {total_share}% rather than 100% of the bonus."
-        )
+        raise ReferralError(f"The milestones pay {total_share}% rather than 100% of the bonus.")
 
     gross = money(bonus_amount)
     rows = []

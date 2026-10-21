@@ -329,8 +329,7 @@ async def create_grant(
             "expires_on": payload.expires_on.isoformat(),
         },
         summary=(
-            f"Payroll access granted to {operator.email} at {firm.name} "
-            f"until {payload.expires_on}"
+            f"Payroll access granted to {operator.email} at {firm.name} until {payload.expires_on}"
         ),
         request=request,
     )

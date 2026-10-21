@@ -73,19 +73,19 @@ class TemplateAssignmentRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         # Priority is unique per cycle. Two rules at the same priority means
         # the winner depends on row order, which is not a decision.
-        UniqueConstraint(
-            "tenant_id", "cycle_id", "priority", name="uq_assignment_rule_priority"
-        ),
+        UniqueConstraint("tenant_id", "cycle_id", "priority", name="uq_assignment_rule_priority"),
     )
 
     cycle_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("appraisal_cycles.id", ondelete="CASCADE"),
         nullable=False,
     )
     # Lower runs first.
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     template_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("competency_templates.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("competency_templates.id", ondelete="RESTRICT"),
         nullable=False,
     )
     # Only the keys the assignment engine knows: grades, department_ids,
@@ -129,12 +129,14 @@ class ProbationReview(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # many times has this been extended" is answerable — which is exactly the
     # question when it has happened three times.
     extends_review_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("probation_reviews.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("probation_reviews.id", ondelete="SET NULL"),
         nullable=True,
     )
     # The confirmation letter, where the outcome was CONFIRM.
     confirmation_letter_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("issued_letters.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -29,9 +29,7 @@ async def my_payslips(user: CurrentUser, session: DbSession) -> list[PayslipSumm
 
 
 @router.get("/my-payslips/{payslip_id}", response_model=PayslipRead)
-async def my_payslip(
-    payslip_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> PayslipRead:
+async def my_payslip(payslip_id: uuid.UUID, user: CurrentUser, session: DbSession) -> PayslipRead:
     """One of your published payslips, with its computation trace."""
     return await payslip_service.my_payslip(session, user, payslip_id)
 
@@ -74,7 +72,6 @@ async def set_payslip_protection(
 async def my_salary(user: CurrentUser, session: DbSession) -> list[SalaryRecordRead]:
     """Your salary history: every revision, newest first."""
     return await payslip_service.my_salary_history(session, user)
-
 
 
 @router.get("/my-total-rewards")

@@ -205,9 +205,7 @@ class GoalCheckInComment(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "goal_check_in_comments"
-    __table_args__ = (
-        Index("ix_goal_check_in_comments_check_in", "tenant_id", "check_in_id"),
-    )
+    __table_args__ = (Index("ix_goal_check_in_comments_check_in", "tenant_id", "check_in_id"),)
 
     check_in_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("goal_check_ins.id", ondelete="CASCADE"), nullable=False

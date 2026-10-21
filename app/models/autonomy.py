@@ -73,9 +73,7 @@ class AgentAutonomyConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "agent_autonomy_configs"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "action_key", name="uq_autonomy_per_action_per_tenant"
-        ),
+        UniqueConstraint("tenant_id", "action_key", name="uq_autonomy_per_action_per_tenant"),
         CheckConstraint(
             "threshold_value IS NULL OR threshold_value >= 0",
             name="ck_autonomy_threshold_non_negative",
@@ -101,14 +99,10 @@ class AgentAutonomyConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     #: Who may approve proposals from this action. Empty means the default HR
     #: approvers.
-    approver_roles: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    approver_roles: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     #: The magnitude below which the action applies itself. Null where the
     #: action does not support one.
-    threshold_value: Mapped[float | None] = mapped_column(
-        Numeric(14, 2), nullable=True
-    )
+    threshold_value: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     #: The unit, copied from the catalogue at write time. Denormalised so a
     #: stored number is never readable without knowing what it counts.
     threshold_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -116,9 +110,7 @@ class AgentAutonomyConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
     configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    configured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    configured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentProposal(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -132,9 +124,7 @@ class AgentProposal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_proposal_queue", "tenant_id", "status", "expires_at"),
         Index("ix_proposal_action", "tenant_id", "action_key", "status"),
-        CheckConstraint(
-            "confidence >= 0 AND confidence <= 1", name="ck_proposal_confidence"
-        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_proposal_confidence"),
         # Non-empty reasoning and at least a citation array. A proposal an
         # approver cannot evaluate gets approved in a batch of forty.
         CheckConstraint("length(reasoning) > 0", name="ck_proposal_has_reasoning"),
@@ -144,13 +134,9 @@ class AgentProposal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     agent_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
     subject_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    subject_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), nullable=False, index=True
-    )
+    subject_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False, index=True)
 
-    proposed_change: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    proposed_change: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     #: Captured at proposal time. By the time somebody wants to revert, the
     #: record has moved on.
     previous_state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
@@ -177,21 +163,18 @@ class AgentProposal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Why it routed the way it did, in words. Shown in the queue so "why did
     #: this need me and that one not" is answerable without reading config.
     routing_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    applied_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: Where an approval or rejection became an eval case. The loop back into
     #: slice 27: a proposal type rejected repeatedly is a defective agent, and
     #: the rejections are the candidate regression cases.
     promoted_to_eval_case_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("eval_cases.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("eval_cases.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -210,16 +193,16 @@ class ProposalReversal(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     proposal_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("agent_proposals.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("agent_proposals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     #: The state restored. Copied from the proposal's `previous_state` at revert
     #: time so the reversal row is self-contained — a reversal that has to read
     #: the proposal to say what it did is one that breaks if the proposal is
     #: ever purged by retention.
-    restored_state: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    restored_state: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     reverted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True

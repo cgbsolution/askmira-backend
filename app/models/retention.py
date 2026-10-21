@@ -83,23 +83,17 @@ class RetentionPolicyRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "retention_policies"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "data_category_key", name="uq_retention_policy_per_category"
-        ),
+        UniqueConstraint("tenant_id", "data_category_key", name="uq_retention_policy_per_category"),
         CheckConstraint(
             "retention_period_months >= statutory_minimum_months",
             name="ck_retention_above_floor",
         ),
-        CheckConstraint(
-            "retention_period_months >= 1", name="ck_retention_positive"
-        ),
+        CheckConstraint("retention_period_months >= 1", name="ck_retention_positive"),
     )
 
     #: A key from `dpdp.categories.CATEGORIES`. Not a foreign key: the catalogue
     #: is code and gets reviewed as code.
-    data_category_key: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    data_category_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     retention_period_months: Mapped[int] = mapped_column(Integer, nullable=False)
     anchor_event: Mapped[RetentionAnchor] = mapped_column(
         Enum(RetentionAnchor, name="retention_anchor"), nullable=False
@@ -109,9 +103,7 @@ class RetentionPolicyRow(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     #: The floor. A database constraint enforces the period is not below it, so
     #: even a direct SQL update cannot produce an unlawful policy.
-    statutory_minimum_months: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False
-    )
+    statutory_minimum_months: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     legal_basis: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -128,9 +120,7 @@ class LegalHold(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "legal_holds"
-    __table_args__ = (
-        Index("ix_legal_hold_open", "tenant_id", "released_at"),
-    )
+    __table_args__ = (Index("ix_legal_hold_open", "tenant_id", "released_at"),)
 
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     #: Empty means all. A hold with every dimension empty freezes the whole
@@ -144,12 +134,8 @@ class LegalHold(Base, UUIDMixin, TenantMixin, TimestampMixin):
     placed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    placed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
-    released_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     released_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -180,21 +166,15 @@ class RetentionRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     records_to_act: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     records_held: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     records_blocked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    counts_by_action: Mapped[dict] = mapped_column(
-        JSONB, default=dict, nullable=False
-    )
+    counts_by_action: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     approval_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
 
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    executed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     #: The plan as it was shown to the approver. Snapshotted, so "what did they
@@ -220,8 +200,10 @@ class RetentionActionLog(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     run_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("retention_runs.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("retention_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     data_category_key: Mapped[str] = mapped_column(String(64), nullable=False)
     record_type: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -239,9 +221,7 @@ class RetentionActionLog(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     #: Hashed. See the class docstring.
-    sample_record_hashes: Mapped[list] = mapped_column(
-        JSONB, default=list, nullable=False
-    )
+    sample_record_hashes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     policy_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
 

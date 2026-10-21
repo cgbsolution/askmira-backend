@@ -229,9 +229,7 @@ def definition_from_json(payload: dict[str, Any]) -> Definition:
                 for f in payload.get("filters", [])
             ),
             group_by=tuple(str(g) for g in payload.get("group_by", [])),
-            sort_by=tuple(
-                (str(pair[0]), str(pair[1])) for pair in payload.get("sort_by", [])
-            ),
+            sort_by=tuple((str(pair[0]), str(pair[1])) for pair in payload.get("sort_by", [])),
             limit=int(payload.get("limit") or compiler.DEFAULT_PAGE_SIZE),
             offset=int(payload.get("offset") or 0),
         )
@@ -284,9 +282,7 @@ async def run_definition(
     await session.flush()
 
     try:
-        compiled = compiler.compile_report(
-            definition, role=role, scope=scope, today=today
-        )
+        compiled = compiler.compile_report(definition, role=role, scope=scope, today=today)
     except (CompileError, SemanticError) as exc:
         run.status = RunStatus.FAILED
         run.error = str(exc)
@@ -325,10 +321,7 @@ async def run_definition(
             )
 
         result = await session.execute(compiled.statement)
-        rows = [
-            [compiler.serialise_value(value) for value in row]
-            for row in result.all()
-        ]
+        rows = [[compiler.serialise_value(value) for value in row] for row in result.all()]
     except DBAPIError as exc:
         run.status = RunStatus.FAILED
         message = str(getattr(exc, "orig", exc))
@@ -399,17 +392,13 @@ async def _load_report(session: AsyncSession, user: User, report_id: uuid.UUID) 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
 
     if report.visibility is ReportVisibility.PRIVATE and report.owner_user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
     if (
         report.visibility is ReportVisibility.SHARED
         and report.owner_user_id != user.id
         and str(user.id) not in [str(u) for u in (report.shared_with_user_ids or [])]
     ):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
     return report
 
 
@@ -513,8 +502,13 @@ async def export_report(
         offset=0,
     )
     result = await run_definition(
-        session, user, full, report=report, today=today,
-        export_format=export_format, request=request,
+        session,
+        user,
+        full,
+        report=report,
+        today=today,
+        export_format=export_format,
+        request=request,
     )
 
     body = to_csv(result["columns"], result["rows"])
@@ -532,9 +526,10 @@ async def export_report(
             "which Excel opens directly."
         ),
         "filename": (
-            f"{(report.name if report else definition.entity_key)}"
-            f"-{datetime.now(UTC):%Y%m%d}.csv"
-        ).replace(" ", "-").lower(),
+            f"{(report.name if report else definition.entity_key)}-{datetime.now(UTC):%Y%m%d}.csv"
+        )
+        .replace(" ", "-")
+        .lower(),
         "content": body,
         # Above this, a synchronous download is a request that times out on a
         # slow connection. The caller queues it and notifies instead.
@@ -547,9 +542,7 @@ async def export_report(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def next_run_after(
-    schedule: ReportSchedule, *, after: datetime
-) -> datetime:
+def next_run_after(schedule: ReportSchedule, *, after: datetime) -> datetime:
     """When this schedule is next due, in its own timezone.
 
     Computed in the recipient's zone and converted, not the other way round. A
@@ -558,9 +551,7 @@ def next_run_after(
     """
     zone = ZoneInfo(schedule.timezone_name)
     local = after.astimezone(zone)
-    candidate = local.replace(
-        hour=schedule.hour_of_day, minute=0, second=0, microsecond=0
-    )
+    candidate = local.replace(hour=schedule.hour_of_day, minute=0, second=0, microsecond=0)
 
     if schedule.cadence is Cadence.DAILY:
         if candidate <= local:
@@ -795,9 +786,7 @@ async def run_schedule(
         changes={
             "recipients": [d["recipient"] for d in deliveries],
             "skipped": skipped,
-            "max_sensitivity": max(
-                (d["max_sensitivity"] for d in deliveries), default="public"
-            ),
+            "max_sensitivity": max((d["max_sensitivity"] for d in deliveries), default="public"),
         },
     )
     return {

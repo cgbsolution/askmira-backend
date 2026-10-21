@@ -213,7 +213,10 @@ async def update_stage(
     request: Request,
 ) -> StageRead:
     stage = await interview_service.update_stage(
-        session, user, stage_id=stage_id, changes=payload.model_dump(exclude_unset=True),
+        session,
+        user,
+        stage_id=stage_id,
+        changes=payload.model_dump(exclude_unset=True),
         request=request,
     )
     await session.commit()
@@ -233,9 +236,7 @@ async def list_stages(
     return [StageRead.model_validate(r) for r in rows]
 
 
-@router.get(
-    "/interviews/panel-people", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.get("/interviews/panel-people", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def panel_people(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     return await interview_service.panel_people(session, user)
 
@@ -245,9 +246,7 @@ async def panel_people(user: CurrentUser, session: DbSession) -> list[dict[str, 
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-@router.get(
-    "/interviews/calendar/status", dependencies=[Depends(require_roles(*PANEL_ROLES))]
-)
+@router.get("/interviews/calendar/status", dependencies=[Depends(require_roles(*PANEL_ROLES))])
 async def calendar_status(user: CurrentUser, session: DbSession) -> dict[str, Any]:
     return await calendar_oauth.connection_status(session, user)
 
@@ -398,9 +397,7 @@ async def bulk_plan(payload: BulkPlanRequest, user: CurrentUser) -> dict[str, An
     return {"slots_generated": len(slots), **plan.as_dict(payload.timezone_name)}
 
 
-@router.post(
-    "/interviews/reminders/run", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.post("/interviews/reminders/run", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def run_reminders(
     user: CurrentUser,
     session: DbSession,
@@ -443,9 +440,7 @@ async def create_self_schedule(
     }
 
 
-@router.get(
-    "/interviews/{interview_id}", dependencies=[Depends(require_roles(*PANEL_ROLES))]
-)
+@router.get("/interviews/{interview_id}", dependencies=[Depends(require_roles(*PANEL_ROLES))])
 async def get_interview(
     interview_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> dict[str, Any]:
@@ -477,9 +472,7 @@ async def reschedule(
     return result
 
 
-@router.post(
-    "/interviews/{interview_id}/cancel", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.post("/interviews/{interview_id}/cancel", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def cancel(
     interview_id: uuid.UUID,
     payload: ReasonRequest,

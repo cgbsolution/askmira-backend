@@ -108,12 +108,18 @@ async def create_rule(
 
 @router.patch("/rules/{rule_id}", dependencies=[Depends(require_roles(UserRole.ADMIN))])
 async def update_rule(
-    rule_id: uuid.UUID, payload: RuleUpdate, user: CurrentUser, session: DbSession,
+    rule_id: uuid.UUID,
+    payload: RuleUpdate,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
     """Requests already submitted keep the chain they were given."""
     result = await rules.update_rule(
-        session, user, rule_id, payload.model_dump(mode="json", exclude_unset=True),
+        session,
+        user,
+        rule_id,
+        payload.model_dump(mode="json", exclude_unset=True),
         request=request,
     )
     await session.commit()
@@ -151,8 +157,13 @@ async def create_delegation(
 ) -> dict[str, Any]:
     """Hand your approvals to somebody while you are away."""
     result = await rules.create_delegation(
-        session, user, to_user_id=payload.to_user_id, starts_on=payload.starts_on,
-        ends_on=payload.ends_on, reason=payload.reason, from_user_id=payload.from_user_id,
+        session,
+        user,
+        to_user_id=payload.to_user_id,
+        starts_on=payload.starts_on,
+        ends_on=payload.ends_on,
+        reason=payload.reason,
+        from_user_id=payload.from_user_id,
         request=request,
     )
     await session.commit()

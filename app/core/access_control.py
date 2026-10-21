@@ -62,9 +62,7 @@ async def load_request_access(request: Request, session: AsyncSession, user: Use
     if area is not None:
         rights = await rights_for(session, user, area)
         if rights is not None:
-            user.hr_allowed = rights.allows(
-                areas.required_right(request.method, request.url.path)
-            )
+            user.hr_allowed = rights.allows(areas.required_right(request.method, request.url.path))
 
     from app.models.access import AdminScope
     from app.models.employee import Employee

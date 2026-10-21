@@ -390,6 +390,4 @@ async def add_standard_categories(
         await session.commit()
         for category in created:
             await session.refresh(category)
-    return StandardCategoriesResult(
-        created=await _reads(session, user, created), skipped=skipped
-    )
+    return StandardCategoriesResult(created=await _reads(session, user, created), skipped=skipped)

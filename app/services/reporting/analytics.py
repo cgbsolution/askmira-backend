@@ -238,9 +238,7 @@ def month_ends(today: date, months: int) -> list[date]:
 def _pct(numerator: Decimal, denominator: Decimal) -> Decimal | None:
     if denominator <= 0:
         return None
-    return (numerator / denominator * Decimal(100)).quantize(
-        Decimal("0.1"), rounding=ROUND_HALF_UP
-    )
+    return (numerator / denominator * Decimal(100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
 async def _people(session: AsyncSession, user: User) -> list[Employee]:
@@ -355,9 +353,7 @@ async def attrition(
         "exits": len(exits),
         "voluntary_exits": len(voluntary_exits),
         "attrition_percent": str(_pct(Decimal(len(exits)), average) or "0.0"),
-        "voluntary_attrition_percent": str(
-            _pct(Decimal(len(voluntary_exits)), average) or "0.0"
-        ),
+        "voluntary_attrition_percent": str(_pct(Decimal(len(voluntary_exits)), average) or "0.0"),
         "basis": (
             f"Exits from {window_start:%d %b %Y} to {window_end:%d %b %Y} over the average of "
             "each month's opening and closing headcount."
@@ -532,9 +528,7 @@ async def absence_scores(session: AsyncSession, user: User, *, today: date) -> d
     A score, so it comes with both of its inputs and the formula; it is
     arithmetic on the attendance record, not a prediction.
     """
-    people = {
-        p.id: p for p in await _people(session, user) if p.status != EmploymentStatus.EXITED
-    }
+    people = {p.id: p for p in await _people(session, user) if p.status != EmploymentStatus.EXITED}
     absence = await _unplanned_absence(session, user, list(people), today)
     rows = []
     for employee_id, (spells, days) in absence.items():
@@ -575,7 +569,8 @@ async def absence_signals(session: AsyncSession, user: User, *, today: date) -> 
     people = [
         p
         for p in everyone
-        if p.status != EmploymentStatus.EXITED and p.date_of_joining
+        if p.status != EmploymentStatus.EXITED
+        and p.date_of_joining
         and p.date_of_joining <= today - timedelta(days=30)
     ]
     if not people:
@@ -892,9 +887,7 @@ def _attrition_signals(
                         f"Final review score fell by {rules.rating_drop.normalize()} or more "
                         "between the last two reviews."
                     ),
-                    "evidence": [
-                        f"Final score {previous.normalize()} then {latest.normalize()}"
-                    ],
+                    "evidence": [f"Final score {previous.normalize()} then {latest.normalize()}"],
                 }
             )
     if rules.no_role_change_months > 0 and person.date_of_joining is not None:
@@ -1008,9 +1001,19 @@ async def unpin_report(session: AsyncSession, user: User, widget_id: uuid.UUID) 
 # ── The weekly digest: signals pushed, not only waited for ──────────────────
 
 #: Pay is payroll data; the digest goes to sub-admins and managers too.
-DIGEST_KINDS = frozenset({"burnout_risk", "no_leave", "bridge_absences", "unpaid_absence",
-                          "frequent_absence", "team_exits", "manager_change", "rating_drop",
-                          "no_role_change"})
+DIGEST_KINDS = frozenset(
+    {
+        "burnout_risk",
+        "no_leave",
+        "bridge_absences",
+        "unpaid_absence",
+        "frequent_absence",
+        "team_exits",
+        "manager_change",
+        "rating_drop",
+        "no_role_change",
+    }
+)
 DIGEST_WEEKDAY = 1  # Monday
 
 register_event(

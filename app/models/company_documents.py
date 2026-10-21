@@ -86,7 +86,9 @@ class CompanyDocumentAcknowledgement(Base, UUIDMixin, TenantMixin, TimestampMixi
         index=True,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(

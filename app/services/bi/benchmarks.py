@@ -162,14 +162,8 @@ def aggregate(
             "worth saying rather than returning a silent empty cell."
         )
 
-    relevant = [
-        c
-        for c in contributions
-        if c.metric == metric and c.dimension_key == dimension_key
-    ]
-    intruders = sorted(
-        {c.tenant_id for c in relevant if c.tenant_id not in consenting_tenant_ids}
-    )
+    relevant = [c for c in contributions if c.metric == metric and c.dimension_key == dimension_key]
+    intruders = sorted({c.tenant_id for c in relevant if c.tenant_id not in consenting_tenant_ids})
     if intruders:
         raise BenchmarkError(
             f"{len(intruders)} tenant(s) that have not opted in appear in this "
@@ -228,8 +222,7 @@ def aggregate(
     # distribution by its headcount - that is the same identification problem
     # arriving through the arithmetic.
     per_company = [
-        money(statistics.fmean([float(c.value) for c in rows]))
-        for rows in by_tenant.values()
+        money(statistics.fmean([float(c.value) for c in rows])) for rows in by_tenant.values()
     ]
     p25, p50, p75 = _quartiles(per_company)
 
@@ -272,9 +265,7 @@ class Position:
         }
 
 
-def position_against(
-    *, own_value: Decimal, cell: BenchmarkCell
-) -> Position:
+def position_against(*, own_value: Decimal, cell: BenchmarkCell) -> Position:
     """Where a company sits in the distribution, with the sample size attached.
 
     Percentile position rather than a distance from the average. "The market

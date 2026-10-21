@@ -377,9 +377,7 @@ async def _offers(session: AsyncSession, user: User) -> list[dict[str, Any]]:
                 select(OfferApproval)
                 .where(
                     OfferApproval.offer_id.in_([o.id for o in offers]),
-                    OfferApproval.decision.in_(
-                        [ApprovalDecision.PENDING, ApprovalDecision.VOIDED]
-                    ),
+                    OfferApproval.decision.in_([ApprovalDecision.PENDING, ApprovalDecision.VOIDED]),
                 )
                 .order_by(OfferApproval.sequence),
                 OfferApproval,
@@ -577,8 +575,13 @@ SOURCES: tuple[Source, ...] = (
     # Comp-off approvers are line managers or HR; the Time page lists them for
     # anyone named.
     Source(
-        "leave_comp_off", "Comp-off claims", "/time", permissions.HR_ROLES,
-        comp_off_service.approval_items, module="leave", line_managers=True,
+        "leave_comp_off",
+        "Comp-off claims",
+        "/time",
+        permissions.HR_ROLES,
+        comp_off_service.approval_items,
+        module="leave",
+        line_managers=True,
     ),
     # A rule may name anybody as an approver, so these are open to everyone
     # and each queue shows only what is waiting on the caller.
@@ -591,86 +594,155 @@ SOURCES: tuple[Source, ...] = (
         module="leave",
     ),
     Source(
-        "overtime", "Overtime", "/time/overtime", permissions.HR_ROLES, _overtime,
-        module="leave", line_managers=True,
+        "overtime",
+        "Overtime",
+        "/time/overtime",
+        permissions.HR_ROLES,
+        _overtime,
+        module="leave",
+        line_managers=True,
     ),
     Source(
-        "shift_swap", "Shift swaps", "/time/attendance-review?tab=swaps", permissions.HR_ROLES,
-        _shift_swaps, module="leave", line_managers=True,
+        "shift_swap",
+        "Shift swaps",
+        "/time/attendance-review?tab=swaps",
+        permissions.HR_ROLES,
+        _shift_swaps,
+        module="leave",
+        line_managers=True,
     ),
     Source("timesheet", "Timesheets", "/time/timesheets/approvals", EVERYONE, _timesheets),
     Source(
-        "payroll_adjustment", "Payroll adjustments", "/payroll/adjustments", ADMIN_ROLES,
-        _payroll_adjustments, module="payroll",
+        "payroll_adjustment",
+        "Payroll adjustments",
+        "/payroll/adjustments",
+        ADMIN_ROLES,
+        _payroll_adjustments,
+        module="payroll",
     ),
     Source(
-        "expense_claim", "Expense claims", "/expenses/review", permissions.HR_ROLES,
+        "expense_claim",
+        "Expense claims",
+        "/expenses/review",
+        permissions.HR_ROLES,
         _expense_claims,
     ),
     Source("travel_request", "Travel requests", "/expenses/review", permissions.HR_ROLES, _travel),
     # The line manager's stage, before finance: the caller's own reporting line.
     Source(
-        "expense_claim_manager", "Team expense claims", "/expenses/team",
-        permissions.HR_ROLES, expense_inbox.manager_claim_items, line_managers=True,
+        "expense_claim_manager",
+        "Team expense claims",
+        "/expenses/team",
+        permissions.HR_ROLES,
+        expense_inbox.manager_claim_items,
+        line_managers=True,
     ),
     Source(
-        "travel_request_manager", "Team travel requests", "/expenses/team",
-        permissions.HR_ROLES, expense_inbox.manager_travel_items, line_managers=True,
+        "travel_request_manager",
+        "Team travel requests",
+        "/expenses/team",
+        permissions.HR_ROLES,
+        expense_inbox.manager_travel_items,
+        line_managers=True,
     ),
     Source(
-        "requisition", "Requisitions", "/hiring", permissions.HR_ROLES, _requisitions,
+        "requisition",
+        "Requisitions",
+        "/hiring",
+        permissions.HR_ROLES,
+        _requisitions,
         module="hiring",
     ),
     Source("offer", "Offers", "/hiring/offers", permissions.HR_ROLES, _offers, module="hiring"),
     Source("lifecycle_event", "Lifecycle events", "/people/lifecycle", EVERYONE, _lifecycle),
     Source("loan", "Loans", "/payroll/loans", ADMIN_ROLES, _loans, module="payroll"),
     Source(
-        "settlement", "Full & final settlements", "/payroll/settlements", ADMIN_ROLES,
-        _settlements, module="payroll",
+        "settlement",
+        "Full & final settlements",
+        "/payroll/settlements",
+        ADMIN_ROLES,
+        _settlements,
+        module="payroll",
     ),
     Source(
-        "payroll_run", "Payroll runs to approve", "/payroll", ADMIN_ROLES,
-        payroll_inbox.run_approval_items, module="payroll",
+        "payroll_run",
+        "Payroll runs to approve",
+        "/payroll",
+        ADMIN_ROLES,
+        payroll_inbox.run_approval_items,
+        module="payroll",
     ),
     Source(
-        "tax_proof", "Tax proofs to verify", "/payroll/tax-proofs", permissions.HR_ROLES,
-        payroll_inbox.tax_proof_items, module="payroll",
+        "tax_proof",
+        "Tax proofs to verify",
+        "/payroll/tax-proofs",
+        permissions.HR_ROLES,
+        payroll_inbox.tax_proof_items,
+        module="payroll",
     ),
     Source(
-        "reimbursement_claim", "Reimbursement bills", "/payroll/loans", permissions.HR_ROLES,
-        payroll_inbox.reimbursement_claim_items, module="payroll",
+        "reimbursement_claim",
+        "Reimbursement bills",
+        "/payroll/loans",
+        permissions.HR_ROLES,
+        payroll_inbox.reimbursement_claim_items,
+        module="payroll",
     ),
     Source(
         "retention_run", "Retention runs", "/compliance/retention", ADMIN_ROLES, _retention_runs
     ),
     Source(
-        "data_principal_request", "Data protection requests", "/compliance",
-        permissions.HR_ROLES, _rights_requests,
-    ),
-    Source("agent_proposal", "AI proposals", "/compliance/ai", permissions.HR_ROLES,
-           _agent_proposals),
-    Source(
-        "asset_request", "Asset requests", "/assets/requests", permissions.HR_ROLES,
-        assets_service.approvals_inbox, line_managers=True,
+        "data_principal_request",
+        "Data protection requests",
+        "/compliance",
+        permissions.HR_ROLES,
+        _rights_requests,
     ),
     Source(
-        "profile_change", "Profile changes", "/people/change-requests", permissions.HR_ROLES,
+        "agent_proposal", "AI proposals", "/compliance/ai", permissions.HR_ROLES, _agent_proposals
+    ),
+    Source(
+        "asset_request",
+        "Asset requests",
+        "/assets/requests",
+        permissions.HR_ROLES,
+        assets_service.approvals_inbox,
+        line_managers=True,
+    ),
+    Source(
+        "profile_change",
+        "Profile changes",
+        "/people/change-requests",
+        permissions.HR_ROLES,
         profile_service.inbox_items,
     ),
     Source(
-        "document_verification", "Documents to verify", "/docs", permissions.HR_ROLES,
+        "document_verification",
+        "Documents to verify",
+        "/docs",
+        permissions.HR_ROLES,
         documents_vault.pending_verification_items,
     ),
     Source(
-        "resignation", "Resignations", "/people/exits", permissions.HR_ROLES,
-        resignation_service.inbox_items, line_managers=True,
+        "resignation",
+        "Resignations",
+        "/people/exits",
+        permissions.HR_ROLES,
+        resignation_service.inbox_items,
+        line_managers=True,
     ),
     Source(
-        "clearance_task", "Clearance tasks", "/people/clearance", EVERYONE,
+        "clearance_task",
+        "Clearance tasks",
+        "/people/clearance",
+        EVERYONE,
         clearance_tasks.inbox_items,
     ),
     Source(
-        "feedback_request", "Feedback to give", "/performance/feedback?tab=give", EVERYONE,
+        "feedback_request",
+        "Feedback to give",
+        "/performance/feedback?tab=give",
+        EVERYONE,
         feedback_service.inbox_items,
     ),
 )
@@ -702,7 +774,10 @@ async def inbox(session: AsyncSession, user: User) -> ApprovalInboxRead:
         except HTTPException as exc:
             sources.append(
                 ApprovalSourceRead(
-                    key=source.key, label=source.label, count=0, available=False,
+                    key=source.key,
+                    label=source.label,
+                    count=0,
+                    available=False,
                     note=str(exc.detail),
                 )
             )
@@ -711,7 +786,10 @@ async def inbox(session: AsyncSession, user: User) -> ApprovalInboxRead:
             logger.exception("Approvals source %s could not be read", source.key)
             sources.append(
                 ApprovalSourceRead(
-                    key=source.key, label=source.label, count=0, available=False,
+                    key=source.key,
+                    label=source.label,
+                    count=0,
+                    available=False,
                     note="This queue could not be read just now.",
                 )
             )

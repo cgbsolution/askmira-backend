@@ -13,8 +13,7 @@ ENDPOINTS: dict[str, str] = {
     "GET /recruiting/posture": "reference: what the module enforces.",
     "GET /recruiting/interviewer-framing": "reference: static guidance.",
     "GET /recruiting/open-roles": (
-        "reference: open roles - title, department, location, openings. No budget, "
-        "no candidates."
+        "reference: open roles - title, department, location, openings. No budget, no candidates."
     ),
     "GET /recruiting/referral-programmes": (
         "reference: active referral programme terms, identical for everyone."

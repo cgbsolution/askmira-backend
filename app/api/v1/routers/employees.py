@@ -201,17 +201,13 @@ async def upload_my_photo(
 
 
 @router.delete("/me/photo", response_model=EmployeeRead)
-async def remove_my_photo(
-    user: CurrentUser, session: DbSession, request: Request
-) -> EmployeeRead:
+async def remove_my_photo(user: CurrentUser, session: DbSession, request: Request) -> EmployeeRead:
     employee = await employee_service.get_own_employee(session, user)
     saved = await profile_service.remove_photo(session, user, employee.id, request=request)
     return await employee_service.employee_view(session, user, saved)
 
 
-@router.get(
-    "/change-requests", response_model=list[ChangeRequestRead], dependencies=HR_ONLY
-)
+@router.get("/change-requests", response_model=list[ChangeRequestRead], dependencies=HR_ONLY)
 async def list_change_requests(
     user: CurrentUser,
     session: DbSession,
@@ -265,9 +261,7 @@ async def withdraw_change_request(
 ) -> ChangeRequestRead:
     """Take back your own pending request."""
     _ = user.employee_id  # only the requester; anybody else's request is a 404
-    return await profile_service.withdraw_change_request(
-        session, user, request_id, request=request
-    )
+    return await profile_service.withdraw_change_request(session, user, request_id, request=request)
 
 
 @router.get("/{employee_id}", response_model=EmployeeRead)
@@ -399,9 +393,7 @@ async def update_employee(
     session: DbSession,
     request: Request,
 ) -> EmployeeRead:
-    employee = await employee_service.update_employee(
-        session, user, employee_id, payload, request
-    )
+    employee = await employee_service.update_employee(session, user, employee_id, payload, request)
     return EmployeeRead.model_validate(employee)
 
 

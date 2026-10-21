@@ -253,9 +253,7 @@ class Escalation:
         }
 
 
-def escalations(
-    open_requests: list[tuple[str, RequestClock]], *, today: date
-) -> list[Escalation]:
+def escalations(open_requests: list[tuple[str, RequestClock]], *, today: date) -> list[Escalation]:
     """Which open requests need escalating, worst first.
 
     Overdue ones sort ahead of approaching ones, and among overdue ones the
@@ -345,9 +343,7 @@ class CategoryDecision:
             "category_name": self.category_name,
             "outcome": self.outcome.value,
             "explanation": self.explanation,
-            "retained_until": (
-                self.retained_until.isoformat() if self.retained_until else None
-            ),
+            "retained_until": (self.retained_until.isoformat() if self.retained_until else None),
             "statutory_reference": self.statutory_reference,
         }
 
@@ -371,9 +367,7 @@ class ErasurePlan:
 
     @property
     def purged(self) -> tuple[CategoryDecision, ...]:
-        return tuple(
-            d for d in self.decisions if d.outcome is ErasureOutcome.PURGED
-        )
+        return tuple(d for d in self.decisions if d.outcome is ErasureOutcome.PURGED)
 
     @property
     def retained(self) -> tuple[CategoryDecision, ...]:
@@ -389,9 +383,7 @@ class ErasurePlan:
             "is_complete": self.is_complete,
             "purged_count": len(self.purged),
             "retained_count": len(self.retained),
-            "review_again_on": (
-                self.review_again_on.isoformat() if self.review_again_on else None
-            ),
+            "review_again_on": (self.review_again_on.isoformat() if self.review_again_on else None),
             "summary": self.summary,
             "decisions": [d.as_dict() for d in self.decisions],
         }

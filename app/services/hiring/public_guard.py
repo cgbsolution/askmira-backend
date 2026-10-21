@@ -109,8 +109,7 @@ def throttle(request: Request, limit: Limit, *, scope: str = "") -> None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
-                "Too many attempts from this connection. Please wait a few minutes and "
-                "try again."
+                "Too many attempts from this connection. Please wait a few minutes and try again."
             ),
             headers={"Retry-After": str(retry_after)},
         )

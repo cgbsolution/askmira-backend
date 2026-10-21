@@ -101,9 +101,7 @@ class EventType(str, enum.Enum):
 CHANGED_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.CONFIRMATION: frozenset({"status", "probation_end_date"}),
     EventType.PROBATION_EXTENSION: frozenset({"probation_end_date"}),
-    EventType.TRANSFER: frozenset(
-        {"location_id", "department_id", "manager_id", "designation"}
-    ),
+    EventType.TRANSFER: frozenset({"location_id", "department_id", "manager_id", "designation"}),
     EventType.PROMOTION: frozenset({"grade", "designation", "manager_id"}),
     EventType.DEMOTION: frozenset({"grade", "designation"}),
     EventType.REDESIGNATION: frozenset({"designation"}),
@@ -291,8 +289,7 @@ def consequences_of(facts: EventFacts) -> list[Consequence]:
                     "holiday, or vice versa, needs looking at."
                 ),
                 action_required=(
-                    "Review any approved leave between the effective date and the end "
-                    "of the year."
+                    "Review any approved leave between the effective date and the end of the year."
                 ),
             )
         )
@@ -460,9 +457,7 @@ def describe(facts: EventFacts, *, today: date) -> dict[str, Any]:
         "reason": facts.reason,
         "needs_a_letter": facts.event_type.needs_a_letter,
         "consequences": [c.as_dict() for c in consequences],
-        "payroll_consequences": sum(
-            1 for c in consequences if c.severity is Severity.PAYROLL
-        ),
+        "payroll_consequences": sum(1 for c in consequences if c.severity is Severity.PAYROLL),
     }
 
 

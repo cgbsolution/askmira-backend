@@ -90,13 +90,15 @@ class Cadence:
                 slot -= timedelta(days=1)
             return slot.astimezone(UTC)
         if self.kind is CadenceKind.MONTHLY:
-            slot = local.replace(
-                day=self.day, hour=self.hour, minute=0, second=0, microsecond=0
-            )
+            slot = local.replace(day=self.day, hour=self.hour, minute=0, second=0, microsecond=0)
             if slot > local:
-                year, month = (slot.year, slot.month - 1) if slot.month > 1 else (
-                    slot.year - 1,
-                    12,
+                year, month = (
+                    (slot.year, slot.month - 1)
+                    if slot.month > 1
+                    else (
+                        slot.year - 1,
+                        12,
+                    )
                 )
                 slot = slot.replace(year=year, month=month)
             return slot.astimezone(UTC)
@@ -105,9 +107,7 @@ class Cadence:
     def is_due(self, *, last_started: datetime | None, now: datetime) -> bool:
         """Whether a run should start now, given when the last one started."""
         if self.kind is CadenceKind.INTERVAL:
-            return last_started is None or now - last_started >= timedelta(
-                minutes=self.minutes
-            )
+            return last_started is None or now - last_started >= timedelta(minutes=self.minutes)
         slot = self.latest_slot(now)
         assert slot is not None
         return last_started is None or last_started < slot

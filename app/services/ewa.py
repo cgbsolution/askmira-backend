@@ -100,8 +100,7 @@ async def set_policy(
         actor=user,
         changes={"before": before.model_dump(mode="json"), "after": policy.model_dump(mode="json")},
         summary=(
-            f"Earned wage access {'on' if policy.enabled else 'off'}, "
-            f"up to {policy.max_percent}%"
+            f"Earned wage access {'on' if policy.enabled else 'off'}, up to {policy.max_percent}%"
         ),
         request=request,
     )

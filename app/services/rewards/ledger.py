@@ -341,26 +341,16 @@ def movement_report(
     def in_period(e: LedgerEntry) -> bool:
         return period_start <= e.occurred_at.date() <= period_end
 
-    opening = sum(
-        e.signed_points for e in entries if e.occurred_at.date() < period_start
-    )
+    opening = sum(e.signed_points for e in entries if e.occurred_at.date() < period_start)
     during = [e for e in entries if in_period(e)]
 
-    awarded = sum(
-        e.points for e in during if e.transaction_type is TransactionType.AWARDED
-    )
-    redeemed = sum(
-        e.points for e in during if e.transaction_type is TransactionType.REDEEMED
-    )
-    expired = sum(
-        e.points for e in during if e.transaction_type is TransactionType.EXPIRED
-    )
+    awarded = sum(e.points for e in during if e.transaction_type is TransactionType.AWARDED)
+    redeemed = sum(e.points for e in during if e.transaction_type is TransactionType.REDEEMED)
+    expired = sum(e.points for e in during if e.transaction_type is TransactionType.EXPIRED)
     reversed_points = sum(
         e.points for e in during if e.transaction_type is TransactionType.REVERSED
     )
-    adjusted = sum(
-        e.points for e in during if e.transaction_type is TransactionType.ADJUSTED
-    )
+    adjusted = sum(e.points for e in during if e.transaction_type is TransactionType.ADJUSTED)
 
     closing = opening + awarded - redeemed - expired - reversed_points + adjusted
     derived_closing = opening + sum(e.signed_points for e in during)
@@ -405,9 +395,7 @@ AGEING_BUCKETS: tuple[tuple[str, int, int], ...] = (
 )
 
 
-def ageing(
-    entries: list[LedgerEntry], *, as_of: date
-) -> dict[str, Any]:
+def ageing(entries: list[LedgerEntry], *, as_of: date) -> dict[str, Any]:
     """Unredeemed points by the age of the award that issued them.
 
     Bucketed rather than listed: the question is "how much of this is about to
@@ -461,15 +449,9 @@ def expected_redemption_rate(
     redeemed; counting them as consumption would make an unpopular programme
     look like a well-used one.
     """
-    awarded = sum(
-        e.points for e in entries if e.transaction_type is TransactionType.AWARDED
-    )
-    redeemed = sum(
-        e.points for e in entries if e.transaction_type is TransactionType.REDEEMED
-    )
-    expired = sum(
-        e.points for e in entries if e.transaction_type is TransactionType.EXPIRED
-    )
+    awarded = sum(e.points for e in entries if e.transaction_type is TransactionType.AWARDED)
+    redeemed = sum(e.points for e in entries if e.transaction_type is TransactionType.REDEEMED)
+    expired = sum(e.points for e in entries if e.transaction_type is TransactionType.EXPIRED)
 
     if awarded < minimum_points:
         return {
@@ -499,9 +481,7 @@ def expected_redemption_rate(
     }
 
 
-def by_group(
-    entries: list[LedgerEntry], *, key: str = "department_key"
-) -> dict[str, Any]:
+def by_group(entries: list[LedgerEntry], *, key: str = "department_key") -> dict[str, Any]:
     """Outstanding liability per department or cost centre.
 
     Finance allocates the provision, so the split has to exist. Grouped on the
@@ -569,9 +549,7 @@ class ExpiryPolicy:
                 "was not real."
             )
         if self.enabled and self.notify_days_before < 7:
-            raise LedgerError(
-                "A warning less than a week before expiry is not a warning."
-            )
+            raise LedgerError("A warning less than a week before expiry is not a warning.")
 
 
 def expiring_soon(
@@ -602,9 +580,7 @@ def expiring_soon(
                     "points": lot["remaining_points"],
                     "rupees": lot["rupees"],
                     "days_left": days_left,
-                    "expires_on": (
-                        awarded_on.toordinal() + policy.expire_after_days
-                    ),
+                    "expires_on": (awarded_on.toordinal() + policy.expire_after_days),
                 }
             )
     for row in out:

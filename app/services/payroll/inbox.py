@@ -61,9 +61,7 @@ async def run_approval_items(session: AsyncSession, user: User) -> list[dict[str
         items.append(
             {
                 "id": run.id,
-                "title": (
-                    f"Payroll for {calendar.month_name[run.period_month]} {run.period_year}"
-                ),
+                "title": (f"Payroll for {calendar.month_name[run.period_month]} {run.period_year}"),
                 "subject_name": entity_name,
                 "detail": detail,
                 "submitted_at": run.processed_at or run.created_at,

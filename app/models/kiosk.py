@@ -20,9 +20,7 @@ from app.models.base import Base, TenantMixin, TimestampMixin, UUIDMixin
 
 class KioskPin(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "kiosk_pins"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "employee_id", name="uq_kiosk_pin_employee"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "employee_id", name="uq_kiosk_pin_employee"),)
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),

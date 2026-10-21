@@ -25,7 +25,9 @@ class UserMfa(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "user_mfa"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         unique=True,
     )
     secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False)

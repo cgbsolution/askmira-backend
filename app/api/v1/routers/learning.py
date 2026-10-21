@@ -80,9 +80,7 @@ async def complete(
 
 
 @router.get("/assignments/{assignment_id}/certificate", response_model=None)
-async def certificate(
-    assignment_id: uuid.UUID, user: CurrentUser, session: DbSession
-) -> Response:
+async def certificate(assignment_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
     data, name = await learning.certificate_pdf(session, user, assignment_id)
     return Response(
         content=data,

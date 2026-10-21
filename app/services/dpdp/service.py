@@ -92,16 +92,12 @@ def current_schema_shape() -> dict[str, tuple[str, ...]]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def get_configuration(
-    session: AsyncSession, user: User
-) -> DpdpConfiguration | None:
+async def get_configuration(session: AsyncSession, user: User) -> DpdpConfiguration | None:
     stmt = tenant_scoped(select(DpdpConfiguration), DpdpConfiguration, user)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def require_configuration(
-    session: AsyncSession, user: User
-) -> DpdpConfiguration:
+async def require_configuration(session: AsyncSession, user: User) -> DpdpConfiguration:
     """The tenant's DPDP settings, or a 422 saying what is missing.
 
     Refuses rather than defaulting. A grievance contact is the address every
@@ -135,9 +131,7 @@ async def upsert_configuration(
     request: Request | None = None,
 ) -> DpdpConfiguration:
     if not grievance_contact.strip():
-        raise _bad_request(
-            "A grievance contact is required — it is printed in every notice."
-        )
+        raise _bad_request("A grievance contact is required — it is printed in every notice.")
 
     # Validate every SLA against the statutory outer bound before writing. A
     # configuration screen must not be able to commit a tenant to a response
@@ -157,8 +151,7 @@ async def upsert_configuration(
         Language(default_notice_language)
     except ValueError as exc:
         raise _bad_request(
-            f"{default_notice_language!r} is not English or an Eighth Schedule "
-            "language."
+            f"{default_notice_language!r} is not English or an Eighth Schedule language."
         ) from exc
 
     config = await get_configuration(session, user)
@@ -445,9 +438,7 @@ async def consent_summary(session: AsyncSession, user: User) -> dict[str, Any]:
     for spec in consent_engine.PURPOSES.values():
         if not spec.requires_consent:
             continue
-        answers = [
-            granted for (key, _pid), granted in latest.items() if key == spec.key
-        ]
+        answers = [granted for (key, _pid), granted in latest.items() if key == spec.key]
         yes = sum(1 for a in answers if a)
         no = len(answers) - yes
         out.append(
@@ -475,9 +466,7 @@ async def notice_for(
     try:
         chosen = Language(language or config.default_notice_language)
     except ValueError as exc:
-        raise _bad_request(
-            f"{language!r} is not English or an Eighth Schedule language."
-        ) from exc
+        raise _bad_request(f"{language!r} is not English or an Eighth Schedule language.") from exc
 
     notice = render_notice(
         language=chosen,
@@ -553,8 +542,7 @@ async def raise_request(
         entity_id=row.id,
         actor=user,
         summary=(
-            f"{request_type.value} request from {principal_label}, due "
-            f"{clock.due_by.isoformat()}."
+            f"{request_type.value} request from {principal_label}, due {clock.due_by.isoformat()}."
         ),
         request=request,
     )
@@ -583,11 +571,7 @@ async def list_requests(
                 ]
             )
         )
-    rows = (
-        (await session.execute(stmt.order_by(DataPrincipalRequest.due_by)))
-        .scalars()
-        .all()
-    )
+    rows = (await session.execute(stmt.order_by(DataPrincipalRequest.due_by))).scalars().all()
     as_of = today or datetime.now(UTC).date()
 
     open_clocks: list[tuple[str, rights_engine.RequestClock]] = []
@@ -614,9 +598,7 @@ async def list_requests(
                 "type": row.request_type.value,
                 "status": row.status.value,
                 "details": row.details,
-                "responded_at": (
-                    row.responded_at.isoformat() if row.responded_at else None
-                ),
+                "responded_at": (row.responded_at.isoformat() if row.responded_at else None),
                 "rejection_reason": row.rejection_reason,
                 "clock": clock.as_dict(today=as_of),
             }
@@ -624,9 +606,7 @@ async def list_requests(
 
     return {
         "requests": payload,
-        "escalations": [
-            e.as_dict() for e in rights_engine.escalations(open_clocks, today=as_of)
-        ],
+        "escalations": [e.as_dict() for e in rights_engine.escalations(open_clocks, today=as_of)],
     }
 
 
@@ -748,9 +728,7 @@ async def build_access_export(
         )
 
     employee_id, login_id = await _principal_identities(session, user, principal_id)
-    contents = await collect_personal_data(
-        session, user, employee_id=employee_id, user_id=login_id
-    )
+    contents = await collect_personal_data(session, user, employee_id=employee_id, user_id=login_id)
 
     return {
         "principal_id": str(principal_id),
@@ -871,10 +849,7 @@ async def resolve_request(
             "request is permitted; refusing it without a reason they can read "
             "is not."
         )
-    if (
-        new_status is DprRequestStatus.PARTIALLY_COMPLETED
-        and not response_payload
-    ):
+    if new_status is DprRequestStatus.PARTIALLY_COMPLETED and not response_payload:
         raise _bad_request(
             "A partially completed request has to carry the response payload "
             "saying which parts were honoured and which were not, and under "
@@ -1225,9 +1200,7 @@ async def tenant_compliance_surface(
         },
         "configured": config is not None,
         "grievance_contact": config.grievance_contact if config else None,
-        "record_of_processing": [
-            a.as_dict() for a in record_of_processing(schema)
-        ],
+        "record_of_processing": [a.as_dict() for a in record_of_processing(schema)],
         "lawful_basis_breakdown": lawful_basis_breakdown(schema),
         "inventory": build_inventory(schema).as_dict(),
         "classification_gaps": [str(g) for g in coverage_gaps(schema)],

@@ -365,14 +365,20 @@ async def list_connections(session: AsyncSession, user: User) -> list[dict[str, 
             )
         )
     ).all()
-    names = {
-        c.client_id: c.client_name
-        for c in (
-            await session.scalars(
-                select(OAuthClient).where(OAuthClient.client_id.in_({g.client_id for g in grants}))
-            )
-        ).all()
-    } if grants else {}
+    names = (
+        {
+            c.client_id: c.client_name
+            for c in (
+                await session.scalars(
+                    select(OAuthClient).where(
+                        OAuthClient.client_id.in_({g.client_id for g in grants})
+                    )
+                )
+            ).all()
+        }
+        if grants
+        else {}
+    )
     return [
         {
             "id": str(g.id),

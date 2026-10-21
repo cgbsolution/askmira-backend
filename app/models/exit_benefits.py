@@ -99,9 +99,7 @@ class GratuityConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # served. Null disables the treatment entirely. High Courts have differed
     # on whether 240 days of a fifth year completes it, so this is a setting a
     # tenant's counsel decides, not a position this codebase takes.
-    eligibility_days_in_final_year: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    eligibility_days_in_final_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Component codes that constitute "wages" — conventionally BASIC + DA, but
     # the mapping is SME-signed rather than assumed.
@@ -125,9 +123,7 @@ class GratuityConfig(Base, UUIDMixin, TenantMixin, TimestampMixin):
         nullable=False,
     )
     # Months beyond which unpaid leave breaks continuous service.
-    unpaid_leave_break_threshold_days: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    unpaid_leave_break_threshold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     include_notice_period_in_service: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
@@ -158,14 +154,14 @@ class GratuityAccrual(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "gratuity_accruals"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "employee_id", "as_of_date", name="uq_gratuity_accrual_date"
-        ),
+        UniqueConstraint("tenant_id", "employee_id", "as_of_date", name="uq_gratuity_accrual_date"),
     )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
@@ -227,9 +223,7 @@ class EncashmentPolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     retirement_exemption_ceiling: Mapped[float | None] = mapped_column(
         Numeric(14, 2), nullable=True
     )
-    in_service_fully_taxable: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    in_service_fully_taxable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -245,8 +239,10 @@ class EncashmentRequest(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "encashment_requests"
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     leave_type_code: Mapped[str] = mapped_column(String(32), nullable=False)
     financial_year: Mapped[str] = mapped_column(String(9), nullable=False, index=True)
@@ -315,7 +311,8 @@ class GratuityPayout(Base, UUIDMixin, TenantMixin, TimestampMixin):
     working: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     config_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("gratuity_configs.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("gratuity_configs.id", ondelete="SET NULL"),
         nullable=True,
     )
     paid_in_run_id: Mapped[uuid.UUID | None] = mapped_column(

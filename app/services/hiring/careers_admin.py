@@ -58,9 +58,7 @@ def _unprocessable(detail: str) -> HTTPException:
 
 
 async def careers_config(session: AsyncSession, user: User) -> dict[str, Any]:
-    config = await session.scalar(
-        tenant_scoped(select(CareersPageConfig), CareersPageConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(CareersPageConfig), CareersPageConfig, user))
     if config is None:
         return {"exists": False, **{field: None for field in CONFIG_FIELDS}}
     return {"exists": True, **{field: getattr(config, field) for field in CONFIG_FIELDS}}
@@ -93,16 +91,15 @@ async def save_careers_config(
             detail="That address is already used by another organisation. Choose another.",
         )
 
-    config = await session.scalar(
-        tenant_scoped(select(CareersPageConfig), CareersPageConfig, user)
-    )
+    config = await session.scalar(tenant_scoped(select(CareersPageConfig), CareersPageConfig, user))
     created = config is None
     if config is None:
         config = CareersPageConfig(tenant_id=user.tenant_id, slug=values["slug"])
         session.add(config)
 
     changed = sorted(
-        field for field in CONFIG_FIELDS
+        field
+        for field in CONFIG_FIELDS
         if field in values and (created or getattr(config, field) != values[field])
     )
     for field in CONFIG_FIELDS:

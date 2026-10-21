@@ -201,7 +201,8 @@ async def request_check(
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Unknown check type(s): {', '.join(unknown)}." if unknown
+                f"Unknown check type(s): {', '.join(unknown)}."
+                if unknown
                 else "Choose at least one check."
             ),
         )
@@ -244,15 +245,23 @@ async def request_check(
 
     _portal, token = await careers.issue_portal_token(session, user, candidate_id=candidate.id)
     await candidate_comms.on_portal_link(
-        session, user, candidate=candidate, token=token, event_key=BGV_CONSENT,
+        session,
+        user,
+        candidate=candidate,
+        token=token,
+        event_key=BGV_CONSENT,
         payload={
             "checks": ", ".join(CHECK_TYPES[t].lower() for t in chosen),
             "agency": row.agency_name,
         },
     )
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.CREATE,
-        entity_type="background_check", entity_id=row.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.CREATE,
+        entity_type="background_check",
+        entity_id=row.id,
         summary=(
             f"Background check requested through {row.agency_name} "
             f"({', '.join(chosen)}); awaiting the candidate's consent"
@@ -290,9 +299,7 @@ async def respond_to_check(
     if row is None:
         raise HTTPException(status_code=404, detail="Background check not found")
     if row.status is not BackgroundCheckStatus.AWAITING_CONSENT:
-        raise HTTPException(
-            status_code=409, detail="You have already answered this request."
-        )
+        raise HTTPException(status_code=409, detail="You have already answered this request.")
     candidate = await _candidate(session, actor, portal.candidate_id)
 
     if agree:
@@ -318,8 +325,12 @@ async def respond_to_check(
         verb = "declined"
     await session.flush()
     await audit.record(
-        session, tenant_id=portal.tenant_id, actor_type="candidate", action=AuditAction.UPDATE,
-        entity_type="background_check", entity_id=row.id,
+        session,
+        tenant_id=portal.tenant_id,
+        actor_type="candidate",
+        action=AuditAction.UPDATE,
+        entity_type="background_check",
+        entity_id=row.id,
         changes={"response": "agreed" if agree else "declined", "via": "candidate_portal"},
         summary=f"Candidate {verb} the background check in the portal",
     )
@@ -414,10 +425,15 @@ async def record_results(
         row.completed_by_user_id = user.id
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="background_check", entity_id=row.id,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="background_check",
+        entity_id=row.id,
         summary=f"Background check outcomes recorded; status {row.status.value}",
-        changes={"checks": row.checks}, request=request,
+        changes={"checks": row.checks},
+        request=request,
     )
     return _read(row)
 
@@ -444,16 +460,19 @@ async def upload_report(
     row.report_filename = filename[:255] or "report"
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="background_check", entity_id=row.id,
-        summary="Background check report attached", request=request,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="background_check",
+        entity_id=row.id,
+        summary="Background check report attached",
+        request=request,
     )
     return _read(row)
 
 
-async def report_file(
-    session: AsyncSession, user: User, check_id: uuid.UUID
-) -> tuple[bytes, str]:
+async def report_file(session: AsyncSession, user: User, check_id: uuid.UUID) -> tuple[bytes, str]:
     from app.services.storage import get_storage
 
     _require_hr(user)
@@ -467,7 +486,11 @@ async def report_file(
 
 
 async def cancel_check(
-    session: AsyncSession, user: User, check_id: uuid.UUID, *, reason: str,
+    session: AsyncSession,
+    user: User,
+    check_id: uuid.UUID,
+    *,
+    reason: str,
     request: Request | None = None,
 ) -> dict[str, Any]:
     _require_hr(user)
@@ -480,8 +503,13 @@ async def cancel_check(
     row.cancelled_reason = reason.strip()
     await session.flush()
     await audit.record(
-        session, tenant_id=user.tenant_id, actor=user, action=AuditAction.UPDATE,
-        entity_type="background_check", entity_id=row.id,
-        summary=f"Background check cancelled: {reason.strip()}", request=request,
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="background_check",
+        entity_id=row.id,
+        summary=f"Background check cancelled: {reason.strip()}",
+        request=request,
     )
     return _read(row)

@@ -161,9 +161,7 @@ async def set_valuation(
     return {"valuation_id": str(row.id), "impact": impact}
 
 
-async def _valuations(
-    session: AsyncSession, user: User
-) -> list[valuation_engine.PointsValuation]:
+async def _valuations(session: AsyncSession, user: User) -> list[valuation_engine.PointsValuation]:
     stmt = tenant_scoped(select(PointsValuation), PointsValuation, user)
     return [
         valuation_engine.PointsValuation(
@@ -224,9 +222,7 @@ async def set_expiry_policy(
     return row
 
 
-async def _expiry_policy(
-    session: AsyncSession, user: User
-) -> ledger_engine.ExpiryPolicy | None:
+async def _expiry_policy(session: AsyncSession, user: User) -> ledger_engine.ExpiryPolicy | None:
     stmt = tenant_scoped(select(PointsExpiryPolicy), PointsExpiryPolicy, user)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
@@ -304,9 +300,7 @@ async def set_tax_rule(
     return row
 
 
-async def _tax_rules(
-    session: AsyncSession, user: User
-) -> list[tax_engine.TaxTreatmentRule]:
+async def _tax_rules(session: AsyncSession, user: User) -> list[tax_engine.TaxTreatmentRule]:
     """Configured rules, falling back to the unreviewed defaults.
 
     The fallback is deliberate and safe: every default carries `reviewed=False`,
@@ -330,9 +324,7 @@ async def _tax_rules(
         for row in rows
     ]
     covered = {r.reward_type for r in configured}
-    return configured + [
-        r for r in tax_engine.DEFAULT_RULES if r.reward_type not in covered
-    ]
+    return configured + [r for r in tax_engine.DEFAULT_RULES if r.reward_type not in covered]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -353,9 +345,7 @@ async def _ledger_entries(
         ledger_engine.LedgerEntry(
             entry_id=str(row.id),
             employee_id=str(row.employee_id),
-            transaction_type=ledger_engine.TransactionType(
-                row.transaction_type.value
-            ),
+            transaction_type=ledger_engine.TransactionType(row.transaction_type.value),
             points=row.points,
             monetary_value=_d(row.monetary_value),
             occurred_at=row.occurred_at,
@@ -389,8 +379,10 @@ async def _insert_entry(
 ) -> PointsLedgerEntry:
     """Append one row. There is no counterpart that changes or removes one."""
     existing = await _ledger_entries(session, user, employee_id=employee_id)
-    signed = points if transaction_type is PointsTransactionTypeEnum.ADJUSTED else (
-        points * ledger_engine.TransactionType(transaction_type.value).sign
+    signed = (
+        points
+        if transaction_type is PointsTransactionTypeEnum.ADJUSTED
+        else (points * ledger_engine.TransactionType(transaction_type.value).sign)
     )
     row = PointsLedgerEntry(
         tenant_id=user.tenant_id,
@@ -436,9 +428,7 @@ async def award_points(
 
     employee = (
         await session.execute(
-            tenant_scoped(
-                select(Employee).where(Employee.id == employee_id), Employee, user
-            )
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
         )
     ).scalar_one_or_none()
     if employee is None:
@@ -458,11 +448,7 @@ async def award_points(
         BudgetScopeEnum.MANAGER: manager_key or str(user.id),
     }
     budget_rows = list(
-        (
-            await session.execute(
-                tenant_scoped(select(PointsBudget), PointsBudget, user)
-            )
-        ).scalars()
+        (await session.execute(tenant_scoped(select(PointsBudget), PointsBudget, user))).scalars()
     )
     engine_budgets = [
         budget_engine.Budget(
@@ -480,15 +466,11 @@ async def award_points(
     decision = budget_engine.check(
         engine_budgets,
         points=points,
-        scope_keys={
-            budget_engine.BudgetScope(k.value): v for k, v in scope_keys.items()
-        },
+        scope_keys={budget_engine.BudgetScope(k.value): v for k, v in scope_keys.items()},
         as_of=awarded_on,
     )
     if not decision.permitted:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=decision.message
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=decision.message)
 
     row = await _insert_entry(
         session,
@@ -497,9 +479,7 @@ async def award_points(
         transaction_type=PointsTransactionTypeEnum.AWARDED,
         points=points,
         rate_per_point=Decimal(valued["rate_per_point"]),
-        occurred_at=datetime(
-            awarded_on.year, awarded_on.month, awarded_on.day, tzinfo=UTC
-        ),
+        occurred_at=datetime(awarded_on.year, awarded_on.month, awarded_on.day, tzinfo=UTC),
         source_type=source_type,
         source_id=source_id,
         department_key=department_key,
@@ -508,8 +488,7 @@ async def award_points(
     consumed_ids = {
         b.budget_id
         for b in engine_budgets
-        if b.covers(awarded_on)
-        and scope_keys.get(BudgetScopeEnum(b.scope.value)) == b.scope_key
+        if b.covers(awarded_on) and scope_keys.get(BudgetScopeEnum(b.scope.value)) == b.scope_key
     }
     for budget in budget_rows:
         if str(budget.id) in consumed_ids:
@@ -591,9 +570,7 @@ async def redeem_points(
         remaining -= take
     rupee_value = ledger_engine.money(lot_value)
     effective_rate = (
-        (rupee_value / Decimal(points)).quantize(Decimal("0.000001"))
-        if points
-        else Decimal("0")
+        (rupee_value / Decimal(points)).quantize(Decimal("0.000001")) if points else Decimal("0")
     )
 
     redemption = PointsRedemption(
@@ -616,9 +593,7 @@ async def redeem_points(
         employee_id=employee_id,
         points=points,
         rate_per_point=effective_rate,
-        occurred_at=datetime(
-            requested_on.year, requested_on.month, requested_on.day, tzinfo=UTC
-        ),
+        occurred_at=datetime(requested_on.year, requested_on.month, requested_on.day, tzinfo=UTC),
         source_type="redemption",
         source_id=redemption.id,
     )
@@ -708,9 +683,7 @@ async def reverse_entry(
     already = (
         await session.execute(
             tenant_scoped(
-                select(PointsLedgerEntry).where(
-                    PointsLedgerEntry.reverses_entry_id == entry_id
-                ),
+                select(PointsLedgerEntry).where(PointsLedgerEntry.reverses_entry_id == entry_id),
                 PointsLedgerEntry,
                 user,
             )
@@ -729,9 +702,7 @@ async def reverse_entry(
         transaction_type=PointsTransactionTypeEnum.REVERSED,
         points=original.points,
         rate_per_point=_d(original.rate_per_point),
-        occurred_at=datetime(
-            occurred_on.year, occurred_on.month, occurred_on.day, tzinfo=UTC
-        ),
+        occurred_at=datetime(occurred_on.year, occurred_on.month, occurred_on.day, tzinfo=UTC),
         source_type="reversal",
         source_id=entry_id,
         department_key=original.department_key,
@@ -778,11 +749,7 @@ async def expire_points(
         }
 
     employees = list(
-        (
-            await session.execute(
-                tenant_scoped(select(Employee), Employee, user)
-            )
-        ).scalars()
+        (await session.execute(tenant_scoped(select(Employee), Employee, user))).scalars()
     )
     total_points = 0
     written = 0
@@ -874,18 +841,12 @@ async def movement(
         raise _bad_request(str(exc)) from exc
 
 
-async def budget_utilisation(
-    session: AsyncSession, user: User, *, as_of: date
-) -> dict[str, Any]:
+async def budget_utilisation(session: AsyncSession, user: User, *, as_of: date) -> dict[str, Any]:
     rows = list(
-        (
-            await session.execute(tenant_scoped(select(PointsBudget), PointsBudget, user))
-        ).scalars()
+        (await session.execute(tenant_scoped(select(PointsBudget), PointsBudget, user))).scalars()
     )
     try:
-        current = valuation_engine.rate_on(
-            await _valuations(session, user), as_of=as_of
-        )
+        current = valuation_engine.rate_on(await _valuations(session, user), as_of=as_of)
     except valuation_engine.ValuationError as exc:
         raise _bad_request(str(exc)) from exc
 
@@ -957,17 +918,21 @@ async def perquisites(
         raise _bad_request(str(exc)) from exc
 
     taken = (
-        await session.execute(
-            tenant_scoped(
-                select(RewardEvent.payroll_reference).where(
-                    RewardEvent.employee_id == employee_id,
-                    RewardEvent.financial_year == financial_year,
-                ),
-                RewardEvent,
-                user,
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(RewardEvent.payroll_reference).where(
+                        RewardEvent.employee_id == employee_id,
+                        RewardEvent.financial_year == financial_year,
+                    ),
+                    RewardEvent,
+                    user,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     runs = sorted({reference for reference in taken if reference})
     waiting = sum(1 for reference in taken if not reference)
     return {
@@ -1025,9 +990,7 @@ async def employee_statement(
             for e in sorted(entries, key=lambda e: e.occurred_at, reverse=True)
         ],
         "expiring": (
-            ledger_engine.expiring_soon(entries, policy=policy, as_of=as_of)
-            if policy
-            else []
+            ledger_engine.expiring_soon(entries, policy=policy, as_of=as_of) if policy else []
         ),
         "expiry_disclosure": (
             policy.disclosure if policy and policy.enabled else "Points do not expire."
@@ -1072,9 +1035,7 @@ async def run_reconciliation(
     )
     fulfilments = list(
         (
-            await session.execute(
-                tenant_scoped(select(FulfilmentRecord), FulfilmentRecord, user)
-            )
+            await session.execute(tenant_scoped(select(FulfilmentRecord), FulfilmentRecord, user))
         ).scalars()
     )
     invoices = list(
@@ -1127,9 +1088,7 @@ async def run_reconciliation(
     existing = (
         await session.execute(
             tenant_scoped(
-                select(ReconciliationRun).where(
-                    ReconciliationRun.period_label == period_label
-                ),
+                select(ReconciliationRun).where(ReconciliationRun.period_label == period_label),
                 ReconciliationRun,
                 user,
             )
@@ -1189,8 +1148,7 @@ def rewards_posture() -> dict[str, Any]:
             "balance_after is a checkpoint and a divergence is reported.",
             "Liability is valued at the rate each award was issued at, oldest "
             "consumed first. A revaluation does not restate issued points.",
-            "The movement report's arithmetic is checked against the ledger "
-            "rather than asserted.",
+            "The movement report's arithmetic is checked against the ledger rather than asserted.",
             "Expiry writes EXPIRED rows and deletes nothing, and an expiry "
             "policy needs a disclosure shown at the point of award.",
             "Budgets are checked across every applicable scope; a hard stop "
@@ -1198,12 +1156,10 @@ def rewards_posture() -> dict[str, Any]:
             "A perquisite from an unreviewed tax rule is refused for payroll.",
             "A reviewed perquisite is added to the next payroll run as a non-cash "
             "line, and each reward records the run that took it.",
-            "Expiry runs daily and warns people before their points lapse, once "
-            "per expiry date.",
+            "Expiry runs daily and warns people before their points lapse, once per expiry date.",
             "Catalogue stock is taken under a row lock in the same transaction "
             "as the redemption, so an item cannot be oversold.",
-            "Reconciliation reports each kind of gap separately rather than "
-            "netting them.",
+            "Reconciliation reports each kind of gap separately rather than netting them.",
         ],
         "not_built": [
             "**No tax advisor has reviewed the thresholds or treatments.** "

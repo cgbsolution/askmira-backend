@@ -66,7 +66,9 @@ class OAuthGrant(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     client_id: Mapped[str] = mapped_column(String(64), nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     scopes: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)

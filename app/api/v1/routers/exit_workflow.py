@@ -388,9 +388,7 @@ async def list_settlements(
     session: DbSession,
     settlement_status: SettlementStatus | None = Query(default=None, alias="status"),
 ) -> list[SettlementRead]:
-    rows = await operations.list_settlements(
-        session, user, settlement_status=settlement_status
-    )
+    rows = await operations.list_settlements(session, user, settlement_status=settlement_status)
     return [SettlementRead(**row) for row in rows]
 
 
@@ -477,7 +475,10 @@ async def my_exit(user: CurrentUser, session: DbSession) -> ExitRead | None:
 
 @router.post("/exits/{exit_id}/withdraw", response_model=ExitRead)
 async def withdraw(
-    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    exit_id: uuid.UUID,
+    payload: ReasonRequest,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> ExitRead:
     """Withdraw your own resignation while nobody has accepted it."""
@@ -495,7 +496,10 @@ async def withdraw(
     dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def accept(
-    exit_id: uuid.UUID, payload: ResignationAccept, user: CurrentUser, session: DbSession,
+    exit_id: uuid.UUID,
+    payload: ResignationAccept,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> ExitRead:
     """Accept a submitted resignation: the leaver's line manager or HR, never the leaver."""
@@ -542,7 +546,10 @@ async def get_exit(exit_id: uuid.UUID, user: CurrentUser, session: DbSession) ->
     dependencies=[Depends(require_roles(*HR_ROLES))],
 )
 async def cancel_exit(
-    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    exit_id: uuid.UUID,
+    payload: ReasonRequest,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> ExitRead:
     record = await operations.cancel_exit(
@@ -558,7 +565,10 @@ async def cancel_exit(
     dependencies=[Depends(require_roles(*ADMIN_ROLES))],
 )
 async def waive_notice(
-    exit_id: uuid.UUID, payload: ReasonRequest, user: CurrentUser, session: DbSession,
+    exit_id: uuid.UUID,
+    payload: ReasonRequest,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> ExitRead:
     """Waive a notice shortfall, with a reason. Waiving recovery gives money away."""
@@ -604,8 +614,7 @@ async def list_clearance(
 ) -> list[ClearanceItemRead]:
     """HR, the leaver's reporting line, the leaver, or a named owner of one of its items."""
     return [
-        ClearanceItemRead(**row)
-        for row in await operations.list_clearance(session, user, exit_id)
+        ClearanceItemRead(**row) for row in await operations.list_clearance(session, user, exit_id)
     ]
 
 
@@ -787,9 +796,7 @@ async def approve_settlement(
     settlement_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> SettlementRead:
     """Sign off for payment — or, where the net is negative, for a demand."""
-    settlement = await operations.approve_settlement(
-        session, user, settlement_id, request=request
-    )
+    settlement = await operations.approve_settlement(session, user, settlement_id, request=request)
     await session.commit()
     await session.refresh(settlement)
     return await _settlement_read(session, user, settlement)
@@ -869,9 +876,7 @@ class RehireIn(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
-@router.get(
-    "/exits/interviews/summary", dependencies=[Depends(require_roles(*HR_ROLES))]
-)
+@router.get("/exits/interviews/summary", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def exit_interview_summary(
     user: CurrentUser, session: DbSession, start: date, end: date
 ) -> dict[str, Any]:
@@ -904,7 +909,10 @@ async def record_exit_interview(
 
 @router.post("/exits/{exit_id}/rehire", dependencies=[Depends(require_roles(*HR_ROLES))])
 async def set_rehire_eligibility(
-    exit_id: uuid.UUID, payload: RehireIn, user: CurrentUser, session: DbSession,
+    exit_id: uuid.UUID,
+    payload: RehireIn,
+    user: CurrentUser,
+    session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
     """Whether this person could be hired again. A no needs a reason."""

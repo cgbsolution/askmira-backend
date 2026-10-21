@@ -59,9 +59,7 @@ def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
-def _to_engine_suite(
-    row: EvalSuiteRow, case_rows: list[EvalCaseRow]
-) -> EvalSuite:
+def _to_engine_suite(row: EvalSuiteRow, case_rows: list[EvalCaseRow]) -> EvalSuite:
     """Rebuild the pure suite from its stored rows.
 
     Takes the case rows explicitly rather than reading `row.cases`. A
@@ -131,8 +129,7 @@ async def register_suite(
     defects = suite_defects(suite)
     if defects:
         raise _bad_request(
-            "This suite is refused:\n  - "
-            + "\n  - ".join(d.problem for d in defects)
+            "This suite is refused:\n  - " + "\n  - ".join(d.problem for d in defects)
         )
 
     stmt = tenant_scoped(
@@ -160,11 +157,7 @@ async def register_suite(
     # a MissingGreenlet on an async session, and only ever surfaces against a
     # real database.
     existing_rows = (
-        (
-            await session.execute(
-                select(EvalCaseRow).where(EvalCaseRow.suite_id == row.id)
-            )
-        )
+        (await session.execute(select(EvalCaseRow).where(EvalCaseRow.suite_id == row.id)))
         .scalars()
         .all()
     )
@@ -172,9 +165,7 @@ async def register_suite(
     for case in suite.cases:
         case_row = existing.get(case.name)
         if case_row is None:
-            case_row = EvalCaseRow(
-                tenant_id=user.tenant_id, suite_id=row.id, name=case.name
-            )
+            case_row = EvalCaseRow(tenant_id=user.tenant_id, suite_id=row.id, name=case.name)
             session.add(case_row)
         case_row.description = case.description
         case_row.inputs = list(case.inputs)
@@ -217,9 +208,7 @@ async def seed_canonical_suites(
     return written
 
 
-async def _suite_row(
-    session: AsyncSession, user: User, agent_key: str
-) -> EvalSuiteRow:
+async def _suite_row(session: AsyncSession, user: User, agent_key: str) -> EvalSuiteRow:
     stmt = tenant_scoped(
         select(EvalSuiteRow).where(EvalSuiteRow.agent_key == agent_key),
         EvalSuiteRow,
@@ -234,9 +223,7 @@ async def _suite_row(
     return row
 
 
-async def latest_run(
-    session: AsyncSession, user: User, *, agent_key: str
-) -> EvalRunRow | None:
+async def latest_run(session: AsyncSession, user: User, *, agent_key: str) -> EvalRunRow | None:
     stmt = (
         tenant_scoped(
             select(EvalRunRow).where(EvalRunRow.agent_key == agent_key),
@@ -353,8 +340,7 @@ async def execute_suite(
                 MetricMove(key=key, before=float(stored[key]), after=value)
                 for key, value in current_metrics.items()
                 if key in stored
-                and abs(value - float(stored[key]))
-                > abs(float(stored[key])) * 0.10
+                and abs(value - float(stored[key])) > abs(float(stored[key])) * 0.10
             )
             diff = RunDiff(
                 newly_failing=diff.newly_failing,
@@ -602,9 +588,9 @@ async def coverage(session: AsyncSession, user: User) -> dict[str, Any]:
     rows = (await session.execute(stmt)).scalars().all()
     registered = {row.agent_key for row in rows}
 
-    known_agents = {
-        key for key in fixtures.AGENTS if not key.endswith("_defective")
-    } | set(PRODUCTION_AGENTS)
+    known_agents = {key for key in fixtures.AGENTS if not key.endswith("_defective")} | set(
+        PRODUCTION_AGENTS
+    )
 
     return {
         "suites": [
@@ -614,9 +600,7 @@ async def coverage(session: AsyncSession, user: User) -> dict[str, Any]:
                 "version": row.version,
                 "is_scoring_agent": row.is_scoring_agent,
                 "case_count": len(row.cases),
-                "regression_case_count": sum(
-                    1 for c in row.cases if c.is_regression_case
-                ),
+                "regression_case_count": sum(1 for c in row.cases if c.is_regression_case),
             }
             for row in rows
         ],

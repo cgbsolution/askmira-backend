@@ -142,9 +142,7 @@ class SamlAssertionSeen(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "saml_assertions_seen"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "assertion_id", name="uq_saml_assertion_once"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "assertion_id", name="uq_saml_assertion_once"),)
 
     assertion_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     not_on_or_after: Mapped[datetime] = mapped_column(
@@ -163,7 +161,8 @@ class SsoLoginAttempt(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "sso_login_attempts"
 
     provider_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("identity_providers.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("identity_providers.id", ondelete="CASCADE"),
         nullable=False,
     )
     state: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
@@ -246,9 +245,7 @@ class DeviceIntegration(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Minutes of silence before the device is flagged.
-    silence_threshold_minutes: Mapped[int] = mapped_column(
-        Integer, default=180, nullable=False
-    )
+    silence_threshold_minutes: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
 
     @property
     def is_silent(self) -> bool:

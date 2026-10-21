@@ -65,7 +65,7 @@ def financial_year_bounds(on: date, *, offset: int = 0) -> tuple[date, date]:
 
 
 def financial_year_label(start: date) -> str:
-    """"FY 2026-27", the way it is written on every Indian filing."""
+    """ "FY 2026-27", the way it is written on every Indian filing."""
     return f"FY {start.year}-{str(start.year + 1)[-2:]}"
 
 

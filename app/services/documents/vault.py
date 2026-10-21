@@ -693,9 +693,7 @@ async def pending_verification_items(session: AsyncSession, user: User) -> list[
             "id": document.id,
             "title": f"Verify '{document.title}'",
             "subject_name": employee.full_name,
-            "detail": CATEGORY_LABELS.get(
-                DocumentCategory(document.category), document.category
-            )
+            "detail": CATEGORY_LABELS.get(DocumentCategory(document.category), document.category)
             if document.category in {c.value for c in DocumentCategory}
             else document.category,
             "submitted_at": document.created_at,

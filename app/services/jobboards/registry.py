@@ -97,9 +97,7 @@ def get_adapter(board: JobBoard, transport: Transport | None = None) -> JobBoard
     return builder(transport)
 
 
-def credentials_for(
-    account: JobBoardAccount, tenant_id: uuid.UUID
-) -> BoardCredentials:
+def credentials_for(account: JobBoardAccount, tenant_id: uuid.UUID) -> BoardCredentials:
     """Decrypt a board login at the point of use.
 
     Decrypted here and nowhere else, and never attached to the model instance —
@@ -132,6 +130,4 @@ def credentials_for(
         extras.update({k: v for k, v in parsed.items() if k != "secret"})
         secret = str(parsed.get("secret", ""))
 
-    return BoardCredentials(
-        username=account.username or "", secret=secret, extras=extras
-    )
+    return BoardCredentials(username=account.username or "", secret=secret, extras=extras)

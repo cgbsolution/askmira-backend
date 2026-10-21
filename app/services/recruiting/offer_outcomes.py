@@ -65,9 +65,7 @@ def _rates(rows: list[OfferOutcomeFacts], minimum: int) -> dict[str, Any]:
     }
 
 
-def offer_outcomes(
-    rows: list[OfferOutcomeFacts], *, minimum: int = MIN_FOR_RATE
-) -> dict[str, Any]:
+def offer_outcomes(rows: list[OfferOutcomeFacts], *, minimum: int = MIN_FOR_RATE) -> dict[str, Any]:
     """Overall rates and the same rates by department, recruiter and notice band."""
 
     def grouped(key) -> list[dict[str, Any]]:

@@ -77,8 +77,9 @@ class BankProfile(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "bank_profiles"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "legal_entity_id", "account_number",
-                         name="uq_bank_profile_account"),
+        UniqueConstraint(
+            "tenant_id", "legal_entity_id", "account_number", name="uq_bank_profile_account"
+        ),
     )
 
     legal_entity_id: Mapped[uuid.UUID] = mapped_column(
@@ -161,7 +162,8 @@ class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # A supplementary batch reissuing failed credits from an earlier one. It
     # exists so a handful of failures does not mean regenerating the whole run.
     supplements_batch_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("disbursement_batches.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("disbursement_batches.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -192,9 +194,7 @@ class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     released_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    acknowledged_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     validation_exceptions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -207,9 +207,7 @@ class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     def approval_is_current(self) -> bool:
         """Whether the approval still applies to the file that exists now."""
         return bool(
-            self.approved_file_hash
-            and self.file_hash
-            and self.approved_file_hash == self.file_hash
+            self.approved_file_hash and self.file_hash and self.approved_file_hash == self.file_hash
         )
 
 
@@ -225,7 +223,8 @@ class DisbursementLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "disbursement_lines"
 
     batch_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("disbursement_batches.id", ondelete="CASCADE"),
+        PgUUID(as_uuid=True),
+        ForeignKey("disbursement_batches.id", ondelete="CASCADE"),
         nullable=False,
     )
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -264,8 +263,10 @@ class DisbursementDownload(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "disbursement_downloads"
 
     batch_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("disbursement_batches.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("disbursement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     downloaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

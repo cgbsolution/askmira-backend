@@ -38,6 +38,7 @@ from app.models.grounding import AgentInvocation, PromptInjectionAttempt
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services.ai import assistant, governance
+from app.services.ai import client as ai_client
 from app.services.ai.client import AiUnavailableError, Completion, use_backend
 from app.services.companion import config as companion_config
 from app.services.companion import service as companion
@@ -175,21 +176,28 @@ async def test_nothing_is_sent_until_switched_on_and_agreed(
     await session.commit()
     model = FakeModel()
     with use_backend(model):
-        assert (await companion.status_for(session, user))["reason"] == "disabled"
-        with pytest.raises(HTTPException) as off:
-            await _say(session, user, "Hello")
-        assert off.value.status_code == 403
+        # Switched off: the chat is still there, answering by rule, never by the model.
+        status = await companion.status_for(session, user)
+        assert status["reason"] == "disabled" and status["mode"] == "direct"
+        off = await _say(session, user, "Hello")
+        assert off["messages"][1]["text"].startswith("Hi! I'm Mira.")
 
         await _ai_on(session, hr_user)
-        assert (await companion.status_for(session, user))["reason"] == "no_consent"
-        with pytest.raises(HTTPException) as no_consent:
-            await _say(session, user, "Hello")
-        assert no_consent.value.status_code == 403
+        status = await companion.status_for(session, user)
+        assert status["reason"] == "no_consent" and status["mode"] == "direct"
+        await _say(session, user, "Hello")
 
         await _consent(session, tenant.id, employee.id)
         status = await companion.status_for(session, user)
         assert status["available"] is True and status["name"] == "Mira"
+        assert status["mode"] == "ai"
     assert model.calls == []
+    invocations = (
+        await session.scalars(
+            select(AgentInvocation).where(AgentInvocation.agent_key == "companion")
+        )
+    ).all()
+    assert invocations == []
 
 
 # ── Tools ───────────────────────────────────────────────────────────────────
@@ -295,6 +303,43 @@ async def test_who_is_out_defaults_to_today(session: AsyncSession, me: User) -> 
     assert reply["arguments"]["from"] == reply["arguments"]["to"]
     assert reply["cards"][0]["type"] == "notice"  # nobody is on leave in a fresh workspace
     assert "Nobody is on approved leave" in reply["cards"][0]["text"]
+
+
+# ── Without a model ─────────────────────────────────────────────────────────
+
+
+async def test_without_an_ai_provider_it_answers_by_rule(
+    session: AsyncSession, me: User, manager: Employee, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    status = await companion.status_for(session, me)
+    assert status["available"] is True
+    assert status["mode"] == "direct" and status["reason"] == "not_configured"
+    offered = {tool["key"] for tool in status["tools"]}
+    # The two tools that ask a model of their own wait for AI.
+    assert "policy_question" not in offered and "report_question" not in offered
+    assert {"search_people", "who_is_out", "my_record"} <= offered
+    assert "Who is on leave this week?" in status["examples"]
+
+    first = await _say(session, me, "Find Rohan")
+    people = first["messages"][1]
+    assert people["tool"] == "search_people" and people["arguments"]["query"] == "rohan"
+    assert people["cards"][0]["rows"][0][:2] == ["Rohan Verma", "Engineering Manager"]
+
+    second = await _say(session, me, "who is my manager?", first["conversation"]["id"])
+    own = second["messages"][1]
+    assert own["tool"] == "my_record" and "Rohan Verma" in own["cards"][0]["text"]
+
+    policy = await _say(session, me, "What is the leave policy?")
+    assert policy["messages"][1]["tool"] is None
+    assert "answered by AI" in policy["messages"][1]["text"]
+
+    rows = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "companion_message"))
+    ).all()
+    assert len(rows) == 3 and all(row.action is AuditAction.CREATE for row in rows)
+    assert {row.changes["mode"] for row in rows} == {"direct"}
+    assert (await session.scalars(select(CrossBorderTransfer))).all() == []
 
 
 # ── Each workspace's own agent ──────────────────────────────────────────────

@@ -409,8 +409,7 @@ async def _detail(
     users = await _users(
         session,
         user,
-        {c.author_user_id for c in comments}
-        | {ticket.assignee_user_id, ticket.raised_by_user_id},
+        {c.author_user_id for c in comments} | {ticket.assignee_user_id, ticket.raised_by_user_id},
     )
     employees = await _employees(session, user, {ticket.employee_id})
     now = datetime.now(UTC)
@@ -459,8 +458,7 @@ async def _detail(
         can_rate=requester
         and ticket.resolved_at is not None
         and ticket.rated_at is None
-        and ticket.status
-        in {HelpdeskTicketStatus.RESOLVED, HelpdeskTicketStatus.CLOSED},
+        and ticket.status in {HelpdeskTicketStatus.RESOLVED, HelpdeskTicketStatus.CLOSED},
         can_manage=not requester and not terminal,
     )
 
@@ -556,9 +554,7 @@ async def _requester_user_ids(
 ) -> list[uuid.UUID]:
     rows = await session.scalars(
         tenant_scoped(
-            select(User.id).where(
-                User.employee_id == ticket.employee_id, User.is_active.is_(True)
-            ),
+            select(User.id).where(User.employee_id == ticket.employee_id, User.is_active.is_(True)),
             User,
             user,
         )
@@ -574,9 +570,7 @@ async def _routing_user_ids(
     if category.owner_user_id is not None:
         owner = await session.scalar(
             tenant_scoped(
-                select(User).where(
-                    User.id == category.owner_user_id, User.is_active.is_(True)
-                ),
+                select(User).where(User.id == category.owner_user_id, User.is_active.is_(True)),
                 User,
                 user,
             )
@@ -752,9 +746,7 @@ async def create_ticket(
         owner = None
         if category.owner_user_id is not None:
             owner = await session.scalar(
-                tenant_scoped(
-                    select(User).where(User.id == category.owner_user_id), User, user
-                )
+                tenant_scoped(select(User).where(User.id == category.owner_user_id), User, user)
             )
         ticket = HelpdeskTicket(
             tenant_id=user.tenant_id,
@@ -1301,8 +1293,7 @@ async def assign_ticket(
                 detail=(
                     f"{assignee.full_name} cannot work this ticket. "
                     + (
-                        "A confidential ticket goes only to its category owner or an "
-                        "admin."
+                        "A confidential ticket goes only to its category owner or an admin."
                         if ticket.is_confidential
                         else "Pick someone in HR or the category owner."
                     )
@@ -1411,8 +1402,7 @@ async def update_ticket(
             _system_line(
                 user,
                 ticket,
-                f"Status changed from {STATUS_LABEL[ticket.status]} to "
-                f"{STATUS_LABEL[new_status]}.",
+                f"Status changed from {STATUS_LABEL[ticket.status]} to {STATUS_LABEL[new_status]}.",
             )
         )
         if new_status is HelpdeskTicketStatus.RESOLVED:
@@ -1729,4 +1719,3 @@ async def auto_close_resolved(
         )
     await session.commit()
     return {"closed": len(tickets), "as_of": now.astimezone(INDIA).date().isoformat()}
-

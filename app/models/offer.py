@@ -105,12 +105,8 @@ class ApprovalChainRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "approval_chain_rules"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "scope", "sequence", name="uq_approval_rule_sequence"
-        ),
-        CheckConstraint(
-            "ctc_max IS NULL OR ctc_max > ctc_min", name="ck_approval_rule_band"
-        ),
+        UniqueConstraint("tenant_id", "scope", "sequence", name="uq_approval_rule_sequence"),
+        CheckConstraint("ctc_max IS NULL OR ctc_max > ctc_min", name="ck_approval_rule_band"),
     )
 
     scope: Mapped[ApprovalScope] = mapped_column(
@@ -128,9 +124,7 @@ class ApprovalChainRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     # A step that exists only to catch offers above the approved band. It adds a
     # person rather than a warning colour, because approvers approve.
-    only_when_over_band: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    only_when_over_band: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -145,8 +139,10 @@ class RequisitionApproval(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     requisition_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     approver_role: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -156,14 +152,14 @@ class RequisitionApproval(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     decision: Mapped[ApprovalDecision] = mapped_column(
         Enum(ApprovalDecision, name="approval_decision"),
-        default=ApprovalDecision.PENDING, nullable=False, index=True,
+        default=ApprovalDecision.PENDING,
+        nullable=False,
+        index=True,
     )
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # What was flagged to this approver at the moment they decided. Snapshotted,
@@ -184,12 +180,16 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     code: Mapped[str] = mapped_column(String(32), nullable=False)
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("candidates.id", ondelete="RESTRICT"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     requisition_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("requisitions.id", ondelete="RESTRICT"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("requisitions.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
 
     # ── Terms ───────────────────────────────────────────────────────────────
@@ -197,7 +197,8 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # offer-specific variant: the identity is what makes the letter and the
     # first payslip agree.
     salary_structure_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("salary_structures.id", ondelete="RESTRICT"),
+        PgUUID(as_uuid=True),
+        ForeignKey("salary_structures.id", ondelete="RESTRICT"),
         nullable=False,
     )
     ctc_annual: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
@@ -211,7 +212,8 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("departments.id", ondelete="SET NULL"), nullable=True
     )
     legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("legal_entities.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("legal_entities.id", ondelete="SET NULL"),
         nullable=True,
     )
     grade: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
@@ -222,15 +224,13 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # ── Lifecycle ───────────────────────────────────────────────────────────
     status: Mapped[OfferStatus] = mapped_column(
         Enum(OfferStatus, name="offer_status"),
-        default=OfferStatus.DRAFT, nullable=False, index=True,
+        default=OfferStatus.DRAFT,
+        nullable=False,
+        index=True,
     )
     valid_until: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
-    released_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    responded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Why the offer ended the way it did. Required by the service for every
     # terminal status that is not a plain acceptance — a drop reason nobody
@@ -238,12 +238,11 @@ class Offer(Base, UUIDMixin, TenantMixin, TimestampMixin):
     outcome_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The candidate said they had already resigned elsewhere. Carries legal and
     # reputational exposure and is surfaced to HR rather than logged.
-    resigned_elsewhere: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    resigned_elsewhere: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     letter_id: Mapped[uuid.UUID | None] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("issued_letters.id", ondelete="SET NULL"),
+        PgUUID(as_uuid=True),
+        ForeignKey("issued_letters.id", ondelete="SET NULL"),
         nullable=True,
     )
     converted_employee_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -296,9 +295,7 @@ class OfferComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # Whether the amount counts toward the headline CTC on the letter. A
     # variable component usually does; a signing bonus usually does not, and
     # getting this wrong is how an offer reads richer than it pays.
-    counts_toward_ctc: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
+    counts_toward_ctc: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     offer: Mapped[Offer] = relationship(back_populates="components")
 
@@ -313,9 +310,7 @@ class OfferSalaryComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "offer_salary_components"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "offer_id", "component_code", name="uq_offer_component_once"
-        ),
+        UniqueConstraint("tenant_id", "offer_id", "component_code", name="uq_offer_component_once"),
     )
 
     offer_id: Mapped[uuid.UUID] = mapped_column(
@@ -345,8 +340,10 @@ class OfferApproval(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     offer_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("offers.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("offers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     approver_role: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -355,14 +352,14 @@ class OfferApproval(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     decision: Mapped[ApprovalDecision] = mapped_column(
         Enum(ApprovalDecision, name="approval_decision", create_type=False),
-        default=ApprovalDecision.PENDING, nullable=False, index=True,
+        default=ApprovalDecision.PENDING,
+        nullable=False,
+        index=True,
     )
     decided_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    decided_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # SHA-256 of the material terms as they stood when this approver decided.
@@ -387,15 +384,18 @@ class OfferEvent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "offer_events"
 
     offer_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("offers.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        PgUUID(as_uuid=True),
+        ForeignKey("offers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     from_status: Mapped[OfferStatus | None] = mapped_column(
         Enum(OfferStatus, name="offer_status", create_type=False), nullable=True
     )
     to_status: Mapped[OfferStatus] = mapped_column(
         Enum(OfferStatus, name="offer_status", create_type=False),
-        nullable=False, index=True,
+        nullable=False,
+        index=True,
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -137,9 +137,7 @@ class MicrosoftCalendarAdapter(CalendarAdapter):
         )
         self._check(code, body)
 
-        by_account = {
-            entry.get("scheduleId"): entry for entry in body.get("value", [])
-        }
+        by_account = {entry.get("scheduleId"): entry for entry in body.get("value", [])}
         results: list[FreeBusyResult] = []
         for account in accounts:
             entry = by_account.get(account)
@@ -165,8 +163,7 @@ class MicrosoftCalendarAdapter(CalendarAdapter):
                         account=account,
                         ok=False,
                         error=(
-                            f"Microsoft could not read this mailbox: "
-                            f"{error.get('message', error)}"
+                            f"Microsoft could not read this mailbox: {error.get('message', error)}"
                         ),
                     )
                 )
@@ -204,8 +201,7 @@ class MicrosoftCalendarAdapter(CalendarAdapter):
         if spec.correlation_id:
             body["singleValueExtendedProperties"] = [
                 {
-                    "id": "String {66f5a359-4659-4830-9070-00047ec6ac6e} "
-                    "Name askmira_interview_id",
+                    "id": "String {66f5a359-4659-4830-9070-00047ec6ac6e} Name askmira_interview_id",
                     "value": spec.correlation_id,
                 }
             ]
@@ -232,7 +228,9 @@ class MicrosoftCalendarAdapter(CalendarAdapter):
 
     async def create_event(self, spec: EventSpec, *, token: str) -> EventResult:
         code, body = await self._transport.request(
-            "POST", "/v1.0/me/events", json=self._event_body(spec),
+            "POST",
+            "/v1.0/me/events",
+            json=self._event_body(spec),
             headers=self._headers(token),
         )
         self._check(code, body)
@@ -249,15 +247,18 @@ class MicrosoftCalendarAdapter(CalendarAdapter):
     ) -> EventResult:
         """PATCH the existing event, never delete-then-create."""
         code, body = await self._transport.request(
-            "PATCH", f"/v1.0/me/events/{external_event_id}",
-            json=self._event_body(spec), headers=self._headers(token),
+            "PATCH",
+            f"/v1.0/me/events/{external_event_id}",
+            json=self._event_body(spec),
+            headers=self._headers(token),
         )
         self._check(code, body)
         return self._result(body, spec)
 
     async def cancel_event(self, external_event_id: str, *, token: str) -> None:
         code, body = await self._transport.request(
-            "DELETE", f"/v1.0/me/events/{external_event_id}",
+            "DELETE",
+            f"/v1.0/me/events/{external_event_id}",
             headers=self._headers(token),
         )
         if code in (404, 410):

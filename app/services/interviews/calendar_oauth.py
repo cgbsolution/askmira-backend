@@ -112,9 +112,7 @@ def _state_for(user: User, provider: CalendarProviderKind) -> str:
 
 def _check_state(state: str, user: User, provider: CalendarProviderKind) -> None:
     try:
-        claims = jwt.decode(
-            state, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
+        claims = jwt.decode(state, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except jwt.InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -153,9 +151,7 @@ async def connection_status(session: AsyncSession, user: User) -> dict[str, Any]
     providers = []
     for provider in CalendarProviderKind:
         row = rows.get(provider)
-        connected = bool(
-            row is not None and row.revoked_at is None and row.access_token_encrypted
-        )
+        connected = bool(row is not None and row.revoked_at is None and row.access_token_encrypted)
         expired = bool(connected and row.expires_at is not None and row.expires_at <= now)
         providers.append(
             {

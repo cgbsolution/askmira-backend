@@ -29,9 +29,7 @@ async def mcp_message(
     session: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> Response:
-    challenge = {
-        "WWW-Authenticate": f'Bearer resource_metadata="{resource_metadata_url(request)}"'
-    }
+    challenge = {"WWW-Authenticate": f'Bearer resource_metadata="{resource_metadata_url(request)}"'}
     presented = credentials.credentials if credentials else ""
     try:
         if presented.startswith("amk_"):

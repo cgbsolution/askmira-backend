@@ -146,9 +146,7 @@ async def todays_for(
             for location_id, zone in (
                 await session.execute(
                     tenant_scoped(
-                        select(Location.id, Location.timezone).where(
-                            Location.id.in_(location_ids)
-                        ),
+                        select(Location.id, Location.timezone).where(Location.id.in_(location_ids)),
                         Location,
                         user,
                     )
@@ -572,7 +570,10 @@ async def approvers_for(
     if steps:
         return [
             engine.Approver(
-                s.role if s.role != "user" else "approver", s.user_id, s.employee_id, s.name,
+                s.role if s.role != "user" else "approver",
+                s.user_id,
+                s.employee_id,
+                s.name,
                 escalate_after_hours=s.escalate_after_hours,
             )
             for s in steps
@@ -797,7 +798,10 @@ async def preview(
         session, user, employee, payload, today
     )
     approvers = await approvers_for(
-        session, user, employee, days=count.total,
+        session,
+        user,
+        employee,
+        days=count.total,
         leave_type_id=payload.leave_type_id,
     )
     return LeavePreviewRead(
@@ -838,9 +842,7 @@ async def apply(
         await attachments.require_stored(payload.document_url)
 
     chain = engine.build_chain(
-        await approvers_for(
-            session, user, employee, days=count.total, leave_type_id=leave_type.id
-        )
+        await approvers_for(session, user, employee, days=count.total, leave_type_id=leave_type.id)
     )
     leave = LeaveRequest(
         tenant_id=user.tenant_id,
@@ -1254,9 +1256,7 @@ async def approvals_inbox(session: AsyncSession, user: User) -> list[LeaveReques
         stmt = stmt.where(or_(*clauses))
     rows = [
         (leave, emp, lt)
-        for leave, emp, lt in (
-            await session.execute(stmt.order_by(LeaveRequest.created_at))
-        ).all()
+        for leave, emp, lt in (await session.execute(stmt.order_by(LeaveRequest.created_at))).all()
         if _may_decide(user, leave)
     ]
     today = local_today()

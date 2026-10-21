@@ -79,7 +79,7 @@ def _amount(value: object) -> Decimal:
 
 
 def _long_year(start: date) -> str:
-    """"2026-2027", the form the reimbursement module stores."""
+    """ "2026-2027", the form the reimbursement module stores."""
     return f"{start.year}-{start.year + 1}"
 
 
@@ -339,9 +339,7 @@ async def _loan_perquisite(
             )
 
 
-def _balances_in_year(
-    loan: LoanAccount, start: date, end: date
-) -> tuple[list[Decimal], Decimal]:
+def _balances_in_year(loan: LoanAccount, start: date, end: date) -> tuple[list[Decimal], Decimal]:
     """The month-by-month balance inside the year, and interest charged in it.
 
     Read from the schedule stored on the account — the same ledger payroll

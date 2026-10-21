@@ -241,9 +241,7 @@ class IssuedLetter(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     # ── E-signature ─────────────────────────────────────────────────────────
     signature_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    signature_request_id: Mapped[str | None] = mapped_column(
-        String(128), nullable=True, index=True
-    )
+    signature_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_pdf_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
@@ -263,9 +261,7 @@ class LetterSequence(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     __tablename__ = "letter_sequences"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "category", "financial_year", name="uq_letter_sequence_slot"
-        ),
+        UniqueConstraint("tenant_id", "category", "financial_year", name="uq_letter_sequence_slot"),
     )
 
     category: Mapped[LetterCategory] = mapped_column(

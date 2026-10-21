@@ -227,9 +227,7 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
 
     # ── 1. Holiday ──────────────────────────────────────────────────────────
     if inputs.is_holiday:
-        return _rest_day(
-            inputs, AttendanceStatus.HOLIDAY, inputs.holiday_name or "Public holiday"
-        )
+        return _rest_day(inputs, AttendanceStatus.HOLIDAY, inputs.holiday_name or "Public holiday")
 
     # ── 2. Weekly off ───────────────────────────────────────────────────────
     if inputs.roster_week_off or _is_weekly_off(shift, day):
@@ -247,9 +245,7 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
             return ComputedDay(
                 attendance_date=day,
                 status=(
-                    AttendanceStatus.ON_LEAVE
-                    if inputs.leave_is_paid
-                    else AttendanceStatus.HALF_DAY
+                    AttendanceStatus.ON_LEAVE if inputs.leave_is_paid else AttendanceStatus.HALF_DAY
                 ),
                 payable_fraction=Decimal(1) if inputs.leave_is_paid else Decimal("0.5"),
                 note=(

@@ -107,9 +107,7 @@ class GateDecision:
         }
 
 
-def evaluate_gate(
-    report: RunReport, *, diff: RunDiff | None = None
-) -> GateDecision:
+def evaluate_gate(report: RunReport, *, diff: RunDiff | None = None) -> GateDecision:
     """Decide whether this run permits a merge.
 
     A diff is optional and adds warnings only — a metric that moved is worth
@@ -139,9 +137,7 @@ def evaluate_gate(
             )
             continue
 
-        blocked_here = [
-            v for v in result.verdicts if not v.passed and v.kind in BLOCKING_KINDS
-        ]
+        blocked_here = [v for v in result.verdicts if not v.passed and v.kind in BLOCKING_KINDS]
         if blocked_here:
             blocking.append(
                 f"{result.case_name} failed "
@@ -159,9 +155,7 @@ def evaluate_gate(
                 "the shape of a slow degradation."
             )
         if diff.cost_delta_inr > 0:
-            warnings.append(
-                f"cost rose by ₹{diff.cost_delta_inr:.4f} across the suite."
-            )
+            warnings.append(f"cost rose by ₹{diff.cost_delta_inr:.4f} across the suite.")
 
     if blocking:
         outcome = GateOutcome.BLOCK

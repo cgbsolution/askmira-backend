@@ -172,9 +172,7 @@ async def allocate_reference_number(
             financial_year=year,
             last_value=0,
         )
-        .on_conflict_do_nothing(
-            index_elements=["tenant_id", "category", "financial_year"]
-        )
+        .on_conflict_do_nothing(index_elements=["tenant_id", "category", "financial_year"])
     )
 
     # Now take the row lock. Every concurrent caller queues here, so each one
@@ -300,9 +298,7 @@ async def _statutory_values(
 
     values = {
         "date_of_birth": employee.date_of_birth,
-        "gender": employee.gender.value.replace("_", " ").capitalize()
-        if employee.gender
-        else None,
+        "gender": employee.gender.value.replace("_", " ").capitalize() if employee.gender else None,
         "father_or_spouse_name": personal.get("father_name") or personal.get("spouse_name"),
         "marital_status": str(personal.get("marital_status") or "").replace("_", " ").capitalize()
         or None,
@@ -353,9 +349,7 @@ def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> Merg
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def get_template(
-    session: AsyncSession, user: User, template_id: uuid.UUID
-) -> LetterTemplate:
+async def get_template(session: AsyncSession, user: User, template_id: uuid.UUID) -> LetterTemplate:
     template = await session.scalar(
         tenant_scoped(
             select(LetterTemplate).where(LetterTemplate.id == template_id),
@@ -476,14 +470,10 @@ async def create_template_version(
             other.active = False
 
     content = {k: v for k, v in payload.items() if k not in {"code", "fields"}}
-    template = LetterTemplate(
-        tenant_id=user.tenant_id, code=code, version=next_version, **content
-    )
+    template = LetterTemplate(tenant_id=user.tenant_id, code=code, version=next_version, **content)
     for item in field_items:
         field = item if isinstance(item, TemplateFieldInput) else TemplateFieldInput(**item)
-        template.fields.append(
-            LetterTemplateField(tenant_id=user.tenant_id, **field.model_dump())
-        )
+        template.fields.append(LetterTemplateField(tenant_id=user.tenant_id, **field.model_dump()))
     session.add(template)
     await session.flush()
 
@@ -505,9 +495,7 @@ async def create_template_version(
 
 async def _active_versions(session: AsyncSession, user: User, code: str) -> list[LetterTemplate]:
     stmt = tenant_scoped(
-        select(LetterTemplate).where(
-            LetterTemplate.code == code, LetterTemplate.active.is_(True)
-        ),
+        select(LetterTemplate).where(LetterTemplate.code == code, LetterTemplate.active.is_(True)),
         LetterTemplate,
         user,
     )
@@ -756,9 +744,7 @@ async def issue_letter(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    reference = await allocate_reference_number(
-        session, user, template.category, effective_as_of
-    )
+    reference = await allocate_reference_number(session, user, template.category, effective_as_of)
 
     letter = IssuedLetter(
         tenant_id=user.tenant_id,
@@ -1028,12 +1014,9 @@ async def _letter_reads(
         templates = {row.id: row.name for row in (await session.execute(stmt)).all()}
     names: dict[uuid.UUID, str] = {}
     if employee_ids:
-        stmt = tenant_scoped(
-            select(Employee).where(Employee.id.in_(employee_ids)), Employee, user
-        )
+        stmt = tenant_scoped(select(Employee).where(Employee.id.in_(employee_ids)), Employee, user)
         names |= {
-            e.id: f"{e.full_name} ({e.employee_code})"
-            for e in (await session.scalars(stmt)).all()
+            e.id: f"{e.full_name} ({e.employee_code})" for e in (await session.scalars(stmt)).all()
         }
     if candidate_ids:
         stmt = tenant_scoped(
@@ -1202,19 +1185,18 @@ async def approve_letter(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Letter {letter.reference_number} is {letter.status.value}, "
-                "not awaiting approval."
+                f"Letter {letter.reference_number} is {letter.status.value}, not awaiting approval."
             ),
         )
     if letter.issued_by_user_id == user.id:
-        raise permissions.forbidden(
-            "You issued this letter, so somebody else has to approve it."
-        )
+        raise permissions.forbidden("You issued this letter, so somebody else has to approve it.")
     if letter.employee_id is not None and letter.employee_id == user.employee_id:
         raise permissions.forbidden("A letter addressed to you needs somebody else's approval.")
     template = await get_template(session, user, letter.template_id)
-    if template.approver_roles and user.role.value not in template.approver_roles and (
-        user.role is not UserRole.SUPER_ADMIN
+    if (
+        template.approver_roles
+        and user.role.value not in template.approver_roles
+        and (user.role is not UserRole.SUPER_ADMIN)
     ):
         raise permissions.forbidden(
             "This template names who may approve it: "
@@ -1424,9 +1406,7 @@ async def record_signature_webhook(
         return {"status": "ignored", "state": signature_status.state}
 
     letter = await session.scalar(
-        select(IssuedLetter).where(
-            IssuedLetter.signature_request_id == signature_status.request_id
-        )
+        select(IssuedLetter).where(IssuedLetter.signature_request_id == signature_status.request_id)
     )
     if letter is None:
         # 200 rather than 404: providers retry on non-2xx, and retrying a

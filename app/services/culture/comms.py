@@ -132,9 +132,7 @@ def is_visible_to(audience: Audience, recipient: Recipient) -> bool:
     return not (audience.grades and recipient.grade not in audience.grades)
 
 
-def resolve_audience(
-    audience: Audience, recipients: list[Recipient]
-) -> list[Recipient]:
+def resolve_audience(audience: Audience, recipients: list[Recipient]) -> list[Recipient]:
     return [r for r in recipients if is_visible_to(audience, r)]
 
 
@@ -155,9 +153,7 @@ class Announcement:
         if not self.title.strip() or not self.body.strip():
             raise AnnouncementError("An announcement needs a title and a body.")
         if self.expires_at is not None and self.expires_at <= self.publish_at:
-            raise AnnouncementError(
-                "An announcement cannot expire before it is published."
-            )
+            raise AnnouncementError("An announcement cannot expire before it is published.")
         if self.requires_acknowledgement and self.expires_at is not None:
             # An acknowledgement register that disappears is not a register.
             # The audit question is asked months later, and "it expired" is not
@@ -225,14 +221,12 @@ def acknowledgement_report(
     current = {
         a.employee_id
         for a in acknowledgements
-        if a.announcement_id == announcement.announcement_id
-        and a.covers(announcement)
+        if a.announcement_id == announcement.announcement_id and a.covers(announcement)
     }
     stale = {
         a.employee_id
         for a in acknowledgements
-        if a.announcement_id == announcement.announcement_id
-        and not a.covers(announcement)
+        if a.announcement_id == announcement.announcement_id and not a.covers(announcement)
     } - current
 
     outstanding = sorted(expected - current)
@@ -383,11 +377,7 @@ def calendar_events(
                 label=event.label,
                 employee_id=event.employee_id,
                 years=event.years,
-                scope=(
-                    setting.birthday_scope
-                    if event.kind is EventKind.BIRTHDAY
-                    else "company"
-                ),
+                scope=(setting.birthday_scope if event.kind is EventKind.BIRTHDAY else "company"),
             )
         )
 

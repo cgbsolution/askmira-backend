@@ -281,9 +281,7 @@ def normalise(
 
     punched_at = _parse_timestamp(raw_time, timezone_name)
     direction_value = str(_pick(payload, fields["direction"]) or "").strip()
-    direction = (
-        PunchDirection.OUT if direction_value in _OUT_VALUES else PunchDirection.IN
-    )
+    direction = PunchDirection.OUT if direction_value in _OUT_VALUES else PunchDirection.IN
 
     return NormalisedPunch(
         employee_code=str(code).strip(),
@@ -333,9 +331,7 @@ async def ingest_punches(
 
     for payload in payloads:
         try:
-            punch = normalise(
-                payload, vendor=device.vendor, timezone_name=device.assumed_timezone
-            )
+            punch = normalise(payload, vendor=device.vendor, timezone_name=device.assumed_timezone)
         except DeviceError as exc:
             session.add(
                 DevicePunchException(

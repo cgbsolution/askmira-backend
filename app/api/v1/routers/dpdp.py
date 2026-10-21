@@ -248,9 +248,7 @@ async def record_my_consent(
         user,
         principal_id=principal,
         principal_kind=(
-            DataPrincipalKind.EMPLOYEE
-            if user.employee_id
-            else DataPrincipalKind.PLATFORM_USER
+            DataPrincipalKind.EMPLOYEE if user.employee_id else DataPrincipalKind.PLATFORM_USER
         ),
         purpose_key=payload.purpose_key,
         granted=payload.granted,
@@ -281,9 +279,7 @@ async def withdraw_my_consent(
         user,
         principal_id=principal,
         principal_kind=(
-            DataPrincipalKind.EMPLOYEE
-            if user.employee_id
-            else DataPrincipalKind.PLATFORM_USER
+            DataPrincipalKind.EMPLOYEE if user.employee_id else DataPrincipalKind.PLATFORM_USER
         ),
         purpose_key=purpose_key,
         request=request,
@@ -294,9 +290,7 @@ async def withdraw_my_consent(
 async def my_export(session: DbSession, user: CurrentUser) -> dict[str, Any]:
     """Everything held about the caller, organised for a person to read."""
     principal = user.employee_id or user.id
-    return await dpdp_service.build_access_export(
-        session, user, principal_id=principal
-    )
+    return await dpdp_service.build_access_export(session, user, principal_id=principal)
 
 
 @router.get("/dpdp/me/export/download")
@@ -321,9 +315,7 @@ async def my_requests(session: DbSession, user: CurrentUser) -> dict[str, Any]:
 
 
 @router.get("/dpdp/me/erasure-preview")
-async def my_erasure_preview(
-    session: DbSession, user: CurrentUser
-) -> dict[str, Any]:
+async def my_erasure_preview(session: DbSession, user: CurrentUser) -> dict[str, Any]:
     """What an erasure request would and would not delete, before asking.
 
     Deliberately available before the request is made. Somebody deciding whether
@@ -348,9 +340,7 @@ async def raise_my_request(
         user,
         principal_id=principal,
         principal_kind=(
-            DataPrincipalKind.EMPLOYEE
-            if user.employee_id
-            else DataPrincipalKind.PLATFORM_USER
+            DataPrincipalKind.EMPLOYEE if user.employee_id else DataPrincipalKind.PLATFORM_USER
         ),
         principal_label=user.full_name or user.email,
         principal_contact=user.email,
@@ -451,9 +441,7 @@ async def list_requests(
     _hr=Depends(require_roles(*HR_ROLES)),
 ) -> dict[str, Any]:
     """Requests with their clocks, and what needs escalating, worst first."""
-    return await dpdp_service.list_requests(
-        session, user, open_only=open_only, today=today
-    )
+    return await dpdp_service.list_requests(session, user, open_only=open_only, today=today)
 
 
 @router.post("/dpdp/requests/{request_id}/resolve")
@@ -495,9 +483,7 @@ async def export_for_request(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No such request.")
-    return await dpdp_service.build_access_export(
-        session, user, principal_id=row.principal_id
-    )
+    return await dpdp_service.build_access_export(session, user, principal_id=row.principal_id)
 
 
 @router.get("/dpdp/requests/{request_id}/export/download")
@@ -561,9 +547,7 @@ async def erasure_preview_for_request(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No such request.")
-    return await dpdp_service.preview_erasure(
-        session, user, principal_id=row.principal_id
-    )
+    return await dpdp_service.preview_erasure(session, user, principal_id=row.principal_id)
 
 
 # ── Breach ──────────────────────────────────────────────────────────────────
@@ -650,9 +634,7 @@ async def breach_notification(
     _admin=Depends(require_roles(*ADMIN_ROLES)),
 ) -> dict[str, Any]:
     """The message affected people would receive. Drafted, not sent."""
-    return await dpdp_service.draft_breach_notification(
-        session, user, incident_id=incident_id
-    )
+    return await dpdp_service.draft_breach_notification(session, user, incident_id=incident_id)
 
 
 # ── Transfers and the Trust Center ──────────────────────────────────────────

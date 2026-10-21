@@ -273,9 +273,7 @@ async def get_preferences(user: CurrentUser, session: DbSession) -> list[Prefere
     stored = (
         await session.scalars(
             tenant_scoped(
-                select(NotificationPreference).where(
-                    NotificationPreference.user_id == user.id
-                ),
+                select(NotificationPreference).where(NotificationPreference.user_id == user.id),
                 NotificationPreference,
                 user,
             )
@@ -377,9 +375,7 @@ async def mark_read(
         )
     )
     if notification is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
 
     if notification.read_at is None:
         notification.read_at = datetime.now(UTC)
@@ -427,16 +423,20 @@ async def stream(user: CurrentUser, session: DbSession, request: Request) -> Str
 
             for row in rows:
                 last_seen = max(last_seen, row.created_at)
-                yield "event: notification\ndata: " + json.dumps(
-                    {
-                        "id": str(row.id),
-                        "event_key": row.event_key,
-                        "subject": row.rendered_subject,
-                        "body": row.rendered_body,
-                        "is_urgent": row.is_urgent,
-                        "created_at": row.created_at.isoformat(),
-                    }
-                ) + "\n\n"
+                yield (
+                    "event: notification\ndata: "
+                    + json.dumps(
+                        {
+                            "id": str(row.id),
+                            "event_key": row.event_key,
+                            "subject": row.rendered_subject,
+                            "body": row.rendered_body,
+                            "is_urgent": row.is_urgent,
+                            "created_at": row.created_at.isoformat(),
+                        }
+                    )
+                    + "\n\n"
+                )
 
             # Keep-alive, so proxies do not close an idle stream.
             yield ": keep-alive\n\n"
@@ -522,11 +522,7 @@ async def list_failed(
     """
     stmt = tenant_scoped(
         select(Notification)
-        .where(
-            Notification.status.in_(
-                [NotificationStatus.FAILED, NotificationStatus.DEAD_LETTER]
-            )
-        )
+        .where(Notification.status.in_([NotificationStatus.FAILED, NotificationStatus.DEAD_LETTER]))
         .order_by(Notification.created_at.desc())
         .limit(limit),
         Notification,
@@ -565,9 +561,7 @@ async def seed_templates(user: CurrentUser, session: DbSession) -> dict[str, int
 
 
 @router.post("/webhooks/{provider}", include_in_schema=False)
-async def delivery_receipt(
-    provider: str, request: Request, session: DbSession
-) -> dict[str, Any]:
+async def delivery_receipt(provider: str, request: Request, session: DbSession) -> dict[str, Any]:
     """Delivery receipts, bounces and complaints.
 
     A bounce or complaint is a *permanent* signal: the notification is marked
@@ -580,11 +574,7 @@ async def delivery_receipt(
     """
     payload = await request.json()
 
-    message_id = (
-        payload.get("providerMessageId")
-        or payload.get("message_id")
-        or payload.get("id")
-    )
+    message_id = payload.get("providerMessageId") or payload.get("message_id") or payload.get("id")
     if not message_id:
         return {"status": "ignored", "reason": "no message id in payload"}
 
@@ -606,8 +596,7 @@ async def delivery_receipt(
     elif event in {"bounce", "bounced", "complaint", "failed", "undelivered"}:
         notification.status = NotificationStatus.FAILED
         notification.failure_reason = (
-            f"{provider} reported '{event}': "
-            f"{payload.get('reason') or 'no reason supplied'}"
+            f"{provider} reported '{event}': {payload.get('reason') or 'no reason supplied'}"
         )
         # Permanent by nature — no next attempt.
         notification.next_attempt_at = None

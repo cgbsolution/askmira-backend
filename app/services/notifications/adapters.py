@@ -105,9 +105,7 @@ class ConsoleEmailAdapter(ChannelAdapter):
 
         address = (message.recipient_email or "").strip()
         if not address or "@" not in address or address.startswith("@"):
-            raise PermanentFailure(
-                f"'{address}' is not a usable email address. Not retrying."
-            )
+            raise PermanentFailure(f"'{address}' is not a usable email address. Not retrying.")
 
         self.sent.append(message)
         logging.getLogger("askmira.notifications").info(
@@ -127,9 +125,7 @@ class InAppAdapter(ChannelAdapter):
     name = "in_app"
 
     async def send(self, message: OutboundMessage) -> DeliveryResult:
-        return DeliveryResult(
-            provider_message_id=f"inapp-{uuid.uuid4().hex[:16]}", delivered=True
-        )
+        return DeliveryResult(provider_message_id=f"inapp-{uuid.uuid4().hex[:16]}", delivered=True)
 
 
 class NullPushAdapter(ChannelAdapter):
@@ -185,9 +181,7 @@ class WhatsAppCloudAdapter(ChannelAdapter):
 
     def __init__(self, phone_number_id: str, access_token: str) -> None:
         if not phone_number_id or not access_token:
-            raise PermanentFailure(
-                "WhatsApp needs a phone number id and an access token"
-            )
+            raise PermanentFailure("WhatsApp needs a phone number id and an access token")
         self._phone_number_id = phone_number_id
         self._access_token = access_token
 
@@ -232,9 +226,7 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             raise TransientFailure(f"Could not reach the WhatsApp API: {exc}") from exc
 
         if response.status_code >= 500 or response.status_code == 429:
-            raise TransientFailure(
-                f"WhatsApp returned {response.status_code}; will retry"
-            )
+            raise TransientFailure(f"WhatsApp returned {response.status_code}; will retry")
 
         if response.status_code >= 400:
             payload = response.json() if response.content else {}

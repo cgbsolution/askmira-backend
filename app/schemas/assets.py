@@ -105,9 +105,7 @@ class AssetCreate(BaseModel):
     def _tag(cls, value: str) -> str:
         return value.strip().upper()
 
-    @field_validator(
-        "serial_number", "make", "model", "specs", "notes", "vendor", "invoice_number"
-    )
+    @field_validator("serial_number", "make", "model", "specs", "notes", "vendor", "invoice_number")
     @classmethod
     def _blank_is_none(cls, value: str | None) -> str | None:
         return _strip(value)
@@ -131,9 +129,7 @@ class AssetUpdate(BaseModel):
     location_id: uuid.UUID | None = None
     condition: AssetCondition | None = None
 
-    @field_validator(
-        "serial_number", "make", "model", "specs", "notes", "vendor", "invoice_number"
-    )
+    @field_validator("serial_number", "make", "model", "specs", "notes", "vendor", "invoice_number")
     @classmethod
     def _blank_is_none(cls, value: str | None) -> str | None:
         return _strip(value)
