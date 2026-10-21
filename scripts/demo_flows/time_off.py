@@ -83,9 +83,14 @@ HISTORY = (
     ("divya", "SL", "2026-10-07", "2026-10-07", None, "Unwell, resting today", "approve"),
 )
 
+#: Every location's holidays: a day off for everyone has nothing to request.
+_DAYS_OFF = {date.fromisoformat(day) for day, _, state, optional in HOLIDAYS_2026
+             if state is None and not optional}
+
+
 def _weekday(day: date, step: int) -> date:
-    """The nearest weekday from `day` going in `step`'s direction (+1 or -1)."""
-    while day.weekday() >= 5:
+    """The nearest working day from `day` going in `step`'s direction (+1 or -1)."""
+    while day.weekday() >= 5 or day in _DAYS_OFF:
         day += timedelta(days=step)
     return day
 

@@ -78,9 +78,9 @@ async def test_an_application_is_acknowledged_and_the_link_is_never_stored(
     client, session, tenant, people, outbox
 ) -> None:
     await _open_requisition(session, tenant, people)
-    code = (
-        await client.get("/api/v1/hiring/requisitions", headers=_auth(people["hr"]))
-    ).json()["items"][0]["code"]
+    code = (await client.get("/api/v1/hiring/requisitions", headers=_auth(people["hr"]))).json()[
+        "items"
+    ][0]["code"]
     session.add(CareersPageConfig(tenant_id=tenant.id, slug="acme-jobs", is_published=True))
     await session.commit()
 
@@ -123,9 +123,12 @@ async def test_an_application_is_acknowledged_and_the_link_is_never_stored(
 
 async def _candidate(session, people, requisition_id) -> uuid.UUID:
     added = await candidate_service.create_candidate(
-        session, people["hr"],
+        session,
+        people["hr"],
         CandidateCreate(
-            requisition_id=requisition_id, full_name="Arjun Rao", email="arjun@example.com",
+            requisition_id=requisition_id,
+            full_name="Arjun Rao",
+            email="arjun@example.com",
             expected_ctc=Decimal("1800000"),
         ),
     )
@@ -138,22 +141,35 @@ async def test_interviews_reach_the_candidate(session, tenant, people, outbox) -
     requisition_id = await _open_requisition(session, tenant, people)
     candidate_id = await _candidate(session, people, requisition_id)
     stage = await interview_service.create_stage(
-        session, hr,
+        session,
+        hr,
         values={
-            "requisition_id": requisition_id, "sequence": 1, "name": "Technical",
-            "stage_type": InterviewStageType.TECHNICAL, "duration_minutes": 60,
-            "mode": InterviewMode.VIDEO, "required_competencies": ["design"],
+            "requisition_id": requisition_id,
+            "sequence": 1,
+            "name": "Technical",
+            "stage_type": InterviewStageType.TECHNICAL,
+            "duration_minutes": 60,
+            "mode": InterviewMode.VIDEO,
+            "required_competencies": ["design"],
         },
     )
     await session.commit()
     start = datetime(2026, 11, 3, 10, 30)
     interview = await interview_service.schedule_interview(
-        session, hr, candidate_id=candidate_id, stage_id=stage.id, start=start,
-        panelist_user_ids=[people["alice"].id], location="https://meet.example/abc",
+        session,
+        hr,
+        candidate_id=candidate_id,
+        stage_id=stage.id,
+        start=start,
+        panelist_user_ids=[people["alice"].id],
+        location="https://meet.example/abc",
     )
     await session.commit()
     await interview_service.reschedule_interview(
-        session, hr, interview_id=interview.id, start=start + timedelta(days=1),
+        session,
+        hr,
+        interview_id=interview.id,
+        start=start + timedelta(days=1),
         reason="Panel clash",
     )
     await session.commit()
@@ -185,7 +201,10 @@ async def test_a_rejection_waits_and_is_withdrawn_if_reopened(
     candidate_id = await _candidate(session, people, requisition_id)
 
     await candidate_service.move_stage(
-        session, hr, candidate_id=candidate_id, to_stage=CandidateStage.REJECTED,
+        session,
+        hr,
+        candidate_id=candidate_id,
+        to_stage=CandidateStage.REJECTED,
         reason="Notice period too long",
     )
     await session.commit()
@@ -197,7 +216,10 @@ async def test_a_rejection_waits_and_is_withdrawn_if_reopened(
     assert outbox.sent == [], "not before the hold is up"
 
     await candidate_service.move_stage(
-        session, hr, candidate_id=candidate_id, to_stage=CandidateStage.SCREENING,
+        session,
+        hr,
+        candidate_id=candidate_id,
+        to_stage=CandidateStage.SCREENING,
         reason="They can join sooner after all",
     )
     await session.commit()
@@ -206,8 +228,12 @@ async def test_a_rejection_waits_and_is_withdrawn_if_reopened(
 
     # A rejection made without telling the candidate queues nothing.
     await candidate_service.move_stage(
-        session, hr, candidate_id=candidate_id, to_stage=CandidateStage.REJECTED,
-        reason="Duplicate profile", notify_candidate=False,
+        session,
+        hr,
+        candidate_id=candidate_id,
+        to_stage=CandidateStage.REJECTED,
+        reason="Duplicate profile",
+        notify_candidate=False,
     )
     await session.commit()
     assert len(await _messages(session, candidate_id)) == 1
@@ -217,7 +243,10 @@ async def test_a_held_rejection_goes_after_a_day(session, tenant, people, outbox
     requisition_id = await _open_requisition(session, tenant, people)
     candidate_id = await _candidate(session, people, requisition_id)
     await candidate_service.move_stage(
-        session, people["hr"], candidate_id=candidate_id, to_stage=CandidateStage.REJECTED,
+        session,
+        people["hr"],
+        candidate_id=candidate_id,
+        to_stage=CandidateStage.REJECTED,
         reason="Skills gap in Postgres",
     )
     await session.commit()
@@ -270,7 +299,11 @@ async def test_an_empty_message_is_refused(session, tenant, people) -> None:
     candidate_id = await _candidate(session, people, requisition_id)
     with pytest.raises(HTTPException) as exc:
         await candidate_comms.send_message(
-            session, people["hr"], candidate_id=candidate_id, subject="  ", message="Hi",
+            session,
+            people["hr"],
+            candidate_id=candidate_id,
+            subject="  ",
+            message="Hi",
             include_portal_link=False,
         )
     assert exc.value.status_code == 422
@@ -293,7 +326,8 @@ async def test_whatsapp_goes_only_to_a_candidate_who_opted_in(
 
     monkeypatch.setattr(candidate_comms, "whatsapp_adapter_for", whatsapp_for)
     meta = WhatsAppTemplate(
-        tenant_id=tenant.id, meta_name="application_received",
+        tenant_id=tenant.id,
+        meta_name="application_received",
         status=WhatsAppTemplateStatus.APPROVED,
         parameter_names=["first_name", "job_title", "link"],
     )
@@ -301,15 +335,17 @@ async def test_whatsapp_goes_only_to_a_candidate_who_opted_in(
     await session.flush()
     session.add(
         NotificationTemplate(
-            tenant_id=tenant.id, event_key=candidate_comms.APPLICATION_RECEIVED,
-            channel=Channel.WHATSAPP, body="Hi {first_name}, we have your application.",
+            tenant_id=tenant.id,
+            event_key=candidate_comms.APPLICATION_RECEIVED,
+            channel=Channel.WHATSAPP,
+            body="Hi {first_name}, we have your application.",
             whatsapp_template_id=meta.id,
         )
     )
     await _open_requisition(session, tenant, people)
-    code = (
-        await client.get("/api/v1/hiring/requisitions", headers=_auth(people["hr"]))
-    ).json()["items"][0]["code"]
+    code = (await client.get("/api/v1/hiring/requisitions", headers=_auth(people["hr"]))).json()[
+        "items"
+    ][0]["code"]
     session.add(CareersPageConfig(tenant_id=tenant.id, slug="acme-jobs", is_published=True))
     await session.commit()
 
@@ -317,7 +353,9 @@ async def test_whatsapp_goes_only_to_a_candidate_who_opted_in(
         response = await client.post(
             f"/api/v1/public/careers/acme-jobs/jobs/{code}/apply",
             data={
-                "full_name": "Meera Iyer", "email": email, "phone": phone,
+                "full_name": "Meera Iyer",
+                "email": email,
+                "phone": phone,
                 "consent_application_processing": "true",
                 "consent_whatsapp": "true" if whatsapp_ok else "false",
             },
@@ -347,8 +385,12 @@ async def test_whatsapp_goes_only_to_a_candidate_who_opted_in(
     await session.refresh(candidate)
     assert candidate_comms.whatsapp_on(candidate) is False
     await candidate_comms.on_portal_link(
-        session, people["admin"], candidate=candidate, token="t",
-        event_key=candidate_comms.APPLICATION_RECEIVED, payload={"job_title": "X"},
+        session,
+        people["admin"],
+        candidate=candidate,
+        token="t",
+        event_key=candidate_comms.APPLICATION_RECEIVED,
+        payload={"job_title": "X"},
     )
     await session.commit()
     assert [m.channel for m in await _messages(session, candidate.id)].count("whatsapp") == 1

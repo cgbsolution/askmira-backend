@@ -77,9 +77,7 @@ async def _user_for(session, tenant, person, role):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_an_employee_reaches_only_their_own_records(
-    session, tenant, legal_entity, location
-):
+async def test_an_employee_reaches_only_their_own_records(session, tenant, legal_entity, location):
     mine = await _employee(session, tenant, legal_entity, location, code="EMP1")
     theirs = await _employee(session, tenant, legal_entity, location, code="EMP2")
     me = await _user_for(session, tenant, mine, UserRole.EMPLOYEE)
@@ -99,12 +97,8 @@ async def test_a_manager_reaches_their_reports_and_not_another_team(
     session, tenant, legal_entity, location
 ):
     boss = await _employee(session, tenant, legal_entity, location, code="MGR1")
-    report = await _employee(
-        session, tenant, legal_entity, location, code="REP1", manager=boss
-    )
-    skip = await _employee(
-        session, tenant, legal_entity, location, code="REP2", manager=report
-    )
+    report = await _employee(session, tenant, legal_entity, location, code="REP1", manager=boss)
+    skip = await _employee(session, tenant, legal_entity, location, code="REP2", manager=report)
     other = await _employee(session, tenant, legal_entity, location, code="OTHER")
     manager_user = await as_caller(
         session, await _user_for(session, tenant, boss, UserRole.EMPLOYEE)
@@ -149,8 +143,7 @@ async def test_hr_reaches_the_tenant_but_not_another_tenant(
 
     theirs = await grounding.retrieve(session, other_hr_user, sources=("employees",))
     assert theirs.records == (), (
-        "A second tenant's HR reached our employees through the agent retrieval "
-        "path."
+        "A second tenant's HR reached our employees through the agent retrieval path."
     )
 
 
@@ -178,9 +171,7 @@ async def test_your_voice_is_refused_for_every_role(
 
     for requester in (hr_user, employee_user):
         with pytest.raises(RetrievalError) as exc:
-            await grounding.retrieve(
-                session, requester, sources=("your_voice_cases",)
-            )
+            await grounding.retrieve(session, requester, sources=("your_voice_cases",))
         assert "no role that unlocks this" in str(exc.value)
 
 
@@ -190,13 +181,9 @@ async def test_a_forbidden_source_mixed_with_a_permitted_one_refuses_both(
     """Refusing the request, not quietly dropping the forbidden half."""
     await _employee(session, tenant, legal_entity, location, code="EMP1")
     with pytest.raises(RetrievalError):
-        await grounding.retrieve(
-            session, hr_user, sources=("employees", "your_voice_messages")
-        )
+        await grounding.retrieve(session, hr_user, sources=("employees", "your_voice_messages"))
 
-    count = (
-        await session.execute(select(func.count()).select_from(AgentInvocation))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(AgentInvocation))).scalar_one()
     assert count == 0
 
 
@@ -204,9 +191,7 @@ async def test_a_source_outside_the_allowlist_is_reported_not_silently_dropped(
     session, tenant, legal_entity, location, hr_user
 ):
     await _employee(session, tenant, legal_entity, location, code="EMP1")
-    result = await grounding.retrieve(
-        session, hr_user, sources=("employees", "payroll_runs")
-    )
+    result = await grounding.retrieve(session, hr_user, sources=("employees", "payroll_runs"))
     assert "payroll_runs" in result.refused_sources
     assert any("allowlist" in note for note in result.notes)
     assert result.records, "the permitted source still came back"
@@ -254,8 +239,7 @@ async def test_a_fabricated_citation_is_withheld_and_logged(
     assert row.outcome is InvocationOutcome.WITHHELD
     assert not row.citations_verified
     assert "2019" in row.raw_output, (
-        "The log lost what the model actually produced, so the fabrication is "
-        "not reconstructible."
+        "The log lost what the model actually produced, so the fabrication is not reconstructible."
     )
     assert "could not verify" in row.rendered_output
 
@@ -285,9 +269,7 @@ async def test_a_verified_citation_renders_and_is_logged_as_answered(
     assert row.retrieved_record_ids
 
 
-async def test_an_uncited_number_does_not_render(
-    session, tenant, legal_entity, location, hr_user
-):
+async def test_an_uncited_number_does_not_render(session, tenant, legal_entity, location, hr_user):
     """An uncited number in an HR system is treated as fact and acted on."""
     await _employee(session, tenant, legal_entity, location, code="EMP1")
 
@@ -376,14 +358,10 @@ async def test_an_adversarial_resume_is_fenced_flagged_and_does_not_alter_scorin
         "missing. Expected exactly one closing marker for the block and one in "
         "the reinforcement text."
     )
-    assert prompt.rindex("only instructions you follow") > prompt.rindex(
-        "Priya Ramesh"
-    )
+    assert prompt.rindex("only instructions you follow") > prompt.rindex("Priya Ramesh")
     assert result["injection_attempts"], "The attempt was not flagged."
 
-    logged = (
-        (await session.execute(select(PromptInjectionAttempt))).scalars().all()
-    )
+    logged = (await session.execute(select(PromptInjectionAttempt))).scalars().all()
     assert logged
     assert {a.source_field for a in logged} == {"resume"}
     assert all(len(a.matched_text) <= 400 for a in logged), (
@@ -445,9 +423,7 @@ async def test_a_clean_resume_produces_no_attempts(
         sources=("employees",),
         answer_fn=lambda _p: "I could not score this from the record alone.",
         system_rules=SYSTEM_RULES,
-        untrusted_sections=(
-            ("resume", "Senior Data Engineer, eight years' experience."),
-        ),
+        untrusted_sections=(("resume", "Senior Data Engineer, eight years' experience."),),
     )
     assert result["injection_attempts"] == []
 
@@ -586,27 +562,23 @@ async def test_a_forbidden_source_produces_a_refusal_invocation(
     assert row.raw_output is None, "the agent was never called"
 
 
-async def test_injection_attempts_can_be_reviewed(
-    session, tenant, legal_entity, location, hr_user
-):
+async def test_injection_attempts_can_be_reviewed(session, tenant, legal_entity, location, hr_user):
     await _employee(session, tenant, legal_entity, location, code="EMP1")
     written = await grounding.log_injection_attempts(
         session,
         hr_user,
         attempts=[
             a
-            for a in __import__(
-                "app.services.grounding.injection", fromlist=["detect"]
-            ).detect(_ADVERSARIAL_RESUME, field="resume")
+            for a in __import__("app.services.grounding.injection", fromlist=["detect"]).detect(
+                _ADVERSARIAL_RESUME, field="resume"
+            )
         ],
         source_table="candidates",
         source_record_id=uuid.uuid4(),
     )
     assert written >= 3
 
-    rows = (
-        (await session.execute(select(PromptInjectionAttempt))).scalars().all()
-    )
+    rows = (await session.execute(select(PromptInjectionAttempt))).scalars().all()
     assert all(row.reviewed_at is None for row in rows)
     rows[0].reviewed_at = NOW
     await session.commit()

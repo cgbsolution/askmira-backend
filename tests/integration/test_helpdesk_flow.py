@@ -50,9 +50,7 @@ async def people(session: AsyncSession, tenant: Tenant) -> dict[str, User]:
         "bala": await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Bala Iyer"),
         "ops": await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops"),
         "admin": await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin"),
-        "officer": await make_person(
-            session, tenant, role=UserRole.EMPLOYEE, name="Gita Officer"
-        ),
+        "officer": await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Gita Officer"),
     }
 
 
@@ -62,8 +60,9 @@ async def _category(client, admin: User, name: str) -> dict:
     return next(c for c in listed.json() if c["name"] == name)
 
 
-async def _raise(client, user: User, category_id: str, *, subject="Salary short", file=None,
-                 employee_id=None):
+async def _raise(
+    client, user: User, category_id: str, *, subject="Salary short", file=None, employee_id=None
+):
     data = {
         "category_id": category_id,
         "subject": subject,
@@ -136,9 +135,7 @@ async def test_raise_assign_reply_resolve_rate(client, session, people) -> None:
         "/api/v1/helpdesk/queue?assignee=unassigned&search=HD-00001", headers=bearer(ops)
     )
     assert [t["id"] for t in queue.json()] == [tid]
-    assignees = await client.get(
-        f"/api/v1/helpdesk/tickets/{tid}/assignees", headers=bearer(ops)
-    )
+    assignees = await client.get(f"/api/v1/helpdesk/tickets/{tid}/assignees", headers=bearer(ops))
     assert {a["user_id"] for a in assignees.json()} >= {str(ops.id), str(admin.id)}
     assert str(anita.id) not in {a["user_id"] for a in assignees.json()}
     assigned = await client.post(
@@ -179,9 +176,7 @@ async def test_raise_assign_reply_resolve_rate(client, session, people) -> None:
     assert seen["can_add_internal_note"] is False and seen["can_manage"] is False
     assert len(seen["attachments"]) == 1
     own_file = seen["attachments"][0]["id"]
-    download = await client.get(
-        f"/api/v1/helpdesk/attachments/{own_file}", headers=bearer(anita)
-    )
+    download = await client.get(f"/api/v1/helpdesk/attachments/{own_file}", headers=bearer(anita))
     assert download.status_code == 200 and download.content == PDF
     assert download.headers["content-disposition"].startswith("attachment;")
     hidden = await client.get(
@@ -325,9 +320,9 @@ async def test_confidential_tickets_and_other_peoples_tickets(
     # The owner and HR admins work it.
     officer_queue = await client.get("/api/v1/helpdesk/queue", headers=bearer(officer))
     assert [t["id"] for t in officer_queue.json()] == [tid]
-    assert (
-        await client.get(f"/api/v1/helpdesk/tickets/{tid}", headers=bearer(admin))
-    ).json()["viewer"] == "agent"
+    assert (await client.get(f"/api/v1/helpdesk/tickets/{tid}", headers=bearer(admin))).json()[
+        "viewer"
+    ] == "agent"
     to_ops = await client.post(
         f"/api/v1/helpdesk/tickets/{tid}/assign",
         headers=bearer(admin),
@@ -352,9 +347,7 @@ async def test_confidential_tickets_and_other_peoples_tickets(
     ).status_code == 404
 
     # Raising for somebody else is HR's, not a colleague's.
-    for_anita = await _raise(
-        client, bala, general["id"], employee_id=str(anita.employee_id)
-    )
+    for_anita = await _raise(client, bala, general["id"], employee_id=str(anita.employee_id))
     assert for_anita.status_code == 403
     on_behalf = await _raise(client, ops, general["id"], employee_id=str(bala.employee_id))
     assert on_behalf.status_code == 201 and on_behalf.json()["raised_on_behalf"] is True

@@ -61,54 +61,76 @@ async def test_scim_deactivate_revokes_sessions_but_preserves_payroll_history(
     """
     # ── Real history to protect ─────────────────────────────────────────────
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="CTC", value=Decimal(40), counts_toward_pf=True,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
         display_order=1,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, special])
     await session.flush()
 
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2026, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, component in enumerate((basic, special)):
         structure.components.append(
             SalaryStructureComponent(
-                tenant_id=tenant.id, component_id=component.id,
-                component=component, display_order=index,
+                tenant_id=tenant.id,
+                component_id=component.id,
+                component=component,
+                display_order=index,
             )
         )
     session.add(structure)
     await session.commit()
 
     await salary_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
-            structure_id=structure.id, ctc_annual=Decimal("1200000"),
+            structure_id=structure.id,
+            ctc_annual=Decimal("1200000"),
             effective_from=date(2026, 4, 1),
         ),
     )
 
     session.add(
         AttendanceDay(
-            tenant_id=tenant.id, employee_id=employee.id,
-            attendance_date=date(2026, 4, 6), status=AttendanceStatus.PRESENT,
-            payable_fraction=Decimal(1), computed_at=datetime.now(UTC),
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            attendance_date=date(2026, 4, 6),
+            status=AttendanceStatus.PRESENT,
+            payable_fraction=Decimal(1),
+            computed_at=datetime.now(UTC),
         )
     )
 
     # The user being de-provisioned, linked to that employee.
     leaver = User(
-        tenant_id=tenant.id, email="leaver@acme.test", password_hash="!scim",
-        full_name="Anita Sharma", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="leaver@acme.test",
+        password_hash="!scim",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(leaver)
@@ -132,28 +154,20 @@ async def test_scim_deactivate_revokes_sessions_but_preserves_payroll_history(
 
     # History is not.
     assert (
-        await session.scalar(
-            select(func.count(Employee.id)).where(Employee.id == employee.id)
-        )
-        == 1
+        await session.scalar(select(func.count(Employee.id)).where(Employee.id == employee.id)) == 1
     ), "the employee record must survive a directory de-provision"
     assert (
-        len(await salary_service.salary_history(session, hr_user, employee.id))
-        == salary_before
+        len(await salary_service.salary_history(session, hr_user, employee.id)) == salary_before
     ), "payroll history must survive"
     assert (
         await session.scalar(
-            select(func.count(AttendanceDay.id)).where(
-                AttendanceDay.employee_id == employee.id
-            )
+            select(func.count(AttendanceDay.id)).where(AttendanceDay.employee_id == employee.id)
         )
         == attendance_before
     ), "attendance history must survive"
 
     entry = await session.scalar(
-        select(AuditLog).where(
-            AuditLog.entity_type == "user", AuditLog.entity_id == leaver.id
-        )
+        select(AuditLog).where(AuditLog.entity_type == "user", AuditLog.entity_id == leaver.id)
     )
     assert entry is not None
     assert entry.changes["employee_record"] == "retained"
@@ -168,8 +182,12 @@ async def test_a_scim_patch_setting_active_false_also_revokes(
     A service that only implements DELETE silently never de-provisions anyone.
     """
     user = User(
-        tenant_id=tenant.id, email="patchme@acme.test", password_hash="!scim",
-        full_name="Patch Me", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="patchme@acme.test",
+        password_hash="!scim",
+        full_name="Patch Me",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
@@ -193,14 +211,20 @@ async def test_a_pathless_patch_carrying_a_partial_resource_works(
 ) -> None:
     """Okta sends `{"op": "replace", "value": {"active": false}}` with no path."""
     user = User(
-        tenant_id=tenant.id, email="okta@acme.test", password_hash="!scim",
-        full_name="Okta User", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="okta@acme.test",
+        password_hash="!scim",
+        full_name="Okta User",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
 
     updated = await scim_service.apply_patch(
-        session, tenant.id, user.id,
+        session,
+        tenant.id,
+        user.id,
         {
             "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
             "Operations": [{"op": "replace", "value": {"active": False}}],
@@ -227,18 +251,22 @@ async def test_a_scim_payload_claiming_admin_does_not_grant_it(
     assert user.role is UserRole.EMPLOYEE
 
 
-async def test_a_scim_patch_cannot_change_a_role(
-    session: AsyncSession, tenant: Tenant
-) -> None:
+async def test_a_scim_patch_cannot_change_a_role(session: AsyncSession, tenant: Tenant) -> None:
     user = User(
-        tenant_id=tenant.id, email="escalate@acme.test", password_hash="!scim",
-        full_name="Escalate Me", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="escalate@acme.test",
+        password_hash="!scim",
+        full_name="Escalate Me",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
 
     updated = await scim_service.apply_patch(
-        session, tenant.id, user.id,
+        session,
+        tenant.id,
+        user.id,
         {
             "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
             "Operations": [
@@ -273,8 +301,11 @@ async def test_scim_list_is_paginated_and_one_indexed(
     for index in range(5):
         session.add(
             User(
-                tenant_id=tenant.id, email=f"u{index}@acme.test", password_hash="!x",
-                full_name=f"User {index}", role=UserRole.EMPLOYEE,
+                tenant_id=tenant.id,
+                email=f"u{index}@acme.test",
+                password_hash="!x",
+                full_name=f"User {index}",
+                role=UserRole.EMPLOYEE,
             )
         )
     await session.commit()
@@ -299,9 +330,7 @@ async def test_an_unsupported_scim_filter_returns_a_scim_shaped_error(
     session: AsyncSession, tenant: Tenant
 ) -> None:
     with pytest.raises(scim_service.ScimError) as exc:
-        await scim_service.list_users(
-            session, tenant.id, filter_expression='title co "Manager"'
-        )
+        await scim_service.list_users(session, tenant.id, filter_expression='title co "Manager"')
     assert exc.value.scim_type == "invalidFilter"
 
 
@@ -318,9 +347,7 @@ async def test_scim_cannot_reach_another_tenants_users(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_replayed_assertion_id_is_refused(
-    session: AsyncSession, tenant: Tenant
-) -> None:
+async def test_a_replayed_assertion_id_is_refused(session: AsyncSession, tenant: Tenant) -> None:
     """The checklist gate. Valid assertion, used twice."""
     expiry = datetime.now(UTC) + timedelta(minutes=5)
 
@@ -331,20 +358,24 @@ async def test_a_replayed_assertion_id_is_refused(
 
     with pytest.raises(sso_service.SsoError, match="already been used"):
         await sso_service.consume_assertion_id(
-            session, tenant_id=tenant.id, assertion_id="_assertion-1",
+            session,
+            tenant_id=tenant.id,
+            assertion_id="_assertion-1",
             not_on_or_after=expiry,
         )
 
 
-async def test_expired_assertion_ids_are_purged(
-    session: AsyncSession, tenant: Tenant
-) -> None:
+async def test_expired_assertion_ids_are_purged(session: AsyncSession, tenant: Tenant) -> None:
     await sso_service.consume_assertion_id(
-        session, tenant_id=tenant.id, assertion_id="_old",
+        session,
+        tenant_id=tenant.id,
+        assertion_id="_old",
         not_on_or_after=datetime.now(UTC) - timedelta(hours=1),
     )
     await sso_service.consume_assertion_id(
-        session, tenant_id=tenant.id, assertion_id="_current",
+        session,
+        tenant_id=tenant.id,
+        assertion_id="_current",
         not_on_or_after=datetime.now(UTC) + timedelta(hours=1),
     )
     await session.commit()
@@ -355,7 +386,9 @@ async def test_expired_assertion_ids_are_purged(
     # The still-valid one must remain protected.
     with pytest.raises(sso_service.SsoError):
         await sso_service.consume_assertion_id(
-            session, tenant_id=tenant.id, assertion_id="_current",
+            session,
+            tenant_id=tenant.id,
+            assertion_id="_current",
             not_on_or_after=datetime.now(UTC) + timedelta(hours=1),
         )
 
@@ -366,13 +399,21 @@ async def test_enforce_sso_blocks_password_login_but_permits_break_glass(
     """The checklist gate: break-glass works and audits at high severity."""
     session.add(
         IdentityProvider(
-            tenant_id=tenant.id, name="Entra ID", idp_type=IdpType.SAML,
-            enabled=True, enforce_sso=True, allowed_email_domains=["acme.test"],
+            tenant_id=tenant.id,
+            name="Entra ID",
+            idp_type=IdpType.SAML,
+            enabled=True,
+            enforce_sso=True,
+            allowed_email_domains=["acme.test"],
         )
     )
     ordinary = User(
-        tenant_id=tenant.id, email="someone@acme.test", password_hash="!x",
-        full_name="Someone", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="someone@acme.test",
+        password_hash="!x",
+        full_name="Someone",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
     )
     session.add(ordinary)
     tenant.settings = {**(tenant.settings or {}), "break_glass_email": hr_user.email}
@@ -401,8 +442,12 @@ async def test_password_login_is_unaffected_when_sso_is_not_enforced(
 ) -> None:
     session.add(
         IdentityProvider(
-            tenant_id=tenant.id, name="Optional SSO", idp_type=IdpType.OIDC,
-            enabled=True, enforce_sso=False, allowed_email_domains=["acme.test"],
+            tenant_id=tenant.id,
+            name="Optional SSO",
+            idp_type=IdpType.OIDC,
+            enabled=True,
+            enforce_sso=False,
+            allowed_email_domains=["acme.test"],
         )
     )
     await session.commit()
@@ -416,12 +461,18 @@ async def test_email_domain_routes_to_the_right_provider(
     session.add_all(
         [
             IdentityProvider(
-                tenant_id=tenant.id, name="Acme Entra", idp_type=IdpType.SAML,
-                enabled=True, allowed_email_domains=["acme.test"],
+                tenant_id=tenant.id,
+                name="Acme Entra",
+                idp_type=IdpType.SAML,
+                enabled=True,
+                allowed_email_domains=["acme.test"],
             ),
             IdentityProvider(
-                tenant_id=other_tenant.id, name="Globex Okta", idp_type=IdpType.OIDC,
-                enabled=True, allowed_email_domains=["globex.test"],
+                tenant_id=other_tenant.id,
+                name="Globex Okta",
+                idp_type=IdpType.OIDC,
+                enabled=True,
+                allowed_email_domains=["globex.test"],
             ),
         ]
     )
@@ -440,8 +491,12 @@ async def test_jit_provisioning_creates_a_user_but_never_an_employee(
 ) -> None:
     """A user with no employee record is a valid state for a contractor."""
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.SAML, enabled=True,
-        allowed_email_domains=["acme.test"], jit_provisioning=True,
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.SAML,
+        enabled=True,
+        allowed_email_domains=["acme.test"],
+        jit_provisioning=True,
     )
     session.add(provider)
     await session.commit()
@@ -449,8 +504,12 @@ async def test_jit_provisioning_creates_a_user_but_never_an_employee(
     employees_before = await session.scalar(select(func.count(Employee.id)))
 
     user = await sso_service.provision_user(
-        session, tenant_id=tenant.id, provider=provider,
-        email="contractor@acme.test", first_name="Ravi", last_name="Kumar",
+        session,
+        tenant_id=tenant.id,
+        provider=provider,
+        email="contractor@acme.test",
+        first_name="Ravi",
+        last_name="Kumar",
         external_employee_code=None,
     )
     await session.commit()
@@ -460,11 +519,12 @@ async def test_jit_provisioning_creates_a_user_but_never_an_employee(
     assert await session.scalar(select(func.count(Employee.id))) == employees_before
 
 
-async def test_a_disallowed_email_domain_is_refused(
-    session: AsyncSession, tenant: Tenant
-) -> None:
+async def test_a_disallowed_email_domain_is_refused(session: AsyncSession, tenant: Tenant) -> None:
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.SAML, enabled=True,
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.SAML,
+        enabled=True,
         allowed_email_domains=["acme.test"],
     )
     session.add(provider)
@@ -472,8 +532,12 @@ async def test_a_disallowed_email_domain_is_refused(
 
     with pytest.raises(sso_service.SsoError, match="not permitted"):
         await sso_service.provision_user(
-            session, tenant_id=tenant.id, provider=provider,
-            email="attacker@evil.test", first_name="X", last_name="Y",
+            session,
+            tenant_id=tenant.id,
+            provider=provider,
+            email="attacker@evil.test",
+            first_name="X",
+            last_name="Y",
             external_employee_code=None,
         )
 
@@ -483,15 +547,23 @@ async def test_sso_login_does_not_change_an_existing_users_role(
 ) -> None:
     """A subsequent SSO login must leave the assigned role exactly as it is."""
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.SAML, enabled=True,
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.SAML,
+        enabled=True,
         allowed_email_domains=["acme.test"],
     )
     session.add(provider)
     await session.commit()
 
     returned = await sso_service.provision_user(
-        session, tenant_id=tenant.id, provider=provider, email=hr_user.email,
-        first_name="Priya", last_name="Ramesh", external_employee_code=None,
+        session,
+        tenant_id=tenant.id,
+        provider=provider,
+        email=hr_user.email,
+        first_name="Priya",
+        last_name="Ramesh",
+        external_employee_code=None,
     )
     await session.commit()
 
@@ -504,15 +576,24 @@ async def test_an_unmatched_employee_code_leaves_the_user_unlinked(
 ) -> None:
     """A near-miss is not a match. Guessing attaches the wrong payslips."""
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.SAML, enabled=True,
-        allowed_email_domains=["acme.test"], employee_id_attribute="employeeId",
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.SAML,
+        enabled=True,
+        allowed_email_domains=["acme.test"],
+        employee_id_attribute="employeeId",
     )
     session.add(provider)
     await session.commit()
 
     user = await sso_service.provision_user(
-        session, tenant_id=tenant.id, provider=provider, email="ghost@acme.test",
-        first_name="Ghost", last_name="User", external_employee_code="NOPE999",
+        session,
+        tenant_id=tenant.id,
+        provider=provider,
+        email="ghost@acme.test",
+        first_name="Ghost",
+        last_name="User",
+        external_employee_code="NOPE999",
     )
     await session.commit()
 
@@ -529,15 +610,23 @@ async def test_a_matching_employee_code_links_the_user(
     session: AsyncSession, tenant: Tenant, employee: Employee
 ) -> None:
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.SAML, enabled=True,
-        allowed_email_domains=["acme.test"], employee_id_attribute="employeeId",
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.SAML,
+        enabled=True,
+        allowed_email_domains=["acme.test"],
+        employee_id_attribute="employeeId",
     )
     session.add(provider)
     await session.commit()
 
     user = await sso_service.provision_user(
-        session, tenant_id=tenant.id, provider=provider, email="anita@acme.test",
-        first_name="Anita", last_name="Sharma",
+        session,
+        tenant_id=tenant.id,
+        provider=provider,
+        email="anita@acme.test",
+        first_name="Anita",
+        last_name="Sharma",
         external_employee_code=employee.employee_code,
     )
     await session.commit()
@@ -552,7 +641,10 @@ async def test_a_matching_employee_code_links_the_user(
 
 async def _device(session: AsyncSession, tenant: Tenant, hr_user: User):
     return await device_service.create_device(
-        session, hr_user, device_id="DEV-BLR-01", name="Bengaluru main gate",
+        session,
+        hr_user,
+        device_id="DEV-BLR-01",
+        name="Bengaluru main gate",
         vendor=DeviceVendor.ESSL,
     )
 
@@ -578,9 +670,7 @@ async def test_duplicate_punches_deduplicate_to_one(
     assert second.duplicates == 2
 
     stored = await session.scalar(
-        select(func.count(AttendancePunch.id)).where(
-            AttendancePunch.employee_id == employee.id
-        )
+        select(func.count(AttendancePunch.id)).where(AttendancePunch.employee_id == employee.id)
     )
     assert stored == 2
 
@@ -728,17 +818,19 @@ async def test_a_stored_client_secret_is_never_plaintext_in_the_database(
 
     plaintext = "the-real-oidc-client-secret"
     provider = IdentityProvider(
-        tenant_id=tenant.id, name="Entra", idp_type=IdpType.OIDC, enabled=True,
-        client_id="abc", client_secret_encrypted=encrypt_secret(plaintext, tenant.id),
+        tenant_id=tenant.id,
+        name="Entra",
+        idp_type=IdpType.OIDC,
+        enabled=True,
+        client_id="abc",
+        client_secret_encrypted=encrypt_secret(plaintext, tenant.id),
     )
     session.add(provider)
     await session.commit()
 
     # Read the raw column, bypassing the ORM entirely.
     raw = await session.scalar(
-        select(IdentityProvider.client_secret_encrypted).where(
-            IdentityProvider.id == provider.id
-        )
+        select(IdentityProvider.client_secret_encrypted).where(IdentityProvider.id == provider.id)
     )
     assert plaintext not in raw
     assert raw.startswith("enc:v1:")

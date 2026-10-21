@@ -59,8 +59,12 @@ pytestmark = requires_db
 
 # Test fixtures, deliberately synthetic — not an authority on Indian rates.
 PF_RULES = {
-    "wage_ceiling": 15000, "employee_rate": 12, "employer_rate": 12,
-    "eps_wage_ceiling": 15000, "edli_wage_ceiling": 15000, "eps_rate": 8.33,
+    "wage_ceiling": 15000,
+    "employee_rate": 12,
+    "employer_rate": 12,
+    "eps_wage_ceiling": 15000,
+    "edli_wage_ceiling": 15000,
+    "eps_rate": 8.33,
 }
 TDS_RULES = {
     "regimes": {
@@ -115,21 +119,32 @@ async def _person(
 
 async def _structure(session: AsyncSession, tenant: Tenant) -> SalaryStructure:
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.PERCENTAGE_OF, base_component_code="CTC",
-        value=Decimal(40), counts_toward_pf=True, display_order=1,
+        calculation_type=CalculationType.PERCENTAGE_OF,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
+        display_order=1,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, special])
     await session.flush()
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 4, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2026, 4, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, item in enumerate((basic, special)):
         structure.components.append(
@@ -155,30 +170,50 @@ def _lock(tenant: Tenant, user: User, year: int, month: int) -> AttendancePeriod
 
 @pytest.fixture
 async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, location: Location):
-    _, maker = await _person(session, tenant, legal_entity, location, code="MAKER",
-                             role=UserRole.ADMIN)
-    _, checker = await _person(session, tenant, legal_entity, location, code="CHECKER",
-                               role=UserRole.SUB_ADMIN)
-    meera_emp, meera = await _person(session, tenant, legal_entity, location, code="MEERA",
-                                     role=UserRole.EMPLOYEE)
-    ravi_emp, ravi = await _person(session, tenant, legal_entity, location, code="RAVI",
-                                   role=UserRole.EMPLOYEE)
+    _, maker = await _person(
+        session, tenant, legal_entity, location, code="MAKER", role=UserRole.ADMIN
+    )
+    _, checker = await _person(
+        session, tenant, legal_entity, location, code="CHECKER", role=UserRole.SUB_ADMIN
+    )
+    meera_emp, meera = await _person(
+        session, tenant, legal_entity, location, code="MEERA", role=UserRole.EMPLOYEE
+    )
+    ravi_emp, ravi = await _person(
+        session, tenant, legal_entity, location, code="RAVI", role=UserRole.EMPLOYEE
+    )
     structure = await _structure(session, tenant)
     for person in (maker, checker):
         await salary_service.assign_salary(
-            session, maker, person.employee_id,
-            EmployeeSalaryCreate(structure_id=structure.id, ctc_annual=Decimal("600000"),
-                                 effective_from=date(2026, 4, 1)),
+            session,
+            maker,
+            person.employee_id,
+            EmployeeSalaryCreate(
+                structure_id=structure.id,
+                ctc_annual=Decimal("600000"),
+                effective_from=date(2026, 4, 1),
+            ),
         )
     for person in (meera_emp, ravi_emp):
         await salary_service.assign_salary(
-            session, maker, person.id,
-            EmployeeSalaryCreate(structure_id=structure.id, ctc_annual=Decimal("1200000"),
-                                 effective_from=date(2026, 4, 1)),
+            session,
+            maker,
+            person.id,
+            EmployeeSalaryCreate(
+                structure_id=structure.id,
+                ctc_annual=Decimal("1200000"),
+                effective_from=date(2026, 4, 1),
+            ),
         )
     return {
-        "tenant": tenant, "entity": legal_entity, "maker": maker, "checker": checker,
-        "meera": meera, "meera_emp": meera_emp, "ravi": ravi, "ravi_emp": ravi_emp,
+        "tenant": tenant,
+        "entity": legal_entity,
+        "maker": maker,
+        "checker": checker,
+        "meera": meera,
+        "meera_emp": meera_emp,
+        "ravi": ravi,
+        "ravi_emp": ravi_emp,
         "structure": structure,
     }
 
@@ -188,20 +223,26 @@ async def _approved_rules(session: AsyncSession, org, *, tds: bool = True) -> No
     kinds = [("pf", PF_RULES)] + ([("tds", TDS_RULES)] if tds else [])
     for rule_type, rules in kinds:
         created = await rule_set_service.create_rule_set(
-            session, org["maker"],
-            RuleSetCreate(rule_type=rule_type, jurisdiction="IN",
-                          effective_from=date(2026, 4, 1), rules=rules,
-                          source_reference="Test fixture, not a statutory source"),
+            session,
+            org["maker"],
+            RuleSetCreate(
+                rule_type=rule_type,
+                jurisdiction="IN",
+                effective_from=date(2026, 4, 1),
+                rules=rules,
+                source_reference="Test fixture, not a statutory source",
+            ),
         )
-        await rule_set_service.approve_rule_set(
-            session, org["checker"], created.id, attest=True
-        )
+        await rule_set_service.approve_rule_set(session, org["checker"], created.id, attest=True)
 
 
 async def _open_run(session: AsyncSession, org, month: int):
     return await run_service.create_run(
-        session, org["maker"], legal_entity_id=org["entity"].id,
-        period_year=2026, period_month=month,
+        session,
+        org["maker"],
+        legal_entity_id=org["entity"].id,
+        period_year=2026,
+        period_month=month,
     )
 
 
@@ -212,9 +253,15 @@ async def _open_run(session: AsyncSession, org, month: int):
 
 async def test_the_author_of_a_rule_set_cannot_approve_it(session: AsyncSession, org) -> None:
     created = await rule_set_service.create_rule_set(
-        session, org["maker"],
-        RuleSetCreate(rule_type="pf", jurisdiction="IN", effective_from=date(2026, 4, 1),
-                      rules=PF_RULES, source_reference="fixture"),
+        session,
+        org["maker"],
+        RuleSetCreate(
+            rule_type="pf",
+            jurisdiction="IN",
+            effective_from=date(2026, 4, 1),
+            rules=PF_RULES,
+            source_reference="fixture",
+        ),
     )
     assert created.is_approved is False
     assert created.caller_may_approve is False
@@ -236,9 +283,15 @@ async def test_the_author_of_a_rule_set_cannot_approve_it(session: AsyncSession,
 async def test_a_rule_set_missing_an_engine_key_is_refused(session: AsyncSession, org) -> None:
     with pytest.raises(HTTPException) as exc:
         await rule_set_service.create_rule_set(
-            session, org["maker"],
-            RuleSetCreate(rule_type="pf", jurisdiction="IN", effective_from=date(2026, 4, 1),
-                          rules={"wage_ceiling": 1}, source_reference="fixture"),
+            session,
+            org["maker"],
+            RuleSetCreate(
+                rule_type="pf",
+                jurisdiction="IN",
+                effective_from=date(2026, 4, 1),
+                rules={"wage_ceiling": 1},
+                source_reference="fixture",
+            ),
         )
     assert exc.value.status_code == 422
     assert "employee_rate" in exc.value.detail
@@ -249,9 +302,15 @@ async def test_approving_a_new_version_closes_the_old_one_and_leaves_its_rules(
 ) -> None:
     await _approved_rules(session, org, tds=False)
     newer = await rule_set_service.create_rule_set(
-        session, org["maker"],
-        RuleSetCreate(rule_type="pf", jurisdiction="IN", effective_from=date(2026, 10, 1),
-                      rules={**PF_RULES, "wage_ceiling": 99999}, source_reference="fixture v2"),
+        session,
+        org["maker"],
+        RuleSetCreate(
+            rule_type="pf",
+            jurisdiction="IN",
+            effective_from=date(2026, 10, 1),
+            rules={**PF_RULES, "wage_ceiling": 99999},
+            source_reference="fixture v2",
+        ),
     )
     assert newer.version == 2
     await rule_set_service.approve_rule_set(session, org["checker"], newer.id, attest=True)
@@ -293,9 +352,7 @@ async def test_a_run_end_to_end(session: AsyncSession, org, other_hr_user: User)
     assert computed.computed_by_user_id == org["maker"].id
 
     meera_slip = await session.scalar(
-        select(Payslip).where(
-            Payslip.run_id == run.id, Payslip.employee_id == org["meera_emp"].id
-        )
+        select(Payslip).where(Payslip.run_id == run.id, Payslip.employee_id == org["meera_emp"].id)
     )
     # 1,200,000 projected at the fixture's flat 10%, over twelve months.
     assert Decimal(str(meera_slip.tds)) == Decimal("10000.00")
@@ -408,29 +465,51 @@ async def test_variances_must_each_be_acknowledged_and_inputs_paid_once(
 
     # May: a raise for Meera (a variance), a reimbursement and a loan for Ravi.
     await salary_service.assign_salary(
-        session, org["maker"], org["meera_emp"].id,
-        EmployeeSalaryCreate(structure_id=org["structure"].id, ctc_annual=Decimal("1800000"),
-                             effective_from=date(2026, 5, 1), revision_reason="Promotion"),
+        session,
+        org["maker"],
+        org["meera_emp"].id,
+        EmployeeSalaryCreate(
+            structure_id=org["structure"].id,
+            ctc_annual=Decimal("1800000"),
+            effective_from=date(2026, 5, 1),
+            revision_reason="Promotion",
+        ),
     )
     tenant_id = org["tenant"].id
-    session.add(ReimbursementComponent(tenant_id=tenant_id, code="FUEL", name="Fuel",
-                                       annual_entitlement=Decimal("24000")))
+    session.add(
+        ReimbursementComponent(
+            tenant_id=tenant_id, code="FUEL", name="Fuel", annual_entitlement=Decimal("24000")
+        )
+    )
     claim = ReimbursementClaim(
-        tenant_id=tenant_id, employee_id=org["ravi_emp"].id, component_code="FUEL",
-        financial_year="2026-27", amount=Decimal("3000"), accepted_amount=Decimal("2500"),
+        tenant_id=tenant_id,
+        employee_id=org["ravi_emp"].id,
+        component_code="FUEL",
+        financial_year="2026-27",
+        amount=Decimal("3000"),
+        accepted_amount=Decimal("2500"),
         status=ClaimStatus.PARTIAL,
     )
-    scheme = LoanScheme(tenant_id=tenant_id, name="Salary advance",
-                        loan_type=LoanType.SALARY_ADVANCE,
-                        interest_type=InterestType.INTEREST_FREE, max_tenure_months=12,
-                        minimum_net_pay=Decimal("10000"))
+    scheme = LoanScheme(
+        tenant_id=tenant_id,
+        name="Salary advance",
+        loan_type=LoanType.SALARY_ADVANCE,
+        interest_type=InterestType.INTEREST_FREE,
+        max_tenure_months=12,
+        minimum_net_pay=Decimal("10000"),
+    )
     session.add_all([claim, scheme])
     await session.flush()
     loan = LoanAccount(
-        tenant_id=tenant_id, employee_id=org["ravi_emp"].id, scheme_id=scheme.id,
-        status=LoanStatus.ACTIVE, principal=Decimal("12000"),
-        interest_type=InterestType.INTEREST_FREE, tenure_months=12,
-        emi_amount=Decimal("1000"), outstanding_principal=Decimal("12000"),
+        tenant_id=tenant_id,
+        employee_id=org["ravi_emp"].id,
+        scheme_id=scheme.id,
+        status=LoanStatus.ACTIVE,
+        principal=Decimal("12000"),
+        interest_type=InterestType.INTEREST_FREE,
+        tenure_months=12,
+        emi_amount=Decimal("1000"),
+        outstanding_principal=Decimal("12000"),
     )
     session.add(loan)
     await session.commit()
@@ -473,13 +552,24 @@ async def test_variances_must_each_be_acknowledged_and_inputs_paid_once(
         await run_service.approve_run(session, org["checker"], may.id)
     assert exc.value.status_code == 409
     assert "Recompute" in exc.value.detail
-    assert await session.scalar(
-        select(LoanRepayment.id).where(LoanRepayment.loan_account_id == loan_id)
-    ) is None
+    assert (
+        await session.scalar(
+            select(LoanRepayment.id).where(LoanRepayment.loan_account_id == loan_id)
+        )
+        is None
+    )
 
     # The refusal rolled the approval back, which expires everything loaded.
-    for loaded in (org["maker"], org["checker"], org["meera_emp"], org["ravi_emp"],
-                   claim, loan, april, may):
+    for loaded in (
+        org["maker"],
+        org["checker"],
+        org["meera_emp"],
+        org["ravi_emp"],
+        claim,
+        loan,
+        april,
+        may,
+    ):
         await session.refresh(loaded)
 
     # Put it back, recompute, re-acknowledge, approve: consumed exactly once.
@@ -527,9 +617,15 @@ async def test_no_approved_tds_rule_set_blocks_approval(session: AsyncSession, o
 
 async def test_an_unapproved_rule_set_fails_the_computation(session: AsyncSession, org) -> None:
     await rule_set_service.create_rule_set(
-        session, org["maker"],
-        RuleSetCreate(rule_type="pf", jurisdiction="IN", effective_from=date(2026, 4, 1),
-                      rules=PF_RULES, source_reference="fixture"),
+        session,
+        org["maker"],
+        RuleSetCreate(
+            rule_type="pf",
+            jurisdiction="IN",
+            effective_from=date(2026, 4, 1),
+            rules=PF_RULES,
+            source_reference="fixture",
+        ),
     )
     session.add(_lock(org["tenant"], org["maker"], 2026, 4))
     await session.commit()
@@ -545,18 +641,28 @@ async def test_an_unapproved_rule_set_fails_the_computation(session: AsyncSessio
 async def test_a_scheduled_statutory_bonus_rides_the_run(session: AsyncSession, org) -> None:
     await _approved_rules(session, org)
     bonus_rules = PayrollRuleSet(
-        tenant_id=org["tenant"].id, rule_type="bonus", jurisdiction="IN", version=1,
-        effective_from=date(2025, 4, 1), rules={"note": "fixture"},
+        tenant_id=org["tenant"].id,
+        rule_type="bonus",
+        jurisdiction="IN",
+        version=1,
+        effective_from=date(2025, 4, 1),
+        rules={"note": "fixture"},
         approved_at=datetime.now(UTC),
     )
     session.add(bonus_rules)
     await session.flush()
     bonus = BonusComputation(
-        tenant_id=org["tenant"].id, employee_id=org["ravi_emp"].id,
-        financial_year="2025-2026", rule_set_id=bonus_rules.id, is_eligible=True,
-        eligible_wage=Decimal("7000"), days_worked=Decimal(300),
-        total_working_days=Decimal(300), percentage=Decimal("8.33"),
-        amount=Decimal("7000.00"), status=BonusStatus.APPROVED,
+        tenant_id=org["tenant"].id,
+        employee_id=org["ravi_emp"].id,
+        financial_year="2025-2026",
+        rule_set_id=bonus_rules.id,
+        is_eligible=True,
+        eligible_wage=Decimal("7000"),
+        days_worked=Decimal(300),
+        total_working_days=Decimal(300),
+        percentage=Decimal("8.33"),
+        amount=Decimal("7000.00"),
+        status=BonusStatus.APPROVED,
     )
     session.add(bonus)
     session.add(_lock(org["tenant"], org["maker"], 2026, 4))
@@ -564,7 +670,10 @@ async def test_a_scheduled_statutory_bonus_rides_the_run(session: AsyncSession, 
 
     run = await _open_run(session, org, 4)
     scheduled = await statutory_service.disburse_bonus(
-        session, org["maker"], financial_year="2025-2026", paid_on=date(2026, 4, 30),
+        session,
+        org["maker"],
+        financial_year="2025-2026",
+        paid_on=date(2026, 4, 30),
         run_id=run.id,
     )
     await session.commit()

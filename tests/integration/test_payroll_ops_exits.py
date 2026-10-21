@@ -43,45 +43,66 @@ pytestmark = requires_db
 
 
 async def _org(session, tenant, legal_entity, location):
-    boss, boss_user = await person(session, tenant, legal_entity, location, code="MGR1",
-                                   role=UserRole.EMPLOYEE)
-    other, other_user = await person(session, tenant, legal_entity, location, code="MGR2",
-                                     role=UserRole.EMPLOYEE)
-    leaver, leaver_user = await person(session, tenant, legal_entity, location, code="EMP1",
-                                       role=UserRole.EMPLOYEE, manager=boss)
-    hr, hr_user = await person(session, tenant, legal_entity, location, code="HR1",
-                               role=UserRole.ADMIN)
-    it_admin, it_user = await person(session, tenant, legal_entity, location, code="IT1",
-                                     role=UserRole.EMPLOYEE)
+    boss, boss_user = await person(
+        session, tenant, legal_entity, location, code="MGR1", role=UserRole.EMPLOYEE
+    )
+    other, other_user = await person(
+        session, tenant, legal_entity, location, code="MGR2", role=UserRole.EMPLOYEE
+    )
+    leaver, leaver_user = await person(
+        session, tenant, legal_entity, location, code="EMP1", role=UserRole.EMPLOYEE, manager=boss
+    )
+    hr, hr_user = await person(
+        session, tenant, legal_entity, location, code="HR1", role=UserRole.ADMIN
+    )
+    it_admin, it_user = await person(
+        session, tenant, legal_entity, location, code="IT1", role=UserRole.EMPLOYEE
+    )
     session.add_all(
         [
             ClearanceTemplate(
-                tenant_id=tenant.id, department="IT", description="Laptop returned",
-                owner_role=ClearanceOwnerRole.NAMED_USER.value, owner_user_id=it_user.id,
+                tenant_id=tenant.id,
+                department="IT",
+                description="Laptop returned",
+                owner_role=ClearanceOwnerRole.NAMED_USER.value,
+                owner_user_id=it_user.id,
                 display_order=1,
             ),
             ClearanceTemplate(
-                tenant_id=tenant.id, department="Manager", description="Handover done",
-                owner_role=ClearanceOwnerRole.REPORTING_MANAGER.value, display_order=2,
+                tenant_id=tenant.id,
+                department="Manager",
+                description="Handover done",
+                owner_role=ClearanceOwnerRole.REPORTING_MANAGER.value,
+                display_order=2,
             ),
             ClearanceTemplate(
-                tenant_id=tenant.id, department="Finance", description="Advances settled",
+                tenant_id=tenant.id,
+                department="Finance",
+                description="Advances settled",
                 display_order=3,
             ),
         ]
     )
     await session.commit()
     return {
-        "boss": boss_user, "other": other_user, "leaver": leaver, "leaver_user": leaver_user,
-        "hr": hr_user, "it": it_user,
+        "boss": boss_user,
+        "other": other_user,
+        "leaver": leaver,
+        "leaver_user": leaver_user,
+        "hr": hr_user,
+        "it": it_user,
     }
 
 
 async def _exit(session, org, *, by=None):
     record = await exit_service.initiate_exit(
-        session, by or org["hr"], employee_id=org["leaver"].id,
-        exit_type=ExitType.RESIGNATION, resignation_date=date(2026, 6, 1),
-        approved_last_working_day=date(2026, 8, 31), notice_period_days=90,
+        session,
+        by or org["hr"],
+        employee_id=org["leaver"].id,
+        exit_type=ExitType.RESIGNATION,
+        resignation_date=date(2026, 6, 1),
+        approved_last_working_day=date(2026, 8, 31),
+        notice_period_days=90,
     )
     await session.commit()
     return record
@@ -97,8 +118,11 @@ async def test_a_manager_starts_an_exit_only_for_their_reporting_line(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.initiate_exit(
-            session, org["leaver_user"], employee_id=org["leaver"].id,
-            exit_type=ExitType.RESIGNATION, resignation_date=date(2026, 6, 1),
+            session,
+            org["leaver_user"],
+            employee_id=org["leaver"].id,
+            exit_type=ExitType.RESIGNATION,
+            resignation_date=date(2026, 6, 1),
         )
     assert exc.value.status_code == 403
 
@@ -133,8 +157,10 @@ async def test_clearance_is_signed_off_by_its_owner_or_hr_only(
         ).all()
     }
 
-    it_view = {row["department"]: row for row in await operations.list_clearance(
-        session, org["it"], record.id)}
+    it_view = {
+        row["department"]: row
+        for row in await operations.list_clearance(session, org["it"], record.id)
+    }
     assert it_view["IT"]["can_update"] is True
     assert it_view["Manager"]["can_update"] is False
     assert it_view["IT"]["owner_name"] == "It1 Test"
@@ -146,8 +172,11 @@ async def test_clearance_is_signed_off_by_its_owner_or_hr_only(
     assert exc.value.status_code == 403
 
     await exit_service.clear_item(
-        session, org["it"], item_id=items["IT"].id,
-        outcome=ClearanceStatus.CLEARED_WITH_RECOVERY, recovery_amount=Decimal(15000),
+        session,
+        org["it"],
+        item_id=items["IT"].id,
+        outcome=ClearanceStatus.CLEARED_WITH_RECOVERY,
+        recovery_amount=Decimal(15000),
     )
     await exit_service.clear_item(
         session, org["boss"], item_id=items["Manager"].id, outcome=ClearanceStatus.CLEARED
@@ -164,7 +193,9 @@ async def test_clearance_is_signed_off_by_its_owner_or_hr_only(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.clear_item(
-            session, org["leaver_user"], item_id=items["Finance"].id,
+            session,
+            org["leaver_user"],
+            item_id=items["Finance"].id,
             outcome=ClearanceStatus.CLEARED,
         )
     assert exc.value.status_code == 403
@@ -190,24 +221,37 @@ async def test_the_settlement_prefill_reads_what_other_modules_hold(
     org = await _org(session, tenant, legal_entity, location)
     record = await _cleared(session, org)
     scheme = LoanScheme(
-        tenant_id=tenant.id, name="Advance", loan_type=LoanType.SALARY_ADVANCE,
-        interest_type=InterestType.INTEREST_FREE, max_tenure_months=6,
+        tenant_id=tenant.id,
+        name="Advance",
+        loan_type=LoanType.SALARY_ADVANCE,
+        interest_type=InterestType.INTEREST_FREE,
+        max_tenure_months=6,
     )
     session.add(scheme)
     await session.flush()
     session.add_all(
         [
             LoanAccount(
-                tenant_id=tenant.id, employee_id=org["leaver"].id, scheme_id=scheme.id,
-                status=LoanStatus.ACTIVE, principal=Decimal(60000),
-                interest_type=InterestType.INTEREST_FREE, tenure_months=6,
-                emi_amount=Decimal(10000), outstanding_principal=Decimal(40000),
+                tenant_id=tenant.id,
+                employee_id=org["leaver"].id,
+                scheme_id=scheme.id,
+                status=LoanStatus.ACTIVE,
+                principal=Decimal(60000),
+                interest_type=InterestType.INTEREST_FREE,
+                tenure_months=6,
+                emi_amount=Decimal(10000),
+                outstanding_principal=Decimal(40000),
             ),
             GratuityPayout(
-                tenant_id=tenant.id, employee_id=org["leaver"].id, exit_date=date(2026, 8, 31),
-                exit_reason=ExitReason.RESIGNATION, service_days=3100,
-                service_years=Decimal(8), monthly_wages=Decimal(40000),
-                gross_amount=Decimal(184615), exempt_amount=Decimal(184615),
+                tenant_id=tenant.id,
+                employee_id=org["leaver"].id,
+                exit_date=date(2026, 8, 31),
+                exit_reason=ExitReason.RESIGNATION,
+                service_days=3100,
+                service_years=Decimal(8),
+                monthly_wages=Decimal(40000),
+                gross_amount=Decimal(184615),
+                exempt_amount=Decimal(184615),
             ),
         ]
     )
@@ -222,15 +266,23 @@ async def test_the_settlement_prefill_reads_what_other_modules_hold(
 
 
 async def test_a_hold_blocks_letters_and_nobody_approves_their_own_settlement(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     org = await _org(session, tenant, legal_entity, location)
     record = await _cleared(session, org)
     settlement = await exit_service.compute_settlement(
-        session, org["hr"], exit_id=record.id,
+        session,
+        org["hr"],
+        exit_id=record.id,
         inputs=engine.SettlementInput(
-            final_month_salary=Decimal(45000), final_month_basis="18 of 30 days.",
-            loan_outstanding=Decimal(60000), loan_basis="Advance outstanding.",
+            final_month_salary=Decimal(45000),
+            final_month_basis="18 of 30 days.",
+            loan_outstanding=Decimal(60000),
+            loan_basis="Advance outstanding.",
         ),
     )
     await session.commit()
@@ -287,8 +339,11 @@ async def test_the_letter_policy_is_configurable(
     await session.commit()
     gate = await operations.letter_gate(session, org["hr"], org["leaver"].id)
     assert gate == {
-        "allowed": True, "reason": "", "requires_settlement": False,
-        "settlement_status": None, "hold_reason": None,
+        "allowed": True,
+        "reason": "",
+        "requires_settlement": False,
+        "settlement_status": None,
+        "hold_reason": None,
     }
 
 
@@ -298,13 +353,19 @@ async def test_encashment_is_decided_by_the_reporting_line_not_the_requester(
     org = await _org(session, tenant, legal_entity, location)
     session.add(
         EncashmentPolicy(
-            tenant_id=tenant.id, leave_type_code="EL", encashable_in_service=True,
-            formula_basis=["BASIC"], days_per_month_divisor=30,
+            tenant_id=tenant.id,
+            leave_type_code="EL",
+            encashable_in_service=True,
+            formula_basis=["BASIC"],
+            days_per_month_divisor=30,
         )
     )
     request = EncashmentRequest(
-        tenant_id=tenant.id, employee_id=org["leaver"].id, leave_type_code="EL",
-        financial_year="2026-27", days_requested=Decimal(5),
+        tenant_id=tenant.id,
+        employee_id=org["leaver"].id,
+        leave_type_code="EL",
+        financial_year="2026-27",
+        days_requested=Decimal(5),
     )
     session.add(request)
     await session.commit()
@@ -322,9 +383,12 @@ async def test_encashment_is_decided_by_the_reporting_line_not_the_requester(
         session, org["boss"], employee_id=None, pending_only=True
     )
     assert [row.id for row in boss_view] == [request.id]
-    assert await benefits_service.list_encashments(
-        session, org["other"], employee_id=None, pending_only=True
-    ) == []
+    assert (
+        await benefits_service.list_encashments(
+            session, org["other"], employee_id=None, pending_only=True
+        )
+        == []
+    )
 
     decided = await benefits_service.decide_encashment(
         session, org["boss"], request.id, approve=True, note="OK"
@@ -358,28 +422,37 @@ async def test_claims_owed_to_a_leaver_are_settled_once_in_full_and_final(
     org = await _org(session, tenant, legal_entity, location)
     record = await _cleared(session, org)
     claim = ExpenseClaim(
-        tenant_id=tenant.id, employee_id=org["leaver"].id, category_key="local_travel",
-        city_tier=CityTierEnum.A, kind=ClaimKindEnum.RECEIPTED, amount=Decimal("2400.00"),
-        original_amount=Decimal("2400.00"), original_currency="INR",
-        incurred_on=date(2026, 8, 20), has_receipt=True,
-        status=ExpenseClaimStatusEnum.APPROVED, policy_verdict=PolicyVerdictEnum.WITHIN_POLICY,
-        verdict_message="Within policy.", evaluated_at=datetime.now(UTC),
+        tenant_id=tenant.id,
+        employee_id=org["leaver"].id,
+        category_key="local_travel",
+        city_tier=CityTierEnum.A,
+        kind=ClaimKindEnum.RECEIPTED,
+        amount=Decimal("2400.00"),
+        original_amount=Decimal("2400.00"),
+        original_currency="INR",
+        incurred_on=date(2026, 8, 20),
+        has_receipt=True,
+        status=ExpenseClaimStatusEnum.APPROVED,
+        policy_verdict=PolicyVerdictEnum.WITHIN_POLICY,
+        verdict_message="Within policy.",
+        evaluated_at=datetime.now(UTC),
     )
     session.add(claim)
     await session.commit()
 
     sources = await operations.settlement_sources(session, org["hr"], record.id)
-    suggestion = next(
-        s for s in sources["suggestions"] if s["field"] == "pending_reimbursements"
-    )
+    suggestion = next(s for s in sources["suggestions"] if s["field"] == "pending_reimbursements")
     assert suggestion["amount"] == Decimal("2400.00")
     assert "local_travel" in suggestion["basis"]
 
     # A settlement that leaves the claim out cannot be approved.
     short = await exit_service.compute_settlement(
-        session, org["hr"], exit_id=record.id,
-        inputs=engine.SettlementInput(final_month_salary=Decimal(45000),
-                                      final_month_basis="Full month."),
+        session,
+        org["hr"],
+        exit_id=record.id,
+        inputs=engine.SettlementInput(
+            final_month_salary=Decimal(45000), final_month_basis="Full month."
+        ),
     )
     await session.commit()
     with pytest.raises(HTTPException) as exc:
@@ -387,9 +460,12 @@ async def test_claims_owed_to_a_leaver_are_settled_once_in_full_and_final(
     assert exc.value.status_code == 409
 
     settlement = await exit_service.compute_settlement(
-        session, org["hr"], exit_id=record.id,
+        session,
+        org["hr"],
+        exit_id=record.id,
         inputs=engine.SettlementInput(
-            final_month_salary=Decimal(45000), final_month_basis="Full month.",
+            final_month_salary=Decimal(45000),
+            final_month_basis="Full month.",
             pending_reimbursements=Decimal("2400.00"),
             reimbursement_basis=suggestion["basis"],
         ),
@@ -406,9 +482,12 @@ async def test_claims_owed_to_a_leaver_are_settled_once_in_full_and_final(
 
     # Recomputing gives the claim back to the open pool.
     await exit_service.compute_settlement(
-        session, org["hr"], exit_id=record.id,
+        session,
+        org["hr"],
+        exit_id=record.id,
         inputs=engine.SettlementInput(
-            final_month_salary=Decimal(45000), final_month_basis="Full month.",
+            final_month_salary=Decimal(45000),
+            final_month_basis="Full month.",
             pending_reimbursements=Decimal("2400.00"),
             reimbursement_basis=suggestion["basis"],
         ),

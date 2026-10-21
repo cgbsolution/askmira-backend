@@ -43,16 +43,28 @@ async def test_a_punch_names_the_nearest_work_location_inside_and_out(
 ):
     await _hq(session, tenant)
     near = await attendance_service.record_punch(
-        session, hr_user, employee_id=employee.id, punched_at=datetime.now(UTC),
-        direction=PunchDirection.IN, source=PunchSource.WEB, latitude=12.9720, longitude=77.5950,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        punched_at=datetime.now(UTC),
+        direction=PunchDirection.IN,
+        source=PunchSource.WEB,
+        latitude=12.9720,
+        longitude=77.5950,
     )
     assert near.location_label == "Bengaluru HQ"
     assert near.outside_geofence is False
     assert near.nearest_location_metres is not None and near.nearest_location_metres < 0
 
     far = await attendance_service.record_punch(
-        session, hr_user, employee_id=employee.id, punched_at=datetime.now(UTC),
-        direction=PunchDirection.OUT, source=PunchSource.WEB, latitude=13.0350, longitude=77.5970,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        punched_at=datetime.now(UTC),
+        direction=PunchDirection.OUT,
+        source=PunchSource.WEB,
+        latitude=13.0350,
+        longitude=77.5970,
     )
     assert far.location_label == "Bengaluru HQ"
     assert far.outside_geofence is True
@@ -69,8 +81,12 @@ async def test_required_location_refuses_a_self_punch_without_one(
     current = await attendance_setup.attendance_settings(session, hr_user)
     assert current.location_mode == "required"
     login = User(
-        tenant_id=tenant.id, email="anita.loc@acme.test", password_hash="x",
-        full_name="Anita Sharma", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="anita.loc@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(login)

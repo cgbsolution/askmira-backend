@@ -8,10 +8,11 @@ list_for_workspace      the console's view of one workspace's products
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
@@ -27,7 +28,7 @@ from app.models.user import User, UserRole
 from app.services import audit
 from app.services.products.catalogue import PRODUCTS, Product
 from app.services.products.client import ProductError, provision_organisation, sync_people
-from app.services.products.settings import endpoint
+from app.services.products.connections import endpoint, require_super
 from app.services.products.tokens import launch_token
 
 ACTIVE = "active"
@@ -48,12 +49,7 @@ def _product(key: str) -> Product:
     return product
 
 
-def _require_super(user: User) -> None:
-    if user.role is not UserRole.SUPER_ADMIN or getattr(user, "operator_grant_id", None):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the platform's super admin links products.",
-        )
+_require_super = require_super
 
 
 async def _workspace(session: AsyncSession, tenant_id: uuid.UUID) -> Tenant:
@@ -73,12 +69,12 @@ async def _link_row(
     )
 
 
-def _read(product: Product, row: ProductLink | None) -> dict[str, Any]:
+def _read(product: Product, row: ProductLink | None, *, configured: bool) -> dict[str, Any]:
     return {
         "key": product.key,
         "name": product.name,
         "replaces": product.replaces,
-        "configured": endpoint(product.key) is not None,
+        "configured": configured,
         "status": row.status if row else None,
         "external_ref": row.external_ref if row else None,
         "last_synced_at": row.last_synced_at.isoformat() if row and row.last_synced_at else None,
@@ -194,7 +190,14 @@ async def list_for_workspace(
 ) -> list[dict[str, Any]]:
     _require_super(user)
     await _workspace(session, tenant_id)
-    return [_read(p, await _link_row(session, tenant_id, p.key)) for p in PRODUCTS.values()]
+    return [
+        _read(
+            p,
+            await _link_row(session, tenant_id, p.key),
+            configured=await endpoint(session, p.key) is not None,
+        )
+        for p in PRODUCTS.values()
+    ]
 
 
 async def link(
@@ -208,7 +211,7 @@ async def link(
     """Create or adopt the company in the product, switch the module over, push its people."""
     _require_super(user)
     product = _product(product_key)
-    target = endpoint(product.key)
+    target = await endpoint(session, product.key)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -252,7 +255,7 @@ async def link(
     await session.commit()
 
     await sync(session, tenant.id, product.key, actor=user, request=request)
-    return _read(product, await _link_row(session, tenant.id, product.key))
+    return _read(product, await _link_row(session, tenant.id, product.key), configured=True)
 
 
 async def unlink(
@@ -285,7 +288,7 @@ async def unlink(
         request=request,
     )
     await session.commit()
-    return _read(product, row)
+    return _read(product, row, configured=await endpoint(session, product.key) is not None)
 
 
 async def sync_now(
@@ -303,7 +306,11 @@ async def sync_now(
     if row is None or row.status != ACTIVE:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Not linked.")
     await sync(session, tenant_id, product.key, actor=user, request=request)
-    return _read(product, await _link_row(session, tenant_id, product.key))
+    return _read(
+        product,
+        await _link_row(session, tenant_id, product.key),
+        configured=await endpoint(session, product.key) is not None,
+    )
 
 
 # ── People sync ──────────────────────────────────────────────────────────────
@@ -324,7 +331,7 @@ async def sync(
     """
     product = _product(product_key)
     row = await _link_row(session, tenant_id, product.key)
-    target = endpoint(product.key)
+    target = await endpoint(session, product.key)
     if row is None or row.status != ACTIVE:
         return {"skipped": "not linked"}
     if target is None:
@@ -395,9 +402,24 @@ async def sync_workspace(session: AsyncSession, actor: User) -> dict[str, Any]:
 # ── Launch ───────────────────────────────────────────────────────────────────
 
 
-async def launch(session: AsyncSession, user: User, product_key: str) -> dict[str, str]:
-    """A one-time, 60-second link that signs this person in to the product."""
+#: A page inside the product to land on: a plain path, never another site.
+_LANDING = re.compile(r"^/(?!/)[A-Za-z0-9._~/-]{0,200}$")
+
+
+async def launch(
+    session: AsyncSession, user: User, product_key: str, *, to: str | None = None
+) -> dict[str, str]:
+    """A one-time, 60-second link that signs this person in to the product.
+
+    `to` is where in the product to land, such as a job's candidates; the
+    product goes there after signing the person in. Only a plain path is
+    accepted, so the link can never send anyone to another site.
+    """
     product = _product(product_key)
+    if to is not None and not _LANDING.match(to):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="That is not a page there."
+        )
     row = await session.scalar(
         tenant_scoped(select(ProductLink), ProductLink, user).where(
             ProductLink.product == product.key
@@ -414,7 +436,7 @@ async def launch(session: AsyncSession, user: User, product_key: str) -> dict[st
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"{product.name} is for HR and hiring managers.",
         )
-    target = endpoint(product.key)
+    target = await endpoint(session, product.key)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -431,4 +453,5 @@ async def launch(session: AsyncSession, user: User, product_key: str) -> dict[st
         role=role,
     )
     # The fragment never reaches a server log or a Referer header.
-    return {"url": f"{target.app_url}/sso/askmira#token={token}"}
+    landing = f"&next={quote(to, safe='/')}" if to else ""
+    return {"url": f"{target.app_url}/sso/askmira#token={token}{landing}"}

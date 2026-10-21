@@ -32,9 +32,7 @@ async def _team(session, tenant):
     return boss, report
 
 
-async def test_somebody_with_a_report_is_a_manager_without_a_manager_role(
-    client, session, tenant
-):
+async def test_somebody_with_a_report_is_a_manager_without_a_manager_role(client, session, tenant):
     boss, report = await _team(session, tenant)
 
     mine = (await client.get(SESSION, headers=bearer(boss))).json()["user"]
@@ -56,9 +54,7 @@ async def test_signing_in_says_so_too(client, session, tenant):
     assert response.json()["user"]["is_manager"] is True
 
 
-async def test_moving_the_last_report_takes_manager_access_away_at_once(
-    client, session, tenant
-):
+async def test_moving_the_last_report_takes_manager_access_away_at_once(client, session, tenant):
     boss, report = await _team(session, tenant)
     assert (await client.get(TEAM_TODAY, headers=bearer(boss))).status_code == 200
 

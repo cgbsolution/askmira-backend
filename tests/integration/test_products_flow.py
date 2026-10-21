@@ -389,3 +389,27 @@ async def test_unknown_product_is_404(
     with pytest.raises(HTTPException) as missing:
         await products.link(session, super_admin, tenant.id, "payroll-x", request=None)
     assert missing.value.status_code == 404
+
+
+async def test_a_launch_can_land_on_a_page_inside_the_product_only(
+    session: AsyncSession,
+    super_admin: User,
+    hr_user: User,
+    tenant: Tenant,
+    configured: FakeProduct,
+) -> None:
+    await products.link(session, super_admin, tenant.id, "interview", request=None)
+    hr = await as_caller(session, hr_user)
+    url = (await products.launch(session, hr, "interview", to="/job-openings/aB3_x-9/candidates"))[
+        "url"
+    ]
+    fragment = dict(part.split("=", 1) for part in urlparse(url).fragment.split("&"))
+    assert fragment["next"] == "/job-openings/aB3_x-9/candidates"
+    jwt.decode(
+        fragment["token"], SECRETS["interview"], algorithms=["HS256"], audience="askmira:interview"
+    )
+    # Never another site, a protocol-relative path or anything with a query.
+    for bad in ("https://evil.test", "//evil.test", "/a?b=c", "/a#b", "jobs", "/a b"):
+        with pytest.raises(HTTPException) as refused:
+            await products.launch(session, hr, "interview", to=bad)
+        assert refused.value.status_code == 422, bad

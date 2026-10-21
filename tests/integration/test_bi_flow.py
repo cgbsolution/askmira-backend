@@ -62,12 +62,14 @@ async def make_connection(session, user, **kw):
     body.update(kw)
     result = await bi.create_connection(session, user, **body)
     row = (
-        await session.execute(
-            select(BiConnection).where(
-                BiConnection.id == uuid.UUID(result["connection_id"])
+        (
+            await session.execute(
+                select(BiConnection).where(BiConnection.id == uuid.UUID(result["connection_id"]))
             )
         )
-    ).scalars().one()
+        .scalars()
+        .one()
+    )
     return row, result
 
 
@@ -113,9 +115,7 @@ async def make_contributor(session, *, code: str) -> tuple[Tenant, User]:
 
 
 async def contribute(session, user, *, value, heads=25, metric="median_ctc"):
-    await bi.set_consent(
-        session, user, is_contributor=True, contract_reference="MSA-7.4", at=NOW
-    )
+    await bi.set_consent(session, user, is_contributor=True, contract_reference="MSA-7.4", at=NOW)
     return await bi.record_contribution(
         session,
         user,
@@ -132,9 +132,7 @@ async def contribute(session, user, *, value, heads=25, metric="median_ctc"):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_schema_a_role_is_shown_matches_what_it_could_export(
-    session, hr_user
-):
+async def test_the_schema_a_role_is_shown_matches_what_it_could_export(session, hr_user):
     """The gate: "connector applies the same sensitivity rules as the report
     builder"."""
     document = bi.schema_for_role(hr_user)
@@ -143,9 +141,7 @@ async def test_the_schema_a_role_is_shown_matches_what_it_could_export(
     exportable = {
         f.name for f in exposed_schema.visible_columns("fact_payslip", hr_user.role.value)
     }
-    assert documented == exportable, (
-        "A client is documented a surface they cannot actually export."
-    )
+    assert documented == exportable, "A client is documented a surface they cannot actually export."
 
 
 async def test_the_schema_document_never_names_an_internal_column(session, hr_user):
@@ -176,9 +172,7 @@ async def test_a_connection_naming_a_field_the_role_cannot_see_is_refused_up_fro
     assert exc.value.status_code == 400
 
 
-async def test_a_connection_records_the_schema_version_it_was_built_against(
-    session, hr_user
-):
+async def test_a_connection_records_the_schema_version_it_was_built_against(session, hr_user):
     row, result = await make_connection(session, hr_user)
     assert row.schema_version == exposed_schema.SCHEMA_VERSION
     assert result["schema_version"] == exposed_schema.SCHEMA_VERSION
@@ -218,10 +212,14 @@ async def test_an_export_writes_its_audit_row_with_the_field_list(session, hr_us
     assert result["row_count"] == 3
 
     run = (
-        await session.execute(
-            select(BiExportRun).where(BiExportRun.tenant_id == hr_user.tenant_id)
+        (
+            await session.execute(
+                select(BiExportRun).where(BiExportRun.tenant_id == hr_user.tenant_id)
+            )
         )
-    ).scalars().one()
+        .scalars()
+        .one()
+    )
     assert run.field_count == len(run.field_names)
     assert "net_pay" in run.field_names
     assert run.carries_payroll_data is True
@@ -242,20 +240,22 @@ async def test_the_export_row_and_the_audit_log_land_together(session, hr_user):
         at=NOW,
     )
     entries = (
-        await session.execute(
-            select(AuditLog).where(
-                AuditLog.tenant_id == hr_user.tenant_id,
-                AuditLog.action == AuditAction.EXPORT,
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.tenant_id == hr_user.tenant_id,
+                    AuditLog.action == AuditAction.EXPORT,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(entries) == 1
     assert "net_pay" in entries[0].changes["fields"]
 
 
-async def test_an_unentitled_column_cannot_leak_through_the_projection(
-    session, hr_user
-):
+async def test_an_unentitled_column_cannot_leak_through_the_projection(session, hr_user):
     """A source row carrying an Aadhaar number must not reach the file because
     the caller happened to hand one to the exporter."""
     row, _ = await make_connection(session, hr_user)
@@ -295,9 +295,7 @@ async def test_a_salary_is_withheld_from_a_role_that_may_not_see_it(session, hr_
         assert "net_pay" not in exported
 
 
-async def test_the_second_export_is_a_delta_from_the_stored_watermark(
-    session, hr_user
-):
+async def test_the_second_export_is_a_delta_from_the_stored_watermark(session, hr_user):
     """The gate: "export is incremental and change-tracked"."""
     connection, _ = await make_connection(session, hr_user)
     rows = payslip_rows(3, start=NOW)
@@ -329,9 +327,7 @@ async def test_the_second_export_is_a_delta_from_the_stored_watermark(
     assert connection.last_watermark == watermark + timedelta(hours=1)
 
 
-async def test_an_empty_delta_leaves_the_watermark_exactly_where_it_was(
-    session, hr_user
-):
+async def test_an_empty_delta_leaves_the_watermark_exactly_where_it_was(session, hr_user):
     """Advancing on an empty run to "now" would skip anything written in
     between, and that row would never be exported again."""
     connection, _ = await make_connection(session, hr_user)
@@ -389,9 +385,7 @@ async def test_another_tenant_cannot_export_through_this_connection(
     assert exc.value.status_code == 404
 
 
-async def test_another_tenants_export_history_is_invisible(
-    session, hr_user, other_hr_user
-):
+async def test_another_tenants_export_history_is_invisible(session, hr_user, other_hr_user):
     connection, _ = await make_connection(session, hr_user)
     await bi.run_export(
         session,
@@ -429,12 +423,14 @@ async def test_consent_records_who_accepted_and_when(session, hr_user):
         session, hr_user, is_contributor=True, contract_reference="MSA-7.4", at=NOW
     )
     row = (
-        await session.execute(
-            select(BenchmarkConsent).where(
-                BenchmarkConsent.tenant_id == hr_user.tenant_id
+        (
+            await session.execute(
+                select(BenchmarkConsent).where(BenchmarkConsent.tenant_id == hr_user.tenant_id)
             )
         )
-    ).scalars().one()
+        .scalars()
+        .one()
+    )
     assert row.is_contributor is True
     assert row.accepted_by_user_id == hr_user.id
     assert row.accepted_at == NOW
@@ -442,9 +438,7 @@ async def test_consent_records_who_accepted_and_when(session, hr_user):
     assert row.revoked_at is None
 
 
-async def test_opting_out_deletes_the_contributions_and_keeps_the_record(
-    session, hr_user
-):
+async def test_opting_out_deletes_the_contributions_and_keeps_the_record(session, hr_user):
     """A stored contribution from a client who has withdrawn is a row waiting
     for the next run to forget the flag."""
     await contribute(session, hr_user, value=1800000)
@@ -454,21 +448,27 @@ async def test_opting_out_deletes_the_contributions_and_keeps_the_record(
     assert result["contributions_removed"] == 1
 
     remaining = (
-        await session.execute(
-            select(BenchmarkContribution).where(
-                BenchmarkContribution.tenant_id == hr_user.tenant_id
+        (
+            await session.execute(
+                select(BenchmarkContribution).where(
+                    BenchmarkContribution.tenant_id == hr_user.tenant_id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert remaining == []
 
     row = (
-        await session.execute(
-            select(BenchmarkConsent).where(
-                BenchmarkConsent.tenant_id == hr_user.tenant_id
+        (
+            await session.execute(
+                select(BenchmarkConsent).where(BenchmarkConsent.tenant_id == hr_user.tenant_id)
             )
         )
-    ).scalars().one()
+        .scalars()
+        .one()
+    )
     assert row.is_contributor is False
     assert row.revoked_at == NOW + timedelta(days=1)
     # The record survives, so "was this client contributing in March" is
@@ -488,12 +488,16 @@ async def test_a_contribution_is_updated_rather_than_duplicated(session, hr_user
         employee_count=30,
     )
     rows = (
-        await session.execute(
-            select(BenchmarkContribution).where(
-                BenchmarkContribution.tenant_id == hr_user.tenant_id
+        (
+            await session.execute(
+                select(BenchmarkContribution).where(
+                    BenchmarkContribution.tenant_id == hr_user.tenant_id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].value == D("1900000.00")
 
@@ -503,9 +507,7 @@ async def test_a_contribution_is_updated_rather_than_duplicated(session, hr_user
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_cell_below_the_contributor_floor_is_stored_unpublished(
-    session, hr_user
-):
+async def test_a_cell_below_the_contributor_floor_is_stored_unpublished(session, hr_user):
     """The gate: "minimum sample size enforced on every published cell". The
     row exists with its reason, so "why is there no benchmark for my segment"
     has an answer."""
@@ -514,9 +516,7 @@ async def test_a_cell_below_the_contributor_floor_is_stored_unpublished(
         _, person = await make_contributor(session, code=f"C{index}")
         await contribute(session, person, value=1700000 + index * 10000)
 
-    outcome = await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    outcome = await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
     assert outcome.contributing_tenants == 4
     assert outcome.cells_published == 0
     assert outcome.cells_suppressed == 1
@@ -540,9 +540,7 @@ async def test_a_cell_with_enough_contributors_publishes_quartiles(session, hr_u
         _, person = await make_contributor(session, code=f"D{index}")
         await contribute(session, person, value=1600000 + index * 50000)
 
-    outcome = await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    outcome = await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
     assert outcome.contributing_tenants == 10
     assert outcome.cells_published == 1
 
@@ -572,9 +570,7 @@ async def test_a_client_who_revokes_disappears_from_the_next_run(session, hr_use
         await contribute(session, person, value=1600000 + index * 50000)
         people.append(person)
 
-    await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
     before = await published.fetch_cell(
         session,
         metric="median_ctc",
@@ -584,9 +580,7 @@ async def test_a_client_who_revokes_disappears_from_the_next_run(session, hr_use
     )
     assert before.contributors == 10
 
-    await bi.set_consent(
-        session, hr_user, is_contributor=False, at=NOW + timedelta(days=1)
-    )
+    await bi.set_consent(session, hr_user, is_contributor=False, at=NOW + timedelta(days=1))
     await aggregation.run_aggregation(
         session, metric="median_ctc", period=PERIOD, at=NOW + timedelta(days=1)
     )
@@ -604,9 +598,7 @@ async def test_a_client_who_revokes_disappears_from_the_next_run(session, hr_use
 
 
 async def test_an_aggregation_with_no_consent_at_all_writes_nothing(session, hr_user):
-    outcome = await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    outcome = await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
     assert outcome.contributing_tenants == 0
     assert outcome.cells_written == 0
     rows = (await session.execute(select(BenchmarkDataset))).scalars().all()
@@ -619,9 +611,7 @@ async def test_a_rerun_replaces_the_cell_rather_than_adding_one(session, hr_user
         _, person = await make_contributor(session, code=f"F{index}")
         await contribute(session, person, value=1600000 + index * 50000)
 
-    await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
     await aggregation.run_aggregation(
         session, metric="median_ctc", period=PERIOD, at=NOW + timedelta(days=1)
     )
@@ -635,9 +625,7 @@ async def test_a_rerun_replaces_the_cell_rather_than_adding_one(session, hr_user
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_non_contributor_is_refused_the_peer_aggregate_and_told_why(
-    session, hr_user
-):
+async def test_a_non_contributor_is_refused_the_peer_aggregate_and_told_why(session, hr_user):
     with pytest.raises(HTTPException) as exc:
         await bi.benchmark_position(
             session,
@@ -652,18 +640,14 @@ async def test_a_non_contributor_is_refused_the_peer_aggregate_and_told_why(
     assert "reversible" in exc.value.detail
 
 
-async def test_a_contributor_gets_a_band_with_the_sample_size_and_the_source(
-    session, hr_user
-):
+async def test_a_contributor_gets_a_band_with_the_sample_size_and_the_source(session, hr_user):
     """The gate: "benchmark source labelled" and "percentile position, not just
     an average"."""
     await contribute(session, hr_user, value=1800000)
     for index in range(9):
         _, person = await make_contributor(session, code=f"G{index}")
         await contribute(session, person, value=1600000 + index * 50000)
-    await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
 
     result = await bi.benchmark_position(
         session,
@@ -685,9 +669,7 @@ async def test_a_suppressed_cell_yields_no_position_but_says_why(session, hr_use
     for index in range(3):
         _, person = await make_contributor(session, code=f"H{index}")
         await contribute(session, person, value=1700000)
-    await aggregation.run_aggregation(
-        session, metric="median_ctc", period=PERIOD, at=NOW
-    )
+    await aggregation.run_aggregation(session, metric="median_ctc", period=PERIOD, at=NOW)
 
     result = await bi.benchmark_position(
         session,

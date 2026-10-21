@@ -161,9 +161,7 @@ async def test_a_second_group_is_withheld_so_the_first_is_not_recoverable(
     arithmetic a manager can do in their head."""
     survey = await open_survey(session, hr_user)
     for group, count, score in (("a", 12, 5), ("b", 8, 4), ("c", 6, 3), ("tiny", 3, 1)):
-        people = await make_employees(
-            session, tenant, legal_entity, location, count, group.upper()
-        )
+        people = await make_employees(session, tenant, legal_entity, location, count, group.upper())
         for person in people:
             await culture.submit_response(
                 session,
@@ -180,9 +178,7 @@ async def test_a_second_group_is_withheld_so_the_first_is_not_recoverable(
     hidden = {g["key"] for g in results["groups"] if not g["visible"]}
     assert "tiny" in hidden
     assert "c" in hidden
-    assert next(g for g in results["groups"] if g["key"] == "c")["suppression"] == (
-        "complementary"
-    )
+    assert next(g for g in results["groups"] if g["key"] == "c")["suppression"] == ("complementary")
 
 
 async def test_hr_gets_no_privileged_view_of_a_small_team(
@@ -229,9 +225,7 @@ async def test_a_threshold_below_the_floor_is_refused(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_an_answer_row_carries_no_link_to_the_person(
-    session, hr_user, employee
-):
+async def test_an_answer_row_carries_no_link_to_the_person(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     await culture.submit_response(
         session,
@@ -243,17 +237,13 @@ async def test_an_answer_row_carries_no_link_to_the_person(
     )
 
     row = (
-        await session.execute(
-            select(SurveyResponse).where(SurveyResponse.survey_id == survey.id)
-        )
+        await session.execute(select(SurveyResponse).where(SurveyResponse.survey_id == survey.id))
     ).scalar_one()
     values = {c.name: getattr(row, c.name) for c in SurveyResponse.__table__.columns}
     assert str(employee.id) not in {str(v) for v in values.values()}
 
 
-async def test_the_participant_row_records_that_they_responded(
-    session, hr_user, employee
-):
+async def test_the_participant_row_records_that_they_responded(session, hr_user, employee):
     """So reminders stop. It carries no answers, which is all it needs."""
     survey = await open_survey(session, hr_user)
     await culture.submit_response(
@@ -334,9 +324,7 @@ async def test_enps_comes_back_scored_the_standard_way(
     assert results["overall"]["suppressed"] is False
 
 
-async def test_an_ad_hoc_survey_is_not_reported_as_an_instrument(
-    session, hr_user
-):
+async def test_an_ad_hoc_survey_is_not_reported_as_an_instrument(session, hr_user):
     survey = await culture.create_survey(
         session,
         hr_user,
@@ -453,9 +441,7 @@ async def test_a_submitted_score_cannot_be_revised(
 async def test_somebody_who_is_not_a_juror_cannot_score(
     session, hr_user, tenant, legal_entity, location
 ):
-    _, nomination, _, _ = await nomination_fixture(
-        session, hr_user, tenant, legal_entity, location
-    )
+    _, nomination, _, _ = await nomination_fixture(session, hr_user, tenant, legal_entity, location)
     outsider = await make_juror(session, tenant, "outsider")
     with pytest.raises(HTTPException) as exc:
         await culture.score_nomination(
@@ -472,9 +458,7 @@ async def test_somebody_who_is_not_a_juror_cannot_score(
 async def test_a_nomination_after_the_window_is_refused(
     session, hr_user, tenant, legal_entity, location
 ):
-    cycle, _, _, _ = await nomination_fixture(
-        session, hr_user, tenant, legal_entity, location
-    )
+    cycle, _, _, _ = await nomination_fixture(session, hr_user, tenant, legal_entity, location)
     people = await make_employees(session, tenant, legal_entity, location, 2, "LATE")
     with pytest.raises(HTTPException) as exc:
         await culture.nominate(
@@ -493,9 +477,7 @@ async def test_a_nomination_after_the_window_is_refused(
 async def test_a_nomination_before_the_window_is_refused(
     session, hr_user, tenant, legal_entity, location
 ):
-    cycle, _, _, _ = await nomination_fixture(
-        session, hr_user, tenant, legal_entity, location
-    )
+    cycle, _, _, _ = await nomination_fixture(session, hr_user, tenant, legal_entity, location)
     people = await make_employees(session, tenant, legal_entity, location, 2, "EARLY")
     with pytest.raises(HTTPException) as exc:
         await culture.nominate(
@@ -516,9 +498,7 @@ async def test_the_closing_day_itself_still_accepts_a_nomination(
 ):
     """A window closing at 00:00 on the advertised day loses every nomination
     made on the day people were told they had."""
-    cycle, _, _, _ = await nomination_fixture(
-        session, hr_user, tenant, legal_entity, location
-    )
+    cycle, _, _, _ = await nomination_fixture(session, hr_user, tenant, legal_entity, location)
     people = await make_employees(session, tenant, legal_entity, location, 2, "LAST")
     row = await culture.nominate(
         session,
@@ -536,9 +516,7 @@ async def test_the_closing_day_itself_still_accepts_a_nomination(
 async def test_a_category_outside_the_programme_is_refused(
     session, hr_user, tenant, legal_entity, location
 ):
-    cycle, _, _, _ = await nomination_fixture(
-        session, hr_user, tenant, legal_entity, location
-    )
+    cycle, _, _, _ = await nomination_fixture(session, hr_user, tenant, legal_entity, location)
     people = await make_employees(session, tenant, legal_entity, location, 2, "CAT")
     with pytest.raises(HTTPException) as exc:
         await culture.nominate(
@@ -629,9 +607,7 @@ async def test_a_nominations_values_reach_the_analytics(
     assert report["coverage"]["totals"]["nomination"] == 1
 
 
-async def test_a_value_nobody_recognises_is_surfaced(
-    session, hr_user, employee
-):
+async def test_a_value_nobody_recognises_is_surfaced(session, hr_user, employee):
     """A value on the wall in 1% of recognition is either the wrong value or one
     nobody has been shown how to act on."""
     await culture.define_value(
@@ -678,9 +654,7 @@ async def test_a_tag_to_an_undefined_value_is_refused(session, hr_user, employee
 
 async def test_a_value_needs_a_description(session, hr_user):
     with pytest.raises(HTTPException):
-        await culture.define_value(
-            session, hr_user, code="speed", name="Speed", description="   "
-        )
+        await culture.define_value(session, hr_user, code="speed", name="Speed", description="   ")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -713,46 +687,34 @@ async def make_plan(session, hr_user, employee, survey):
     )
 
 
-async def test_a_plan_with_open_items_cannot_be_completed(
-    session, hr_user, employee
-):
+async def test_a_plan_with_open_items_cannot_be_completed(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     plan = await make_plan(session, hr_user, employee, survey)
     with pytest.raises(HTTPException) as exc:
-        await culture.complete_plan(
-            session, hr_user, plan_id=plan.id, completed_on=TODAY
-        )
+        await culture.complete_plan(session, hr_user, plan_id=plan.id, completed_on=TODAY)
     assert "still open" in exc.value.detail
     assert "Publish the promotion criteria" in exc.value.detail
 
 
-async def test_a_plan_completes_once_every_item_is_resolved(
-    session, hr_user, employee
-):
+async def test_a_plan_completes_once_every_item_is_resolved(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     plan = await make_plan(session, hr_user, employee, survey)
 
     items = list(
         (
-            await session.execute(
-                select(ActionPlanItem).where(ActionPlanItem.plan_id == plan.id)
-            )
+            await session.execute(select(ActionPlanItem).where(ActionPlanItem.plan_id == plan.id))
         ).scalars()
     )
     items[0].done_on = date(2026, 8, 20)
     items[1].dropped_reason = "Superseded by the new levelling framework."
     await session.commit()
 
-    completed = await culture.complete_plan(
-        session, hr_user, plan_id=plan.id, completed_on=TODAY
-    )
+    completed = await culture.complete_plan(session, hr_user, plan_id=plan.id, completed_on=TODAY)
     assert completed.status is PlanStatusEnum.COMPLETED
     assert completed.completed_on == TODAY
 
 
-async def test_a_plan_with_no_items_is_refused_at_creation(
-    session, hr_user, employee
-):
+async def test_a_plan_with_no_items_is_refused_at_creation(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     with pytest.raises(HTTPException) as exc:
         await culture.create_plan(
@@ -769,33 +731,25 @@ async def test_a_plan_with_no_items_is_refused_at_creation(
     assert "theme somebody typed" in exc.value.detail
 
 
-async def test_the_loop_report_pairs_action_with_movement(
-    session, hr_user, employee
-):
+async def test_the_loop_report_pairs_action_with_movement(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     plan = await make_plan(session, hr_user, employee, survey)
     items = list(
         (
-            await session.execute(
-                select(ActionPlanItem).where(ActionPlanItem.plan_id == plan.id)
-            )
+            await session.execute(select(ActionPlanItem).where(ActionPlanItem.plan_id == plan.id))
         ).scalars()
     )
     items[0].done_on = date(2026, 8, 20)
     await session.commit()
 
-    report = await culture.loop_report(
-        session, hr_user, as_of=TODAY, movement={"voice": 0.4}
-    )
+    report = await culture.loop_report(session, hr_user, as_of=TODAY, movement={"voice": 0.4})
     voice = next(r for r in report["themes"] if r["theme"] == "voice")
     assert voice["acted"] is True
     assert voice["movement"] == 0.4
     assert "loop closed" in voice["reading"]
 
 
-async def test_a_theme_never_re_surveyed_reads_as_unmeasured(
-    session, hr_user, employee
-):
+async def test_a_theme_never_re_surveyed_reads_as_unmeasured(session, hr_user, employee):
     survey = await open_survey(session, hr_user)
     await make_plan(session, hr_user, employee, survey)
     report = await culture.loop_report(session, hr_user, as_of=TODAY)
@@ -895,9 +849,7 @@ async def test_re_acknowledging_after_an_edit_is_recorded_separately(
     assert register["stale"] == []
 
 
-async def test_an_acknowledgement_announcement_cannot_be_given_an_expiry(
-    session, hr_user
-):
+async def test_an_acknowledgement_announcement_cannot_be_given_an_expiry(session, hr_user):
     with pytest.raises(HTTPException) as exc:
         await culture.announce(
             session,
@@ -911,9 +863,7 @@ async def test_an_acknowledgement_announcement_cannot_be_given_an_expiry(
     assert "register" in exc.value.detail
 
 
-async def test_acknowledging_something_that_never_asked_is_refused(
-    session, hr_user, employee
-):
+async def test_acknowledging_something_that_never_asked_is_refused(session, hr_user, employee):
     announcement = await culture.announce(
         session,
         hr_user,
@@ -956,9 +906,7 @@ async def test_the_audience_narrows_who_the_register_expects(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_birthday_is_not_published_without_an_opt_in(
-    session, hr_user, employee
-):
+async def test_a_birthday_is_not_published_without_an_opt_in(session, hr_user, employee):
     """The absence of a record is a refusal, not a gap to fill with yes."""
     employee.date_of_birth = date(1992, 9, 9)
     await session.commit()
@@ -969,9 +917,7 @@ async def test_a_birthday_is_not_published_without_an_opt_in(
     assert all(e["kind"] != "birthday" for e in calendar["events"])
 
 
-async def test_a_birthday_appears_after_an_explicit_opt_in(
-    session, hr_user, employee
-):
+async def test_a_birthday_appears_after_an_explicit_opt_in(session, hr_user, employee):
     employee.date_of_birth = date(1992, 9, 9)
     await session.commit()
     await culture.set_event_privacy(
@@ -990,9 +936,7 @@ async def test_a_birthday_appears_after_an_explicit_opt_in(
     assert birthdays[0]["scope"] == "team"
 
 
-async def test_a_work_anniversary_is_a_separate_consent(
-    session, hr_user, employee
-):
+async def test_a_work_anniversary_is_a_separate_consent(session, hr_user, employee):
     """Somebody happy to mark five years may not want their age inferable."""
     employee.date_of_birth = date(1992, 9, 9)
     employee.date_of_joining = date(2021, 9, 10)
@@ -1030,9 +974,7 @@ async def test_the_stored_default_shares_nothing(session, hr_user, employee):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_another_tenant_cannot_read_a_survey(
-    session, hr_user, other_hr_user
-):
+async def test_another_tenant_cannot_read_a_survey(session, hr_user, other_hr_user):
     survey = await open_survey(session, hr_user)
     with pytest.raises(HTTPException) as exc:
         await culture.survey_results(session, other_hr_user, survey_id=survey.id)
@@ -1057,9 +999,7 @@ async def test_another_tenant_cannot_read_an_acknowledgement_register(
     assert exc.value.status_code == 404
 
 
-async def test_value_analytics_are_scoped_to_the_tenant(
-    session, hr_user, other_hr_user, employee
-):
+async def test_value_analytics_are_scoped_to_the_tenant(session, hr_user, other_hr_user, employee):
     await culture.define_value(
         session, hr_user, code="craft", name="Craft", description="We sign our work."
     )

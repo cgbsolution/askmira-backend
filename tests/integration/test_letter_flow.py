@@ -193,17 +193,23 @@ async def test_categories_number_independently(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
     offer = await _template(session, tenant, code="OFF", category=LetterCategory.OFFER)
-    experience = await _template(
-        session, tenant, code="EXP", category=LetterCategory.EXPERIENCE
-    )
+    experience = await _template(session, tenant, code="EXP", category=LetterCategory.EXPERIENCE)
 
     first = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=offer.id,
-        as_of=date(2026, 6, 1), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=offer.id,
+        as_of=date(2026, 6, 1),
+        generate_pdf=False,
     )
     second = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=experience.id,
-        as_of=date(2026, 6, 1), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=experience.id,
+        as_of=date(2026, 6, 1),
+        generate_pdf=False,
     )
 
     assert first.reference_number.endswith("00001")
@@ -226,8 +232,12 @@ async def test_editing_a_template_leaves_an_issued_letter_untouched(
     )
 
     letter = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=template.id,
-        as_of=date(2026, 6, 1), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=template.id,
+        as_of=date(2026, 6, 1),
+        generate_pdf=False,
     )
     original_html = letter.merged_html
     original_hash = letter.content_hash
@@ -285,9 +295,7 @@ async def test_a_new_version_deactivates_the_previous_one(
     assert template.active is False
 
     versions = (
-        await session.scalars(
-            select(LetterTemplate).where(LetterTemplate.code == template.code)
-        )
+        await session.scalars(select(LetterTemplate).where(LetterTemplate.code == template.code))
     ).all()
     assert len(versions) == 2
     assert sum(1 for v in versions if v.active) == 1
@@ -315,17 +323,23 @@ async def test_a_letter_for_a_past_date_shows_the_historical_salary(
             ),
         )
 
-    template = await _template(
-        session, tenant, body="<p>CTC: {{salary.ctc_annual}}</p>"
-    )
+    template = await _template(session, tenant, body="<p>CTC: {{salary.ctc_annual}}</p>")
 
     old = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=template.id,
-        as_of=date(2026, 6, 30), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=template.id,
+        as_of=date(2026, 6, 30),
+        generate_pdf=False,
     )
     current = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=template.id,
-        as_of=date(2026, 12, 31), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=template.id,
+        as_of=date(2026, 12, 31),
+        generate_pdf=False,
     )
 
     assert "12,00,000" in old.merged_html
@@ -422,8 +436,12 @@ async def test_tampering_with_stored_html_is_detected(
 ) -> None:
     template = await _template(session, tenant)
     letter = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=template.id,
-        as_of=date(2026, 6, 1), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=template.id,
+        as_of=date(2026, 6, 1),
+        generate_pdf=False,
     )
 
     _, intact = await letter_service.verify_letter(session, hr_user, letter.id)
@@ -445,8 +463,12 @@ async def test_one_tenant_cannot_read_anothers_letters(
 ) -> None:
     template = await _template(session, tenant)
     letter = await letter_service.issue_letter(
-        session, hr_user, employee_id=employee.id, template_id=template.id,
-        as_of=date(2026, 6, 1), generate_pdf=False,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        template_id=template.id,
+        as_of=date(2026, 6, 1),
+        generate_pdf=False,
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -483,7 +505,10 @@ async def test_a_required_manual_field_blocks_issuance_with_a_usable_message(
 
     with pytest.raises(HTTPException) as exc:
         await letter_service.issue_letter(
-            session, hr_user, employee_id=employee.id, template_id=template.id,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            template_id=template.id,
             generate_pdf=False,
         )
     assert exc.value.status_code == 422

@@ -169,9 +169,7 @@ async def test_a_colleague_cannot_list_or_download_somebody_elses_documents(
         f"/api/v1/documents?employee_id={employee.id}", headers=_auth(colleague)
     )
     assert listed.status_code == 403
-    download = await client.get(
-        f"/api/v1/documents/{doc['id']}/download", headers=_auth(colleague)
-    )
+    download = await client.get(f"/api/v1/documents/{doc['id']}/download", headers=_auth(colleague))
     assert download.status_code == 404
     upload = await _upload(client, colleague, employee.id)
     assert upload.status_code == 403
@@ -375,9 +373,7 @@ async def test_company_documents_are_tenant_scoped_and_audited(
     assert (await client.get("/api/v1/documents/company", headers=_auth(hr_user))).json()[0][
         "valid_until"
     ] == "2027-03-31"
-    deleted = await client.delete(
-        f"/api/v1/documents/company/{doc['id']}", headers=_auth(hr_user)
-    )
+    deleted = await client.delete(f"/api/v1/documents/company/{doc['id']}", headers=_auth(hr_user))
     assert deleted.status_code == 204
     assert not any(path.is_file() for path in _storage_root.rglob("*"))
 

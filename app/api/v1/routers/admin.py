@@ -31,6 +31,7 @@ from app.schemas.platform_admin import (
     PasswordResetByAdmin,
     RoleChange,
     TenantSettingsUpdate,
+    WelcomeEmailRead,
 )
 from app.services import access_admin, integrations
 from app.services.identity import users as user_admin
@@ -198,6 +199,14 @@ async def reset_password(
     return await user_admin.issue_temporary_password(
         session, user, user_id=user_id, reason=payload.reason, request=request
     )
+
+
+@router.post("/users/{user_id}/welcome-email", response_model=WelcomeEmailRead)
+async def resend_welcome_email(
+    user_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> WelcomeEmailRead:
+    """Email a login its sign-in details again, with a fresh set-password link."""
+    return await user_admin.resend_welcome(session, user, user_id=user_id, request=request)
 
 
 # ── Modules ─────────────────────────────────────────────────────────────────

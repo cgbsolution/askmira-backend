@@ -80,14 +80,26 @@ async def test_a_candidate_accepts_by_typing_their_name_against_the_letter(
 
     with pytest.raises(HTTPException) as exc:
         await candidate_portal.respond_to_offer(
-            session, token, offer.id, accept=True, typed_name="Somebody Else",
-            reason=None, ip_address="203.0.113.7", user_agent="test",
+            session,
+            token,
+            offer.id,
+            accept=True,
+            typed_name="Somebody Else",
+            reason=None,
+            ip_address="203.0.113.7",
+            user_agent="test",
         )
     assert exc.value.status_code == 422
 
     result = await candidate_portal.respond_to_offer(
-        session, token, offer.id, accept=True, typed_name=f"  {candidate.full_name.upper()} ",
-        reason=None, ip_address="203.0.113.7", user_agent="test-browser",
+        session,
+        token,
+        offer.id,
+        accept=True,
+        typed_name=f"  {candidate.full_name.upper()} ",
+        reason=None,
+        ip_address="203.0.113.7",
+        user_agent="test-browser",
     )
     await session.commit()
     assert result["status"] == "accepted"
@@ -99,8 +111,14 @@ async def test_a_candidate_accepts_by_typing_their_name_against_the_letter(
     # Answered once.
     with pytest.raises(HTTPException):
         await candidate_portal.respond_to_offer(
-            session, token, offer.id, accept=False, typed_name=None,
-            reason="Changed my mind", ip_address=None, user_agent=None,
+            session,
+            token,
+            offer.id,
+            accept=False,
+            typed_name=None,
+            reason="Changed my mind",
+            ip_address=None,
+            user_agent=None,
         )
 
 
@@ -108,12 +126,24 @@ async def test_a_candidate_declines_with_a_reason(session, tenant, hr_user, lega
     offer, _, token = await _released_offer(session, tenant, hr_user, legal_entity)
     with pytest.raises(HTTPException):
         await candidate_portal.respond_to_offer(
-            session, token, offer.id, accept=False, typed_name=None, reason="  ",
-            ip_address=None, user_agent=None,
+            session,
+            token,
+            offer.id,
+            accept=False,
+            typed_name=None,
+            reason="  ",
+            ip_address=None,
+            user_agent=None,
         )
     await candidate_portal.respond_to_offer(
-        session, token, offer.id, accept=False, typed_name=None,
-        reason="Accepted another offer closer to home", ip_address=None, user_agent=None,
+        session,
+        token,
+        offer.id,
+        accept=False,
+        typed_name=None,
+        reason="Accepted another offer closer to home",
+        ip_address=None,
+        user_agent=None,
     )
     await session.commit()
     await session.refresh(offer)
@@ -125,8 +155,11 @@ async def test_another_candidates_token_cannot_reach_the_offer(
 ) -> None:
     offer, _, _ = await _released_offer(session, tenant, hr_user, legal_entity)
     other_candidate = await _candidate(
-        session, tenant, await _requisition(session, tenant, legal_entity, code="REQ-002"),
-        name="Asha Menon", email="asha@example.test",
+        session,
+        tenant,
+        await _requisition(session, tenant, legal_entity, code="REQ-002"),
+        name="Asha Menon",
+        email="asha@example.test",
     )
     _, other_token = await careers.issue_portal_token(
         session, hr_user, candidate_id=other_candidate.id
@@ -142,8 +175,12 @@ async def test_another_candidates_token_cannot_reach_the_offer(
 
 async def _employee_login(session, tenant, employee) -> User:
     login = User(
-        tenant_id=tenant.id, email=employee.work_email, password_hash="x",
-        full_name=employee.full_name, role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email=employee.work_email,
+        password_hash="x",
+        full_name=employee.full_name,
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(login)
@@ -157,8 +194,12 @@ async def test_a_policy_is_acknowledged_against_the_exact_file(
 ) -> None:
     login = await _employee_login(session, tenant, employee)
     doc = await company_documents.upload_company_document(
-        session, hr_user, document_type="POSH policy", title="Prevention of sexual harassment",
-        data=PDF, requires_acknowledgement=True,
+        session,
+        hr_user,
+        document_type="POSH policy",
+        title="Prevention of sexual harassment",
+        data=PDF,
+        requires_acknowledgement=True,
     )
     mine = await company_documents.list_company_documents(session, login)
     assert mine[0].requires_acknowledgement and mine[0].acknowledged_by_me is False
@@ -178,9 +219,7 @@ async def test_a_policy_is_acknowledged_against_the_exact_file(
 
     register = await company_documents.acknowledgement_register(session, hr_user, doc.id)
     assert register.acknowledged == 1
-    assert [r.employee_code for r in register.rows if r.acknowledged_at] == [
-        employee.employee_code
-    ]
+    assert [r.employee_code for r in register.rows if r.acknowledged_at] == [employee.employee_code]
 
     # Only HR reads the register.
     with pytest.raises(HTTPException):
@@ -192,8 +231,13 @@ async def test_a_policy_needing_acknowledgement_must_be_published(
 ) -> None:
     with pytest.raises(HTTPException) as exc:
         await company_documents.upload_company_document(
-            session, hr_user, document_type="Code of conduct", title="Code",
-            data=PDF, is_employee_visible=False, requires_acknowledgement=True,
+            session,
+            hr_user,
+            document_type="Code of conduct",
+            title="Code",
+            data=PDF,
+            is_employee_visible=False,
+            requires_acknowledgement=True,
         )
     assert exc.value.status_code == 422
 
@@ -205,10 +249,17 @@ async def test_a_joiner_signs_their_pf_nomination_and_the_task_completes(
     session, tenant, hr_user, legal_entity, location
 ) -> None:
     joiner = Employee(
-        tenant_id=tenant.id, employee_code="JNR001", first_name="Kiran", last_name="Rao",
-        work_email="kiran@acme.test", legal_entity_id=legal_entity.id, location_id=location.id,
-        status=EmploymentStatus.ACTIVE, date_of_joining=date(2026, 10, 1),
-        date_of_birth=date(1995, 5, 4), gender=Gender.FEMALE,
+        tenant_id=tenant.id,
+        employee_code="JNR001",
+        first_name="Kiran",
+        last_name="Rao",
+        work_email="kiran@acme.test",
+        legal_entity_id=legal_entity.id,
+        location_id=location.id,
+        status=EmploymentStatus.ACTIVE,
+        date_of_joining=date(2026, 10, 1),
+        date_of_birth=date(1995, 5, 4),
+        gender=Gender.FEMALE,
     )
     session.add(joiner)
     await session.flush()
@@ -218,17 +269,31 @@ async def test_a_joiner_signs_their_pf_nomination_and_the_task_completes(
             employee_id=joiner.id,
             personal={"father_name": "Suresh Rao", "marital_status": "single"},
             addresses={
-                "current": {"line1": "12 MG Road", "city": "Bengaluru", "state_code": "KA",
-                            "pincode": "560001", "country_code": "IN"},
+                "current": {
+                    "line1": "12 MG Road",
+                    "city": "Bengaluru",
+                    "state_code": "KA",
+                    "pincode": "560001",
+                    "country_code": "IN",
+                },
                 "permanent_same_as_current": True,
             },
             nominees=[
-                {"name": "Lata Rao", "relationship": "mother", "purpose": "pf",
-                 "share_percent": "100", "date_of_birth": "1968-02-11"},
+                {
+                    "name": "Lata Rao",
+                    "relationship": "mother",
+                    "purpose": "pf",
+                    "share_percent": "100",
+                    "date_of_birth": "1968-02-11",
+                },
             ],
             family_members=[
-                {"name": "Lata Rao", "relationship": "mother", "date_of_birth": "1968-02-11",
-                 "is_dependent": True},
+                {
+                    "name": "Lata Rao",
+                    "relationship": "mother",
+                    "date_of_birth": "1968-02-11",
+                    "is_dependent": True,
+                },
             ],
         )
     )
@@ -236,7 +301,8 @@ async def test_a_joiner_signs_their_pf_nomination_and_the_task_completes(
     login = await _employee_login(session, tenant, joiner)
 
     template = await onboarding.create_template(
-        session, hr_user,
+        session,
+        hr_user,
         TemplateCreate(
             name=f"Forms {uuid.uuid4().hex[:4]}",
             tasks=[
@@ -285,8 +351,9 @@ async def test_a_form_with_nominee_shares_not_adding_up_is_refused(
 
     context = MergeContext(
         as_of=date(2026, 10, 1),
-        nominees=[{"name": "A", "relationship": "mother", "purpose": "pf",
-                   "share_percent": Decimal("60")}],
+        nominees=[
+            {"name": "A", "relationship": "mother", "purpose": "pf", "share_percent": Decimal("60")}
+        ],
     )
     with pytest.raises(LetterMergeError, match="60"):
         COMPUTED_HANDLERS["pf_nominees_table"](context)

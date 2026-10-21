@@ -29,10 +29,10 @@ from app.models.product_link import ProductLink
 from app.models.user import User
 from app.services.products import client
 from app.services.products.catalogue import PRODUCTS
+from app.services.products.connections import endpoint
 from app.services.products.service import ACTIVE
-from app.services.products.settings import endpoint
 
-__all__ = ["ProductUnavailableError", "ask", "role_in"]
+__all__ = ["ProductUnavailableError", "ask", "connection", "role_in"]
 
 
 class ProductUnavailableError(Exception):
@@ -48,7 +48,7 @@ async def role_in(session: AsyncSession, user: User, product_key: str) -> str | 
     person's AskMira role gives them no role there.
     """
     product = PRODUCTS.get(product_key)
-    if product is None or endpoint(product_key) is None:
+    if product is None or await endpoint(session, product_key) is None:
         return None
     if getattr(user, "operator_grant_id", None):
         return None
@@ -60,6 +60,40 @@ async def role_in(session: AsyncSession, user: User, product_key: str) -> str | 
     if row is None or row.status != ACTIVE:
         return None
     return product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
+
+
+async def connection(session: AsyncSession, user: User, product_key: str) -> dict[str, str]:
+    """Where the product stands for this person: set up here, linked, and their access.
+
+    Each answer is a short sentence a person can act on. Nothing is asked of the
+    product itself.
+    """
+    product = PRODUCTS[product_key]
+    if await endpoint(session, product_key) is None:
+        return {
+            "server": "Not set up",
+            "workspace": "Can't be linked until the server is set up",
+            "access": "None",
+        }
+    row = await session.scalar(
+        tenant_scoped(select(ProductLink), ProductLink, user).where(
+            ProductLink.product == product_key
+        )
+    )
+    if row is None:
+        workspace = "Not linked; the platform admin links it from the console"
+    elif row.status != ACTIVE:
+        workspace = "Linked but switched off"
+    else:
+        workspace = "Linked"
+    if getattr(user, "operator_grant_id", None):
+        access = "None while you act in this workspace as the platform operator"
+    elif row is None or row.status != ACTIVE:
+        access = "None"
+    else:
+        role = product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
+        access = f"As {role}" if role else "None for your role"
+    return {"server": "Set up", "workspace": workspace, "access": access}
 
 
 def _explain(brand: str, exc: client.ProductError) -> str:
@@ -87,7 +121,7 @@ async def ask(
     """Ask the product one read-only question as `user`; its answer, as it gave it."""
     product = PRODUCTS[product_key]
     role = await role_in(session, user, product_key)
-    target = endpoint(product_key)
+    target = await endpoint(session, product_key)
     if role is None or target is None:
         raise ProductUnavailableError(f"{product.brand} is not linked to your workspace for you.")
     try:

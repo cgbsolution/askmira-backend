@@ -25,7 +25,10 @@ pytestmark = requires_db
 
 def test_pre_cliff_tranches_vest_together_on_the_cliff() -> None:
     grant = EsopGrant(
-        units=1000, vesting_start=date(2026, 1, 1), cliff_months=12, vesting_months=48,
+        units=1000,
+        vesting_start=date(2026, 1, 1),
+        cliff_months=12,
+        vesting_months=48,
         frequency_months=3,
     )
     schedule = esop.vesting_schedule(grant)
@@ -35,7 +38,10 @@ def test_pre_cliff_tranches_vest_together_on_the_cliff() -> None:
     assert len(schedule) == 13
 
     odd = EsopGrant(
-        units=100, vesting_start=date(2026, 1, 31), cliff_months=10, vesting_months=12,
+        units=100,
+        vesting_start=date(2026, 1, 31),
+        cliff_months=10,
+        vesting_months=12,
         frequency_months=3,
     )
     rows = esop.vesting_schedule(odd)
@@ -45,7 +51,10 @@ def test_pre_cliff_tranches_vest_together_on_the_cliff() -> None:
 
 
 async def test_grant_value_exercise_and_payroll_perquisite(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     plan = await esop.create_plan(
@@ -54,28 +63,50 @@ async def test_grant_value_exercise_and_payroll_perquisite(
     plan_id = uuid.UUID(plan["id"])
     with pytest.raises(HTTPException):
         await esop.create_grant(
-            session, hr_user, plan_id,
-            esop.GrantIn(employee_id=employee.id, grant_date=date(2026, 1, 1), units=20_000,
-                         exercise_price=Decimal("10")),
+            session,
+            hr_user,
+            plan_id,
+            esop.GrantIn(
+                employee_id=employee.id,
+                grant_date=date(2026, 1, 1),
+                units=20_000,
+                exercise_price=Decimal("10"),
+            ),
             request=None,
         )
     grant = await esop.create_grant(
-        session, hr_user, plan_id,
-        esop.GrantIn(employee_id=employee.id, grant_date=date(2026, 1, 1), units=1000,
-                     exercise_price=Decimal("10")),
+        session,
+        hr_user,
+        plan_id,
+        esop.GrantIn(
+            employee_id=employee.id,
+            grant_date=date(2026, 1, 1),
+            units=1000,
+            exercise_price=Decimal("10"),
+        ),
         request=None,
     )
     grant_id = uuid.UUID(grant["id"])
     await esop.add_valuation(
-        session, hr_user, plan_id,
-        esop.ValuationIn(effective_from=date(2026, 1, 1), fmv_per_unit=Decimal("40"),
-                         source="Valuer report, Dec 2025"),
+        session,
+        hr_user,
+        plan_id,
+        esop.ValuationIn(
+            effective_from=date(2026, 1, 1),
+            fmv_per_unit=Decimal("40"),
+            source="Valuer report, Dec 2025",
+        ),
         request=None,
     )
 
     me = User(
-        tenant_id=tenant.id, email="anita.esop@acme-demo.com", password_hash="x",
-        full_name="Anita", role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.esop@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(me)
     await session.commit()
@@ -101,24 +132,38 @@ async def test_grant_value_exercise_and_payroll_perquisite(
 
     with pytest.raises(HTTPException):
         await esop.record_exercise(
-            session, hr_user, grant_id,
-            esop.ExerciseIn(exercise_date=date(2027, 4, 1), units=400), request=None,
+            session,
+            hr_user,
+            grant_id,
+            esop.ExerciseIn(exercise_date=date(2027, 4, 1), units=400),
+            request=None,
         )
     exercised = await esop.record_exercise(
-        session, hr_user, grant_id,
-        esop.ExerciseIn(exercise_date=date(2027, 4, 1), units=100), request=None,
+        session,
+        hr_user,
+        grant_id,
+        esop.ExerciseIn(exercise_date=date(2027, 4, 1), units=100),
+        request=None,
     )
     assert exercised["perquisite_value"] == "3000.00"
 
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, period_year=2027, period_month=4,
-        effective_date=date(2027, 4, 30), status=PayrollRunStatus.DRAFT,
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2027,
+        period_month=4,
+        effective_date=date(2027, 4, 30),
+        status=PayrollRunStatus.DRAFT,
     )
     session.add(run)
     await session.commit()
     scope = RunScope(
-        run=run, period_start=date(2027, 4, 1), period_end=date(2027, 4, 30), period="2027-04",
-        employee_ids=frozenset({employee.id}), fy_start=date(2027, 4, 1),
+        run=run,
+        period_start=date(2027, 4, 1),
+        period_end=date(2027, 4, 30),
+        period="2027-04",
+        employee_ids=frozenset({employee.id}),
+        fy_start=date(2027, 4, 1),
         fy_end=date(2028, 3, 31),
     )
     output = await EsopPerquisiteProvider().collect(session, hr_user, scope)

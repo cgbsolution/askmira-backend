@@ -82,43 +82,61 @@ async def _salary_for(
     )
     if existing is None:
         basic = SalaryComponent(
-            tenant_id=tenant.id, code="BASIC", name="Basic",
+            tenant_id=tenant.id,
+            code="BASIC",
+            name="Basic",
             component_type=ComponentType.EARNING,
             calculation_type=CalculationType.PERCENTAGE_OF,
-            base_component_code="CTC", value=Decimal(40), counts_toward_pf=True,
+            base_component_code="CTC",
+            value=Decimal(40),
+            counts_toward_pf=True,
             display_order=1,
         )
         da = SalaryComponent(
-            tenant_id=tenant.id, code="DA", name="Dearness allowance",
+            tenant_id=tenant.id,
+            code="DA",
+            name="Dearness allowance",
             component_type=ComponentType.EARNING,
             calculation_type=CalculationType.PERCENTAGE_OF,
-            base_component_code="BASIC", value=Decimal(10), counts_toward_pf=True,
+            base_component_code="BASIC",
+            value=Decimal(10),
+            counts_toward_pf=True,
             display_order=2,
         )
         special = SalaryComponent(
-            tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+            tenant_id=tenant.id,
+            code="SPECIAL",
+            name="Special allowance",
             component_type=ComponentType.EARNING,
-            calculation_type=CalculationType.BALANCE, display_order=9,
+            calculation_type=CalculationType.BALANCE,
+            display_order=9,
         )
         session.add_all([basic, da, special])
         await session.flush()
 
         existing = SalaryStructure(
-            tenant_id=tenant.id, name="Standard", effective_from=date(2010, 1, 1),
-            applicable_grades=[], applicable_locations=[],
+            tenant_id=tenant.id,
+            name="Standard",
+            effective_from=date(2010, 1, 1),
+            applicable_grades=[],
+            applicable_locations=[],
         )
         for index, component in enumerate((basic, da, special)):
             existing.components.append(
                 SalaryStructureComponent(
-                    tenant_id=tenant.id, component_id=component.id,
-                    component=component, display_order=index,
+                    tenant_id=tenant.id,
+                    component_id=component.id,
+                    component=component,
+                    display_order=index,
                 )
             )
         session.add(existing)
         await session.commit()
 
     await salary_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
             structure_id=existing.id,
             ctc_annual=Decimal(ctc),
@@ -202,8 +220,11 @@ async def test_an_employee_with_no_joining_date_is_skipped_not_fatal(
     employee.date_of_joining = date(2015, 4, 1)
 
     incomplete = Employee(
-        tenant_id=tenant.id, employee_code="NODOJ", first_name="No",
-        work_email="nodoj@acme.test", status=EmploymentStatus.ACTIVE,
+        tenant_id=tenant.id,
+        employee_code="NODOJ",
+        first_name="No",
+        work_email="nodoj@acme.test",
+        status=EmploymentStatus.ACTIVE,
         date_of_joining=None,
     )
     session.add(incomplete)
@@ -256,17 +277,20 @@ async def test_the_liability_report_reconciles_to_individual_accruals_to_the_rup
     # A spread of tenures, so the bands are actually exercised.
     for index, (joined, ctc) in enumerate(
         [
-            (date(2025, 6, 1), "600000"),   # under a year
-            (date(2024, 1, 1), "900000"),   # 1-3
+            (date(2025, 6, 1), "600000"),  # under a year
+            (date(2024, 1, 1), "900000"),  # 1-3
             (date(2022, 1, 1), "1200000"),  # 3-5
             (date(2018, 1, 1), "1800000"),  # 5-10
             (date(2010, 1, 1), "2400000"),  # 10+
         ]
     ):
         person = Employee(
-            tenant_id=tenant.id, employee_code=f"TEN{index:03d}",
-            first_name=f"Person{index}", work_email=f"t{index}@acme.test",
-            status=EmploymentStatus.ACTIVE, date_of_joining=joined,
+            tenant_id=tenant.id,
+            employee_code=f"TEN{index:03d}",
+            first_name=f"Person{index}",
+            work_email=f"t{index}@acme.test",
+            status=EmploymentStatus.ACTIVE,
+            date_of_joining=joined,
         )
         session.add(person)
         await session.flush()
@@ -275,16 +299,12 @@ async def test_the_liability_report_reconciles_to_individual_accruals_to_the_rup
     accruals = await exit_service.accrue_gratuity(session, hr_user, as_of=AS_OF)
     report = await exit_service.liability_report(session, hr_user, AS_OF)
 
-    individual_total = sum(
-        (Decimal(str(a.eligible_amount)) for a in accruals), start=Decimal(0)
-    )
+    individual_total = sum((Decimal(str(a.eligible_amount)) for a in accruals), start=Decimal(0))
 
     assert Decimal(report["total_accrued_liability"]) == individual_total
     assert report["reconciles"] is True
 
-    by_department = sum(
-        Decimal(row["accrued_liability"]) for row in report["by_department"]
-    )
+    by_department = sum(Decimal(row["accrued_liability"]) for row in report["by_department"])
     by_tenure = sum(Decimal(row["accrued_liability"]) for row in report["by_tenure_band"])
     assert by_department == individual_total
     assert by_tenure == individual_total
@@ -300,8 +320,11 @@ async def test_the_report_separates_eligible_from_not_yet_eligible(
     await _salary_for(session, tenant, hr_user, employee)
 
     newcomer = Employee(
-        tenant_id=tenant.id, employee_code="NEW001", first_name="New",
-        work_email="new@acme.test", status=EmploymentStatus.ACTIVE,
+        tenant_id=tenant.id,
+        employee_code="NEW001",
+        first_name="New",
+        work_email="new@acme.test",
+        status=EmploymentStatus.ACTIVE,
         date_of_joining=date(2025, 6, 1),
     )
     session.add(newcomer)
@@ -314,8 +337,7 @@ async def test_the_report_separates_eligible_from_not_yet_eligible(
     assert Decimal(report["eligible_liability"]) > Decimal(0)
     total = Decimal(report["total_accrued_liability"])
     assert (
-        Decimal(report["eligible_liability"])
-        + Decimal(report["not_yet_eligible_liability"])
+        Decimal(report["eligible_liability"]) + Decimal(report["not_yet_eligible_liability"])
         == total
     )
 
@@ -353,15 +375,18 @@ async def test_the_taxable_excess_is_recorded_on_the_payout_for_tds(
     await _salary_for(session, tenant, hr_user, employee, ctc="6000000")
 
     payout = await exit_service.compute_exit_gratuity(
-        session, hr_user, employee_id=employee.id,
-        exit_date=date(2026, 4, 1), exit_reason=ExitReason.RETIREMENT,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        exit_date=date(2026, 4, 1),
+        exit_reason=ExitReason.RETIREMENT,
     )
 
     assert Decimal(str(payout.gross_amount)) > Decimal(500_000)
     assert Decimal(str(payout.exempt_amount)) == Decimal(500_000)
-    assert Decimal(str(payout.taxable_amount)) == Decimal(
-        str(payout.gross_amount)
-    ) - Decimal(500_000)
+    assert Decimal(str(payout.taxable_amount)) == Decimal(str(payout.gross_amount)) - Decimal(
+        500_000
+    )
     assert Decimal(str(payout.taxable_amount)) > Decimal(0)
 
     # And it is on the record the TDS computation reads, not only in a log.
@@ -377,8 +402,11 @@ async def test_a_payout_below_the_ceiling_carries_no_taxable_amount(
     await _salary_for(session, tenant, hr_user, employee)
 
     payout = await exit_service.compute_exit_gratuity(
-        session, hr_user, employee_id=employee.id,
-        exit_date=date(2026, 4, 1), exit_reason=ExitReason.RESIGNATION,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        exit_date=date(2026, 4, 1),
+        exit_reason=ExitReason.RESIGNATION,
     )
     assert Decimal(str(payout.taxable_amount)) == Decimal(0)
 
@@ -393,8 +421,11 @@ async def test_a_payout_records_which_configuration_produced_it(
     await _salary_for(session, tenant, hr_user, employee)
 
     payout = await exit_service.compute_exit_gratuity(
-        session, hr_user, employee_id=employee.id,
-        exit_date=date(2026, 4, 1), exit_reason=ExitReason.RESIGNATION,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        exit_date=date(2026, 4, 1),
+        exit_reason=ExitReason.RESIGNATION,
     )
     assert payout.config_id == config.id
 
@@ -408,8 +439,11 @@ async def test_gratuity_cannot_be_paid_twice(
     await _salary_for(session, tenant, hr_user, employee)
 
     payout = await exit_service.compute_exit_gratuity(
-        session, hr_user, employee_id=employee.id,
-        exit_date=date(2026, 4, 1), exit_reason=ExitReason.RESIGNATION,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        exit_date=date(2026, 4, 1),
+        exit_reason=ExitReason.RESIGNATION,
     )
     # Mark it paid, as a payroll run would.
     from app.models.payroll import PayrollRun, PayrollRunType
@@ -417,7 +451,9 @@ async def test_gratuity_cannot_be_paid_twice(
     run = PayrollRun(
         tenant_id=tenant.id,
         legal_entity_id=(await session.scalar(select(Employee.legal_entity_id))),
-        period_year=2026, period_month=4, effective_date=date(2026, 4, 30),
+        period_year=2026,
+        period_month=4,
+        effective_date=date(2026, 4, 30),
         run_type=PayrollRunType.FULL_AND_FINAL,
     )
     session.add(run)
@@ -427,8 +463,11 @@ async def test_gratuity_cannot_be_paid_twice(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.compute_exit_gratuity(
-            session, hr_user, employee_id=employee.id,
-            exit_date=date(2026, 4, 1), exit_reason=ExitReason.RESIGNATION,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            exit_date=date(2026, 4, 1),
+            exit_reason=ExitReason.RESIGNATION,
         )
     assert exc.value.status_code == 409
     assert "already been paid" in exc.value.detail
@@ -445,8 +484,11 @@ async def test_a_payout_with_no_matching_wage_components_names_the_basis(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.compute_exit_gratuity(
-            session, hr_user, employee_id=employee.id,
-            exit_date=date(2026, 4, 1), exit_reason=ExitReason.RESIGNATION,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            exit_date=date(2026, 4, 1),
+            exit_reason=ExitReason.RESIGNATION,
         )
     assert "BASIC_PLUS_DA_NONEXISTENT" in exc.value.detail
 
@@ -461,17 +503,21 @@ async def _leave_balance(session, tenant, employee, code="EL", available="20"):
         select(LeaveType).where(LeaveType.tenant_id == tenant.id, LeaveType.code == code)
     )
     if leave_type is None:
-        leave_type = LeaveType(
-            tenant_id=tenant.id, name="Earned Leave", code=code, is_paid=True
-        )
+        leave_type = LeaveType(tenant_id=tenant.id, name="Earned Leave", code=code, is_paid=True)
         session.add(leave_type)
         await session.flush()
 
     session.add(
         LeaveBalance(
-            tenant_id=tenant.id, employee_id=employee.id, leave_type_id=leave_type.id,
-            year=2026, opening_balance=Decimal(available), accrued=Decimal(0),
-            used=Decimal(0), encashed=Decimal(0), carried_forward=Decimal(0),
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            leave_type_id=leave_type.id,
+            year=2026,
+            opening_balance=Decimal(available),
+            accrued=Decimal(0),
+            used=Decimal(0),
+            encashed=Decimal(0),
+            carried_forward=Decimal(0),
         )
     )
     await session.commit()
@@ -510,8 +556,12 @@ async def test_encashment_reads_the_balance_from_the_leave_ledger(
     await _encashment_policy(session, tenant)
 
     record = await exit_service.request_encashment(
-        session, hr_user, employee_id=employee.id, leave_type_code="EL",
-        days=Decimal(20), financial_year="2026-27",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(20),
+        financial_year="2026-27",
     )
 
     assert Decimal(str(record.days_approved)) == Decimal(8)
@@ -547,14 +597,22 @@ async def test_an_earlier_approved_encashment_counts_against_the_annual_cap(
     await _encashment_policy(session, tenant, max_days_per_year=Decimal(15))
 
     first = await exit_service.request_encashment(
-        session, hr_user, employee_id=employee.id, leave_type_code="EL",
-        days=Decimal(10), financial_year="2026-27",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(10),
+        financial_year="2026-27",
     )
     await exit_service.decide_encashment(session, hr_user, first.id, approve=True)
 
     second = await exit_service.request_encashment(
-        session, hr_user, employee_id=employee.id, leave_type_code="EL",
-        days=Decimal(10), financial_year="2026-27",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(10),
+        financial_year="2026-27",
     )
     assert Decimal(str(second.days_approved)) == Decimal(5)
     assert second.working["limiting_factor"] == "max_days_per_year"
@@ -570,8 +628,13 @@ async def test_an_exit_encashment_is_approved_without_a_separate_step(
     await _encashment_policy(session, tenant)
 
     record = await exit_service.request_encashment(
-        session, hr_user, employee_id=employee.id, leave_type_code="EL",
-        days=Decimal(10), financial_year="2026-27", is_exit=True,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(10),
+        financial_year="2026-27",
+        is_exit=True,
     )
     assert record.status is EncashmentStatus.APPROVED
     assert record.is_exit_encashment is True
@@ -588,12 +651,15 @@ async def test_the_whole_balance_is_encashed_at_exit_and_offered_to_the_settleme
     await _config(session, tenant)
     await _salary_for(session, tenant, hr_user, employee)
     await _leave_balance(session, tenant, employee, available="25")
-    await _encashment_policy(session, tenant, max_days_per_year=Decimal(10),
-                             cap_days=Decimal(45))
+    await _encashment_policy(session, tenant, max_days_per_year=Decimal(10), cap_days=Decimal(45))
     record = ExitRecord(
-        tenant_id=tenant.id, employee_id=employee.id, exit_type=ExitType.RESIGNATION,
-        status=ExitStatus.SETTLEMENT_PENDING, resignation_date=date(2026, 7, 31),
-        approved_last_working_day=date(2026, 8, 31), notice_period_days=30,
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        exit_type=ExitType.RESIGNATION,
+        status=ExitStatus.SETTLEMENT_PENDING,
+        resignation_date=date(2026, 7, 31),
+        approved_last_working_day=date(2026, 8, 31),
+        notice_period_days=30,
     )
     session.add(record)
     await session.commit()
@@ -626,17 +692,21 @@ async def test_an_encashment_decision_is_audited(
     await _encashment_policy(session, tenant)
 
     record = await exit_service.request_encashment(
-        session, hr_user, employee_id=employee.id, leave_type_code="EL",
-        days=Decimal(5), financial_year="2026-27",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(5),
+        financial_year="2026-27",
     )
     await exit_service.decide_encashment(
         session, hr_user, record.id, approve=True, note="Approved by manager."
     )
 
     entry = await session.scalar(
-        select(AuditLog).where(
-            AuditLog.entity_type == "encashment_request", AuditLog.entity_id == record.id
-        ).order_by(AuditLog.created_at.desc())
+        select(AuditLog)
+        .where(AuditLog.entity_type == "encashment_request", AuditLog.entity_id == record.id)
+        .order_by(AuditLog.created_at.desc())
     )
     assert entry is not None
     assert entry.changes["note"] == "Approved by manager."
@@ -650,8 +720,12 @@ async def test_an_unknown_leave_type_is_a_clear_404(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.request_encashment(
-            session, hr_user, employee_id=employee.id, leave_type_code="NOPE",
-            days=Decimal(5), financial_year="2026-27",
+            session,
+            hr_user,
+            employee_id=employee.id,
+            leave_type_code="NOPE",
+            days=Decimal(5),
+            financial_year="2026-27",
         )
     assert exc.value.status_code == 404
 

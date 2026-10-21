@@ -29,15 +29,24 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, **extra
 ) -> tuple[Employee, User]:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        status=EmploymentStatus.ACTIVE, **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        **extra,
     )
     session.add(person)
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email=f"{code.lower()}.ts@acme-demo.com", password_hash="x",
-        full_name=code.title(), role=UserRole.EMPLOYEE, is_active=True, employee_id=person.id,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}.ts@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
     )
     session.add(login)
     await session.commit()
@@ -55,22 +64,30 @@ async def test_an_approved_week_is_priced_at_the_rate_in_force_each_day(
     )
     project_id = uuid.UUID(project["id"])
     await timesheets.add_rate(
-        session, hr_user, RateIn(employee_id=dev.id, rate=Decimal("500"),
-                                 effective_from=date(2026, 1, 1)), request=None,
+        session,
+        hr_user,
+        RateIn(employee_id=dev.id, rate=Decimal("500"), effective_from=date(2026, 1, 1)),
+        request=None,
     )
     # A raise from Wednesday: Monday and Tuesday at 500, the rest at 600.
     await timesheets.add_rate(
-        session, hr_user, RateIn(employee_id=dev.id, rate=Decimal("600"),
-                                 effective_from=date(2026, 9, 9)), request=None,
+        session,
+        hr_user,
+        RateIn(employee_id=dev.id, rate=Decimal("600"), effective_from=date(2026, 9, 9)),
+        request=None,
     )
 
     with pytest.raises(HTTPException):
         await timesheets.save_week(
-            session, dev_login, MONDAY,
+            session,
+            dev_login,
+            MONDAY,
             [EntryIn(work_date=date(2026, 9, 20), project_id=project_id, hours=Decimal("2"))],
         )
     week = await timesheets.save_week(
-        session, dev_login, MONDAY,
+        session,
+        dev_login,
+        MONDAY,
         [
             EntryIn(work_date=date(2026, 9, 7), project_id=project_id, hours=Decimal("8")),
             EntryIn(work_date=date(2026, 9, 8), project_id=project_id, hours=Decimal("8")),
@@ -151,26 +168,43 @@ async def test_tasks_project_rates_notifications_and_reminders(
 
     # General rate 400; on the client project the person is paid 700.
     await timesheets.add_rate(
-        session, hr_user, RateIn(employee_id=dev.id, rate=Decimal("400"),
-                                 effective_from=date(2026, 1, 1)), request=None,
+        session,
+        hr_user,
+        RateIn(employee_id=dev.id, rate=Decimal("400"), effective_from=date(2026, 1, 1)),
+        request=None,
     )
     await timesheets.add_rate(
-        session, hr_user, RateIn(employee_id=dev.id, project_id=client_id, rate=Decimal("700"),
-                                 effective_from=date(2026, 1, 1)), request=None,
+        session,
+        hr_user,
+        RateIn(
+            employee_id=dev.id,
+            project_id=client_id,
+            rate=Decimal("700"),
+            effective_from=date(2026, 1, 1),
+        ),
+        request=None,
     )
 
     # A project split into tasks needs one on every entry.
     with pytest.raises(HTTPException) as exc:
         await timesheets.save_week(
-            session, dev_login, MONDAY,
+            session,
+            dev_login,
+            MONDAY,
             [EntryIn(work_date=MONDAY, project_id=client_id, hours=Decimal("5"))],
         )
     assert exc.value.status_code == 422
     week = await timesheets.save_week(
-        session, dev_login, MONDAY,
+        session,
+        dev_login,
+        MONDAY,
         [
-            EntryIn(work_date=MONDAY, project_id=client_id,
-                    task_id=uuid.UUID(design["id"]), hours=Decimal("5")),
+            EntryIn(
+                work_date=MONDAY,
+                project_id=client_id,
+                task_id=uuid.UUID(design["id"]),
+                hours=Decimal("5"),
+            ),
             EntryIn(work_date=MONDAY, project_id=internal_id, hours=Decimal("3")),
         ],
     )
@@ -236,20 +270,26 @@ async def test_the_timesheet_agent_proposes_only_weeks_attendance_supports(
         for day, minutes in ((7, 8 * 60), (8, 6 * 60)):
             session.add(
                 AttendanceDay(
-                    tenant_id=tenant.id, employee_id=person.id,
-                    attendance_date=date(2026, 9, day), worked_minutes=minutes,
-                    status=AttendanceStatus.PRESENT, payable_fraction=Decimal("1"),
+                    tenant_id=tenant.id,
+                    employee_id=person.id,
+                    attendance_date=date(2026, 9, day),
+                    worked_minutes=minutes,
+                    status=AttendanceStatus.PRESENT,
+                    payable_fraction=Decimal("1"),
                     computed_at=datetime(2026, 9, day + 1, tzinfo=UTC),
                 )
             )
     await session.commit()
     for login, second_day in ((good_login, "6"), (padded_login, "8")):
         await timesheets.save_week(
-            session, login, MONDAY,
+            session,
+            login,
+            MONDAY,
             [
                 EntryIn(work_date=date(2026, 9, 7), project_id=project_id, hours=Decimal("8")),
-                EntryIn(work_date=date(2026, 9, 8), project_id=project_id,
-                        hours=Decimal(second_day)),
+                EntryIn(
+                    work_date=date(2026, 9, 8), project_id=project_id, hours=Decimal(second_day)
+                ),
             ],
         )
         await timesheets.submit_week(session, login, MONDAY)

@@ -71,17 +71,23 @@ async def test_the_first_shift_becomes_the_default_and_judges_unassigned_people(
 
     for clock, direction in (("09:35", PunchDirection.IN), ("18:40", PunchDirection.OUT)):
         await attendance_service.record_punch(
-            session, hr_user, employee_id=employee.id, punched_at=_ist(MONDAY, clock),
-            direction=direction, source=PunchSource.WEB,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            punched_at=_ist(MONDAY, clock),
+            direction=direction,
+            source=PunchSource.WEB,
         )
     await attendance_service.recompute_range(
         session, hr_user, employee_ids=[employee.id], start=MONDAY, end=SATURDAY
     )
     days = {
         d.attendance_date: d
-        for d in (await session.scalars(select(AttendanceDay).where(
-            AttendanceDay.employee_id == employee.id
-        ))).all()
+        for d in (
+            await session.scalars(
+                select(AttendanceDay).where(AttendanceDay.employee_id == employee.id)
+            )
+        ).all()
     }
     assert days[MONDAY].status is AttendanceStatus.PRESENT
     assert days[MONDAY].shift_id == shift.id
@@ -101,7 +107,10 @@ async def test_future_days_are_not_written_and_days_before_joining_are_skipped(
 
     future = datetime.now(UTC).date() + timedelta(days=5)
     written = await attendance_service.recompute_range(
-        session, hr_user, employee_ids=[employee.id], start=MONDAY - timedelta(days=3),
+        session,
+        hr_user,
+        employee_ids=[employee.id],
+        start=MONDAY - timedelta(days=3),
         end=MONDAY,
     )
     assert written == 1  # only the joining day itself
@@ -118,22 +127,37 @@ async def test_a_holiday_applies_only_in_its_own_state(
     await _general_shift(session, hr_user)
     session.add_all(
         [
-            Holiday(tenant_id=tenant.id, name="Karnataka day", holiday_date=MONDAY,
-                    year=2026, state_code="KA"),
-            Holiday(tenant_id=tenant.id, name="Maharashtra day",
-                    holiday_date=MONDAY + timedelta(days=1), year=2026, state_code="MH"),
+            Holiday(
+                tenant_id=tenant.id,
+                name="Karnataka day",
+                holiday_date=MONDAY,
+                year=2026,
+                state_code="KA",
+            ),
+            Holiday(
+                tenant_id=tenant.id,
+                name="Maharashtra day",
+                holiday_date=MONDAY + timedelta(days=1),
+                year=2026,
+                state_code="MH",
+            ),
         ]
     )
     await session.commit()
     await attendance_service.recompute_range(
-        session, hr_user, employee_ids=[employee.id], start=MONDAY,
+        session,
+        hr_user,
+        employee_ids=[employee.id],
+        start=MONDAY,
         end=MONDAY + timedelta(days=1),
     )
     days = {
         d.attendance_date: d.status
-        for d in (await session.scalars(select(AttendanceDay).where(
-            AttendanceDay.employee_id == employee.id
-        ))).all()
+        for d in (
+            await session.scalars(
+                select(AttendanceDay).where(AttendanceDay.employee_id == employee.id)
+            )
+        ).all()
     }
     # The employee works in Bengaluru (KA).
     assert days[MONDAY] is AttendanceStatus.HOLIDAY
@@ -146,27 +170,42 @@ async def test_an_approved_missed_punch_applies_the_corrected_time(
 ):
     await _general_shift(session, hr_user)
     await attendance_service.record_punch(
-        session, hr_user, employee_id=employee.id, punched_at=_ist(MONDAY, "09:40"),
-        direction=PunchDirection.IN, source=PunchSource.WEB,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        punched_at=_ist(MONDAY, "09:40"),
+        direction=PunchDirection.IN,
+        source=PunchSource.WEB,
     )
     employee_login = User(
-        tenant_id=tenant.id, email="anita.login@acme.test", password_hash="x",
-        full_name="Anita Sharma", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="anita.login@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(employee_login)
     await session.commit()
 
     request = await attendance_service.raise_regularisation(
-        session, employee_login, employee_id=employee.id, attendance_date=MONDAY,
-        requested_status=AttendanceStatus.PRESENT, reason="Forgot to punch out",
-        kind=RegularisationKind.MISSED_PUNCH, requested_last_out=_ist(MONDAY, "18:45"),
+        session,
+        employee_login,
+        employee_id=employee.id,
+        attendance_date=MONDAY,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="Forgot to punch out",
+        kind=RegularisationKind.MISSED_PUNCH,
+        requested_last_out=_ist(MONDAY, "18:45"),
     )
     await attendance_service.decide_regularisation(session, hr_user, request.id, approve=True)
 
-    day = await session.scalar(select(AttendanceDay).where(
-        AttendanceDay.employee_id == employee.id, AttendanceDay.attendance_date == MONDAY
-    ))
+    day = await session.scalar(
+        select(AttendanceDay).where(
+            AttendanceDay.employee_id == employee.id, AttendanceDay.attendance_date == MONDAY
+        )
+    )
     assert day is not None
     assert day.status is AttendanceStatus.PRESENT
     assert day.first_in == _ist(MONDAY, "09:40")
@@ -181,8 +220,12 @@ async def test_work_from_home_over_a_week_skips_the_weekend(
 ):
     await _general_shift(session, hr_user)
     login = User(
-        tenant_id=tenant.id, email="anita.wfh@acme.test", password_hash="x",
-        full_name="Anita Sharma", role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email="anita.wfh@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(login)
@@ -190,15 +233,24 @@ async def test_work_from_home_over_a_week_skips_the_weekend(
     start = datetime.now(UTC).date() + timedelta(days=7)
     start -= timedelta(days=start.weekday())  # a Monday a week or two ahead
     created = await attendance_service.raise_regularisation_range(
-        session, login, employee_id=employee.id, start=start, end=start + timedelta(days=6),
-        kind=RegularisationKind.WORK_FROM_HOME, reason="Home internet install",
+        session,
+        login,
+        employee_id=employee.id,
+        start=start,
+        end=start + timedelta(days=6),
+        kind=RegularisationKind.WORK_FROM_HOME,
+        reason="Home internet install",
     )
     assert [row.attendance_date.weekday() for row in created] == [0, 1, 2, 3, 4]
 
     with pytest.raises(HTTPException) as refused:
         await attendance_service.raise_regularisation(
-            session, login, employee_id=employee.id, attendance_date=start,
-            requested_status=AttendanceStatus.PRESENT, reason="again",
+            session,
+            login,
+            employee_id=employee.id,
+            attendance_date=start,
+            requested_status=AttendanceStatus.PRESENT,
+            reason="again",
             kind=RegularisationKind.STATUS_CHANGE,
         )
     assert refused.value.status_code == 422  # a correction cannot be for the future

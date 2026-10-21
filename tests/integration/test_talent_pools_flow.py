@@ -35,9 +35,12 @@ pytestmark = requires_db
 
 async def _add(session, hr, requisition_id, name, email, *, resume: str | None = None):
     added = await candidate_service.create_candidate(
-        session, hr,
+        session,
+        hr,
         CandidateCreate(
-            requisition_id=requisition_id, full_name=name, email=email,
+            requisition_id=requisition_id,
+            full_name=name,
+            email=email,
             expected_ctc=Decimal("1500000"),
         ),
     )
@@ -51,9 +54,13 @@ async def _add(session, hr, requisition_id, name, email, *, resume: str | None =
 
 def _consent(tenant, candidate, granted: bool, when: datetime) -> CandidateConsent:
     return CandidateConsent(
-        tenant_id=tenant.id, candidate_id=candidate.id,
-        purpose=ConsentPurpose.TALENT_POOL_RETENTION, granted=granted,
-        notice_text="Keep me on file for two years.", notice_version="v1", recorded_at=when,
+        tenant_id=tenant.id,
+        candidate_id=candidate.id,
+        purpose=ConsentPurpose.TALENT_POOL_RETENTION,
+        granted=granted,
+        notice_text="Keep me on file for two years.",
+        notice_version="v1",
+        recorded_at=when,
     )
 
 
@@ -89,11 +96,19 @@ async def test_search_reads_resumes_by_word(session, tenant, people) -> None:
     hr = people["hr"]
     requisition_id = await _open_requisition(session, tenant, people)
     await _add(
-        session, hr, requisition_id, "Ishaan Mehta", "ishaan@example.com",
+        session,
+        hr,
+        requisition_id,
+        "Ishaan Mehta",
+        "ishaan@example.com",
         resume="Built payment systems in Python. Tuned Postgres for a lending platform.",
     )
     await _add(
-        session, hr, requisition_id, "Nisha Rao", "nisha@example.com",
+        session,
+        hr,
+        requisition_id,
+        "Nisha Rao",
+        "nisha@example.com",
         resume="Java and Spring Boot. Some Python scripting.",
     )
     found, _ = await candidate_service.list_candidates(session, hr, search="postgres python")
@@ -160,10 +175,15 @@ async def test_erasure_takes_tags_pools_and_emails(session, tenant, people) -> N
     await session.commit()
     await talent.set_tags(session, hr, candidate_id=person.id, tags=["design"])
     pool = await talent.create_pool(session, hr, name="Designers", description=None)
-    await talent.add_members(session, hr, uuid.UUID(pool["id"]), candidate_ids=[person.id],
-                             note=None)
+    await talent.add_members(
+        session, hr, uuid.UUID(pool["id"]), candidate_ids=[person.id], note=None
+    )
     await candidate_comms.send_message(
-        session, hr, candidate_id=person.id, subject="Hello Rhea", message="Are you free?",
+        session,
+        hr,
+        candidate_id=person.id,
+        subject="Hello Rhea",
+        message="Are you free?",
         include_portal_link=False,
     )
     await session.commit()
@@ -172,9 +192,12 @@ async def test_erasure_takes_tags_pools_and_emails(session, tenant, people) -> N
     await session.commit()
     await session.refresh(person)
     assert person.tags == []
-    assert await session.scalar(
-        select(TalentPoolMember).where(TalentPoolMember.candidate_id == person.id)
-    ) is None
+    assert (
+        await session.scalar(
+            select(TalentPoolMember).where(TalentPoolMember.candidate_id == person.id)
+        )
+        is None
+    )
     [message] = (
         await session.scalars(
             select(CandidateMessage).where(CandidateMessage.candidate_id == person.id)

@@ -45,9 +45,7 @@ NOW = datetime(2026, 9, 7, 10, 0, tzinfo=UTC)
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-async def make_employee(
-    session, tenant, legal_entity, location, code, *, probation_end=None
-):
+async def make_employee(session, tenant, legal_entity, location, code, *, probation_end=None):
     person = Employee(
         tenant_id=tenant.id,
         employee_code=code,
@@ -95,10 +93,18 @@ async def test_a_programme_with_its_own_milestones_is_stored(session, hr_user):
         session,
         hr_user,
         milestones=[
-            {"key": "joined", "label": "On joining", "share_percent": D("50"),
-             "days_after_joining": 0},
-            {"key": "retained", "label": "After 90 days", "share_percent": D("50"),
-             "days_after_joining": 90},
+            {
+                "key": "joined",
+                "label": "On joining",
+                "share_percent": D("50"),
+                "days_after_joining": 0,
+            },
+            {
+                "key": "retained",
+                "label": "After 90 days",
+                "share_percent": D("50"),
+                "days_after_joining": 90,
+            },
         ],
     )
     programme = await session.get(ReferralProgramme, uuid.UUID(out["programme_id"]))
@@ -195,9 +201,7 @@ async def test_a_referrer_on_a_pip_is_ineligible(session, hr_user, employee):
     assert "configured rule rather than a judgement" in exc.value.detail
 
 
-async def test_the_hiring_team_cannot_refer_into_their_own_requisition(
-    session, hr_user, employee
-):
+async def test_the_hiring_team_cannot_refer_into_their_own_requisition(session, hr_user, employee):
     programme = await make_programme(session, hr_user)
     requisition = uuid.uuid4()
     with pytest.raises(HTTPException) as exc:
@@ -229,9 +233,7 @@ async def test_a_role_outside_the_programme_is_refused(session, hr_user, employe
     assert "this role is" in exc.value.detail
 
 
-async def test_a_referral_with_no_candidate_key_is_refused(
-    session, hr_user, employee
-):
+async def test_a_referral_with_no_candidate_key_is_refused(session, hr_user, employee):
     """Without it two referrals of the same person cannot be recognised as
     duplicates, and both bonuses get paid."""
     programme = await make_programme(session, hr_user)
@@ -354,9 +356,7 @@ async def hired_referral(session, hr_user, employee, **kw):
     return uuid.UUID(submitted["referral_id"])
 
 
-async def test_the_whole_schedule_is_written_when_the_candidate_joins(
-    session, hr_user, employee
-):
+async def test_the_whole_schedule_is_written_when_the_candidate_joins(session, hr_user, employee):
     """The ninety-day milestone is visible as owed from day one rather than
     appearing when somebody remembers to create it."""
     referral_id = await hired_referral(session, hr_user, employee)
@@ -384,9 +384,7 @@ async def test_the_whole_schedule_is_written_when_the_candidate_joins(
     assert all(r.paid_at is None for r in rows)
 
 
-async def test_the_later_milestone_is_dated_ninety_days_out(
-    session, hr_user, employee
-):
+async def test_the_later_milestone_is_dated_ninety_days_out(session, hr_user, employee):
     """Paying it all on joining rewards a referral that leaves in six weeks
     exactly as much as one that stays five years."""
     referral_id = await hired_referral(session, hr_user, employee)
@@ -422,10 +420,14 @@ async def test_a_payout_needs_the_payroll_reference(session, hr_user, employee):
         grade="M3",
     )
     payout = (
-        await session.execute(
-            select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+        (
+            await session.execute(
+                select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     with pytest.raises(HTTPException) as exc:
         await recruiting.pay_milestone(
@@ -446,10 +448,14 @@ async def test_a_paid_milestone_records_its_reference_and_says_it_is_taxed(
         grade="M3",
     )
     payout = (
-        await session.execute(
-            select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+        (
+            await session.execute(
+                select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     out = await recruiting.pay_milestone(
         session, hr_user, payout_id=payout.id, payroll_reference="OCT-2026-RUN-1"
@@ -472,13 +478,15 @@ async def test_a_milestone_cannot_be_paid_twice(session, hr_user, employee):
         grade="M3",
     )
     payout = (
-        await session.execute(
-            select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+        (
+            await session.execute(
+                select(ReferralPayout).where(ReferralPayout.referral_id == referral_id)
+            )
         )
-    ).scalars().first()
-    await recruiting.pay_milestone(
-        session, hr_user, payout_id=payout.id, payroll_reference="RUN-1"
+        .scalars()
+        .first()
     )
+    await recruiting.pay_milestone(session, hr_user, payout_id=payout.id, payroll_reference="RUN-1")
     with pytest.raises(HTTPException):
         await recruiting.pay_milestone(
             session, hr_user, payout_id=payout.id, payroll_reference="RUN-2"
@@ -534,9 +542,7 @@ async def test_an_incomplete_cost_reports_itself_as_a_floor(session, hr_user):
         component=CostComponentEnum.JOB_BOARD_SPEND,
         amount=D("300000"),
     )
-    report = await recruiting.cost_report(
-        session, hr_user, period_label="2026-Q3", hires=6
-    )
+    report = await recruiting.cost_report(session, hr_user, period_label="2026-Q3", hires=6)
     assert report["is_complete"] is False
     assert "agency_fees" in report["missing_components"]
     assert "floor" in report["note"]
@@ -551,16 +557,12 @@ async def test_a_complete_cost_says_so(session, hr_user):
             component=component,
             amount=D("100000"),
         )
-    report = await recruiting.cost_report(
-        session, hr_user, period_label="2026-Q4", hires=4
-    )
+    report = await recruiting.cost_report(session, hr_user, period_label="2026-Q4", hires=4)
     assert report["is_complete"] is True
     assert report["cost_per_hire"] == "100000.00"
 
 
-async def test_costs_from_several_sources_sum_within_a_component(
-    session, hr_user
-):
+async def test_costs_from_several_sources_sum_within_a_component(session, hr_user):
     await recruiting.record_cost(
         session,
         hr_user,
@@ -577,15 +579,11 @@ async def test_costs_from_several_sources_sum_within_a_component(
         amount=D("100000"),
         source="indeed",
     )
-    report = await recruiting.cost_report(
-        session, hr_user, period_label="2026-Q3", hires=3
-    )
+    report = await recruiting.cost_report(session, hr_user, period_label="2026-Q3", hires=3)
     assert report["components"]["job_board_spend"] == "300000.00"
 
 
-async def test_recording_the_same_line_twice_updates_rather_than_doubles(
-    session, hr_user
-):
+async def test_recording_the_same_line_twice_updates_rather_than_doubles(session, hr_user):
     for amount in (D("100000"), D("250000")):
         await recruiting.record_cost(
             session,
@@ -594,9 +592,7 @@ async def test_recording_the_same_line_twice_updates_rather_than_doubles(
             component=CostComponentEnum.AGENCY_FEES,
             amount=amount,
         )
-    report = await recruiting.cost_report(
-        session, hr_user, period_label="2026-Q3", hires=1
-    )
+    report = await recruiting.cost_report(session, hr_user, period_label="2026-Q3", hires=1)
     assert report["components"]["agency_fees"] == "250000.00"
 
 
@@ -625,9 +621,7 @@ async def test_interviewer_signals_carry_the_coaching_framing(session, hr_user):
     assert "rank" not in out["severity"]
 
 
-async def test_incoherent_feedback_is_the_signal_worth_acting_on(
-    session, hr_user
-):
+async def test_incoherent_feedback_is_the_signal_worth_acting_on(session, hr_user):
     feedback = [
         interviewer_engine.FeedbackFacts(
             f"f{i}", "j2", f"c{i}", {"a": 2, "b": 2}, 5, 120, 1.0, True
@@ -652,25 +646,17 @@ def journeys_for(candidate_ids, furthest):
         funnel_engine.CandidateJourney(
             candidate_id=str(cid),
             source="x",
-            stage_dates={
-                s: date(2026, 1, 1)
-                for s in stages
-                if s.rank <= furthest.rank
-            },
+            stage_dates={s: date(2026, 1, 1) for s in stages if s.rank <= furthest.rank},
         )
         for cid in candidate_ids
     ]
 
 
-async def test_diversity_suppression_holds_on_real_disclosures(
-    session, hr_user, tenant
-):
+async def test_diversity_suppression_holds_on_real_disclosures(session, hr_user, tenant):
     report = await recruiting.diversity_report(
         session,
         hr_user,
-        journeys=journeys_for(
-            [uuid.uuid4() for _ in range(6)], funnel_engine.Stage.APPLIED
-        ),
+        journeys=journeys_for([uuid.uuid4() for _ in range(6)], funnel_engine.Stage.APPLIED),
         dimension="gender",
         focus_value="female",
     )
@@ -678,13 +664,9 @@ async def test_diversity_suppression_holds_on_real_disclosures(
     assert report["largest_fall"] is None
 
 
-async def test_undisclosed_candidates_are_excluded_from_the_denominator(
-    session, hr_user, tenant
-):
+async def test_undisclosed_candidates_are_excluded_from_the_denominator(session, hr_user, tenant):
     """An absent answer is not an answer."""
-    journeys = journeys_for(
-        [uuid.uuid4() for _ in range(20)], funnel_engine.Stage.APPLIED
-    )
+    journeys = journeys_for([uuid.uuid4() for _ in range(20)], funnel_engine.Stage.APPLIED)
     report = await recruiting.diversity_report(
         session,
         hr_user,
@@ -701,9 +683,7 @@ async def test_undisclosed_candidates_are_excluded_from_the_denominator(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_another_tenant_cannot_see_this_programme(
-    session, hr_user, other_hr_user, employee
-):
+async def test_another_tenant_cannot_see_this_programme(session, hr_user, other_hr_user, employee):
     programme = await make_programme(session, hr_user)
     with pytest.raises(HTTPException) as exc:
         await recruiting.generate_share_link(
@@ -751,9 +731,7 @@ async def test_another_tenant_sees_no_costs(session, hr_user, other_hr_user):
         component=CostComponentEnum.AGENCY_FEES,
         amount=D("500000"),
     )
-    report = await recruiting.cost_report(
-        session, other_hr_user, period_label="2026-Q3", hires=1
-    )
+    report = await recruiting.cost_report(session, other_hr_user, period_label="2026-Q3", hires=1)
     assert report["total_cost"] == "0.00"
 
 
@@ -776,9 +754,7 @@ async def test_a_referral_row_records_the_channel(session, hr_user, employee):
         submitted_at=NOW,
     )
     row = (
-        await session.execute(
-            select(Referral).where(Referral.id == uuid.UUID(out["referral_id"]))
-        )
+        await session.execute(select(Referral).where(Referral.id == uuid.UUID(out["referral_id"])))
     ).scalar_one()
     assert row.share_channel is ShareChannelEnum.WHATSAPP
     assert row.status is ReferralStatusEnum.SUBMITTED

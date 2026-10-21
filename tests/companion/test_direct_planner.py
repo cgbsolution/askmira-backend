@@ -32,6 +32,8 @@ def _plan(text: str, tools=ALL) -> direct.DirectPlan:
         ("Show open jobs", "hiring_jobs", {"status": "open", "query": ""}),
         ("open jobs in AnytimeHire", "hiring_jobs", {"status": "open", "query": ""}),
         ("Open AnytimeHire", "open_product", {"product": "interview"}),
+        ("do we have antime hire is connect with this", "product_connections", {}),
+        ("is expensegenie linked?", "product_connections", {}),
         ('candidates for "Python developer"', "hiring_candidates", {"query": "python developer"}),
         ("Candidates offered", "hiring_candidates", {"status": "offered"}),
         ("interviews next 7 days", "hiring_interviews", {"from": "2026-10-21", "to": "2026-10-27"}),

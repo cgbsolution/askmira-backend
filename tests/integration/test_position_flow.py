@@ -68,10 +68,16 @@ async def _position(
     vacated_on: date | None = None,
 ) -> Position:
     position = Position(
-        tenant_id=tenant.id, code=code, title=f"{code} role", status=status,
-        department_id=department_id, reports_to_position_id=reports_to,
-        fte=Decimal(fte), budgeted_ctc_max=Decimal(budget),
-        effective_from=effective_from, vacated_on=vacated_on,
+        tenant_id=tenant.id,
+        code=code,
+        title=f"{code} role",
+        status=status,
+        department_id=department_id,
+        reports_to_position_id=reports_to,
+        fte=Decimal(fte),
+        budgeted_ctc_max=Decimal(budget),
+        effective_from=effective_from,
+        vacated_on=vacated_on,
     )
     session.add(position)
     await session.commit()
@@ -83,8 +89,12 @@ async def _employee(
     session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, code: str
 ) -> Employee:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code, last_name="Person",
-        display_name=f"{code} Person", work_email=f"{code.lower()}@acme.test",
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code,
+        last_name="Person",
+        display_name=f"{code} Person",
+        work_email=f"{code.lower()}@acme.test",
         legal_entity_id=legal_entity.id,
     )
     session.add(person)
@@ -107,16 +117,20 @@ async def test_a_point_in_time_query_returns_the_historical_occupant(
     rohit = await _employee(session, tenant, legal_entity, "ROHIT")
 
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=anita.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=anita.id,
         from_date=date(2025, 1, 1),
     )
     await session.commit()
-    await position_service.vacate(
-        session, hr_user, position_id=position.id, on=date(2026, 3, 31)
-    )
+    await position_service.vacate(session, hr_user, position_id=position.id, on=date(2026, 3, 31))
     await session.commit()
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=rohit.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=rohit.id,
         from_date=date(2026, 4, 1),
     )
     await session.commit()
@@ -128,9 +142,7 @@ async def test_a_point_in_time_query_returns_the_historical_occupant(
     assert today[0].primary_holder.employee_label == "ROHIT Person"
 
     between = await position_service.snapshots_on(session, hr_user, on=date(2026, 3, 31))
-    assert between[0].primary_holder.employee_label == "ANITA Person", (
-        "the last day is inclusive"
-    )
+    assert between[0].primary_holder.employee_label == "ANITA Person", "the last day is inclusive"
 
 
 async def test_an_exit_vacates_the_position_rather_than_deleting_it(
@@ -145,13 +157,19 @@ async def test_an_exit_vacates_the_position_rather_than_deleting_it(
     position = await _position(session, tenant, "P1")
     person = await _employee(session, tenant, legal_entity, "LEAVER")
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=person.id,
         from_date=date(2025, 1, 1),
     )
     await session.commit()
 
     result = await position_service.vacate(
-        session, hr_user, position_id=position.id, on=date(2026, 8, 31),
+        session,
+        hr_user,
+        position_id=position.id,
+        on=date(2026, 8, 31),
         reason="Resigned.",
     )
     await session.commit()
@@ -181,14 +199,20 @@ async def test_a_second_primary_assignment_to_an_occupied_seat_is_refused(
     second = await _employee(session, tenant, legal_entity, "SECOND")
 
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=first.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=first.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
 
     with pytest.raises(HTTPException) as exc:
         await position_service.assign(
-            session, hr_user, position_id=position.id, employee_id=second.id,
+            session,
+            hr_user,
+            position_id=position.id,
+            employee_id=second.id,
             from_date=date(2026, 6, 1),
         )
     assert "double the headcount" in exc.value.detail
@@ -203,13 +227,20 @@ async def test_additional_charge_is_allowed_alongside_a_primary(
     cover = await _employee(session, tenant, legal_entity, "COVER")
 
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=holder.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=holder.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=cover.id,
-        from_date=date(2026, 6, 1), assignment_type=AssignmentType.ACTING,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=cover.id,
+        from_date=date(2026, 6, 1),
+        assignment_type=AssignmentType.ACTING,
     )
     await session.commit()
 
@@ -230,7 +261,10 @@ async def test_a_frozen_seat_cannot_be_quietly_filled(
     person = await _employee(session, tenant, legal_entity, "SOMEONE")
     with pytest.raises(HTTPException) as exc:
         await position_service.assign(
-            session, hr_user, position_id=position.id, employee_id=person.id,
+            session,
+            hr_user,
+            position_id=position.id,
+            employee_id=person.id,
             from_date=TODAY,
         )
     assert "Unfreeze it first" in exc.value.detail
@@ -243,7 +277,10 @@ async def test_an_abolished_seat_cannot_be_filled(
     person = await _employee(session, tenant, legal_entity, "SOMEONE")
     with pytest.raises(HTTPException) as exc:
         await position_service.assign(
-            session, hr_user, position_id=position.id, employee_id=person.id,
+            session,
+            hr_user,
+            position_id=position.id,
+            employee_id=person.id,
             from_date=TODAY,
         )
     assert "a seat that exists" in exc.value.detail
@@ -260,16 +297,26 @@ async def test_the_budget_view_separates_approved_filled_and_vacant(
     engineering = await _department(session, tenant, "Engineering")
     filled = await _position(session, tenant, "F1", department_id=engineering.id)
     await _position(
-        session, tenant, "V1", department_id=engineering.id,
+        session,
+        tenant,
+        "V1",
+        department_id=engineering.id,
         status=PositionStatus.VACANT,
     )
     await _position(
-        session, tenant, "H1", department_id=engineering.id, fte="0.5",
+        session,
+        tenant,
+        "H1",
+        department_id=engineering.id,
+        fte="0.5",
         status=PositionStatus.VACANT,
     )
     person = await _employee(session, tenant, legal_entity, "PERSON")
     await position_service.assign(
-        session, hr_user, position_id=filled.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=filled.id,
+        employee_id=person.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
@@ -299,27 +346,39 @@ async def test_the_cost_view_needs_payroll_access_to_be_requested(
     from app.services.payroll import service as payroll_service
 
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.PERCENTAGE_OF, base_component_code="CTC",
-        value=Decimal(40), display_order=1,
+        calculation_type=CalculationType.PERCENTAGE_OF,
+        base_component_code="CTC",
+        value=Decimal(40),
+        display_order=1,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, special])
     await session.flush()
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2025, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2025, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, component in enumerate((basic, special)):
         structure.components.append(
             SalaryStructureComponent(
-                tenant_id=tenant.id, component_id=component.id,
-                component=component, display_order=index,
+                tenant_id=tenant.id,
+                component_id=component.id,
+                component=component,
+                display_order=index,
             )
         )
     session.add(structure)
@@ -331,21 +390,25 @@ async def test_the_cost_view_needs_payroll_access_to_be_requested(
     )
     person = await _employee(session, tenant, legal_entity, "PAID")
     await payroll_service.assign_salary(
-        session, hr_user, person.id,
+        session,
+        hr_user,
+        person.id,
         EmployeeSalaryCreate(
-            structure_id=structure.id, ctc_annual=Decimal("1800000"),
+            structure_id=structure.id,
+            ctc_annual=Decimal("1800000"),
             effective_from=date(2026, 1, 1),
         ),
     )
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=person.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
 
-    view = await position_service.budget_view(
-        session, hr_user, on=TODAY, include_cost=True
-    )
+    view = await position_service.budget_view(session, hr_user, on=TODAY, include_cost=True)
     [gap] = [g for g in view["cost"] if g["scope"] == "Engineering"]
     assert gap["budgeted_cost"] == "2000000.00"
     assert gap["actual_cost"] == "1800000.00"
@@ -357,11 +420,17 @@ async def test_vacancy_ageing_measures_from_the_vacate_date(
 ) -> None:
     """The checklist gate, through a real round trip."""
     await _position(
-        session, tenant, "OLD", status=PositionStatus.VACANT,
+        session,
+        tenant,
+        "OLD",
+        status=PositionStatus.VACANT,
         vacated_on=TODAY - timedelta(days=200),
     )
     await _position(
-        session, tenant, "NEW", status=PositionStatus.VACANT,
+        session,
+        tenant,
+        "NEW",
+        status=PositionStatus.VACANT,
         vacated_on=TODAY - timedelta(days=10),
     )
 
@@ -378,13 +447,14 @@ async def test_the_org_chart_renders_vacant_seats(
     """The checklist gate."""
     boss = await _position(session, tenant, "BOSS")
     await _position(session, tenant, "R1", reports_to=boss.id)
-    await _position(
-        session, tenant, "R2", reports_to=boss.id, status=PositionStatus.VACANT
-    )
+    await _position(session, tenant, "R2", reports_to=boss.id, status=PositionStatus.VACANT)
 
     person = await _employee(session, tenant, legal_entity, "BOSSY")
     await position_service.assign(
-        session, hr_user, position_id=boss.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=boss.id,
+        employee_id=person.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
@@ -411,7 +481,10 @@ async def test_the_chart_survives_the_managers_exit(
 
     person = await _employee(session, tenant, legal_entity, "BOSSY")
     await position_service.assign(
-        session, hr_user, position_id=boss.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=boss.id,
+        employee_id=person.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
@@ -434,8 +507,12 @@ async def test_the_chart_survives_the_managers_exit(
 async def _chain(session: AsyncSession, tenant: Tenant) -> None:
     session.add(
         ApprovalChainRule(
-            tenant_id=tenant.id, scope=ApprovalScope.REQUISITION, sequence=1,
-            approver_role="hiring_manager", ctc_min=Decimal(0), ctc_max=None,
+            tenant_id=tenant.id,
+            scope=ApprovalScope.REQUISITION,
+            sequence=1,
+            approver_role="hiring_manager",
+            ctc_min=Decimal(0),
+            ctc_max=None,
         )
     )
     await session.commit()
@@ -445,9 +522,13 @@ async def _requisition(
     session: AsyncSession, tenant: Tenant, *, position_id=None, ctc_max="2000000"
 ) -> Requisition:
     requisition = Requisition(
-        tenant_id=tenant.id, code=f"REQ-{uuid.uuid4().hex[:6]}", title="Engineer",
-        status=RequisitionStatus.DRAFT, justification="Team growth.",
-        budget_ctc_max=Decimal(ctc_max), position_id=position_id,
+        tenant_id=tenant.id,
+        code=f"REQ-{uuid.uuid4().hex[:6]}",
+        title="Engineer",
+        status=RequisitionStatus.DRAFT,
+        justification="Team growth.",
+        budget_ctc_max=Decimal(ctc_max),
+        position_id=position_id,
         approved_headcount=10,
     )
     session.add(requisition)
@@ -486,9 +567,7 @@ async def test_a_requisition_against_an_approved_position_is_not_flagged(
 ) -> None:
     await _chain(session, tenant)
     position = await _position(session, tenant, "P1", budget="2500000")
-    requisition = await _requisition(
-        session, tenant, position_id=position.id, ctc_max="2000000"
-    )
+    requisition = await _requisition(session, tenant, position_id=position.id, ctc_max="2000000")
 
     result = await requisition_service.submit_requisition(
         session, hr_user, requisition_id=requisition.id
@@ -504,9 +583,7 @@ async def test_a_requisition_above_the_positions_band_is_flagged(
 ) -> None:
     await _chain(session, tenant)
     position = await _position(session, tenant, "P1", budget="1500000")
-    requisition = await _requisition(
-        session, tenant, position_id=position.id, ctc_max="2200000"
-    )
+    requisition = await _requisition(session, tenant, position_id=position.id, ctc_max="2200000")
 
     result = await requisition_service.submit_requisition(
         session, hr_user, requisition_id=requisition.id
@@ -525,7 +602,10 @@ async def test_recruiting_against_an_occupied_seat_is_flagged(
     position = await _position(session, tenant, "P1")
     person = await _employee(session, tenant, legal_entity, "INCUMBENT")
     await position_service.assign(
-        session, hr_user, position_id=position.id, employee_id=person.id,
+        session,
+        hr_user,
+        position_id=position.id,
+        employee_id=person.id,
         from_date=date(2026, 1, 1),
     )
     await session.commit()
@@ -566,16 +646,16 @@ async def _scenario(
     session: AsyncSession, tenant: Tenant, hr_user: User, changes: list[dict]
 ) -> PositionScenario:
     scenario = PositionScenario(
-        tenant_id=tenant.id, name=f"Scenario {uuid.uuid4().hex[:6]}",
-        as_of=TODAY, created_by_user_id=hr_user.id,
+        tenant_id=tenant.id,
+        name=f"Scenario {uuid.uuid4().hex[:6]}",
+        as_of=TODAY,
+        created_by_user_id=hr_user.id,
     )
     session.add(scenario)
     await session.flush()
     for index, change in enumerate(changes, start=1):
         session.add(
-            ScenarioChange(
-                tenant_id=tenant.id, scenario_id=scenario.id, sequence=index, **change
-            )
+            ScenarioChange(tenant_id=tenant.id, scenario_id=scenario.id, sequence=index, **change)
         )
     await session.commit()
     await session.refresh(scenario)
@@ -591,7 +671,9 @@ async def test_projecting_a_scenario_leaves_live_positions_untouched(
     position = await _position(session, tenant, "P1", department_id=engineering.id)
 
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [
             {
                 "kind": "move",
@@ -601,16 +683,16 @@ async def test_projecting_a_scenario_leaves_live_positions_untouched(
             {
                 "kind": "create",
                 "values": {
-                    "code": "NEW1", "title": "Staff Engineer",
-                    "budgeted_ctc_max": "3000000", "department_name": "Engineering",
+                    "code": "NEW1",
+                    "title": "Staff Engineer",
+                    "budgeted_ctc_max": "3000000",
+                    "department_name": "Engineering",
                 },
             },
         ],
     )
 
-    projection = await position_service.project_scenario(
-        session, hr_user, scenario_id=scenario.id
-    )
+    projection = await position_service.project_scenario(session, hr_user, scenario_id=scenario.id)
     await session.commit()
 
     assert projection["status"] == "draft"
@@ -635,20 +717,25 @@ async def test_committing_a_scenario_applies_it_to_live_positions(
     cutting = await _position(session, tenant, "CUT1", department_id=engineering.id)
 
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [
             {
-                "kind": "move", "position_id": moving.id,
+                "kind": "move",
+                "position_id": moving.id,
                 "values": {"department_id": str(sales.id)},
             },
             {
-                "kind": "abolish", "position_id": cutting.id,
+                "kind": "abolish",
+                "position_id": cutting.id,
                 "reason": "Duplicated role.",
             },
             {
                 "kind": "create",
                 "values": {
-                    "code": "NEW1", "title": "Staff Engineer",
+                    "code": "NEW1",
+                    "title": "Staff Engineer",
                     "budgeted_ctc_max": "3000000",
                     "department_id": str(engineering.id),
                 },
@@ -656,9 +743,7 @@ async def test_committing_a_scenario_applies_it_to_live_positions(
         ],
     )
 
-    result = await position_service.commit_scenario(
-        session, hr_user, scenario_id=scenario.id
-    )
+    result = await position_service.commit_scenario(session, hr_user, scenario_id=scenario.id)
     await session.commit()
 
     assert len(result["applied"]) == 3
@@ -686,13 +771,13 @@ async def test_a_committed_scenario_records_which_position_each_create_produced(
 ) -> None:
     """Without it, "what did this reorg actually do" is a reconstruction."""
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [
             {
                 "kind": "create",
-                "values": {
-                    "code": "NEW1", "title": "Engineer", "budgeted_ctc_max": "1000000"
-                },
+                "values": {"code": "NEW1", "title": "Engineer", "budgeted_ctc_max": "1000000"},
             }
         ],
     )
@@ -713,7 +798,9 @@ async def test_a_scenario_cannot_be_committed_twice(
     """Committing the same reorg on top of itself."""
     position = await _position(session, tenant, "P1")
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [{"kind": "freeze", "position_id": position.id, "reason": "Freeze."}],
     )
     await position_service.commit_scenario(session, hr_user, scenario_id=scenario.id)
@@ -730,7 +817,9 @@ async def test_a_scenario_that_does_not_hold_together_writes_nothing(
     """Projected first: if the plan is invalid, no part of it is applied."""
     position = await _position(session, tenant, "P1")
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [
             {"kind": "freeze", "position_id": position.id, "reason": "Valid."},
             # No reason: the engine refuses it.
@@ -766,7 +855,9 @@ async def test_a_committed_scenario_cannot_be_discarded(
 ) -> None:
     position = await _position(session, tenant, "P1")
     scenario = await _scenario(
-        session, tenant, hr_user,
+        session,
+        tenant,
+        hr_user,
         [{"kind": "freeze", "position_id": position.id, "reason": "Freeze."}],
     )
     await position_service.commit_scenario(session, hr_user, scenario_id=scenario.id)
@@ -785,22 +876,22 @@ async def test_a_freeze_scenario_shows_the_fte_it_would_hold_back(
     engineering = await _department(session, tenant, "Engineering")
     vacancies = [
         await _position(
-            session, tenant, f"V{i}", department_id=engineering.id,
+            session,
+            tenant,
+            f"V{i}",
+            department_id=engineering.id,
             status=PositionStatus.VACANT,
         )
         for i in range(3)
     ]
     scenario = await _scenario(
-        session, tenant, hr_user,
-        [
-            {"kind": "freeze", "position_id": p.id, "reason": "Q3 freeze."}
-            for p in vacancies
-        ],
+        session,
+        tenant,
+        hr_user,
+        [{"kind": "freeze", "position_id": p.id, "reason": "Q3 freeze."} for p in vacancies],
     )
 
-    projection = await position_service.project_scenario(
-        session, hr_user, scenario_id=scenario.id
-    )
+    projection = await position_service.project_scenario(session, hr_user, scenario_id=scenario.id)
     await session.commit()
     assert projection["projected_totals"]["Engineering"]["frozen_fte"] == "3.00"
     assert projection["live_totals"]["Engineering"]["frozen_fte"] == "0.00"
@@ -811,7 +902,5 @@ async def test_positions_are_tenant_isolated(
 ) -> None:
     position = await _position(session, tenant, "OURS")
     with pytest.raises(HTTPException) as exc:
-        await position_service.vacate(
-            session, other_hr_user, position_id=position.id, on=TODAY
-        )
+        await position_service.vacate(session, other_hr_user, position_id=position.id, on=TODAY)
     assert exc.value.status_code == 404

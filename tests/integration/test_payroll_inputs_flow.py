@@ -189,9 +189,14 @@ async def test_an_off_cycle_run_tops_up_the_month_without_paying_it_twice(
     # Not before the regular run is approved, and never without a reason or people.
     with pytest.raises(HTTPException) as exc:
         await run_service.create_run(
-            session, org["maker"], legal_entity_id=org["entity"].id, period_year=2026,
-            period_month=4, run_type=PayrollRunType.OFF_CYCLE,
-            employee_ids=[org["meera_emp"].id], reason="Late incentive",
+            session,
+            org["maker"],
+            legal_entity_id=org["entity"].id,
+            period_year=2026,
+            period_month=4,
+            run_type=PayrollRunType.OFF_CYCLE,
+            employee_ids=[org["meera_emp"].id],
+            reason="Late incentive",
         )
     assert exc.value.status_code == 409
 
@@ -201,8 +206,13 @@ async def test_an_off_cycle_run_tops_up_the_month_without_paying_it_twice(
 
     with pytest.raises(HTTPException) as exc:
         await run_service.create_run(
-            session, org["maker"], legal_entity_id=org["entity"].id, period_year=2026,
-            period_month=4, run_type=PayrollRunType.OFF_CYCLE, reason="Late incentive",
+            session,
+            org["maker"],
+            legal_entity_id=org["entity"].id,
+            period_year=2026,
+            period_month=4,
+            run_type=PayrollRunType.OFF_CYCLE,
+            reason="Late incentive",
         )
     assert exc.value.status_code == 422
 
@@ -212,9 +222,14 @@ async def test_an_off_cycle_run_tops_up_the_month_without_paying_it_twice(
     await adjustment_service.approve(session, org["maker"], created.id)
 
     off_cycle = await run_service.create_run(
-        session, org["maker"], legal_entity_id=org["entity"].id, period_year=2026,
-        period_month=4, run_type=PayrollRunType.OFF_CYCLE,
-        employee_ids=[org["meera_emp"].id], reason="Late incentive",
+        session,
+        org["maker"],
+        legal_entity_id=org["entity"].id,
+        period_year=2026,
+        period_month=4,
+        run_type=PayrollRunType.OFF_CYCLE,
+        employee_ids=[org["meera_emp"].id],
+        reason="Late incentive",
     )
     assert off_cycle.included_sources == ["payroll_adjustments", "overtime"]
     computed = await run_service.compute_run(session, org["maker"], off_cycle.id)
@@ -246,9 +261,14 @@ async def test_an_off_cycle_run_with_nothing_due_says_so(session: AsyncSession, 
     await _approved_rules(session, org)
     await _approve_month(session, org, 4)
     off_cycle = await run_service.create_run(
-        session, org["maker"], legal_entity_id=org["entity"].id, period_year=2026,
-        period_month=4, run_type=PayrollRunType.BONUS,
-        employee_ids=[org["ravi_emp"].id], reason="Festival bonus",
+        session,
+        org["maker"],
+        legal_entity_id=org["entity"].id,
+        period_year=2026,
+        period_month=4,
+        run_type=PayrollRunType.BONUS,
+        employee_ids=[org["ravi_emp"].id],
+        reason="Festival bonus",
     )
     with pytest.raises(HTTPException) as exc:
         await run_service.compute_run(session, org["maker"], off_cycle.id)
@@ -259,8 +279,12 @@ async def test_an_off_cycle_run_with_nothing_due_says_so(session: AsyncSession, 
 async def test_full_and_final_is_not_a_payroll_run(session: AsyncSession, org) -> None:
     with pytest.raises(HTTPException) as exc:
         await run_service.create_run(
-            session, org["maker"], legal_entity_id=org["entity"].id, period_year=2026,
-            period_month=4, run_type=PayrollRunType.FULL_AND_FINAL,
+            session,
+            org["maker"],
+            legal_entity_id=org["entity"].id,
+            period_year=2026,
+            period_month=4,
+            run_type=PayrollRunType.FULL_AND_FINAL,
         )
     assert exc.value.status_code == 422
 
@@ -301,9 +325,15 @@ async def test_overtime_from_attendance_to_the_payslip(session: AsyncSession, or
         ),
     )
     shift = Shift(
-        tenant_id=org["tenant"].id, code="NIGHT", name="Night", start_time=time(22, 0),
-        end_time=time(6, 0), is_night_shift=True, weekly_off_days=[7],
-        allowance_per_day=Decimal("150.00"), allowance_name="Night shift allowance",
+        tenant_id=org["tenant"].id,
+        code="NIGHT",
+        name="Night",
+        start_time=time(22, 0),
+        end_time=time(6, 0),
+        is_night_shift=True,
+        weekly_off_days=[7],
+        allowance_per_day=Decimal("150.00"),
+        allowance_name="Night shift allowance",
     )
     session.add(shift)
     await session.flush()
@@ -352,11 +382,7 @@ async def test_overtime_from_attendance_to_the_payslip(session: AsyncSession, or
     may = await _approve_month(session, org, 5)
     may_slip = await _slip(session, may.id, org["meera_emp"].id)
     assert not [line for line in may_slip.input_lines if line["code"] == "OVERTIME"]
-    assert (
-        await session.scalar(
-            select(PayrollAdjustmentApplication.id).limit(1)
-        )
-    ) is None
+    assert (await session.scalar(select(PayrollAdjustmentApplication.id).limit(1))) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -372,10 +398,15 @@ async def test_deductions_past_the_legal_ceiling_need_an_acknowledgement(
 
     await _approved_rules(session, org)
     ceiling = await rule_set_service.create_rule_set(
-        session, org["maker"],
-        RuleSetCreate(rule_type="wage_deductions", jurisdiction="IN",
-                      effective_from=date(2026, 4, 1), rules={"max_deduction_percent": "50"},
-                      source_reference="Test fixture, not a statutory source"),
+        session,
+        org["maker"],
+        RuleSetCreate(
+            rule_type="wage_deductions",
+            jurisdiction="IN",
+            effective_from=date(2026, 4, 1),
+            rules={"max_deduction_percent": "50"},
+            source_reference="Test fixture, not a statutory source",
+        ),
     )
     await rule_set_service.approve_rule_set(session, org["checker"], ceiling.id, attest=True)
 
@@ -412,7 +443,10 @@ async def test_deductions_past_the_legal_ceiling_need_an_acknowledgement(
     assert exc.value.status_code == 409
 
     await run_service.acknowledge_variance(
-        session, org["checker"], run.id, org["ravi_emp"].id,
+        session,
+        org["checker"],
+        run.id,
+        org["ravi_emp"].id,
         note="Court order served; the decree overrides the ceiling for this month.",
     )
     approved = await run_service.approve_run(session, org["checker"], run.id)

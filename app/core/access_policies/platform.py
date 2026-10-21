@@ -27,6 +27,11 @@ ENDPOINTS: dict[str, str] = {
         "own: signs the caller in to the product as themselves (identity from the token); "
         "the product's role rule refuses anyone it does not admit."
     ),
+    "GET /products/{product}/views/{view}": (
+        "scoped:role_in: only someone AskMira gives a role in the linked product is answered; "
+        "the product is asked as them (identity from the token, workspace from tid), answers "
+        "only what that role there may see, and a page's fixed scope cannot be widened."
+    ),
     # ── Notifications ───────────────────────────────────────────────────────
     "GET /notifications/unread-count": "own: the caller's own unread count.",
     "GET /oauth/authorize/details": (

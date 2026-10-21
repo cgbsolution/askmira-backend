@@ -102,7 +102,12 @@ async def team(session, tenant, legal_entity, location):
         session, tenant, legal_entity, location, code="MGR1", role=UserRole.EMPLOYEE
     )
     report, report_user = await _person(
-        session, tenant, legal_entity, location, code="EMP1", role=UserRole.EMPLOYEE,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="EMP1",
+        role=UserRole.EMPLOYEE,
         manager=manager,
     )
     outsider, outsider_user = await _person(
@@ -137,9 +142,7 @@ async def _general_shift(session, hr_user):
     )
 
 
-async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
-    session, hr_user, team
-):
+async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(session, hr_user, team):
     report, report_user = team["report"], team["report_user"]
     manager_user = team["manager_user"]
     shift = await _general_shift(session, hr_user)
@@ -183,8 +186,12 @@ async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
         (ist(TUESDAY, 9, 0), PunchDirection.IN),
     ):
         await attendance_service.record_punch(
-            session, report_user, employee_id=report.id, punched_at=at,
-            direction=direction, source=PunchSource.WEB,
+            session,
+            report_user,
+            employee_id=report.id,
+            punched_at=at,
+            direction=direction,
+            source=PunchSource.WEB,
         )
 
     await attendance_service.recompute_range(
@@ -202,8 +209,12 @@ async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
 
     # The employee raises a correction for the missed punch-out.
     reg = await attendance_service.raise_regularisation(
-        session, report_user, employee_id=report.id, attendance_date=TUESDAY,
-        requested_status=AttendanceStatus.PRESENT, reason="Forgot to punch out",
+        session,
+        report_user,
+        employee_id=report.id,
+        attendance_date=TUESDAY,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="Forgot to punch out",
     )
     queue = await review.pending_regularisations(session, manager_user)
     assert [item.id for item in queue] == [reg.id]
@@ -221,9 +232,7 @@ async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
         session, hr_user, date(2026, 4, 1), date(2026, 4, 30)
     )
     with pytest.raises(HTTPException) as exc:
-        await attendance_service.decide_regularisation(
-            session, manager_user, reg.id, approve=True
-        )
+        await attendance_service.decide_regularisation(session, manager_user, reg.id, approve=True)
     assert exc.value.status_code == 409
     with pytest.raises(HTTPException) as exc:
         await attendance_service.recompute_range(
@@ -246,9 +255,7 @@ async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
     assert day.is_regularised
 
     await attendance_service.lock_period(session, hr_user, date(2026, 4, 1), date(2026, 4, 30))
-    lop = await attendance_service.get_lop_days(
-        session, hr_user, report.id, MONDAY, TUESDAY
-    )
+    lop = await attendance_service.get_lop_days(session, hr_user, report.id, MONDAY, TUESDAY)
     assert lop == 0
 
     summaries = (
@@ -262,14 +269,16 @@ async def test_the_whole_flow_assignment_punch_recompute_regularise_lock(
 async def test_nobody_decides_their_own_regularisation(session, hr_user, team):
     manager, manager_user = team["manager"], team["manager_user"]
     reg = await attendance_service.raise_regularisation(
-        session, manager_user, employee_id=manager.id, attendance_date=MONDAY,
-        requested_status=AttendanceStatus.PRESENT, reason="Client visit",
+        session,
+        manager_user,
+        employee_id=manager.id,
+        attendance_date=MONDAY,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="Client visit",
     )
     assert await review.pending_regularisations(session, manager_user) == []
     with pytest.raises(HTTPException) as exc:
-        await attendance_service.decide_regularisation(
-            session, manager_user, reg.id, approve=True
-        )
+        await attendance_service.decide_regularisation(session, manager_user, reg.id, approve=True)
     assert exc.value.status_code == 403
     # HR can, because it is not HR's own.
     queue = await review.pending_regularisations(session, hr_user)
@@ -279,13 +288,21 @@ async def test_nobody_decides_their_own_regularisation(session, hr_user, team):
 async def test_a_rejection_needs_a_reason_and_a_duplicate_is_refused(session, team):
     report, report_user = team["report"], team["report_user"]
     reg = await attendance_service.raise_regularisation(
-        session, report_user, employee_id=report.id, attendance_date=MONDAY,
-        requested_status=AttendanceStatus.PRESENT, reason="Missed punch",
+        session,
+        report_user,
+        employee_id=report.id,
+        attendance_date=MONDAY,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="Missed punch",
     )
     with pytest.raises(HTTPException) as exc:
         await attendance_service.raise_regularisation(
-            session, report_user, employee_id=report.id, attendance_date=MONDAY,
-            requested_status=AttendanceStatus.HALF_DAY, reason="Again",
+            session,
+            report_user,
+            employee_id=report.id,
+            attendance_date=MONDAY,
+            requested_status=AttendanceStatus.HALF_DAY,
+            reason="Again",
         )
     assert exc.value.status_code == 409
     with pytest.raises(HTTPException) as exc:
@@ -299,13 +316,15 @@ async def test_a_rejection_needs_a_reason_and_a_duplicate_is_refused(session, te
 
 async def test_another_tenant_gets_a_404(session, other_hr_user, team):
     reg = await attendance_service.raise_regularisation(
-        session, team["report_user"], employee_id=team["report"].id,
-        attendance_date=MONDAY, requested_status=AttendanceStatus.PRESENT, reason="x-tenant",
+        session,
+        team["report_user"],
+        employee_id=team["report"].id,
+        attendance_date=MONDAY,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="x-tenant",
     )
     with pytest.raises(HTTPException) as exc:
-        await attendance_service.decide_regularisation(
-            session, other_hr_user, reg.id, approve=True
-        )
+        await attendance_service.decide_regularisation(session, other_hr_user, reg.id, approve=True)
     assert exc.value.status_code == 404
 
 
@@ -313,23 +332,29 @@ async def test_a_new_assignment_closes_the_open_one(session, hr_user, team):
     report = team["report"]
     shift = await _general_shift(session, hr_user)
     first = await setup.assign_shift(
-        session, hr_user,
-        ShiftAssignmentCreate(employee_id=report.id, shift_id=shift.id,
-                              effective_from=date(2026, 4, 1)),
+        session,
+        hr_user,
+        ShiftAssignmentCreate(
+            employee_id=report.id, shift_id=shift.id, effective_from=date(2026, 4, 1)
+        ),
     )
     await setup.assign_shift(
-        session, hr_user,
-        ShiftAssignmentCreate(employee_id=report.id, shift_id=shift.id,
-                              effective_from=date(2026, 4, 10)),
+        session,
+        hr_user,
+        ShiftAssignmentCreate(
+            employee_id=report.id, shift_id=shift.id, effective_from=date(2026, 4, 10)
+        ),
     )
     row = await session.get(ShiftAssignment, first.id)
     await session.refresh(row)
     assert row.effective_to == date(2026, 4, 9)
     with pytest.raises(HTTPException) as exc:
         await setup.assign_shift(
-            session, hr_user,
-            ShiftAssignmentCreate(employee_id=report.id, shift_id=shift.id,
-                                  effective_from=date(2026, 4, 5)),
+            session,
+            hr_user,
+            ShiftAssignmentCreate(
+                employee_id=report.id, shift_id=shift.id, effective_from=date(2026, 4, 5)
+            ),
         )
     assert exc.value.status_code == 409
 
@@ -350,8 +375,12 @@ async def test_csv_import_reports_rows_and_deduplicates(session, hr_user, team):
     def rows():
         return [
             attendance_service.ImportRow(
-                row=p.row, employee_code=p.employee_code, punched_at=p.punched_at,
-                direction=p.direction, device_id=None, raw={"row": p.row},
+                row=p.row,
+                employee_code=p.employee_code,
+                punched_at=p.punched_at,
+                direction=p.direction,
+                device_id=None,
+                raw={"row": p.row},
             )
             for p in parsed
         ]
@@ -422,8 +451,11 @@ async def test_http_an_employee_cannot_backdate_a_punch_or_decide(session, team,
         assert geo.status_code == 201 and geo.json()["source"] == "mobile_geo"
         other = await client.get(
             "/api/v1/attendance/punches",
-            params={"from": "2026-04-01", "to": "2026-04-02",
-                    "employee_id": str(team["outsider"].id)},
+            params={
+                "from": "2026-04-01",
+                "to": "2026-04-02",
+                "employee_id": str(team["outsider"].id),
+            },
         )
         assert other.status_code == 403
         # Anybody may be named on an approval chain, so the queue is open to all

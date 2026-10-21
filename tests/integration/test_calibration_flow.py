@@ -49,8 +49,11 @@ async def _cycle(
     # The name is a parameter because (tenant, name, period_start) is unique —
     # a second cycle has to be created with its own name, not renamed after.
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name=name, cycle_type=CycleType.ANNUAL,
-        period_start=date(2026, 4, 1), period_end=date(2027, 3, 31),
+        tenant_id=tenant.id,
+        name=name,
+        cycle_type=CycleType.ANNUAL,
+        period_start=date(2026, 4, 1),
+        period_end=date(2027, 3, 31),
     )
     session.add(cycle)
     await session.commit()
@@ -67,19 +70,27 @@ async def _policy(
     min_group_size: int = 8,
 ) -> CalibrationPolicy:
     policy = CalibrationPolicy(
-        tenant_id=tenant.id, cycle_id=cycle.id, mode=mode,
-        scope=CalibrationScope.DEPARTMENT, min_group_size=min_group_size,
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        mode=mode,
+        scope=CalibrationScope.DEPARTMENT,
+        min_group_size=min_group_size,
     )
     session.add(policy)
     await session.flush()
     for rating, target, tolerance in [
-        ("Outstanding", 10, 2), ("Exceeds", 20, 5),
-        ("Meets", 55, 10), ("Below", 15, 5),
+        ("Outstanding", 10, 2),
+        ("Exceeds", 20, 5),
+        ("Meets", 55, 10),
+        ("Below", 15, 5),
     ]:
         session.add(
             DistributionTarget(
-                tenant_id=tenant.id, policy_id=policy.id, rating_value=rating,
-                target_percent=Decimal(target), tolerance_percent=Decimal(tolerance),
+                tenant_id=tenant.id,
+                policy_id=policy.id,
+                rating_value=rating,
+                target_percent=Decimal(target),
+                tolerance_percent=Decimal(tolerance),
             )
         )
     await session.commit()
@@ -111,17 +122,23 @@ async def _population(
     out: list[Appraisal] = []
     for index, rating in enumerate(ratings):
         employee = Employee(
-            tenant_id=tenant.id, employee_code=f"{prefix}{index:03d}",
-            first_name="Person", last_name=str(index),
+            tenant_id=tenant.id,
+            employee_code=f"{prefix}{index:03d}",
+            first_name="Person",
+            last_name=str(index),
             work_email=f"{prefix.lower()}{index}@acme.test",
-            legal_entity_id=legal_entity.id, department_id=department.id,
+            legal_entity_id=legal_entity.id,
+            department_id=department.id,
             grade="L3",
         )
         session.add(employee)
         await session.flush()
         appraisal = Appraisal(
-            tenant_id=tenant.id, cycle_id=cycle.id, employee_id=employee.id,
-            status=AppraisalStatus.COMPLETED, final_rating=rating,
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            employee_id=employee.id,
+            status=AppraisalStatus.COMPLETED,
+            final_rating=rating,
             final_score=Decimal(70),
         )
         session.add(appraisal)
@@ -138,8 +155,11 @@ async def _session(
     hr_user: User,
 ) -> CalibrationSession:
     row = CalibrationSession(
-        tenant_id=tenant.id, cycle_id=cycle.id, name="Engineering calibration",
-        scope=CalibrationScope.DEPARTMENT, scope_value=str(department.id),
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        name="Engineering calibration",
+        scope=CalibrationScope.DEPARTMENT,
+        scope_value=str(department.id),
         facilitator_user_id=hr_user.id,
         participant_user_ids=[str(hr_user.id)],
         scheduled_at=datetime.now(UTC),
@@ -152,8 +172,10 @@ async def _session(
 
 def _shape(outstanding=0, exceeds=0, meets=0, below=0) -> list[str]:
     return (
-        ["Outstanding"] * outstanding + ["Exceeds"] * exceeds
-        + ["Meets"] * meets + ["Below"] * below
+        ["Outstanding"] * outstanding
+        + ["Exceeds"] * exceeds
+        + ["Meets"] * meets
+        + ["Below"] * below
     )
 
 
@@ -169,7 +191,11 @@ async def test_a_compliant_department_can_close(
     await _policy(session, tenant, cycle)
     dept = await _department(session, tenant, legal_entity, "Engineering")
     await _population(
-        session, tenant, cycle, legal_entity, dept,
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        dept,
         ratings=_shape(outstanding=1, exceeds=2, meets=6, below=1),
     )
 
@@ -192,7 +218,11 @@ async def test_enforced_mode_blocks_and_names_the_department(
     await _policy(session, tenant, cycle)
     dept = await _department(session, tenant, legal_entity, "Engineering")
     await _population(
-        session, tenant, cycle, legal_entity, dept,
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        dept,
         ratings=_shape(outstanding=5, exceeds=2, meets=2, below=1),
     )
 
@@ -203,9 +233,7 @@ async def test_enforced_mode_blocks_and_names_the_department(
 
     # 5 of 10 Outstanding and 2 of 10 Meets both breach, so the blocker under
     # test is found by rating rather than by position.
-    outstanding = next(
-        b for b in result["blockers"] if b["rating"] == "Outstanding"
-    )
+    outstanding = next(b for b in result["blockers"] if b["rating"] == "Outstanding")
     assert outstanding["scope_value"] == str(dept.id)
     assert outstanding["count"] == 5
     assert "points above" in outstanding["message"]
@@ -219,7 +247,11 @@ async def test_advisory_mode_shows_the_gap_but_permits_closure(
     await _policy(session, tenant, cycle, mode=CalibrationMode.ADVISORY)
     dept = await _department(session, tenant, legal_entity, "Engineering")
     await _population(
-        session, tenant, cycle, legal_entity, dept,
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        dept,
         ratings=_shape(outstanding=5, exceeds=2, meets=2, below=1),
     )
 
@@ -236,9 +268,7 @@ async def test_none_mode_computes_no_distribution_at_all(
     cycle = await _cycle(session, tenant)
     await _policy(session, tenant, cycle, mode=CalibrationMode.NONE)
     dept = await _department(session, tenant, legal_entity, "Engineering")
-    await _population(
-        session, tenant, cycle, legal_entity, dept, ratings=_shape(outstanding=10)
-    )
+    await _population(session, tenant, cycle, legal_entity, dept, ratings=_shape(outstanding=10))
 
     result = await calibration_service.cycle_distribution(session, hr_user, cycle.id)
     assert result["distributions"] == []
@@ -257,8 +287,13 @@ async def test_a_small_department_is_excluded_and_says_why(
     await _policy(session, tenant, cycle, min_group_size=8)
     small = await _department(session, tenant, legal_entity, "Design")
     await _population(
-        session, tenant, cycle, legal_entity, small,
-        ratings=_shape(outstanding=1, meets=2), prefix="DSG",
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        small,
+        ratings=_shape(outstanding=1, meets=2),
+        prefix="DSG",
     )
 
     result = await calibration_service.cycle_distribution(session, hr_user, cycle.id)
@@ -280,7 +315,11 @@ async def _ready(session, tenant, hr_user, legal_entity):
     await _policy(session, tenant, cycle)
     dept = await _department(session, tenant, legal_entity, "Engineering")
     appraisals = await _population(
-        session, tenant, cycle, legal_entity, dept,
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        dept,
         ratings=_shape(outstanding=5, exceeds=2, meets=2, below=1),
     )
     calib = await _session(session, tenant, cycle, dept, hr_user)
@@ -298,8 +337,12 @@ async def test_a_change_without_a_justification_is_refused_by_the_service(
 
     with pytest.raises(HTTPException) as exc:
         await calibration_service.apply_change(
-            session, hr_user, session_id=calib.id,
-            appraisal_id=appraisals[0].id, new_rating="Meets", justification="   ",
+            session,
+            hr_user,
+            session_id=calib.id,
+            appraisal_id=appraisals[0].id,
+            new_rating="Meets",
+            justification="   ",
         )
     assert exc.value.status_code == 422
     assert "needs a justification" in exc.value.detail
@@ -319,8 +362,12 @@ async def test_a_change_records_the_previous_value_the_actor_and_the_reason(
     _, _, appraisals, calib = await _ready(session, tenant, hr_user, legal_entity)
 
     change = await calibration_service.apply_change(
-        session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-        new_rating="Exceeds", new_score=Decimal(78),
+        session,
+        hr_user,
+        session_id=calib.id,
+        appraisal_id=appraisals[0].id,
+        new_rating="Exceeds",
+        new_score=Decimal(78),
         justification="Strong year, but the delivery goal slipped a quarter.",
     )
     await session.commit()
@@ -344,8 +391,12 @@ async def test_a_change_starts_the_session(
     assert calib.status is SessionStatus.SCHEDULED
 
     await calibration_service.apply_change(
-        session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-        new_rating="Exceeds", justification="Discussed in the session.",
+        session,
+        hr_user,
+        session_id=calib.id,
+        appraisal_id=appraisals[0].id,
+        new_rating="Exceeds",
+        justification="Discussed in the session.",
     )
     await session.commit()
 
@@ -365,8 +416,12 @@ async def test_a_change_to_another_cycles_appraisal_is_refused(
 
     with pytest.raises(HTTPException) as exc:
         await calibration_service.apply_change(
-            session, hr_user, session_id=calib.id, appraisal_id=stray[0].id,
-            new_rating="Exceeds", justification="Wrong cycle.",
+            session,
+            hr_user,
+            session_id=calib.id,
+            appraisal_id=stray[0].id,
+            new_rating="Exceeds",
+            justification="Wrong cycle.",
         )
     assert "different cycle" in exc.value.detail
 
@@ -405,7 +460,11 @@ async def test_the_workspace_distribution_stays_accurate_at_scale(
     await _policy(session, tenant, cycle)
     dept = await _department(session, tenant, legal_entity, "Engineering")
     await _population(
-        session, tenant, cycle, legal_entity, dept,
+        session,
+        tenant,
+        cycle,
+        legal_entity,
+        dept,
         ratings=_shape(outstanding=20, exceeds=40, meets=110, below=30),
         prefix="BIG",
     )
@@ -441,15 +500,17 @@ async def test_locking_writes_the_agreed_ratings_back(
     _, _, appraisals, calib = await _ready(session, tenant, hr_user, legal_entity)
 
     await calibration_service.apply_change(
-        session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-        new_rating="Meets", new_score=Decimal(65),
+        session,
+        hr_user,
+        session_id=calib.id,
+        appraisal_id=appraisals[0].id,
+        new_rating="Meets",
+        new_score=Decimal(65),
         justification="Moved down after peer comparison at grade.",
     )
     await session.commit()
 
-    result = await calibration_service.lock_session(
-        session, hr_user, session_id=calib.id
-    )
+    result = await calibration_service.lock_session(session, hr_user, session_id=calib.id)
     await session.commit()
 
     assert result["ratings_written"] == 1
@@ -474,8 +535,12 @@ async def test_the_last_change_in_a_session_wins_and_both_stay_on_record(
         ("Exceeds", "Reconsidered after the reviewer spoke."),
     ]:
         await calibration_service.apply_change(
-            session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-            new_rating=rating, justification=why,
+            session,
+            hr_user,
+            session_id=calib.id,
+            appraisal_id=appraisals[0].id,
+            new_rating=rating,
+            justification=why,
         )
     await session.commit()
 
@@ -505,8 +570,12 @@ async def test_a_locked_session_refuses_further_changes(
 
     with pytest.raises(HTTPException) as exc:
         await calibration_service.apply_change(
-            session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-            new_rating="Meets", justification="Too late.",
+            session,
+            hr_user,
+            session_id=calib.id,
+            appraisal_id=appraisals[0].id,
+            new_rating="Meets",
+            justification="Too late.",
         )
     assert "locked" in exc.value.detail
 
@@ -521,15 +590,21 @@ async def test_reopening_a_calibrated_appraisal_requires_an_hr_override(
     """
     _, _, appraisals, calib = await _ready(session, tenant, hr_user, legal_entity)
     await calibration_service.apply_change(
-        session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-        new_rating="Meets", justification="Moved down after peer comparison.",
+        session,
+        hr_user,
+        session_id=calib.id,
+        appraisal_id=appraisals[0].id,
+        new_rating="Meets",
+        justification="Moved down after peer comparison.",
     )
     await calibration_service.lock_session(session, hr_user, session_id=calib.id)
     await session.commit()
 
     with pytest.raises(HTTPException) as exc:
         await calibration_service.reopen_calibrated(
-            session, hr_user, appraisal_id=appraisals[0].id,
+            session,
+            hr_user,
+            appraisal_id=appraisals[0].id,
             reason="Manager disputes the outcome.",
         )
     assert exc.value.status_code == 403
@@ -537,7 +612,9 @@ async def test_reopening_a_calibrated_appraisal_requires_an_hr_override(
     assert exc.value.detail["calibration_history"][0]["to"] == "Meets"
 
     reopened = await calibration_service.reopen_calibrated(
-        session, hr_user, appraisal_id=appraisals[0].id,
+        session,
+        hr_user,
+        appraisal_id=appraisals[0].id,
         reason="Manager disputes the outcome; HR agreed to revisit.",
         hr_override=True,
     )
@@ -551,21 +628,26 @@ async def test_reopening_keeps_the_calibration_history(
     """Reopening adds to the record; it does not erase the session."""
     _, _, appraisals, calib = await _ready(session, tenant, hr_user, legal_entity)
     await calibration_service.apply_change(
-        session, hr_user, session_id=calib.id, appraisal_id=appraisals[0].id,
-        new_rating="Meets", justification="Moved down after peer comparison.",
+        session,
+        hr_user,
+        session_id=calib.id,
+        appraisal_id=appraisals[0].id,
+        new_rating="Meets",
+        justification="Moved down after peer comparison.",
     )
     await calibration_service.lock_session(session, hr_user, session_id=calib.id)
     await calibration_service.reopen_calibrated(
-        session, hr_user, appraisal_id=appraisals[0].id,
-        reason="Revisiting.", hr_override=True,
+        session,
+        hr_user,
+        appraisal_id=appraisals[0].id,
+        reason="Revisiting.",
+        hr_override=True,
     )
     await session.commit()
 
     history = (
         await session.scalars(
-            select(CalibrationChange).where(
-                CalibrationChange.appraisal_id == appraisals[0].id
-            )
+            select(CalibrationChange).where(CalibrationChange.appraisal_id == appraisals[0].id)
         )
     ).all()
     assert len(history) == 1
@@ -587,7 +669,10 @@ async def test_an_uncalibrated_appraisal_reopens_without_an_override(
 
 
 async def test_calibration_is_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
     legal_entity: LegalEntity,
 ) -> None:
     _, _, _, calib = await _ready(session, tenant, hr_user, legal_entity)

@@ -27,8 +27,13 @@ MORNING = datetime(2026, 10, 12, 3, 30, tzinfo=UTC)
 
 async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> User:
     user = User(
-        tenant_id=tenant.id, email="anita.kiosk@acme-demo.com", password_hash="x",
-        full_name="Anita", role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.kiosk@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()
@@ -37,7 +42,10 @@ async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> U
 
 async def _tablet(session: AsyncSession, hr_user: User) -> str:
     _, token = await device_service.create_device(
-        session, hr_user, device_id="KIOSK-RECEPTION", name="Reception tablet",
+        session,
+        hr_user,
+        device_id="KIOSK-RECEPTION",
+        name="Reception tablet",
         vendor=DeviceVendor.KIOSK,
     )
     return token
@@ -65,18 +73,23 @@ async def test_a_person_punches_in_then_out_with_their_pin(
     )
     assert first["direction"] == "in" and first["first_name"] == "Anita"
     second = await kiosk.kiosk_punch(
-        session, token, employee_code=employee.employee_code, pin="2580",
+        session,
+        token,
+        employee_code=employee.employee_code,
+        pin="2580",
         now=MORNING + timedelta(hours=9),
     )
     assert second["direction"] == "out"
     punches = (
         await session.scalars(
-            select(AttendancePunch).where(AttendancePunch.employee_id == employee.id)
+            select(AttendancePunch)
+            .where(AttendancePunch.employee_id == employee.id)
             .order_by(AttendancePunch.punched_at)
         )
     ).all()
     assert [(p.direction, p.source) for p in punches] == [
-        (PunchDirection.IN, PunchSource.KIOSK), (PunchDirection.OUT, PunchSource.KIOSK),
+        (PunchDirection.IN, PunchSource.KIOSK),
+        (PunchDirection.OUT, PunchSource.KIOSK),
     ]
 
 

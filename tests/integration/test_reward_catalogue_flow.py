@@ -25,8 +25,13 @@ pytestmark = requires_db
 
 async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> User:
     user = User(
-        tenant_id=tenant.id, email="anita.rw@acme-demo.com", password_hash="x", full_name="Anita",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.rw@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()
@@ -45,12 +50,14 @@ async def test_redeeming_an_item_spends_its_price_and_takes_stock(
     me = await _login(session, tenant, employee)
 
     mug = await catalogue.create_item(
-        session, hr_user,
+        session,
+        hr_user,
         catalogue.CatalogueItemIn(sku="MUG-01", name="Company mug", points_cost=400, stock=1),
         request=None,
     )
     voucher = await catalogue.create_item(
-        session, hr_user,
+        session,
+        hr_user,
         catalogue.CatalogueItemIn(sku="AMZ-500", name="Shopping voucher", points_cost=900),
         request=None,
     )

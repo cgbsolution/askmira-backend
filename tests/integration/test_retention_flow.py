@@ -65,8 +65,10 @@ async def _real(session, employee, count: int) -> list:
 
     rows = [
         Shoutout(
-            tenant_id=employee.tenant_id, from_employee_id=employee.id,
-            to_employee_id=employee.id, message=f"Thanks #{i}",
+            tenant_id=employee.tenant_id,
+            from_employee_id=employee.id,
+            to_employee_id=employee.id,
+            message=f"Thanks #{i}",
         )
         for i in range(count)
     ]
@@ -90,9 +92,7 @@ async def _real(session, employee, count: int) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_tenant_cannot_configure_below_the_statutory_minimum(
-    session, hr_user
-):
+async def test_a_tenant_cannot_configure_below_the_statutory_minimum(session, hr_user):
     with pytest.raises(HTTPException) as exc:
         await retention.set_policy(
             session,
@@ -133,9 +133,7 @@ async def test_the_defaults_are_the_floor_and_cover_every_category(session, hr_u
         assert entry["retention_period_months"] == cat.retention.months
 
 
-async def test_seeding_twice_does_not_overwrite_a_configured_policy(
-    session, hr_user
-):
+async def test_seeding_twice_does_not_overwrite_a_configured_policy(session, hr_user):
     await retention.set_policy(
         session,
         hr_user,
@@ -144,9 +142,7 @@ async def test_seeding_twice_does_not_overwrite_a_configured_policy(
     )
     await retention.seed_default_policies(session, hr_user)
 
-    stmt = select(RetentionPolicyRow).where(
-        RetentionPolicyRow.data_category_key == "compensation"
-    )
+    stmt = select(RetentionPolicyRow).where(RetentionPolicyRow.data_category_key == "compensation")
     row = (await session.execute(stmt)).scalar_one()
     assert row.retention_period_months == 120
 
@@ -175,16 +171,12 @@ async def test_policies_are_scoped_to_their_tenant(session, hr_user, other_hr_us
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_legal_hold_exempts_records_from_an_expired_policy(
-    session, hr_user
-):
+async def test_a_legal_hold_exempts_records_from_an_expired_policy(session, hr_user):
     """The gate. Held is held, even against a period that ran out years ago."""
     await retention.seed_default_policies(session, hr_user)
     candidates = _candidates(4)
 
-    before = await retention.plan_run(
-        session, hr_user, candidates=candidates, today=TODAY
-    )
+    before = await retention.plan_run(session, hr_user, candidates=candidates, today=TODAY)
     assert before.records_to_act == 4
     assert before.records_held == 0
 
@@ -197,9 +189,7 @@ async def test_a_legal_hold_exempts_records_from_an_expired_policy(
         now=NOW,
     )
 
-    after = await retention.plan_run(
-        session, hr_user, candidates=candidates, today=TODAY
-    )
+    after = await retention.plan_run(session, hr_user, candidates=candidates, today=TODAY)
     assert after.records_to_act == 0
     assert after.records_held == 4
 
@@ -215,9 +205,7 @@ async def test_releasing_a_hold_lets_the_policy_run_again(session, hr_user):
         departments=["Engineering"],
         now=NOW,
     )
-    held = await retention.plan_run(
-        session, hr_user, candidates=candidates, today=TODAY
-    )
+    held = await retention.plan_run(session, hr_user, candidates=candidates, today=TODAY)
     assert held.records_held == 3
 
     await retention.release_hold(
@@ -227,17 +215,13 @@ async def test_releasing_a_hold_lets_the_policy_run_again(session, hr_user):
         release_reason="Matter closed; nothing further required.",
         now=NOW,
     )
-    freed = await retention.plan_run(
-        session, hr_user, candidates=candidates, today=TODAY
-    )
+    freed = await retention.plan_run(session, hr_user, candidates=candidates, today=TODAY)
     assert freed.records_to_act == 3
     assert freed.records_held == 0
 
 
 async def test_a_released_hold_is_kept_as_evidence_not_deleted(session, hr_user):
-    hold = await retention.place_hold(
-        session, hr_user, reason="Investigation.", now=NOW
-    )
+    hold = await retention.place_hold(session, hr_user, reason="Investigation.", now=NOW)
     await retention.release_hold(
         session, hr_user, hold_id=hold.id, release_reason="Closed.", now=NOW
     )
@@ -274,20 +258,14 @@ async def test_a_hold_needs_a_reason(session, hr_user):
 
 
 async def test_releasing_a_hold_needs_a_reason(session, hr_user):
-    hold = await retention.place_hold(
-        session, hr_user, reason="Investigation.", now=NOW
-    )
+    hold = await retention.place_hold(session, hr_user, reason="Investigation.", now=NOW)
     with pytest.raises(HTTPException) as exc:
-        await retention.release_hold(
-            session, hr_user, hold_id=hold.id, release_reason="", now=NOW
-        )
+        await retention.release_hold(session, hr_user, hold_id=hold.id, release_reason="", now=NOW)
     assert "somebody will ask who decided" in exc.value.detail
 
 
 async def test_a_hold_cannot_be_released_twice(session, hr_user):
-    hold = await retention.place_hold(
-        session, hr_user, reason="Investigation.", now=NOW
-    )
+    hold = await retention.place_hold(session, hr_user, reason="Investigation.", now=NOW)
     await retention.release_hold(
         session, hr_user, hold_id=hold.id, release_reason="Closed.", now=NOW
     )
@@ -299,9 +277,7 @@ async def test_a_hold_cannot_be_released_twice(session, hr_user):
 
 
 async def test_a_hold_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
-    hold = await retention.place_hold(
-        session, hr_user, reason="Acme only.", now=NOW
-    )
+    hold = await retention.place_hold(session, hr_user, reason="Acme only.", now=NOW)
     with pytest.raises(HTTPException) as exc:
         await retention.release_hold(
             session,
@@ -360,9 +336,7 @@ async def test_a_run_above_the_threshold_waits_for_a_person(session, hr_user, em
     assert "above the approval threshold" in exc.value.detail
     assert "not a good surprise" in exc.value.detail
 
-    approved = await retention.approve_run(
-        session, hr_user, run_id=run.id, now=NOW
-    )
+    approved = await retention.approve_run(session, hr_user, run_id=run.id, now=NOW)
     assert approved.status is RetentionRunStatus.APPROVED
     assert approved.approved_by_user_id == hr_user.id
 
@@ -418,9 +392,7 @@ async def test_a_rejected_run_cannot_execute(session, hr_user):
 
 async def test_a_run_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
     await retention.seed_default_policies(session, hr_user)
-    run = await retention.plan_run(
-        session, hr_user, candidates=_candidates(2), today=TODAY
-    )
+    run = await retention.plan_run(session, hr_user, candidates=_candidates(2), today=TODAY)
     with pytest.raises(HTTPException) as exc:
         await retention.execute_plan(session, other_hr_user, run_id=run.id)
     assert exc.value.status_code == 404
@@ -488,8 +460,11 @@ async def test_execution_claims_only_what_it_actually_removed(session, hr_user, 
     there = await _real(session, employee, 2)
     gone = [
         planner_engine.CandidateRecord(
-            record_id=str(uuid.uuid4()), table="shoutouts", data_category_key="culture_response",
-            subject_id=str(employee.id), record_created=date(2015, 1, 1),
+            record_id=str(uuid.uuid4()),
+            table="shoutouts",
+            data_category_key="culture_response",
+            subject_id=str(employee.id),
+            record_created=date(2015, 1, 1),
             department="Engineering",
         )
     ]
@@ -564,9 +539,7 @@ async def test_a_suppression_outlives_the_backup_window(session, hr_user, employ
     )
 
 
-async def test_a_suppression_is_scoped_to_its_tenant(
-    session, hr_user, other_hr_user, employee
-):
+async def test_a_suppression_is_scoped_to_its_tenant(session, hr_user, other_hr_user, employee):
     await retention.suppress_for_erasure(
         session,
         hr_user,
@@ -578,9 +551,7 @@ async def test_a_suppression_is_scoped_to_its_tenant(
     assert theirs["active_suppressions"] == 0
 
 
-async def test_a_suppression_from_an_unknown_request_is_refused(
-    session, hr_user, employee
-):
+async def test_a_suppression_from_an_unknown_request_is_refused(session, hr_user, employee):
     with pytest.raises(HTTPException) as exc:
         await retention.suppress_for_erasure(
             session,
@@ -627,18 +598,14 @@ async def test_the_trust_centre_shows_open_holds(session, hr_user):
 
 
 async def test_a_whole_tenant_hold_is_described_as_such(session, hr_user):
-    await retention.place_hold(
-        session, hr_user, reason="Regulator inquiry.", now=NOW
-    )
+    await retention.place_hold(session, hr_user, reason="Regulator inquiry.", now=NOW)
     page = await retention.trust_centre(session, hr_user)
     assert page["open_legal_holds"][0]["scope"] == "the whole tenant"
 
 
 async def test_the_run_history_is_readable(session, hr_user):
     await retention.seed_default_policies(session, hr_user)
-    await retention.plan_run(
-        session, hr_user, candidates=_candidates(4), today=TODAY
-    )
+    await retention.plan_run(session, hr_user, candidates=_candidates(4), today=TODAY)
     rows = (await session.execute(select(RetentionRun))).scalars().all()
     assert len(rows) == 1
     assert rows[0].records_evaluated == 4

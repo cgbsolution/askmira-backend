@@ -1,6 +1,6 @@
 """The signed assertions AskMira hands a product.
 
-Three kinds, all HS256 with the product's own secret, all good for 60 seconds:
+Four kinds, all HS256 with the product's own secret, all good for 60 seconds:
 
 * **provision** — sent as the Bearer token on AskMira's server-to-server calls
   that change the product (the organisation, the roster). `bh` is the SHA-256
@@ -9,6 +9,9 @@ Three kinds, all HS256 with the product's own secret, all good for 60 seconds:
 * **query** — the same shape, for a read-only question asked on behalf of one
   person (Ask Mira). A separate `use`, so a query token can never provision
   and a provisioning token can never read.
+* **handshake** — sent once, when the platform admin pastes the product's
+  connection key into the console: the product accepts the key's secret as
+  AskMira's from then on. `bh` binds it to the body, as above.
 * **launch** — carried in the URL fragment when a person opens the product. It
   names the person and their role there; the product accepts each `jti` once.
 
@@ -58,6 +61,11 @@ def provision_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes
 
 def query_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:
     return _sign(secret, product, str(tenant_id), "query", {"bh": body_hash(body)})
+
+
+def handshake_token(secret: str, product: str, body: bytes) -> str:
+    """Proves AskMira holds the secret in a connection key; the product then trusts it."""
+    return _sign(secret, product, ISSUER, "handshake", {"bh": body_hash(body)})
 
 
 def launch_token(

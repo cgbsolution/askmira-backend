@@ -53,7 +53,10 @@ def test_attlog_lines_become_punches_with_the_right_direction() -> None:
 
 
 async def test_a_device_pushes_through_its_token_address(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     client: httpx.AsyncClient,
 ) -> None:
     device, token = await device_service.create_device(
@@ -79,7 +82,8 @@ async def test_a_device_pushes_through_its_token_address(
 
     punches = (
         await session.scalars(
-            select(AttendancePunch).where(AttendancePunch.employee_id == employee.id)
+            select(AttendancePunch)
+            .where(AttendancePunch.employee_id == employee.id)
             .order_by(AttendancePunch.punched_at)
         )
     ).all()
@@ -117,7 +121,10 @@ async def test_a_device_pushes_through_its_token_address(
 
 
 async def test_serial_only_push_needs_hr_to_switch_it_on(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     client: httpx.AsyncClient,
 ) -> None:
     device, _ = await device_service.create_device(
@@ -147,8 +154,12 @@ async def test_the_same_serial_cannot_push_by_serial_into_two_workspaces(
     await device_service.update_device(session, hr_user, mine.id, accepts_serial_push=True)
 
     other_admin = User(
-        tenant_id=other_tenant.id, email="admin@globex-demo.com", password_hash="x",
-        full_name="Other admin", role=UserRole.ADMIN, is_active=True,
+        tenant_id=other_tenant.id,
+        email="admin@globex-demo.com",
+        password_hash="x",
+        full_name="Other admin",
+        role=UserRole.ADMIN,
+        is_active=True,
     )
     session.add(other_admin)
     await session.commit()

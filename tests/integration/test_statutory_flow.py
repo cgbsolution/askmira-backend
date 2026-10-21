@@ -174,8 +174,12 @@ async def test_a_new_period_does_not_inherit_the_previous_one(
     """October opens its own period, and April's answer does not carry over."""
     esi = await _rules(session, tenant, "esi", ESI_RULES)
     await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 4, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 4, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     await session.commit()
 
@@ -191,8 +195,12 @@ async def test_the_wrapping_period_belongs_to_the_year_it_started_in(
     """October 2025 to March 2026 is one period, and February 2026 is in it."""
     esi = await _rules(session, tenant, "esi", ESI_RULES)
     await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 10, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 10, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     await session.commit()
 
@@ -211,15 +219,23 @@ async def test_opening_a_period_twice_keeps_the_first_answer(
     already decided against."""
     esi = await _rules(session, tenant, "esi", ESI_RULES)
     await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 4, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 4, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     await session.commit()
 
     # A recompute after a backdated raise pushed April's wage above the ceiling.
     again = await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 4, 1),
-        esi_wage_base=Decimal("30000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 4, 1),
+        esi_wage_base=Decimal("30000.00"),
+        esi_rules=esi,
     )
     await session.commit()
 
@@ -242,8 +258,12 @@ async def test_coverage_is_only_opened_on_the_first_month_of_a_period(
 ) -> None:
     esi = await _rules(session, tenant, "esi", ESI_RULES)
     result = await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 7, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 7, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     assert result is None
 
@@ -255,8 +275,12 @@ async def test_a_rule_set_without_periods_records_nothing(
     ceiling test, and no coverage rows accumulate."""
     esi = await _rules(session, tenant, "esi", {"wage_threshold": 21000})
     result = await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 4, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 4, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     assert result is None
 
@@ -270,8 +294,12 @@ async def test_coverage_is_tenant_isolated(
 ) -> None:
     esi = await _rules(session, tenant, "esi", ESI_RULES)
     await statutory_service.open_esi_coverage_period(
-        session, hr_user, employee_id=employee.id, on_date=date(2025, 4, 1),
-        esi_wage_base=Decimal("18000.00"), esi_rules=esi,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2025, 4, 1),
+        esi_wage_base=Decimal("18000.00"),
+        esi_rules=esi,
     )
     await session.commit()
 
@@ -324,9 +352,7 @@ async def test_no_election_returns_none_rather_than_a_default(
     session: AsyncSession, hr_user: User, employee: Employee
 ) -> None:
     assert (
-        await statutory_service.active_pf_election(
-            session, hr_user, employee.id, date(2025, 9, 30)
-        )
+        await statutory_service.active_pf_election(session, hr_user, employee.id, date(2025, 9, 30))
         is None
     )
 
@@ -341,9 +367,7 @@ async def test_bonus_is_computed_from_the_years_payslips(
 ) -> None:
     await _rules(session, tenant, "bonus", BONUS_RULES)
     for month in (4, 5, 6):
-        await _run_with_payslip(
-            session, tenant, employee, legal_entity.id, year=2025, month=month
-        )
+        await _run_with_payslip(session, tenant, employee, legal_entity.id, year=2025, month=month)
 
     rows = await statutory_service.compute_bonus_for_year(
         session, hr_user, financial_year="2025-2026", legal_entity_id=legal_entity.id
@@ -830,15 +854,13 @@ async def test_the_register_shows_the_payment_date_once_paid(
 async def test_the_bonus_wage_basis_is_configurable(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee, legal_entity
 ) -> None:
-    """"Salary or wage" is not the same as gross.
+    """ "Salary or wage" is not the same as gross.
 
     With BASIC and DA named as the basis, an employee on a 20,000 gross made up
     of a 6,000 BASIC has their bonus computed on 6,000 — below the calculation
     ceiling — rather than on the gross.
     """
-    await _rules(
-        session, tenant, "bonus", {**BONUS_RULES, "wage_components": ["BASIC", "DA"]}
-    )
+    await _rules(session, tenant, "bonus", {**BONUS_RULES, "wage_components": ["BASIC", "DA"]})
     await _run_with_payslip(
         session,
         tenant,
@@ -1131,9 +1153,7 @@ async def test_a_mid_period_transfer_flags_the_run_and_blocks_approval(
 
     # And it cannot be acknowledged away the way a variance can.
     with pytest.raises(HTTPException) as exc:
-        await run_service.approve_run(
-            session, hr_user, run.id, acknowledge_variances=True
-        )
+        await run_service.approve_run(session, hr_user, run.id, acknowledge_variances=True)
     assert exc.value.status_code == 409
     assert "cannot be acknowledged away" in exc.value.detail
 

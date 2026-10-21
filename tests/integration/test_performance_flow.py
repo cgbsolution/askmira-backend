@@ -44,9 +44,7 @@ TODAY = date(2026, 12, 1)
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-async def make_employee(
-    session, tenant, legal_entity, location, code, *, grade="M3", gender=None
-):
+async def make_employee(session, tenant, legal_entity, location, code, *, grade="M3", gender=None):
     person = Employee(
         tenant_id=tenant.id,
         employee_code=code,
@@ -212,9 +210,7 @@ async def test_a_check_in_captures_both_sides(session, hr_user, employee):
     assert row.employee_comment_at is not None
 
 
-async def test_a_check_in_the_employee_was_never_asked_about_is_refused(
-    session, hr_user, employee
-):
+async def test_a_check_in_the_employee_was_never_asked_about_is_refused(session, hr_user, employee):
     """A trail of manager observations with no employee response is one side of
     a conversation."""
     plan = await open_plan(session, hr_user, employee)
@@ -265,9 +261,7 @@ async def test_a_reasoned_decline_is_recorded(session, hr_user, employee):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_plan_with_no_support_recorded_is_refused(
-    session, hr_user, employee
-):
+async def test_a_plan_with_no_support_recorded_is_refused(session, hr_user, employee):
     """An improvement plan the employer contributed nothing to is a notice
     period with paperwork."""
     with pytest.raises(HTTPException) as exc:
@@ -275,9 +269,7 @@ async def test_a_plan_with_no_support_recorded_is_refused(
     assert "notice period with paperwork" in exc.value.detail
 
 
-async def test_a_plan_with_a_vague_milestone_is_refused(
-    session, hr_user, employee
-):
+async def test_a_plan_with_a_vague_milestone_is_refused(session, hr_user, employee):
     with pytest.raises(HTTPException) as exc:
         await open_plan(
             session,
@@ -300,9 +292,7 @@ async def test_a_plan_with_no_milestones_is_refused(session, hr_user, employee):
     assert "nothing they can be said to have failed" in exc.value.detail
 
 
-async def test_an_unsuccessful_outcome_on_a_thin_trail_is_refused(
-    session, hr_user, employee
-):
+async def test_an_unsuccessful_outcome_on_a_thin_trail_is_refused(session, hr_user, employee):
     """An exit built on a plan that cannot be evidenced is the situation this
     slice exists to prevent."""
     plan = await open_plan(session, hr_user, employee)
@@ -319,17 +309,13 @@ async def test_an_unsuccessful_outcome_on_a_thin_trail_is_refused(
     assert "routes to an exit" in exc.value.detail
 
 
-async def test_a_full_trail_permits_an_unsuccessful_outcome(
-    session, hr_user, employee
-):
+async def test_a_full_trail_permits_an_unsuccessful_outcome(session, hr_user, employee):
     plan = await open_plan(session, hr_user, employee)
     for day in (date(2026, 9, 7), date(2026, 10, 5), date(2026, 11, 2)):
         await add_check_in(session, hr_user, plan, day)
 
     milestone = (
-        await session.execute(
-            select(PipMilestone).where(PipMilestone.pip_id == plan.id)
-        )
+        await session.execute(select(PipMilestone).where(PipMilestone.pip_id == plan.id))
     ).scalar_one()
     milestone.status = MilestoneStatusEnum.NOT_MET
     await session.commit()
@@ -390,9 +376,7 @@ async def test_the_trail_gaps_are_frozen_at_the_outcome(session, hr_user, employ
     assert list(row.trail_gaps_at_outcome) == frozen
 
 
-async def test_a_successful_outcome_needs_no_acknowledgement(
-    session, hr_user, employee
-):
+async def test_a_successful_outcome_needs_no_acknowledgement(session, hr_user, employee):
     """The asymmetry is deliberate: the employee keeps their job."""
     plan = await open_plan(session, hr_user, employee)
     result = await performance.close_pip(
@@ -419,9 +403,7 @@ async def test_an_extension_records_the_original_period(session, hr_user, employ
     assert row.extensions[0]["from"] == "2026-11-30"
 
 
-async def test_the_evidence_pack_carries_the_employees_words(
-    session, hr_user, employee
-):
+async def test_the_evidence_pack_carries_the_employees_words(session, hr_user, employee):
     """A précis of somebody's contemporaneous account is not their account."""
     plan = await open_plan(session, hr_user, employee)
     await add_check_in(
@@ -431,12 +413,9 @@ async def test_the_evidence_pack_carries_the_employees_words(
         date(2026, 9, 7),
         employee_comments="The Q2 target was changed after I agreed it.",
     )
-    pack = await performance.evidence_pack(
-        session, hr_user, pip_id=plan.id, today=TODAY
-    )
+    pack = await performance.evidence_pack(session, hr_user, pip_id=plan.id, today=TODAY)
     assert (
-        pack["check_ins"][0]["employee_comments"]
-        == "The Q2 target was changed after I agreed it."
+        pack["check_ins"][0]["employee_comments"] == "The Q2 target was changed after I agreed it."
     )
     assert pack["support_provided"]
     assert pack["milestones"]
@@ -457,9 +436,7 @@ async def test_the_budget_view_reports_both_scopes(session, hr_user, employee):
     assert view["company"]["allocated"] == "5000000.00"
 
 
-async def test_a_recommendation_returns_the_budget_with_it(
-    session, hr_user, employee
-):
+async def test_a_recommendation_returns_the_budget_with_it(session, hr_user, employee):
     """A manager who allocates blind and is rejected later redoes everything at
     11pm."""
     cycle = await open_cycle(session, hr_user)
@@ -481,8 +458,7 @@ async def test_consumption_accumulates_across_recommendations(
 ):
     cycle = await open_cycle(session, hr_user, budget_total=D("200000"))
     people = [
-        await make_employee(session, tenant, legal_entity, location, f"BUD{i}")
-        for i in range(2)
+        await make_employee(session, tenant, legal_entity, location, f"BUD{i}") for i in range(2)
     ]
     await performance.recommend_increment(
         session,
@@ -498,9 +474,7 @@ async def test_consumption_accumulates_across_recommendations(
     assert view["company"]["remaining"] == "140000.00"
 
 
-async def test_a_hard_stop_budget_refuses_the_recommendation(
-    session, hr_user, employee
-):
+async def test_a_hard_stop_budget_refuses_the_recommendation(session, hr_user, employee):
     cycle = await open_cycle(
         session,
         hr_user,
@@ -541,9 +515,7 @@ async def test_an_escalate_budget_permits_and_flags(session, hr_user, employee):
     assert out["budget"]["requires_escalation"] is True
 
 
-async def test_outside_the_band_without_a_reason_is_refused(
-    session, hr_user, employee
-):
+async def test_outside_the_band_without_a_reason_is_refused(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     with pytest.raises(HTTPException) as exc:
         await performance.recommend_increment(
@@ -558,9 +530,7 @@ async def test_outside_the_band_without_a_reason_is_refused(
     assert "corrupts the rating data" in exc.value.detail
 
 
-async def test_outside_the_band_with_a_reason_is_accepted(
-    session, hr_user, employee
-):
+async def test_outside_the_band_with_a_reason_is_accepted(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     out = await performance.recommend_increment(
         session,
@@ -622,9 +592,7 @@ async def test_a_rejected_recommendation_frees_its_budget(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_small_comparison_group_yields_no_gap_figure(
-    session, hr_user, employee
-):
+async def test_a_small_comparison_group_yields_no_gap_figure(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     out = await performance.recommend_increment(
         session,
@@ -682,9 +650,7 @@ async def test_the_equity_view_appears_with_the_recommendation(
     assert out["equity"]["compa_ratio"]["reading"]
 
 
-async def test_the_equity_snapshot_is_stored_on_the_row(
-    session, hr_user, employee
-):
+async def test_the_equity_snapshot_is_stored_on_the_row(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     out = await performance.recommend_increment(
         session,
@@ -735,9 +701,7 @@ async def approved_promotion(session, hr_user, employee, cycle, **kw):
     return uuid.UUID(out["recommendation_id"])
 
 
-async def test_an_unapproved_recommendation_cannot_be_promoted(
-    session, hr_user, employee
-):
+async def test_an_unapproved_recommendation_cannot_be_promoted(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     out = await performance.recommend_increment(
         session,
@@ -761,9 +725,7 @@ async def test_an_unapproved_recommendation_cannot_be_promoted(
     assert "nobody signed off" in exc.value.detail
 
 
-async def test_a_recommendation_with_no_target_grade_is_not_a_promotion(
-    session, hr_user, employee
-):
+async def test_a_recommendation_with_no_target_grade_is_not_a_promotion(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user)
     out = await performance.recommend_increment(
         session,
@@ -792,9 +754,7 @@ async def test_a_recommendation_with_no_target_grade_is_not_a_promotion(
     assert "it is an increment" in exc.value.detail
 
 
-async def test_a_promotion_records_every_step_it_produced(
-    session, hr_user, tenant, employee
-):
+async def test_a_promotion_records_every_step_it_produced(session, hr_user, tenant, employee):
     """A row with three of four filled is a promotion that did not complete."""
     await give_salary(session, tenant, hr_user, employee)
     cycle = await open_cycle(session, hr_user)
@@ -822,9 +782,7 @@ async def test_a_promotion_records_every_step_it_produced(
     assert row.grade_applied is True
 
 
-async def test_a_future_dated_promotion_is_not_applied_early(
-    session, hr_user, tenant, employee
-):
+async def test_a_future_dated_promotion_is_not_applied_early(session, hr_user, tenant, employee):
     """Effecting it early would change the record before the decision was due
     to apply."""
     await give_salary(session, tenant, hr_user, employee)
@@ -846,9 +804,7 @@ async def test_a_future_dated_promotion_is_not_applied_early(
     assert employee.grade == grade_before
 
 
-async def test_a_promotion_cannot_be_applied_twice(
-    session, hr_user, tenant, employee
-):
+async def test_a_promotion_cannot_be_applied_twice(session, hr_user, tenant, employee):
     await give_salary(session, tenant, hr_user, employee)
     cycle = await open_cycle(session, hr_user)
     recommendation_id = await approved_promotion(session, hr_user, employee, cycle)
@@ -872,9 +828,7 @@ async def test_a_promotion_cannot_be_applied_twice(
     assert "already been applied" in exc.value.detail
 
 
-async def test_a_backdated_promotion_flags_arrears(
-    session, hr_user, tenant, employee
-):
+async def test_a_backdated_promotion_flags_arrears(session, hr_user, tenant, employee):
     """A revision effective in April and approved in December owes April
     onward."""
     await give_salary(session, tenant, hr_user, employee)
@@ -941,16 +895,12 @@ async def test_a_complete_cycle_releases_together(session, hr_user, employee):
     assert result["letter_count"] == 1
 
     row = (
-        await session.execute(
-            select(IncrementCycle).where(IncrementCycle.id == cycle.id)
-        )
+        await session.execute(select(IncrementCycle).where(IncrementCycle.id == cycle.id))
     ).scalar_one()
     assert row.letters_released_at is not None
 
 
-async def test_a_partial_release_is_recorded(
-    session, hr_user, tenant, legal_entity, location
-):
+async def test_a_partial_release_is_recorded(session, hr_user, tenant, legal_entity, location):
     cycle = await open_cycle(session, hr_user, letter_release_on=date(2027, 3, 25))
     first = await make_employee(session, tenant, legal_entity, location, "PRT1")
     second = await make_employee(session, tenant, legal_entity, location, "PRT2")
@@ -975,9 +925,7 @@ async def test_a_partial_release_is_recorded(
     assert result["outstanding_approvals"] == [str(second.id)]
 
     row = (
-        await session.execute(
-            select(IncrementCycle).where(IncrementCycle.id == cycle.id)
-        )
+        await session.execute(select(IncrementCycle).where(IncrementCycle.id == cycle.id))
     ).scalar_one()
     assert row.partial_release_acknowledged is True
 
@@ -985,9 +933,7 @@ async def test_a_partial_release_is_recorded(
 async def test_a_cycle_cannot_release_twice(session, hr_user, employee):
     cycle = await open_cycle(session, hr_user, letter_release_on=date(2027, 3, 25))
     await approved_promotion(session, hr_user, employee, cycle)
-    await performance.release_letters(
-        session, hr_user, cycle_id=cycle.id, today=date(2027, 3, 25)
-    )
+    await performance.release_letters(session, hr_user, cycle_id=cycle.id, today=date(2027, 3, 25))
     with pytest.raises(HTTPException) as exc:
         await performance.release_letters(
             session, hr_user, cycle_id=cycle.id, today=date(2027, 3, 25)
@@ -1010,20 +956,14 @@ async def test_a_cycle_with_no_release_date_is_refused(session, hr_user, employe
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_another_tenant_cannot_read_a_pip(
-    session, hr_user, other_hr_user, employee
-):
+async def test_another_tenant_cannot_read_a_pip(session, hr_user, other_hr_user, employee):
     plan = await open_plan(session, hr_user, employee)
     with pytest.raises(HTTPException) as exc:
-        await performance.evidence_pack(
-            session, other_hr_user, pip_id=plan.id, today=TODAY
-        )
+        await performance.evidence_pack(session, other_hr_user, pip_id=plan.id, today=TODAY)
     assert exc.value.status_code == 404
 
 
-async def test_another_tenant_cannot_see_this_cycles_budget(
-    session, hr_user, other_hr_user
-):
+async def test_another_tenant_cannot_see_this_cycles_budget(session, hr_user, other_hr_user):
     cycle = await open_cycle(session, hr_user)
     with pytest.raises(HTTPException) as exc:
         await performance.budget_view(session, other_hr_user, cycle_id=cycle.id)
@@ -1060,9 +1000,7 @@ async def test_the_posture_says_payroll_is_not_re_run():
     assert "grade and location" in joined
 
 
-async def test_the_recommendation_status_reflects_escalation(
-    session, hr_user, employee
-):
+async def test_the_recommendation_status_reflects_escalation(session, hr_user, employee):
     cycle = await open_cycle(
         session, hr_user, budget_total=D("1000"), overage_mode=OverageModeEnum.ESCALATE
     )
@@ -1088,9 +1026,7 @@ async def test_the_recommendation_status_reflects_escalation(
     assert row.overage_amount > 0
 
 
-async def test_a_promotion_with_no_salary_to_revise_is_refused_up_front(
-    session, hr_user, employee
-):
+async def test_a_promotion_with_no_salary_to_revise_is_refused_up_front(session, hr_user, employee):
     """The cascade would refuse halfway through and roll back, which is correct
     but tells the manager nothing they can act on."""
     cycle = await open_cycle(session, hr_user)

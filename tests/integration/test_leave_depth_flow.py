@@ -108,16 +108,32 @@ async def _person(
 @pytest.fixture
 async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, location: Location):
     hr_emp, hr = await _person(
-        session, tenant, legal_entity, location, code="HR1", name="Priya Ramesh",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="HR1",
+        name="Priya Ramesh",
         role=UserRole.ADMIN,
     )
     boss_emp, boss = await _person(
-        session, tenant, legal_entity, location, code="MGR1", name="Vikram Shah",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="MGR1",
+        name="Vikram Shah",
         role=UserRole.EMPLOYEE,
     )
     meera_emp, meera = await _person(
-        session, tenant, legal_entity, location, code="EMP1", name="Meera Nair",
-        role=UserRole.EMPLOYEE, manager=boss_emp,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="EMP1",
+        name="Meera Nair",
+        role=UserRole.EMPLOYEE,
+        manager=boss_emp,
     )
     earned = LeaveType(tenant_id=tenant.id, name="Earned Leave", code="EL")
     session.add(earned)
@@ -136,8 +152,14 @@ async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, 
     await session.commit()
     await session.refresh(earned)
     return {
-        "hr": hr, "hr_emp": hr_emp, "boss": boss, "meera": meera, "meera_emp": meera_emp,
-        "earned": earned, "tenant": tenant, "location": location,
+        "hr": hr,
+        "hr_emp": hr_emp,
+        "boss": boss,
+        "meera": meera,
+        "meera_emp": meera_emp,
+        "earned": earned,
+        "tenant": tenant,
+        "location": location,
     }
 
 
@@ -230,9 +252,7 @@ async def test_comp_off_is_credited_on_approval_and_can_then_be_taken(
     assert preview.available_after == Decimal(0)
 
     # Lapses once the expiry has passed and it has not been used.
-    result = await ledger.expire_comp_offs(
-        session, org["hr"], today=TODAY + timedelta(days=61)
-    )
+    result = await ledger.expire_comp_offs(session, org["hr"], today=TODAY + timedelta(days=61))
     assert result["credits_expired"] == 1
     assert await _available(session, org, "CO") == Decimal(0)
 
@@ -244,19 +264,22 @@ async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(
     base = {"employee_id": org["meera_emp"].id, "leave_type_id": org["earned"].id}
 
     await ledger.adjust(
-        session, org["hr"],
+        session,
+        org["hr"],
         BalanceAdjustmentCreate(
             **base, year=TODAY.year, kind="opening", days=Decimal(3), reason="Migrated balance"
         ),
     )
     await ledger.adjust(
-        session, org["hr"],
+        session,
+        org["hr"],
         BalanceAdjustmentCreate(
             **base, year=TODAY.year, kind="credit", days=Decimal(2), reason="Award"
         ),
     )
     await ledger.adjust(
-        session, org["hr"],
+        session,
+        org["hr"],
         BalanceAdjustmentCreate(
             **base, year=TODAY.year, kind="debit", days=Decimal("0.5"), reason="Correction"
         ),
@@ -266,13 +289,24 @@ async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(
 
     # Encashment reads the same live figure and debits it in the caller's
     # transaction; more than the balance holds is refused.
-    assert await ledger.live_available(
-        session, org["hr"], employee_id=org["meera_emp"].id, leave_type_code="EL",
-        year=TODAY.year,
-    ) == after
+    assert (
+        await ledger.live_available(
+            session,
+            org["hr"],
+            employee_id=org["meera_emp"].id,
+            leave_type_code="EL",
+            year=TODAY.year,
+        )
+        == after
+    )
     await ledger.post_encashment(
-        session, org["hr"], employee_id=org["meera_emp"].id, leave_type_code="EL",
-        year=TODAY.year, days=Decimal(2), source_id=org["earned"].id,
+        session,
+        org["hr"],
+        employee_id=org["meera_emp"].id,
+        leave_type_code="EL",
+        year=TODAY.year,
+        days=Decimal(2),
+        source_id=org["earned"].id,
     )
     await session.commit()
     row = await session.scalar(
@@ -284,13 +318,21 @@ async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(
     after = await _available(session, org, "EL")
     with pytest.raises(HTTPException) as too_many:
         await ledger.post_encashment(
-            session, org["hr"], employee_id=org["meera_emp"].id, leave_type_code="EL",
-            year=TODAY.year, days=after + 1, source_id=org["earned"].id,
+            session,
+            org["hr"],
+            employee_id=org["meera_emp"].id,
+            leave_type_code="EL",
+            year=TODAY.year,
+            days=after + 1,
+            source_id=org["earned"].id,
         )
     assert too_many.value.status_code == 409
 
     history = await ledger.history(
-        session, org["meera"], employee_id=None, leave_type_id=org["earned"].id,
+        session,
+        org["meera"],
+        employee_id=None,
+        leave_type_id=org["earned"].id,
         year=TODAY.year,
     )
     assert history.available == after
@@ -300,7 +342,8 @@ async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(
 
     with pytest.raises(HTTPException) as employee:
         await ledger.adjust(
-            session, org["meera"],
+            session,
+            org["meera"],
             BalanceAdjustmentCreate(
                 **base, year=TODAY.year, kind="credit", days=Decimal(5), reason="Please"
             ),
@@ -308,10 +351,15 @@ async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(
     assert employee.value.status_code == 403
     with pytest.raises(HTTPException) as own:
         await ledger.adjust(
-            session, org["hr"],
+            session,
+            org["hr"],
             BalanceAdjustmentCreate(
-                employee_id=org["hr_emp"].id, leave_type_id=org["earned"].id,
-                year=TODAY.year, kind="credit", days=Decimal(5), reason="Mine",
+                employee_id=org["hr_emp"].id,
+                leave_type_id=org["earned"].id,
+                year=TODAY.year,
+                kind="credit",
+                days=Decimal(5),
+                reason="Mine",
             ),
         )
     assert own.value.status_code == 403
@@ -360,20 +408,24 @@ async def test_optional_holidays_count_for_those_who_chose_them_within_the_quota
     for index, day in enumerate(upcoming):
         session.add(
             Holiday(
-                tenant_id=org["tenant"].id, name=f"Festival {index}", holiday_date=day,
-                year=day.year, is_optional=True,
+                tenant_id=org["tenant"].id,
+                name=f"Festival {index}",
+                holiday_date=day,
+                year=day.year,
+                is_optional=True,
             )
         )
     session.add(
         Holiday(
-            tenant_id=org["tenant"].id, name="Maharashtra Day", holiday_date=upcoming[0],
-            year=upcoming[0].year, state_code="MH",
+            tenant_id=org["tenant"].id,
+            name="Maharashtra Day",
+            holiday_date=upcoming[0],
+            year=upcoming[0].year,
+            state_code="MH",
         )
     )
     await session.commit()
-    offered = await holiday_calendar.optional_holidays(
-        session, org["meera"], year=upcoming[0].year
-    )
+    offered = await holiday_calendar.optional_holidays(session, org["meera"], year=upcoming[0].year)
     options = [h for h in offered.holidays if h.holiday_date.year == upcoming[0].year]
     assert offered.quota == 2
     # A Maharashtra holiday is not on a Bengaluru employee's calendar at all.
@@ -399,17 +451,20 @@ async def test_two_halves_of_one_day_and_a_same_day_policy_correction(
     monday = _next_monday(TODAY + timedelta(days=14))
     base = {"leave_type_id": org["earned"].id, "start_date": monday, "end_date": monday}
     await leave_service.apply(
-        session, org["meera"],
+        session,
+        org["meera"],
         LeaveRequestCreate(**base, is_half_day=True, half_day_session="first_half"),
     )
     second = await leave_service.apply(
-        session, org["meera"],
+        session,
+        org["meera"],
         LeaveRequestCreate(**base, is_half_day=True, half_day_session="second_half"),
     )
     assert second.half_day_session == "second_half"
     with pytest.raises(HTTPException) as clash:
         await leave_service.apply(
-            session, org["meera"],
+            session,
+            org["meera"],
             LeaveRequestCreate(**base, is_half_day=True, half_day_session="first_half"),
         )
     assert clash.value.status_code == 422
@@ -417,10 +472,13 @@ async def test_two_halves_of_one_day_and_a_same_day_policy_correction(
     # A correction effective the same day replaces the original rather than
     # losing to it: the quota change shows up in the balance.
     await leave_service.create_policy(
-        session, org["hr"],
+        session,
+        org["hr"],
         LeavePolicyCreate(
-            leave_type_id=org["earned"].id, name="Earned leave - corrected",
-            annual_quota_days=Decimal(30), accrual_frequency="annual",
+            leave_type_id=org["earned"].id,
+            name="Earned leave - corrected",
+            annual_quota_days=Decimal(30),
+            accrual_frequency="annual",
             effective_from=date(2020, 1, 1),
         ),
     )

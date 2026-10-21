@@ -20,8 +20,13 @@ pytestmark = requires_db
 
 async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> User:
     user = User(
-        tenant_id=tenant.id, email="anita.ct@acme-demo.com", password_hash="x", full_name="Anita",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.ct@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()
@@ -32,9 +37,12 @@ async def test_rows_are_typed_and_the_person_edits_only_editable_tables(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
     certs = await custom_tables.create_table(
-        session, hr_user,
+        session,
+        hr_user,
         TableIn(
-            key="certifications", label="Certifications", employee_editable=True,
+            key="certifications",
+            label="Certifications",
+            employee_editable=True,
             columns=[
                 ColumnIn(key="name", label="Certificate", field_type="text", is_required=True),
                 ColumnIn(key="expires", label="Expires", field_type="date"),
@@ -43,9 +51,12 @@ async def test_rows_are_typed_and_the_person_edits_only_editable_tables(
         request=None,
     )
     checks = await custom_tables.create_table(
-        session, hr_user,
+        session,
+        hr_user,
         TableIn(
-            key="disciplinary", label="Disciplinary notes", is_sensitive=True,
+            key="disciplinary",
+            label="Disciplinary notes",
+            is_sensitive=True,
             columns=[ColumnIn(key="note", label="Note", field_type="text")],
         ),
         request=None,
@@ -59,8 +70,12 @@ async def test_rows_are_typed_and_the_person_edits_only_editable_tables(
         )
     assert "Certificate is required" in bad.value.detail
     row = await custom_tables.add_row(
-        session, me, employee.id, certs_id,
-        {"name": "AWS Solutions Architect", "expires": "2028-01-31"}, request=None,
+        session,
+        me,
+        employee.id,
+        certs_id,
+        {"name": "AWS Solutions Architect", "expires": "2028-01-31"},
+        request=None,
     )
     assert row["values"]["expires"] == "2028-01-31"
 
@@ -81,7 +96,9 @@ async def test_rows_are_typed_and_the_person_edits_only_editable_tables(
     # With rows saved, a column cannot be dropped or retyped.
     with pytest.raises(HTTPException):
         await custom_tables.update_table(
-            session, hr_user, certs_id,
+            session,
+            hr_user,
+            certs_id,
             TableUpdate(columns=[ColumnIn(key="name", label="Certificate", field_type="number")]),
             request=None,
         )

@@ -65,21 +65,35 @@ async def org(session, tenant, legal_entity, location):
     people = {}
     for code, dept in (("S1", sales), ("S2", sales), ("E1", tech), ("OPS", tech)):
         employee = Employee(
-            tenant_id=tenant.id, employee_code=code, first_name=code, last_name="Test",
-            work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=legal_entity.id,
-            location_id=location.id, department_id=dept.id, status=EmploymentStatus.ACTIVE,
+            tenant_id=tenant.id,
+            employee_code=code,
+            first_name=code,
+            last_name="Test",
+            work_email=f"{code.lower()}@acme-demo.com",
+            legal_entity_id=legal_entity.id,
+            location_id=location.id,
+            department_id=dept.id,
+            status=EmploymentStatus.ACTIVE,
             date_of_joining=date(2024, 1, 1),
         )
         session.add(employee)
         people[code] = employee
     await session.flush()
     admin = User(
-        tenant_id=tenant.id, email="admin@acme-demo.com", password_hash="x",
-        full_name="Admin", role=UserRole.ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="admin@acme-demo.com",
+        password_hash="x",
+        full_name="Admin",
+        role=UserRole.ADMIN,
+        is_active=True,
     )
     ops = User(
-        tenant_id=tenant.id, email="ops@acme-demo.com", password_hash="x",
-        full_name="Ops Person", role=UserRole.SUB_ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="ops@acme-demo.com",
+        password_hash="x",
+        full_name="Ops Person",
+        role=UserRole.SUB_ADMIN,
+        is_active=True,
         employee_id=people["OPS"].id,
     )
     session.add_all([admin, ops])
@@ -90,8 +104,11 @@ async def org(session, tenant, legal_entity, location):
 async def _prove(session, user: User) -> None:
     session.add(
         StepUpChallenge(
-            tenant_id=user.tenant_id, user_id=user.id, action_key="user.role_change",
-            reason="test", satisfied_at=datetime.now(UTC),
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            action_key="user.role_change",
+            reason="test",
+            satisfied_at=datetime.now(UTC),
         )
     )
     await session.commit()
@@ -109,7 +126,8 @@ async def test_a_withheld_area_refuses_hr_but_not_self_service(client, session, 
 
     asked = await client.put(
         "/api/v1/admin/access/role/payroll",
-        json={"can_view": False}, headers=_auth(admin),
+        json={"can_view": False},
+        headers=_auth(admin),
     )
     assert asked.status_code == 428, "a privilege change wants fresh proof"
     await _prove(session, admin)
@@ -130,15 +148,19 @@ async def test_a_withheld_area_refuses_hr_but_not_self_service(client, session, 
     await _prove(session, admin)
     granted = await client.put(
         f"/api/v1/admin/access/users/{ops.id}/areas/payroll",
-        json={"can_view": True, "can_export": True}, headers=_auth(admin),
+        json={"can_view": True, "can_export": True},
+        headers=_auth(admin),
     )
     assert granted.status_code == 200
     assert (await client.get("/api/v1/payroll/runs", headers=_auth(ops))).status_code == 200
     # ...but not to create a run: that right stayed withheld.
     created = await client.post(
         "/api/v1/payroll/runs",
-        json={"legal_entity_id": str(org["people"]["S1"].legal_entity_id),
-              "period_year": 2026, "period_month": 9},
+        json={
+            "legal_entity_id": str(org["people"]["S1"].legal_entity_id),
+            "period_year": 2026,
+            "period_month": 9,
+        },
         headers=_auth(ops),
     )
     assert created.status_code == 403
@@ -154,7 +176,8 @@ async def test_a_department_scope_narrows_every_query(client, session, org) -> N
     await _prove(session, admin)
     scoped = await client.put(
         f"/api/v1/admin/access/users/{ops.id}/scope",
-        json={"department_ids": [str(org["sales"].id)]}, headers=_auth(admin),
+        json={"department_ids": [str(org["sales"].id)]},
+        headers=_auth(admin),
     )
     assert scoped.status_code == 200, scoped.text
 
@@ -162,9 +185,7 @@ async def test_a_department_scope_narrows_every_query(client, session, org) -> N
     codes = {row["employee_code"] for row in listed.json()["items"]}
     assert codes == {"S1", "S2", "OPS"}, "their department, and themselves"
 
-    outside = await client.get(
-        f"/api/v1/employees/{org['people']['E1'].id}", headers=_auth(ops)
-    )
+    outside = await client.get(f"/api/v1/employees/{org['people']['E1'].id}", headers=_auth(ops))
     assert outside.status_code == 404
 
     # The admin is never narrowed.
@@ -172,9 +193,7 @@ async def test_a_department_scope_narrows_every_query(client, session, org) -> N
 
     # Removing the scope restores everybody.
     await _prove(session, admin)
-    await client.put(
-        f"/api/v1/admin/access/users/{ops.id}/scope", json={}, headers=_auth(admin)
-    )
+    await client.put(f"/api/v1/admin/access/users/{ops.id}/scope", json={}, headers=_auth(admin))
     assert (await client.get("/api/v1/employees", headers=_auth(ops))).json()["total"] == 4
 
 
@@ -183,7 +202,8 @@ async def test_only_sub_admins_are_narrowed_and_only_by_an_admin(client, session
     await _prove(session, admin)
     on_admin = await client.put(
         f"/api/v1/admin/access/users/{admin.id}/areas/people",
-        json={"can_view": False}, headers=_auth(admin),
+        json={"can_view": False},
+        headers=_auth(admin),
     )
     assert on_admin.status_code == 409
     by_ops = await client.put(

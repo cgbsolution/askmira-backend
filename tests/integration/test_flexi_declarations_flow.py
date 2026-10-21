@@ -33,18 +33,29 @@ async def _setup(session: AsyncSession, tenant: Tenant, employee: Employee) -> U
     session.add_all(
         [
             ReimbursementComponent(
-                tenant_id=tenant.id, code="FUEL", name="Fuel", annual_entitlement=Decimal(30_000),
+                tenant_id=tenant.id,
+                code="FUEL",
+                name="Fuel",
+                annual_entitlement=Decimal(30_000),
                 exemption_basis="Against bills.",
             ),
             ReimbursementComponent(
-                tenant_id=tenant.id, code="PHONE", name="Telephone",
-                annual_entitlement=Decimal(12_000), exemption_basis="Against bills.",
+                tenant_id=tenant.id,
+                code="PHONE",
+                name="Telephone",
+                annual_entitlement=Decimal(12_000),
+                exemption_basis="Against bills.",
             ),
         ]
     )
     me = User(
-        tenant_id=tenant.id, email="anita@acme.test", password_hash="x", full_name="Anita Sharma",
-        role=UserRole.EMPLOYEE, employee_id=employee.id, is_active=True,
+        tenant_id=tenant.id,
+        email="anita@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        employee_id=employee.id,
+        is_active=True,
     )
     session.add(me)
     await session.commit()
@@ -78,9 +89,7 @@ async def test_a_split_is_declared_within_limits_and_approved_by_hr(
     assert declared["declared"] == "30000.00" and declared["undeclared"] == "6000.00"
 
     with pytest.raises(HTTPException) as self_decide:
-        await flexi.decide(
-            session, me, uuid.UUID(declared["id"]), approve=True, note=None
-        )
+        await flexi.decide(session, me, uuid.UUID(declared["id"]), approve=True, note=None)
     assert self_decide.value.status_code == 403
 
     # Before approval the component defaults still apply.

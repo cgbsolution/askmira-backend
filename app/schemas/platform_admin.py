@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -48,6 +49,9 @@ class ManagedUserRead(BaseModel):
     employee_code: str | None = None
     last_login_at: datetime | None
     created_at: datetime
+    #: Still on what they were given — they have not chosen their own way in
+    #: yet — so a welcome email can be resent.
+    invite_pending: bool = False
     is_you: bool = False
     is_break_glass: bool = False
 
@@ -57,12 +61,26 @@ class ManagedUserCreate(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     role: UserRole = UserRole.EMPLOYEE
     employee_id: uuid.UUID | None = None
+    #: Email them where to sign in, a link to set their password, and their
+    #: onboarding checklist. Off when the address cannot receive mail yet.
+    send_welcome_email: bool = True
+
+
+class WelcomeEmailRead(BaseModel):
+    """What became of a login's welcome email."""
+
+    status: Literal["sent", "queued", "failed", "no_relay"]
+    detail: str
+    sent_to: str
+    link_expires_at: datetime | None
 
 
 class ManagedUserCreated(BaseModel):
     user: ManagedUserRead
     #: Shown once. Only its hash is stored, and the person is asked to change it.
     temporary_password: str
+    #: Null when the admin chose not to send one.
+    welcome_email: WelcomeEmailRead | None = None
 
 
 class EmployeeLink(BaseModel):

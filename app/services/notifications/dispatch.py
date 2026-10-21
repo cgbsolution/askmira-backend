@@ -73,6 +73,7 @@ __all__ = [
     "DispatchOutcome",
     "NotificationError",
     "email_adapter_for",
+    "email_relay",
     "email_wording",
     "notify",
     "process_due_notifications",
@@ -100,6 +101,8 @@ URGENT_EVENT_KEYS: frozenset[str] = frozenset(
         "system.announcement.critical",
         # Somebody is locked out and waiting on this email.
         "auth.password.reset",
+        # A new login's sign-in details: they cannot get in without it.
+        "auth.login.created",
     }
 )
 
@@ -485,6 +488,18 @@ def get_adapter(channel: Channel) -> ChannelAdapter | None:
 #: test registers its own), each send looks for a real relay: the tenant's own,
 #: then the platform's, and only then falls back to logging.
 _DEFAULT_EMAIL_ADAPTER = _ADAPTERS[Channel.EMAIL]
+
+
+async def email_relay(session: AsyncSession, tenant_id: uuid.UUID) -> str:
+    """Which relay this tenant's email goes through.
+
+    `registered` (an adapter put in the registry), `tenant_smtp`,
+    `platform_smtp`, or `console` — logged on the server and sent to nobody.
+    """
+    if _ADAPTERS.get(Channel.EMAIL) is not _DEFAULT_EMAIL_ADAPTER:
+        return "registered"
+    _adapter, relay = await email_adapter_for(session, tenant_id)
+    return relay
 
 
 async def whatsapp_adapter_for(

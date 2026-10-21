@@ -132,15 +132,28 @@ async def _account(session: AsyncSession, tenant: Tenant) -> JobBoardAccount:
 
 
 async def _requisition(
-    session: AsyncSession, tenant: Tenant, *, code: str = "REQ-001",
-    status: RequisitionStatus = RequisitionStatus.OPEN, location_id=None,
+    session: AsyncSession,
+    tenant: Tenant,
+    *,
+    code: str = "REQ-001",
+    status: RequisitionStatus = RequisitionStatus.OPEN,
+    location_id=None,
 ) -> Requisition:
     requisition = Requisition(
-        tenant_id=tenant.id, code=code, title="Senior Backend Engineer",
-        openings=2, grade="L5", status=status, location_id=location_id,
-        description="<p>Build things.</p>", skills=["Python", "PostgreSQL"],
-        justification="Team growth.", experience_min_years=4, experience_max_years=8,
-        budget_ctc_min=Decimal("1500000"), budget_ctc_max=Decimal("2500000"),
+        tenant_id=tenant.id,
+        code=code,
+        title="Senior Backend Engineer",
+        openings=2,
+        grade="L5",
+        status=status,
+        location_id=location_id,
+        description="<p>Build things.</p>",
+        skills=["Python", "PostgreSQL"],
+        justification="Team growth.",
+        experience_min_years=4,
+        experience_max_years=8,
+        budget_ctc_min=Decimal("1500000"),
+        budget_ctc_max=Decimal("2500000"),
     )
     session.add(requisition)
     await session.commit()
@@ -149,10 +162,16 @@ async def _requisition(
 
 
 async def _careers_config(
-    session: AsyncSession, tenant: Tenant, *, slug: str = "acme", retention_days: int = 730,
+    session: AsyncSession,
+    tenant: Tenant,
+    *,
+    slug: str = "acme",
+    retention_days: int = 730,
 ) -> CareersPageConfig:
     config = CareersPageConfig(
-        tenant_id=tenant.id, slug=slug, is_published=True,
+        tenant_id=tenant.id,
+        slug=slug,
+        is_published=True,
         hero_heading="Build with us",
         privacy_notice_html="<p>We keep your application for two years.</p>",
         privacy_notice_version="2026-01",
@@ -250,9 +269,7 @@ async def test_a_rate_limited_posting_comes_back_on_the_retry_sweep(
     await session.commit()
 
     assert await distribution.retryable_postings(session, hr_user, as_of=NOW) == []
-    due = await distribution.retryable_postings(
-        session, hr_user, as_of=NOW + timedelta(hours=1)
-    )
+    due = await distribution.retryable_postings(session, hr_user, as_of=NOW + timedelta(hours=1))
     assert len(due) == 1
 
 
@@ -276,9 +293,9 @@ async def test_a_retry_after_the_last_attempt_parks_for_a_human(
     assert posting.status is PostingStatus.PARKED
     assert posting.next_attempt_at is None
     # And it does not spin on the retry sweep forever.
-    assert await distribution.retryable_postings(
-        session, hr_user, as_of=NOW + timedelta(days=7)
-    ) == []
+    assert (
+        await distribution.retryable_postings(session, hr_user, as_of=NOW + timedelta(days=7)) == []
+    )
 
 
 async def test_a_rejected_field_value_parks_immediately_without_retrying(
@@ -333,9 +350,7 @@ async def test_an_unapproved_requisition_cannot_be_advertised(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
     await _account(session, tenant)
-    requisition = await _requisition(
-        session, tenant, status=RequisitionStatus.PENDING_APPROVAL
-    )
+    requisition = await _requisition(session, tenant, status=RequisitionStatus.PENDING_APPROVAL)
     registry.register_adapter(JobBoard.NAUKRI, ScriptedAdapter())
     with pytest.raises(HTTPException) as exc:
         await distribution.publish_posting(
@@ -460,10 +475,14 @@ async def test_a_repeat_applicant_links_to_the_existing_candidate_with_history(
     # Second role, second board, same person — different email, same phone.
     second_requisition = await _requisition(session, tenant, code="REQ-002")
     second = await ingestion.ingest_application(
-        session, hr_user,
+        session,
+        hr_user,
         _raw(
-            external_application_id="LI-1", board="linkedin", external_job_id="",
-            email="rohit.verma@gmail.test", phone="09876543210",
+            external_application_id="LI-1",
+            board="linkedin",
+            external_job_id="",
+            email="rohit.verma@gmail.test",
+            phone="09876543210",
             current_company="Newer Labs",
         ),
         requisition_id=second_requisition.id,
@@ -480,9 +499,7 @@ async def test_a_repeat_applicant_links_to_the_existing_candidate_with_history(
     )
     assert candidates == 1, "one person, one candidate row"
 
-    history = await ingestion.candidate_history(
-        session, hr_user, candidate_id=first.candidate.id
-    )
+    history = await ingestion.candidate_history(session, hr_user, candidate_id=first.candidate.id)
     assert len(history) == 2
     assert [a.board for a in history] == [JobBoard.NAUKRI, JobBoard.LINKEDIN]
 
@@ -542,7 +559,7 @@ async def test_an_application_for_an_unknown_job_is_held_back_not_misfiled(
 async def test_a_batch_counts_each_branch_separately(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
-    """"40 applications" that turns out to be 38 duplicates is a very different
+    """ "40 applications" that turns out to be 38 duplicates is a very different
     day from 40 new people."""
     await _careers_config(session, tenant)
     await _live_posting(session, tenant, hr_user)
@@ -555,10 +572,18 @@ async def test_a_batch_counts_each_branch_separately(
         hr_user,
         [
             _raw(),  # already ingested
-            _raw(external_application_id="NKR-A2", email="priya@example.test",
-                 phone="9000000002", full_name="Priya Nair"),
-            _raw(external_application_id="NKR-A3", email="rohit@example.test",
-                 phone=None, full_name="Rohit Verma"),
+            _raw(
+                external_application_id="NKR-A2",
+                email="priya@example.test",
+                phone="9000000002",
+                full_name="Priya Nair",
+            ),
+            _raw(
+                external_application_id="NKR-A3",
+                email="rohit@example.test",
+                phone=None,
+                full_name="Rohit Verma",
+            ),
             _raw(external_application_id="NKR-A4", email="", phone=None),
         ],
         now=NOW,
@@ -592,9 +617,7 @@ async def test_the_careers_page_lists_only_open_roles(
     assert page["allow_apply_without_account"] is True
 
 
-async def test_an_unpublished_careers_page_is_a_404(
-    session: AsyncSession, tenant: Tenant
-) -> None:
+async def test_an_unpublished_careers_page_is_a_404(session: AsyncSession, tenant: Tenant) -> None:
     config = await _careers_config(session, tenant)
     config.is_published = False
     await session.commit()
@@ -656,24 +679,36 @@ async def test_culture_content_carries_no_employee_names(
     """A shoutout is visible to colleagues, which is not the same as consenting
     to appear on the public internet."""
     other = Employee(
-        tenant_id=tenant.id, employee_code="CUL001", first_name="Vikram",
-        last_name="Rao", work_email="vikram@acme.test", legal_entity_id=legal_entity.id,
+        tenant_id=tenant.id,
+        employee_code="CUL001",
+        first_name="Vikram",
+        last_name="Rao",
+        work_email="vikram@acme.test",
+        legal_entity_id=legal_entity.id,
     )
     session.add(other)
     await session.flush()
-    session.add_all([
-        Shoutout(
-            tenant_id=tenant.id, from_employee_id=employee.id, to_employee_id=other.id,
-            message="Carried the migration weekend single-handed.",
-            value_tag="ownership", visibility=ShoutoutVisibility.COMPANY,
-        ),
-        Shoutout(
-            tenant_id=tenant.id, from_employee_id=other.id, to_employee_id=employee.id,
-            message="A private word of thanks.", visibility=ShoutoutVisibility.PRIVATE,
-        ),
-        Club(tenant_id=tenant.id, name="Running Club", slug="running", is_private=False),
-        Club(tenant_id=tenant.id, name="Leadership", slug="leadership", is_private=True),
-    ])
+    session.add_all(
+        [
+            Shoutout(
+                tenant_id=tenant.id,
+                from_employee_id=employee.id,
+                to_employee_id=other.id,
+                message="Carried the migration weekend single-handed.",
+                value_tag="ownership",
+                visibility=ShoutoutVisibility.COMPANY,
+            ),
+            Shoutout(
+                tenant_id=tenant.id,
+                from_employee_id=other.id,
+                to_employee_id=employee.id,
+                message="A private word of thanks.",
+                visibility=ShoutoutVisibility.PRIVATE,
+            ),
+            Club(tenant_id=tenant.id, name="Running Club", slug="running", is_private=False),
+            Club(tenant_id=tenant.id, name="Leadership", slug="leadership", is_private=True),
+        ]
+    )
     await _careers_config(session, tenant)
     await session.commit()
 
@@ -713,7 +748,9 @@ async def test_consent_is_recorded_per_purpose_with_the_notice_that_was_shown(
     await _live_posting(session, tenant, hr_user)
 
     outcome = await ingestion.ingest_application(
-        session, hr_user, _raw(),
+        session,
+        hr_user,
+        _raw(),
         consent_purposes=[ConsentPurpose.APPLICATION_PROCESSING],
         notice_text=config.privacy_notice_html,
         notice_version=config.privacy_notice_version,
@@ -723,9 +760,7 @@ async def test_consent_is_recorded_per_purpose_with_the_notice_that_was_shown(
 
     rows = (
         await session.scalars(
-            select(CandidateConsent).where(
-                CandidateConsent.candidate_id == outcome.candidate.id
-            )
+            select(CandidateConsent).where(CandidateConsent.candidate_id == outcome.candidate.id)
         )
     ).all()
     assert len(rows) == 1
@@ -734,11 +769,15 @@ async def test_consent_is_recorded_per_purpose_with_the_notice_that_was_shown(
     assert "two years" in rows[0].notice_text
 
     assert await ingestion.effective_consent(
-        session, hr_user, candidate_id=outcome.candidate.id,
+        session,
+        hr_user,
+        candidate_id=outcome.candidate.id,
         purpose=ConsentPurpose.APPLICATION_PROCESSING,
     )
     assert not await ingestion.effective_consent(
-        session, hr_user, candidate_id=outcome.candidate.id,
+        session,
+        hr_user,
+        candidate_id=outcome.candidate.id,
         purpose=ConsentPurpose.TALENT_POOL_RETENTION,
     )
 
@@ -746,35 +785,43 @@ async def test_consent_is_recorded_per_purpose_with_the_notice_that_was_shown(
 async def test_withdrawal_is_a_new_row_not_an_edit(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
-    """"Did they consent on the day we processed this" has to stay answerable
+    """ "Did they consent on the day we processed this" has to stay answerable
     after they withdraw."""
     await _careers_config(session, tenant)
     await _live_posting(session, tenant, hr_user)
     outcome = await ingestion.ingest_application(
-        session, hr_user, _raw(),
+        session,
+        hr_user,
+        _raw(),
         consent_purposes=[ConsentPurpose.TALENT_POOL_RETENTION],
-        notice_text="notice", notice_version="1", now=NOW,
+        notice_text="notice",
+        notice_version="1",
+        now=NOW,
     )
     await session.commit()
 
     await ingestion.record_consent(
-        session, hr_user, candidate_id=outcome.candidate.id,
-        purpose=ConsentPurpose.TALENT_POOL_RETENTION, granted=False,
-        notice_text="Withdrawn by the candidate.", notice_version="1",
+        session,
+        hr_user,
+        candidate_id=outcome.candidate.id,
+        purpose=ConsentPurpose.TALENT_POOL_RETENTION,
+        granted=False,
+        notice_text="Withdrawn by the candidate.",
+        notice_version="1",
         now=NOW + timedelta(days=30),
     )
     await session.commit()
 
     rows = (
         await session.scalars(
-            select(CandidateConsent).where(
-                CandidateConsent.candidate_id == outcome.candidate.id
-            )
+            select(CandidateConsent).where(CandidateConsent.candidate_id == outcome.candidate.id)
         )
     ).all()
     assert len(rows) == 2, "the original grant survives"
     assert not await ingestion.effective_consent(
-        session, hr_user, candidate_id=outcome.candidate.id,
+        session,
+        hr_user,
+        candidate_id=outcome.candidate.id,
         purpose=ConsentPurpose.TALENT_POOL_RETENTION,
     )
 
@@ -858,14 +905,22 @@ async def test_an_erasure_request_removes_the_person_and_keeps_the_statistics(
     await _careers_config(session, tenant)
     await _live_posting(session, tenant, hr_user)
     outcome = await ingestion.ingest_application(
-        session, hr_user, _raw(resume_url="https://naukri.test/resume/1"),
+        session,
+        hr_user,
+        _raw(resume_url="https://naukri.test/resume/1"),
         consent_purposes=[ConsentPurpose.APPLICATION_PROCESSING],
-        notice_text="notice", notice_version="1", now=NOW,
+        notice_text="notice",
+        notice_version="1",
+        now=NOW,
     )
     session.add(
         CandidateDocument(
-            tenant_id=tenant.id, candidate_id=outcome.candidate.id, category="pan",
-            file_name="pan.pdf", storage_key="s3://bucket/pan.pdf", uploaded_at=NOW,
+            tenant_id=tenant.id,
+            candidate_id=outcome.candidate.id,
+            category="pan",
+            file_name="pan.pdf",
+            storage_key="s3://bucket/pan.pdf",
+            uploaded_at=NOW,
             retention_until=NOW.date() + timedelta(days=730),
         )
     )
@@ -904,9 +959,7 @@ async def test_an_erasure_request_removes_the_person_and_keeps_the_statistics(
     # withdraw" is exactly what gets asked about an erasure.
     consents = (
         await session.scalars(
-            select(CandidateConsent).where(
-                CandidateConsent.candidate_id == outcome.candidate.id
-            )
+            select(CandidateConsent).where(CandidateConsent.candidate_id == outcome.candidate.id)
         )
     ).all()
     assert any(c.granted for c in consents)
@@ -925,9 +978,7 @@ async def test_someone_who_joined_cannot_be_erased_through_the_candidate_route(
     await session.commit()
 
     with pytest.raises(HTTPException) as exc:
-        await careers_service.purge_on_request(
-            session, hr_user, candidate_id=outcome.candidate.id
-        )
+        await careers_service.purge_on_request(session, hr_user, candidate_id=outcome.candidate.id)
     assert "employment law retention" in exc.value.detail
 
 
@@ -967,7 +1018,8 @@ async def test_a_candidate_with_a_newer_application_is_not_purged(
 
     second_requisition = await _requisition(session, tenant, code="REQ-002")
     await ingestion.ingest_application(
-        session, hr_user,
+        session,
+        hr_user,
         _raw(external_application_id="NKR-A9", external_job_id=""),
         requisition_id=second_requisition.id,
         now=NOW + timedelta(days=300),
@@ -993,14 +1045,18 @@ async def test_careers_pages_are_tenant_isolated_by_slug(
     await _careers_config(session, tenant, slug="acme")
     session.add(
         CareersPageConfig(
-            tenant_id=other_tenant.id, slug="other", is_published=True,
+            tenant_id=other_tenant.id,
+            slug="other",
+            is_published=True,
             privacy_notice_html="<p>notice</p>",
         )
     )
     await _requisition(session, tenant, code="ACME-1")
     session.add(
         Requisition(
-            tenant_id=other_tenant.id, code="OTHER-1", title="Their role",
+            tenant_id=other_tenant.id,
+            code="OTHER-1",
+            title="Their role",
             status=RequisitionStatus.OPEN,
         )
     )

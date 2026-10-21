@@ -219,6 +219,16 @@ TOOLS: dict[str, Tool] = {
             inputs=("scope", "status", "from", "to"),
         ),
         Tool(
+            key="product_connections",
+            group="products",
+            title="Linked products",
+            description=(
+                f"Whether {_HIRE} (interviews) and {_EXPENSE} (expenses) are connected to this "
+                "workspace, and what the asker may read from each. Use it when the person asks "
+                "whether a product is connected, linked or set up."
+            ),
+        ),
+        Tool(
             key="open_product",
             group="products",
             title="Open a linked product",
@@ -421,6 +431,21 @@ async def _run(
                 rows,
                 caption=f"{len(rows)} location(s)",
                 empty="No office locations are set up yet.",
+            )
+        ], {}
+
+    if tool.key == "product_connections":
+        rows = []
+        for key, product in PRODUCTS.items():
+            state = await products_data.connection(session, user, key)
+            rows.append([product.brand, state["server"], state["workspace"], state["access"]])
+        return [
+            _table(
+                "Linked products",
+                ["Product", "On this server", "This workspace", "Your access"],
+                rows,
+                caption="What Ask Mira can read for you from each product",
+                empty="No products are known to AskMira.",
             )
         ], {}
 

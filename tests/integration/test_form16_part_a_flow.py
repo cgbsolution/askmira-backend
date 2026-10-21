@@ -30,17 +30,30 @@ def _pdf(pages: int) -> bytes:
 
 
 async def test_a_traces_zip_is_matched_by_pan_and_joined_to_part_b(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     employee.pan = "ABCDE1234F"
     twin_a = Employee(
-        tenant_id=tenant.id, employee_code="T1", first_name="Twin", work_email="t1@acme-demo.com",
-        legal_entity_id=legal_entity.id, status=EmploymentStatus.ACTIVE, pan="ZZZZZ9999Z",
+        tenant_id=tenant.id,
+        employee_code="T1",
+        first_name="Twin",
+        work_email="t1@acme-demo.com",
+        legal_entity_id=legal_entity.id,
+        status=EmploymentStatus.ACTIVE,
+        pan="ZZZZZ9999Z",
     )
     twin_b = Employee(
-        tenant_id=tenant.id, employee_code="T2", first_name="Twin", work_email="t2@acme-demo.com",
-        legal_entity_id=legal_entity.id, status=EmploymentStatus.ACTIVE, pan="ZZZZZ9999Z",
+        tenant_id=tenant.id,
+        employee_code="T2",
+        first_name="Twin",
+        work_email="t2@acme-demo.com",
+        legal_entity_id=legal_entity.id,
+        status=EmploymentStatus.ACTIVE,
+        pan="ZZZZZ9999Z",
     )
     session.add_all([twin_a, twin_b])
     await session.commit()
@@ -73,24 +86,41 @@ async def test_only_hr_uploads_and_only_pdfs(
 ) -> None:
     with pytest.raises(HTTPException):
         await form16_part_a.upload_one(
-            session, hr_user, employee_id=employee.id, financial_year="2025-26",
-            data=b"<html>not a pdf</html>", filename="x.pdf",
+            session,
+            hr_user,
+            employee_id=employee.id,
+            financial_year="2025-26",
+            data=b"<html>not a pdf</html>",
+            filename="x.pdf",
         )
     login = User(
-        tenant_id=tenant.id, email="anita.f16@acme-demo.com", password_hash="x",
-        full_name="Anita", role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.f16@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(login)
     await session.commit()
     login = await as_caller(session, login)
     with pytest.raises(HTTPException) as refused:
         await form16_part_a.upload_one(
-            session, login, employee_id=employee.id, financial_year="2025-26",
-            data=_pdf(1), filename="mine.pdf",
+            session,
+            login,
+            employee_id=employee.id,
+            financial_year="2025-26",
+            data=_pdf(1),
+            filename="mine.pdf",
         )
     assert refused.value.status_code == 403
     done = await form16_part_a.upload_one(
-        session, hr_user, employee_id=employee.id, financial_year="2025-26",
-        data=_pdf(1), filename="a.pdf",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year="2025-26",
+        data=_pdf(1),
+        filename="a.pdf",
     )
     assert done["stored"] is True

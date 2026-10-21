@@ -60,8 +60,11 @@ async def _cycle(
     session: AsyncSession, tenant: Tenant, *, name: str = "FY26 review"
 ) -> AppraisalCycle:
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name=name, cycle_type=CycleType.ANNUAL,
-        period_start=date(2026, 4, 1), period_end=date(2027, 3, 31),
+        tenant_id=tenant.id,
+        name=name,
+        cycle_type=CycleType.ANNUAL,
+        period_start=date(2026, 4, 1),
+        period_end=date(2027, 3, 31),
     )
     session.add(cycle)
     await session.flush()
@@ -71,8 +74,11 @@ async def _cycle(
     ):
         session.add(
             AppraisalStage(
-                tenant_id=tenant.id, cycle_id=cycle.id, sequence=sequence,
-                role=role, label=label,
+                tenant_id=tenant.id,
+                cycle_id=cycle.id,
+                sequence=sequence,
+                role=role,
+                label=label,
             )
         )
     await session.commit()
@@ -91,8 +97,12 @@ async def _rule(
     label: str = "",
 ) -> TemplateAssignmentRule:
     rule = TemplateAssignmentRule(
-        tenant_id=tenant.id, cycle_id=cycle.id, priority=priority,
-        template_id=template.id, conditions=conditions or {}, label=label,
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        priority=priority,
+        template_id=template.id,
+        conditions=conditions or {},
+        label=label,
     )
     session.add(rule)
     await session.commit()
@@ -116,8 +126,13 @@ async def test_activation_refuses_when_an_employee_resolves_to_no_template(
     cycle = await _cycle(session, tenant)
     senior = await _template(session, tenant, "Senior")
     await _rule(
-        session, tenant, cycle, senior, priority=10,
-        conditions={"grades": ["L5"]}, label="Senior grades",
+        session,
+        tenant,
+        cycle,
+        senior,
+        priority=10,
+        conditions={"grades": ["L5"]},
+        label="Senior grades",
     )
     employee.grade = "L3"
     await session.commit()
@@ -139,7 +154,12 @@ async def test_activation_succeeds_once_a_default_rule_exists(
     senior = await _template(session, tenant, "Senior")
     standard = await _template(session, tenant, "Standard")
     await _rule(
-        session, tenant, cycle, senior, priority=10, conditions={"grades": ["L5"]},
+        session,
+        tenant,
+        cycle,
+        senior,
+        priority=10,
+        conditions={"grades": ["L5"]},
         label="Senior grades",
     )
     await _rule(session, tenant, cycle, standard, priority=100, label="Everyone else")
@@ -155,7 +175,10 @@ async def test_activation_succeeds_once_a_default_rule_exists(
 
 
 async def test_the_highest_priority_rule_wins_against_real_employees(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     """The checklist gate: overlapping conditions resolve deterministically."""
@@ -169,12 +192,22 @@ async def test_the_highest_priority_rule_wins_against_real_employees(
     await session.flush()
 
     await _rule(
-        session, tenant, cycle, senior, priority=10, conditions={"grades": ["L5"]},
+        session,
+        tenant,
+        cycle,
+        senior,
+        priority=10,
+        conditions={"grades": ["L5"]},
         label="Senior",
     )
     await _rule(
-        session, tenant, cycle, engineering, priority=20,
-        conditions={"department_ids": [str(dept.id)]}, label="Engineering",
+        session,
+        tenant,
+        cycle,
+        engineering,
+        priority=20,
+        conditions={"department_ids": [str(dept.id)]},
+        label="Engineering",
     )
     await _rule(session, tenant, cycle, standard, priority=100, label="Default")
 
@@ -193,8 +226,11 @@ async def test_a_cycle_with_no_stages_cannot_activate(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name="Empty", cycle_type=CycleType.OFF_CYCLE,
-        period_start=date(2026, 4, 1), period_end=date(2027, 3, 31),
+        tenant_id=tenant.id,
+        name="Empty",
+        cycle_type=CycleType.OFF_CYCLE,
+        period_start=date(2026, 4, 1),
+        period_end=date(2027, 3, 31),
     )
     session.add(cycle)
     await session.commit()
@@ -225,8 +261,11 @@ async def _stuck(session, tenant, hr_user, employee, behaviour):
     stages[0].auto_advance = behaviour
 
     appraisal = Appraisal(
-        tenant_id=tenant.id, cycle_id=cycle.id, employee_id=employee.id,
-        current_stage_id=stages[0].id, status=AppraisalStatus.IN_PROGRESS,
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        employee_id=employee.id,
+        current_stage_id=stages[0].id,
+        status=AppraisalStatus.IN_PROGRESS,
     )
     session.add(appraisal)
     await session.commit()
@@ -292,9 +331,7 @@ async def test_hold_does_nothing(
 async def test_an_open_stage_window_is_left_alone(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
-    cycle, _, _ = await _stuck(
-        session, tenant, hr_user, employee, AutoAdvanceBehaviour.ADVANCE
-    )
+    cycle, _, _ = await _stuck(session, tenant, hr_user, employee, AutoAdvanceBehaviour.ADVANCE)
     result = await cycle_service.run_auto_advance(
         session, hr_user, cycle_id=cycle.id, as_of=date(2026, 5, 1)
     )
@@ -319,21 +356,33 @@ async def test_a_clone_reproduces_stages_and_rules_but_not_appraisals(
     senior = await _template(session, tenant, "Senior")
     standard = await _template(session, tenant, "Standard")
     await _rule(
-        session, tenant, cycle, senior, priority=10, conditions={"grades": ["L5"]},
+        session,
+        tenant,
+        cycle,
+        senior,
+        priority=10,
+        conditions={"grades": ["L5"]},
         label="Senior",
     )
     await _rule(session, tenant, cycle, standard, priority=100, label="Default")
     session.add(
         Appraisal(
-            tenant_id=tenant.id, cycle_id=cycle.id, employee_id=employee.id,
-            status=AppraisalStatus.COMPLETED, final_rating="Meets",
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            employee_id=employee.id,
+            status=AppraisalStatus.COMPLETED,
+            final_rating="Meets",
         )
     )
     await session.commit()
 
     result = await cycle_service.clone_cycle(
-        session, hr_user, source_cycle_id=cycle.id, name="FY27 review",
-        period_start=date(2027, 4, 1), period_end=date(2028, 3, 31),
+        session,
+        hr_user,
+        source_cycle_id=cycle.id,
+        name="FY27 review",
+        period_start=date(2027, 4, 1),
+        period_end=date(2028, 3, 31),
     )
     await session.commit()
 
@@ -342,14 +391,12 @@ async def test_a_clone_reproduces_stages_and_rules_but_not_appraisals(
     assert result["rules"] == 2
 
     stages = await session.scalar(
-        select(func.count()).select_from(AppraisalStage).where(
-            AppraisalStage.cycle_id == clone_id
-        )
+        select(func.count()).select_from(AppraisalStage).where(AppraisalStage.cycle_id == clone_id)
     )
     rules = await session.scalar(
-        select(func.count()).select_from(TemplateAssignmentRule).where(
-            TemplateAssignmentRule.cycle_id == clone_id
-        )
+        select(func.count())
+        .select_from(TemplateAssignmentRule)
+        .where(TemplateAssignmentRule.cycle_id == clone_id)
     )
     appraisals = await session.scalar(
         select(func.count()).select_from(Appraisal).where(Appraisal.cycle_id == clone_id)
@@ -372,9 +419,7 @@ async def test_a_clone_carries_no_stage_dates(
     await _rule(session, tenant, cycle, standard, priority=100, label="Default")
 
     stages = (
-        await session.scalars(
-            select(AppraisalStage).where(AppraisalStage.cycle_id == cycle.id)
-        )
+        await session.scalars(select(AppraisalStage).where(AppraisalStage.cycle_id == cycle.id))
     ).all()
     for stage in stages:
         stage.due_date = date(2026, 5, 31)
@@ -382,8 +427,12 @@ async def test_a_clone_carries_no_stage_dates(
     await session.commit()
 
     result = await cycle_service.clone_cycle(
-        session, hr_user, source_cycle_id=cycle.id, name="FY27 review",
-        period_start=date(2027, 4, 1), period_end=date(2028, 3, 31),
+        session,
+        hr_user,
+        source_cycle_id=cycle.id,
+        name="FY27 review",
+        period_start=date(2027, 4, 1),
+        period_end=date(2028, 3, 31),
     )
     await session.commit()
 
@@ -416,8 +465,12 @@ async def test_a_clone_preserves_the_auto_advance_configuration(
     await session.commit()
 
     result = await cycle_service.clone_cycle(
-        session, hr_user, source_cycle_id=cycle.id, name="FY27 review",
-        period_start=date(2027, 4, 1), period_end=date(2028, 3, 31),
+        session,
+        hr_user,
+        source_cycle_id=cycle.id,
+        name="FY27 review",
+        period_start=date(2027, 4, 1),
+        period_end=date(2028, 3, 31),
     )
     await session.commit()
 
@@ -446,16 +499,22 @@ async def test_closure_is_blocked_while_an_enforced_calibration_is_out(
     """
     cycle = await _cycle(session, tenant)
     policy = CalibrationPolicy(
-        tenant_id=tenant.id, cycle_id=cycle.id, mode=CalibrationMode.ENFORCED,
-        scope=CalibrationScope.DEPARTMENT, min_group_size=4,
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        mode=CalibrationMode.ENFORCED,
+        scope=CalibrationScope.DEPARTMENT,
+        min_group_size=4,
     )
     session.add(policy)
     await session.flush()
     for rating, target, tolerance in [("Outstanding", 10, 2), ("Meets", 90, 10)]:
         session.add(
             DistributionTarget(
-                tenant_id=tenant.id, policy_id=policy.id, rating_value=rating,
-                target_percent=Decimal(target), tolerance_percent=Decimal(tolerance),
+                tenant_id=tenant.id,
+                policy_id=policy.id,
+                rating_value=rating,
+                target_percent=Decimal(target),
+                tolerance_percent=Decimal(tolerance),
             )
         )
 
@@ -466,17 +525,23 @@ async def test_closure_is_blocked_while_an_enforced_calibration_is_out(
     # Everyone Outstanding: 100% against an 8-12% band.
     for index in range(5):
         person = Employee(
-            tenant_id=tenant.id, employee_code=f"CLS{index:03d}",
-            first_name="Person", last_name=str(index),
-            work_email=f"cls{index}@acme.test", legal_entity_id=legal_entity.id,
+            tenant_id=tenant.id,
+            employee_code=f"CLS{index:03d}",
+            first_name="Person",
+            last_name=str(index),
+            work_email=f"cls{index}@acme.test",
+            legal_entity_id=legal_entity.id,
             department_id=dept.id,
         )
         session.add(person)
         await session.flush()
         session.add(
             Appraisal(
-                tenant_id=tenant.id, cycle_id=cycle.id, employee_id=person.id,
-                status=AppraisalStatus.COMPLETED, final_rating="Outstanding",
+                tenant_id=tenant.id,
+                cycle_id=cycle.id,
+                employee_id=person.id,
+                status=AppraisalStatus.COMPLETED,
+                final_rating="Outstanding",
             )
         )
     await session.commit()
@@ -501,7 +566,9 @@ async def test_incomplete_appraisals_block_closure_until_acknowledged(
     cycle = await _cycle(session, tenant)
     session.add(
         Appraisal(
-            tenant_id=tenant.id, cycle_id=cycle.id, employee_id=employee.id,
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            employee_id=employee.id,
             status=AppraisalStatus.IN_PROGRESS,
         )
     )
@@ -525,8 +592,11 @@ async def test_a_complete_cycle_closes_cleanly(
     cycle = await _cycle(session, tenant)
     session.add(
         Appraisal(
-            tenant_id=tenant.id, cycle_id=cycle.id, employee_id=employee.id,
-            status=AppraisalStatus.ACKNOWLEDGED, final_rating="Meets",
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            employee_id=employee.id,
+            status=AppraisalStatus.ACKNOWLEDGED,
+            final_rating="Meets",
         )
     )
     await session.commit()
@@ -543,13 +613,19 @@ async def test_a_complete_cycle_closes_cleanly(
 
 
 async def test_a_probation_review_is_due_on_the_employees_own_date(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     """The checklist gate: triggered per employee, not on the calendar."""
     other = Employee(
-        tenant_id=tenant.id, employee_code="PRB002", first_name="Later",
-        last_name="Joiner", work_email="later@acme.test",
+        tenant_id=tenant.id,
+        employee_code="PRB002",
+        first_name="Later",
+        last_name="Joiner",
+        work_email="later@acme.test",
         legal_entity_id=legal_entity.id,
     )
     session.add(other)
@@ -558,12 +634,16 @@ async def test_a_probation_review_is_due_on_the_employees_own_date(
     session.add_all(
         [
             ProbationReview(
-                tenant_id=tenant.id, employee_id=employee.id,
-                probation_end_date=date(2026, 7, 1), review_due_date=date(2026, 6, 15),
+                tenant_id=tenant.id,
+                employee_id=employee.id,
+                probation_end_date=date(2026, 7, 1),
+                review_due_date=date(2026, 6, 15),
             ),
             ProbationReview(
-                tenant_id=tenant.id, employee_id=other.id,
-                probation_end_date=date(2026, 11, 1), review_due_date=date(2026, 10, 15),
+                tenant_id=tenant.id,
+                employee_id=other.id,
+                probation_end_date=date(2026, 11, 1),
+                review_due_date=date(2026, 10, 15),
             ),
         ]
     )
@@ -589,14 +669,19 @@ async def test_confirming_stamps_the_employee_record(
     outcome actually writes back."""
     employee.status = EmploymentStatus.ON_LEAVE
     review = ProbationReview(
-        tenant_id=tenant.id, employee_id=employee.id,
-        probation_end_date=date(2026, 7, 1), review_due_date=date(2026, 6, 15),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        probation_end_date=date(2026, 7, 1),
+        review_due_date=date(2026, 6, 15),
     )
     session.add(review)
     await session.commit()
 
     result = await cycle_service.record_probation_outcome(
-        session, hr_user, review_id=review.id, outcome=ProbationOutcome.CONFIRM,
+        session,
+        hr_user,
+        review_id=review.id,
+        outcome=ProbationOutcome.CONFIRM,
         notes="Confirmed after a strong first three months.",
     )
     await session.commit()
@@ -618,14 +703,19 @@ async def test_extending_schedules_the_next_review_automatically(
     indefinitely because the second conversation never got diarised.
     """
     review = ProbationReview(
-        tenant_id=tenant.id, employee_id=employee.id,
-        probation_end_date=date(2026, 7, 1), review_due_date=date(2026, 6, 15),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        probation_end_date=date(2026, 7, 1),
+        review_due_date=date(2026, 6, 15),
     )
     session.add(review)
     await session.commit()
 
     await cycle_service.record_probation_outcome(
-        session, hr_user, review_id=review.id, outcome=ProbationOutcome.EXTEND,
+        session,
+        hr_user,
+        review_id=review.id,
+        outcome=ProbationOutcome.EXTEND,
         new_probation_end_date=date(2026, 10, 1),
         notes="Needs another quarter on the delivery goal.",
     )
@@ -648,8 +738,10 @@ async def test_extending_without_a_new_date_is_refused(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
     review = ProbationReview(
-        tenant_id=tenant.id, employee_id=employee.id,
-        probation_end_date=date(2026, 7, 1), review_due_date=date(2026, 6, 15),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        probation_end_date=date(2026, 7, 1),
+        review_due_date=date(2026, 6, 15),
     )
     session.add(review)
     await session.commit()
@@ -665,8 +757,10 @@ async def test_a_review_concludes_only_once(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
     review = ProbationReview(
-        tenant_id=tenant.id, employee_id=employee.id,
-        probation_end_date=date(2026, 7, 1), review_due_date=date(2026, 6, 15),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        probation_end_date=date(2026, 7, 1),
+        review_due_date=date(2026, 6, 15),
     )
     session.add(review)
     await session.commit()

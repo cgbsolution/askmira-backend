@@ -89,9 +89,12 @@ async def people(session, tenant, legal_entity, location):
         session, tenant, legal_entity, location, code="FIN1", role=UserRole.SUB_ADMIN
     )
     return {
-        "staff": staff, "staff_user": staff_user,
-        "other": other, "other_user": other_user,
-        "finance": finance, "finance_user": finance_user,
+        "staff": staff,
+        "staff_user": staff_user,
+        "other": other,
+        "other_user": other_user,
+        "finance": finance,
+        "finance_user": finance_user,
     }
 
 
@@ -109,7 +112,10 @@ def rule(category: str, action: ViolationActionEnum, limit: str = "8000") -> dic
 
 async def _policy(session, hr_user):
     await expenses.create_policy(
-        session, hr_user, name="Travel", effective_from=date(2026, 4, 1),
+        session,
+        hr_user,
+        name="Travel",
+        effective_from=date(2026, 4, 1),
         rules=[
             rule("hotel", ViolationActionEnum.REQUIRE_JUSTIFICATION),
             rule("minibar", ViolationActionEnum.BLOCK, "500"),
@@ -132,8 +138,13 @@ async def test_violation_justify_and_finance_decision(session, hr_user, people):
     assert "/" not in receipt.display_name
 
     out = await expenses.capture_claim(
-        session, staff_user, employee_id=staff.id, category_key="hotel",
-        city_tier=CityTierEnum.A, amount=D("9500"), incurred_on=TODAY,
+        session,
+        staff_user,
+        employee_id=staff.id,
+        category_key="hotel",
+        city_tier=CityTierEnum.A,
+        amount=D("9500"),
+        incurred_on=TODAY,
         receipt_document_id=receipt.id,
     )
     assert out["verdict"]["kind"] == "needs_justification"
@@ -162,8 +173,13 @@ async def test_violation_justify_and_finance_decision(session, hr_user, people):
     # One receipt, one claim.
     with pytest.raises(HTTPException) as exc:
         await expenses.capture_claim(
-            session, staff_user, employee_id=staff.id, category_key="taxi",
-            city_tier=CityTierEnum.A, amount=D("100"), incurred_on=TODAY,
+            session,
+            staff_user,
+            employee_id=staff.id,
+            category_key="taxi",
+            city_tier=CityTierEnum.A,
+            amount=D("100"),
+            incurred_on=TODAY,
             receipt_document_id=receipt.id,
         )
     assert exc.value.status_code == 400
@@ -174,8 +190,13 @@ async def test_nobody_decides_their_own(session, hr_user, people):
     await _policy(session, hr_user)
     receipt = await _receipt(session, finance_user, finance)
     out = await expenses.capture_claim(
-        session, finance_user, employee_id=finance.id, category_key="taxi",
-        city_tier=CityTierEnum.A, amount=D("500"), incurred_on=TODAY,
+        session,
+        finance_user,
+        employee_id=finance.id,
+        category_key="taxi",
+        city_tier=CityTierEnum.A,
+        amount=D("500"),
+        incurred_on=TODAY,
         receipt_document_id=receipt.id,
     )
     claim_id = uuid.UUID(out["claim_id"])
@@ -189,8 +210,13 @@ async def test_nobody_decides_their_own(session, hr_user, people):
     assert exc.value.status_code == 403
 
     trip = await expenses.create_travel_request(
-        session, finance_user, employee_id=finance.id, purpose="Audit",
-        from_date=TODAY, to_date=TODAY, advance_requested=D("5000"),
+        session,
+        finance_user,
+        employee_id=finance.id,
+        purpose="Audit",
+        from_date=TODAY,
+        to_date=TODAY,
+        advance_requested=D("5000"),
     )
     with pytest.raises(HTTPException) as exc:
         await expenses.decide_travel_request(
@@ -228,9 +254,15 @@ async def test_a_report_submits_whole_and_decides_line_by_line(session, hr_user,
     for category, amount in (("taxi", "800"), ("minibar", "900"), ("hotel", "4000")):
         receipt = await _receipt(session, staff_user, staff)
         out = await expenses.capture_claim(
-            session, staff_user, employee_id=staff.id, category_key=category,
-            city_tier=CityTierEnum.A, amount=D(amount), incurred_on=TODAY,
-            receipt_document_id=receipt.id, report_id=report.id,
+            session,
+            staff_user,
+            employee_id=staff.id,
+            category_key=category,
+            city_tier=CityTierEnum.A,
+            amount=D(amount),
+            incurred_on=TODAY,
+            receipt_document_id=receipt.id,
+            report_id=report.id,
         )
         lines.append(uuid.UUID(out["claim_id"]))
 
@@ -261,14 +293,20 @@ async def test_receipts_are_checked_by_their_bytes_and_owner(session, people):
     staff, staff_user = people["staff"], people["staff_user"]
     with pytest.raises(HTTPException) as exc:
         await receipt_store.store_receipt(
-            session, staff_user, employee_id=staff.id,
-            data=b"<html><script>alert(1)</script></html>", filename="bill.pdf",
+            session,
+            staff_user,
+            employee_id=staff.id,
+            data=b"<html><script>alert(1)</script></html>",
+            filename="bill.pdf",
         )
     assert exc.value.status_code == 415
     with pytest.raises(HTTPException) as exc:
         await receipt_store.store_receipt(
-            session, staff_user, employee_id=staff.id,
-            data=b"%PDF-1.4 /OpenAction << /JavaScript (x) >>", filename="bill.pdf",
+            session,
+            staff_user,
+            employee_id=staff.id,
+            data=b"%PDF-1.4 /OpenAction << /JavaScript (x) >>",
+            filename="bill.pdf",
         )
     assert exc.value.status_code == 415
 
@@ -278,9 +316,14 @@ async def test_receipts_are_checked_by_their_bytes_and_owner(session, people):
     assert exc.value.status_code == 403
     with pytest.raises(HTTPException) as exc:
         await expenses.capture_claim(
-            session, people["other_user"], employee_id=people["other"].id,
-            category_key="taxi", city_tier=CityTierEnum.A, amount=D("100"),
-            incurred_on=TODAY, receipt_document_id=receipt.id,
+            session,
+            people["other_user"],
+            employee_id=people["other"].id,
+            category_key="taxi",
+            city_tier=CityTierEnum.A,
+            amount=D("100"),
+            incurred_on=TODAY,
+            receipt_document_id=receipt.id,
         )
     assert exc.value.status_code == 400
 
@@ -288,14 +331,27 @@ async def test_receipts_are_checked_by_their_bytes_and_owner(session, people):
 async def test_gst_credits_on_a_claim_are_the_owners(session, hr_user, people):
     staff, staff_user = people["staff"], people["staff_user"]
     out = await expenses.capture_claim(
-        session, staff_user, employee_id=staff.id, category_key="hotel",
-        city_tier=CityTierEnum.A, amount=D("100"), incurred_on=TODAY,
+        session,
+        staff_user,
+        employee_id=staff.id,
+        category_key="hotel",
+        city_tier=CityTierEnum.A,
+        amount=D("100"),
+        incurred_on=TODAY,
     )
     claim_id = uuid.UUID(out["claim_id"])
     await gst.capture_credit(
-        session, staff_user, vendor_gstin="27AAPFU0939F1ZV", invoice_number="INV-1",
-        invoice_date=TODAY, category_key="hotel", taxable_value=D("1000"),
-        expense_claim_id=claim_id, employee_id=staff.id, cgst=D("60"), sgst=D("60"),
+        session,
+        staff_user,
+        vendor_gstin="27AAPFU0939F1ZV",
+        invoice_number="INV-1",
+        invoice_date=TODAY,
+        category_key="hotel",
+        taxable_value=D("1000"),
+        expense_claim_id=claim_id,
+        employee_id=staff.id,
+        cgst=D("60"),
+        sgst=D("60"),
     )
     assert len(await gst.claim_credits(session, staff_user, claim_id)) == 1
     assert len(await gst.claim_credits(session, hr_user, claim_id)) == 1
@@ -306,8 +362,13 @@ async def test_gst_credits_on_a_claim_are_the_owners(session, hr_user, people):
 
 async def test_another_tenant_gets_404(session, other_hr_user, people):
     out = await expenses.capture_claim(
-        session, people["staff_user"], employee_id=people["staff"].id, category_key="taxi",
-        city_tier=CityTierEnum.A, amount=D("100"), incurred_on=TODAY,
+        session,
+        people["staff_user"],
+        employee_id=people["staff"].id,
+        category_key="taxi",
+        city_tier=CityTierEnum.A,
+        amount=D("100"),
+        incurred_on=TODAY,
     )
     claim_id = uuid.UUID(out["claim_id"])
     for call in (
@@ -359,9 +420,14 @@ async def test_http_gates_and_upload(session, hr_user, people, as_user):
 
         captured = await client.post(
             "/api/v1/expenses/claims",
-            json={"category_key": "taxi", "city_tier": "a", "amount": "2500",
-                  "incurred_on": "2026-09-07", "receipt_document_id": receipt_id,
-                  "has_receipt": True},
+            json={
+                "category_key": "taxi",
+                "city_tier": "a",
+                "amount": "2500",
+                "incurred_on": "2026-09-07",
+                "receipt_document_id": receipt_id,
+                "has_receipt": True,
+            },
         )
         assert captured.status_code == 201, captured.text
         body = captured.json()
@@ -397,8 +463,14 @@ async def test_http_gates_and_upload(session, hr_user, people, as_user):
         bad = await client.post(
             "/api/v1/gst/gstr2b-imports/csv",
             data={"period_label": "2026-09", "imported_on": "2026-10-14"},
-            files={"file": ("2b.csv", b"vendor_gstin,invoice_number,invoice_date,taxable_value\n"
-                                      b"27AAPFU0939F1ZV,INV-1,notadate,100\n", "text/csv")},
+            files={
+                "file": (
+                    "2b.csv",
+                    b"vendor_gstin,invoice_number,invoice_date,taxable_value\n"
+                    b"27AAPFU0939F1ZV,INV-1,notadate,100\n",
+                    "text/csv",
+                )
+            },
         )
         assert bad.status_code == 200 and bad.json()["imported"] is None
         assert bad.json()["errors"][0]["row"] == 1

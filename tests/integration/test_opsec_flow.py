@@ -70,9 +70,7 @@ async def test_the_posture_starts_unevidenced_and_says_so(session, hr_user):
         assert "NOT currently backed by evidence" in tier["evidence"]["statement"]
 
 
-async def test_a_timed_drill_that_meets_the_objectives_evidences_the_tier(
-    session, hr_user
-):
+async def test_a_timed_drill_that_meets_the_objectives_evidences_the_tier(session, hr_user):
     """The gate: a timed restore drill measured against the published RTO."""
     target = continuity.TIERS[continuity.DataTier.CRITICAL]
 
@@ -90,16 +88,12 @@ async def test_a_timed_drill_that_meets_the_objectives_evidences_the_tier(
     assert drill.published_rto_minutes == target.rto_minutes
 
     posture = await opsec.posture(session, hr_user, today=TODAY)
-    critical = next(
-        t for t in posture["continuity"]["tiers"] if t["tier"] == "critical"
-    )
+    critical = next(t for t in posture["continuity"]["tiers"] if t["tier"] == "critical")
     assert critical["evidence"]["is_evidenced"]
     assert critical["evidence"]["last_outcome"] == "met"
 
 
-async def test_a_drill_slower_than_the_rto_is_recorded_as_a_breach(
-    session, hr_user
-):
+async def test_a_drill_slower_than_the_rto_is_recorded_as_a_breach(session, hr_user):
     target = continuity.TIERS[continuity.DataTier.CRITICAL]
     drill = await opsec.record_drill(
         session,
@@ -113,18 +107,13 @@ async def test_a_drill_slower_than_the_rto_is_recorded_as_a_breach(
     assert drill.outcome is DrillOutcomeEnum.EXCEEDED_RTO
 
     posture = await opsec.posture(session, hr_user, today=TODAY)
-    critical = next(
-        t for t in posture["continuity"]["tiers"] if t["tier"] == "critical"
-    )
+    critical = next(t for t in posture["continuity"]["tiers"] if t["tier"] == "critical")
     assert not critical["evidence"]["is_evidenced"], (
-        "A tier whose latest drill breached its RTO is being reported as "
-        "evidenced."
+        "A tier whose latest drill breached its RTO is being reported as evidenced."
     )
 
 
-async def test_the_drill_stores_the_published_targets_of_the_day(
-    session, hr_user
-):
+async def test_the_drill_stores_the_published_targets_of_the_day(session, hr_user):
     """Revising a number later must not turn a past breach into a pass."""
     await opsec.record_drill(
         session,
@@ -136,9 +125,7 @@ async def test_the_drill_stores_the_published_targets_of_the_day(
         succeeded=True,
     )
     row = (await session.execute(select(RestoreDrill))).scalars().one()
-    assert row.published_rto_minutes == continuity.TIERS[
-        continuity.DataTier.CORE
-    ].rto_minutes
+    assert row.published_rto_minutes == continuity.TIERS[continuity.DataTier.CORE].rto_minutes
 
 
 async def test_a_negative_measurement_is_refused(session, hr_user):
@@ -152,9 +139,7 @@ async def test_a_negative_measurement_is_refused(session, hr_user):
             measured_rpo_minutes=0,
             succeeded=True,
         )
-    count = (
-        await session.execute(select(func.count()).select_from(RestoreDrill))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(RestoreDrill))).scalar_one()
     assert count == 0
 
 
@@ -169,9 +154,7 @@ async def test_drills_are_scoped_to_their_tenant(session, hr_user, other_hr_user
         succeeded=True,
     )
     theirs = await opsec.posture(session, other_hr_user, today=TODAY)
-    critical = next(
-        t for t in theirs["continuity"]["tiers"] if t["tier"] == "critical"
-    )
+    critical = next(t for t in theirs["continuity"]["tiers"] if t["tier"] == "critical")
     assert not critical["evidence"]["is_evidenced"]
 
 
@@ -194,9 +177,7 @@ async def test_the_payroll_deadline_runbook_is_published(session, hr_user):
     assert payroll["manual_fallback"]
     assert payroll["severity"] == "sev1"
     assert payroll["steps"]
-    assert not payroll["reviewed"], (
-        "The runbook claims to have been reviewed. Nobody has read it."
-    )
+    assert not payroll["reviewed"], "The runbook claims to have been reviewed. Nobody has read it."
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -323,9 +304,7 @@ async def test_the_event_preview_uses_the_documented_schema(session, hr_user):
     assert "Elastic Common Schema" in preview["schema"]["schema"]
 
 
-async def test_siem_destinations_are_scoped_to_their_tenant(
-    session, hr_user, other_hr_user
-):
+async def test_siem_destinations_are_scoped_to_their_tenant(session, hr_user, other_hr_user):
     await _destination(session, hr_user)
     theirs = await opsec.siem_health(session, other_hr_user, now=NOW)
     assert theirs["destinations"] == []
@@ -355,13 +334,9 @@ async def test_recording_a_delivery_to_another_tenants_destination_is_refused(
     "action_key",
     ["disbursement.release", "payroll.rule_change", "data.bulk_export"],
 )
-async def test_step_up_is_required_on_each_high_impact_action(
-    session, hr_user, action_key
-):
+async def test_step_up_is_required_on_each_high_impact_action(session, hr_user, action_key):
     """Tested per action, as the checklist asks."""
-    result = await opsec.require_step_up(
-        session, hr_user, action_key=action_key, now=NOW
-    )
+    result = await opsec.require_step_up(session, hr_user, action_key=action_key, now=NOW)
     assert result["required"]
     assert not result["satisfied"]
     assert result["challenge_id"]
@@ -369,20 +344,14 @@ async def test_step_up_is_required_on_each_high_impact_action(
 
 
 async def test_an_ordinary_action_needs_no_step_up(session, hr_user):
-    result = await opsec.require_step_up(
-        session, hr_user, action_key="leave.apply", now=NOW
-    )
+    result = await opsec.require_step_up(session, hr_user, action_key="leave.apply", now=NOW)
     assert not result["required"]
 
-    count = (
-        await session.execute(select(func.count()).select_from(StepUpChallenge))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(StepUpChallenge))).scalar_one()
     assert count == 0, "A challenge was opened for an action that needs none."
 
 
-async def test_a_satisfied_challenge_makes_the_next_check_fresh(
-    session, hr_user
-):
+async def test_a_satisfied_challenge_makes_the_next_check_fresh(session, hr_user):
     row = await opsec.start_session(
         session, hr_user, token_hash="h1", ip_address="203.0.113.4", now=NOW
     )
@@ -411,9 +380,7 @@ async def test_a_satisfied_challenge_makes_the_next_check_fresh(
     assert again["satisfied"]
 
 
-async def test_a_stale_verification_does_not_satisfy_a_later_check(
-    session, hr_user
-):
+async def test_a_stale_verification_does_not_satisfy_a_later_check(session, hr_user):
     """The window is short on purpose: "the person at the keyboard right now"."""
     row = await opsec.start_session(session, hr_user, token_hash="h1", now=NOW)
     opened = await opsec.require_step_up(
@@ -459,12 +426,8 @@ async def test_a_failed_challenge_is_recorded(session, hr_user):
     assert row.satisfied_at is None
 
 
-async def test_a_challenge_is_scoped_to_its_tenant(
-    session, hr_user, other_hr_user
-):
-    opened = await opsec.require_step_up(
-        session, hr_user, action_key="data.bulk_export", now=NOW
-    )
+async def test_a_challenge_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
+    opened = await opsec.require_step_up(session, hr_user, action_key="data.bulk_export", now=NOW)
     with pytest.raises(HTTPException) as exc:
         await opsec.satisfy_challenge(
             session,
@@ -481,9 +444,7 @@ async def test_a_challenge_is_scoped_to_its_tenant(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_session_policy_whose_timeout_exceeds_its_lifetime_is_refused(
-    session, hr_user
-):
+async def test_a_session_policy_whose_timeout_exceeds_its_lifetime_is_refused(session, hr_user):
     with pytest.raises(HTTPException) as exc:
         await opsec.configure_sessions(
             session,
@@ -494,9 +455,7 @@ async def test_a_session_policy_whose_timeout_exceeds_its_lifetime_is_refused(
     assert "can never fire" in exc.value.detail
 
 
-async def test_a_malformed_allowlist_entry_is_refused_at_configuration(
-    session, hr_user
-):
+async def test_a_malformed_allowlist_entry_is_refused_at_configuration(session, hr_user):
     """A malformed CIDR discovered at login is a lockout; here it is a form error."""
     with pytest.raises(HTTPException) as exc:
         await opsec.configure_sessions(
@@ -509,9 +468,7 @@ async def test_a_malformed_allowlist_entry_is_refused_at_configuration(
     assert "believing their office range is protected" in exc.value.detail
 
 
-async def test_sessions_are_listed_with_the_device_and_where_from(
-    session, hr_user
-):
+async def test_sessions_are_listed_with_the_device_and_where_from(session, hr_user):
     await opsec.start_session(
         session,
         hr_user,
@@ -566,9 +523,7 @@ async def test_revoking_one_session_leaves_the_others(session, hr_user):
     first = await opsec.start_session(session, hr_user, token_hash="h1", now=NOW)
     second = await opsec.start_session(session, hr_user, token_hash="h2", now=NOW)
 
-    result = await opsec.revoke_session(
-        session, hr_user, session_id=first.id, now=NOW
-    )
+    result = await opsec.revoke_session(session, hr_user, session_id=first.id, now=NOW)
     assert result["revoked"] == 1
     assert not result["tokens_invalidated"]
 
@@ -583,9 +538,7 @@ async def test_revoking_all_is_immediate_across_every_session(session, hr_user):
     await opsec.start_session(session, hr_user, token_hash="h1", now=NOW)
     await opsec.start_session(session, hr_user, token_hash="h2", now=NOW)
 
-    result = await opsec.revoke_session(
-        session, hr_user, all_for_user=hr_user.id, now=NOW
-    )
+    result = await opsec.revoke_session(session, hr_user, all_for_user=hr_user.id, now=NOW)
     assert result["revoked"] == 2
     assert result["tokens_invalidated"]
     assert "Immediate" in result["effective"]
@@ -599,15 +552,11 @@ async def test_revoking_all_is_immediate_across_every_session(session, hr_user):
 
 async def test_revoking_a_nonexistent_session_is_refused(session, hr_user):
     with pytest.raises(HTTPException) as exc:
-        await opsec.revoke_session(
-            session, hr_user, session_id=uuid.uuid4(), now=NOW
-        )
+        await opsec.revoke_session(session, hr_user, session_id=uuid.uuid4(), now=NOW)
     assert exc.value.status_code == 404
 
 
-async def test_sessions_are_scoped_to_their_tenant(
-    session, hr_user, other_hr_user
-):
+async def test_sessions_are_scoped_to_their_tenant(session, hr_user, other_hr_user):
     await opsec.start_session(session, hr_user, token_hash="h1", now=NOW)
     theirs = await opsec.list_sessions(session, other_hr_user, now=NOW)
     assert theirs["sessions"] == []
@@ -645,16 +594,12 @@ async def test_an_unknown_scope_area_is_refused(session, hr_user):
         )
     assert "not a scope area" in exc.value.detail
 
-    count = (
-        await session.execute(select(func.count()).select_from(PenTestFinding))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(PenTestFinding))).scalar_one()
     assert count == 0
 
 
-async def test_a_test_covering_only_part_of_the_scope_is_reported_incomplete(
-    session, hr_user
-):
-    """"We had a pen test" is worth nothing without knowing what it looked at."""
+async def test_a_test_covering_only_part_of_the_scope_is_reported_incomplete(session, hr_user):
+    """ "We had a pen test" is worth nothing without knowing what it looked at."""
     await opsec.record_finding(
         session,
         hr_user,
@@ -682,9 +627,7 @@ async def test_the_pen_test_summary_carries_no_exploit_detail(session, hr_user):
     assert "triaging late" in report["sla_statement"]
 
 
-async def test_findings_are_scoped_to_their_tenant(
-    session, hr_user, other_hr_user
-):
+async def test_findings_are_scoped_to_their_tenant(session, hr_user, other_hr_user):
     await opsec.record_finding(
         session,
         hr_user,
@@ -717,9 +660,7 @@ async def test_the_posture_lists_everything_that_is_not_built(session, hr_user):
     assert posture["siem"]["not_built"]
 
 
-async def test_the_posture_covers_every_section_a_questionnaire_asks(
-    session, hr_user
-):
+async def test_the_posture_covers_every_section_a_questionnaire_asks(session, hr_user):
     posture = await opsec.posture(session, hr_user, today=TODAY)
     for section in ("continuity", "access", "penetration_testing", "siem"):
         assert section in posture
@@ -729,9 +670,7 @@ async def test_the_posture_covers_every_section_a_questionnaire_asks(
     assert posture["siem"]["fields"]
 
 
-async def test_the_allowlist_can_be_tested_before_it_locks_somebody_out(
-    session, hr_user
-):
+async def test_the_allowlist_can_be_tested_before_it_locks_somebody_out(session, hr_user):
     """An admin should be able to check their range before going home."""
     await opsec.configure_sessions(
         session,
@@ -741,9 +680,7 @@ async def test_the_allowlist_can_be_tested_before_it_locks_somebody_out(
         ip_allowlist=["10.1.0.0/16"],
     )
     inside = access.check_allowlist(address="10.1.2.3", entries=("10.1.0.0/16",))
-    outside = access.check_allowlist(
-        address="203.0.113.9", entries=("10.1.0.0/16",)
-    )
+    outside = access.check_allowlist(address="203.0.113.9", entries=("10.1.0.0/16",))
     assert inside.permits
     assert not outside.permits
     assert access.check_allowlist(
@@ -753,8 +690,6 @@ async def test_the_allowlist_can_be_tested_before_it_locks_somebody_out(
     ).permits
 
 
-async def test_the_pentest_scope_requires_tenant_isolation_and_the_agent_surface(
-    session, hr_user
-):
+async def test_the_pentest_scope_requires_tenant_isolation_and_the_agent_surface(session, hr_user):
     assert pentest.ScopeArea.TENANT_ISOLATION in pentest.REQUIRED_SCOPE
     assert pentest.ScopeArea.AGENT_AND_MCP in pentest.REQUIRED_SCOPE

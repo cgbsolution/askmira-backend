@@ -40,13 +40,16 @@ from app.schemas.platform_admin import (
     ManagedUserCreated,
     ManagedUserRead,
     TenantSettingsUpdate,
+    WelcomeEmailRead,
 )
 from app.services import audit
+from app.services.identity.welcome import WelcomeEmail, send_welcome
 
 __all__ = [
     "create_user",
     "list_users",
     "module_state",
+    "resend_welcome",
     "set_active",
     "set_modules",
     "set_role",
@@ -81,6 +84,7 @@ def _read(target: User, caller: User, tenant: Tenant, emp: Employee | None) -> M
         update={
             "employee_name": name,
             "employee_code": emp.employee_code if emp else None,
+            "invite_pending": target.must_change_password,
             "is_you": target.id == caller.id,
             "is_break_glass": bool(_break_glass_email(tenant))
             and target.email.lower() == _break_glass_email(tenant),
@@ -183,6 +187,12 @@ async def create_user(
     )
     session.add(target)
     await session.flush()
+
+    welcome = None
+    if payload.send_welcome_email:
+        welcome = await send_welcome(
+            session, target=target, inviter_name=user.full_name, request=request
+        )
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -195,13 +205,66 @@ async def create_user(
             "email": email,
             "role": payload.role.value,
             "employee_id": str(emp.id) if emp else None,
+            "welcome_email": welcome.status if welcome else "not_sent",
         },
         summary=f"Created a {payload.role.value} login for {email}",
         request=request,
     )
     await session.commit()
     await session.refresh(target)
-    return ManagedUserCreated(user=_read(target, user, tenant, emp), temporary_password=temporary)
+    return ManagedUserCreated(
+        user=_read(target, user, tenant, emp),
+        temporary_password=temporary,
+        welcome_email=_welcome_read(welcome) if welcome else None,
+    )
+
+
+def _welcome_read(welcome: WelcomeEmail) -> WelcomeEmailRead:
+    return WelcomeEmailRead(
+        status=welcome.status,
+        detail=welcome.detail,
+        sent_to=welcome.sent_to,
+        link_expires_at=welcome.link_expires_at,
+    )
+
+
+async def resend_welcome(
+    session: AsyncSession,
+    user: User,
+    *,
+    user_id: uuid.UUID,
+    request: Request | None = None,
+) -> WelcomeEmailRead:
+    """Send a login's welcome email again, with a fresh link.
+
+    Only while they are still on the password they were given: somebody who
+    has chosen their own uses Forgot password, not a welcome. The new link
+    retires the old one.
+    """
+    target = await _target(session, user, user_id)
+    if not target.is_active:
+        raise _bad_request("This login is deactivated. Reactivate it first.")
+    if not target.must_change_password:
+        raise _bad_request(
+            "They have already set their own password. If they have forgotten it, they can "
+            "use Forgot password on the sign-in page."
+        )
+    welcome = await send_welcome(
+        session, target=target, inviter_name=user.full_name, request=request
+    )
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=target.id,
+        actor=user,
+        changes={"welcome_email": welcome.status},
+        summary=f"Resent the welcome email to {target.email}",
+        request=request,
+    )
+    await session.commit()
+    return _welcome_read(welcome)
 
 
 async def link_employee(

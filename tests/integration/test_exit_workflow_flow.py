@@ -46,18 +46,25 @@ async def _templates(session: AsyncSession, tenant: Tenant) -> None:
     session.add_all(
         [
             ClearanceTemplate(
-                tenant_id=tenant.id, department="IT",
+                tenant_id=tenant.id,
+                department="IT",
                 description="Laptop and access cards returned",
-                is_mandatory=True, display_order=1,
+                is_mandatory=True,
+                display_order=1,
             ),
             ClearanceTemplate(
-                tenant_id=tenant.id, department="Finance",
+                tenant_id=tenant.id,
+                department="Finance",
                 description="Advances and reimbursements settled",
-                is_mandatory=True, display_order=2,
+                is_mandatory=True,
+                display_order=2,
             ),
             ClearanceTemplate(
-                tenant_id=tenant.id, department="Library",
-                description="Books returned", is_mandatory=False, display_order=3,
+                tenant_id=tenant.id,
+                department="Library",
+                description="Books returned",
+                is_mandatory=False,
+                display_order=3,
             ),
         ]
     )
@@ -81,9 +88,7 @@ async def _exit(
     return record
 
 
-async def _clear_all(
-    session: AsyncSession, hr_user: User, record: ExitRecord, **per_item
-) -> None:
+async def _clear_all(session: AsyncSession, hr_user: User, record: ExitRecord, **per_item) -> None:
     items = (
         await session.scalars(
             select(ClearanceItem).where(ClearanceItem.exit_record_id == record.id)
@@ -145,9 +150,7 @@ async def test_settlement_is_blocked_while_mandatory_clearance_is_pending(
     record = await _exit(session, tenant, hr_user, employee)
 
     with pytest.raises(HTTPException) as exc:
-        await exit_service.compute_settlement(
-            session, hr_user, exit_id=record.id, inputs=_inputs()
-        )
+        await exit_service.compute_settlement(session, hr_user, exit_id=record.id, inputs=_inputs())
     assert exc.value.status_code == 409
     assert "mandatory clearance item(s) are still pending" in exc.value.detail
     assert "IT" in exc.value.detail
@@ -208,7 +211,9 @@ async def test_a_recovery_clearance_needs_an_amount(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.clear_item(
-            session, hr_user, item_id=item.id,
+            session,
+            hr_user,
+            item_id=item.id,
             outcome=ClearanceStatus.CLEARED_WITH_RECOVERY,
         )
     assert "needs an amount" in exc.value.detail
@@ -230,7 +235,9 @@ async def test_asset_recovery_flows_from_clearance_into_the_settlement(
     await _templates(session, tenant)
     record = await _exit(session, tenant, hr_user, employee, notice_period_days=0)
     await _clear_all(
-        session, hr_user, record,
+        session,
+        hr_user,
+        record,
         IT=ClearanceStatus.CLEARED_WITH_RECOVERY,
         IT_amount=Decimal(35_000),
     )
@@ -267,12 +274,17 @@ async def test_a_negative_settlement_is_stored_as_a_demand(
     await _templates(session, tenant)
     record = await _exit(session, tenant, hr_user, employee, notice_period_days=0)
     await _clear_all(
-        session, hr_user, record,
-        IT=ClearanceStatus.CLEARED_WITH_RECOVERY, IT_amount=Decimal(60_000),
+        session,
+        hr_user,
+        record,
+        IT=ClearanceStatus.CLEARED_WITH_RECOVERY,
+        IT_amount=Decimal(60_000),
     )
 
     settlement = await exit_service.compute_settlement(
-        session, hr_user, exit_id=record.id,
+        session,
+        hr_user,
+        exit_id=record.id,
         inputs=_inputs(
             final_month_salary=Decimal(10_000),
             leave_encashment=Decimal(0),
@@ -304,9 +316,7 @@ async def test_notice_shortfall_must_be_supplied_or_waived(
     assert record.notice_shortfall_days == 60
 
     with pytest.raises(HTTPException) as exc:
-        await exit_service.compute_settlement(
-            session, hr_user, exit_id=record.id, inputs=_inputs()
-        )
+        await exit_service.compute_settlement(session, hr_user, exit_id=record.id, inputs=_inputs())
     assert "wage basis for notice recovery" in exc.value.detail
 
     # Waived, and it computes.
@@ -335,7 +345,9 @@ async def test_every_settlement_line_states_its_basis(
     await _clear_all(session, hr_user, record)
 
     settlement = await exit_service.compute_settlement(
-        session, hr_user, exit_id=record.id,
+        session,
+        hr_user,
+        exit_id=record.id,
         inputs=_inputs(
             final_tds=Decimal(-15_000),
             tax_basis="Full-year tax recomputed at exit on actual figures.",
@@ -369,26 +381,22 @@ async def test_recomputing_replaces_the_lines_rather_than_appending(
     )
     await session.commit()
     count = await session.scalar(
-        select(func.count()).select_from(SettlementLine).where(
-            SettlementLine.settlement_id == first.id
-        )
+        select(func.count())
+        .select_from(SettlementLine)
+        .where(SettlementLine.settlement_id == first.id)
     )
 
-    await exit_service.compute_settlement(
-        session, hr_user, exit_id=record.id, inputs=_inputs()
-    )
+    await exit_service.compute_settlement(session, hr_user, exit_id=record.id, inputs=_inputs())
     await session.commit()
     again = await session.scalar(
-        select(func.count()).select_from(SettlementLine).where(
-            SettlementLine.settlement_id == first.id
-        )
+        select(func.count())
+        .select_from(SettlementLine)
+        .where(SettlementLine.settlement_id == first.id)
     )
     assert again == count
 
     settlements = (
-        await session.scalars(
-            select(Settlement).where(Settlement.exit_record_id == record.id)
-        )
+        await session.scalars(select(Settlement).where(Settlement.exit_record_id == record.id))
     ).all()
     assert len(settlements) == 1
 
@@ -414,7 +422,9 @@ async def test_a_hold_is_computed_but_not_paid_with_the_reason_recorded(
     await session.commit()
 
     held = await exit_service.hold_settlement(
-        session, hr_user, settlement_id=settlement.id,
+        session,
+        hr_user,
+        settlement_id=settlement.id,
         reason="Pending resolution of a client escalation raised on 12 August.",
     )
     await session.commit()
@@ -450,7 +460,10 @@ async def test_a_hold_without_a_reason_is_refused(
 
 
 async def test_exit_deactivates_the_login_and_retains_every_record(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     """The checklist gate.
@@ -462,30 +475,45 @@ async def test_exit_deactivates_the_login_and_retains_every_record(
     from app.core.security import hash_password
 
     login = User(
-        tenant_id=tenant.id, email="leaver@acme.test",
-        password_hash=hash_password("Str0ng!Passw0rd"), full_name="Anita Sharma",
-        role=UserRole.EMPLOYEE, employee_id=employee.id, is_active=True,
+        tenant_id=tenant.id,
+        email="leaver@acme.test",
+        password_hash=hash_password("Str0ng!Passw0rd"),
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        employee_id=employee.id,
+        is_active=True,
     )
     session.add(login)
 
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, period_year=2026,
-        period_month=6, effective_date=date(2026, 6, 30), status=PayrollRunStatus.PAID,
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=6,
+        effective_date=date(2026, 6, 30),
+        status=PayrollRunStatus.PAID,
     )
     session.add(run)
     await session.flush()
     session.add(
         Payslip(
-            tenant_id=tenant.id, run_id=run.id, employee_id=employee.id,
-            working_days=Decimal(30), paid_days=Decimal(30),
-            gross_earnings=Decimal("75000.00"), net_pay=Decimal("68000.00"),
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=employee.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(30),
+            gross_earnings=Decimal("75000.00"),
+            net_pay=Decimal("68000.00"),
         )
     )
     session.add(
         AttendanceDay(
-            tenant_id=tenant.id, employee_id=employee.id,
-            attendance_date=date(2026, 6, 15), status=AttendanceStatus.PRESENT,
-            payable_fraction=Decimal(1), computed_at=datetime.now(UTC),
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            attendance_date=date(2026, 6, 15),
+            status=AttendanceStatus.PRESENT,
+            payable_fraction=Decimal(1),
+            computed_at=datetime.now(UTC),
         )
     )
     await session.commit()
@@ -531,9 +559,7 @@ async def test_the_revocation_audit_says_nothing_was_deleted(
     await session.commit()
 
     entry = await session.scalar(
-        select(AuditLog)
-        .where(AuditLog.entity_id == record.id)
-        .order_by(AuditLog.created_at.desc())
+        select(AuditLog).where(AuditLog.entity_id == record.id).order_by(AuditLog.created_at.desc())
     )
     assert entry is not None
     assert "retained" in (entry.summary or "")
@@ -553,7 +579,10 @@ async def test_a_second_open_exit_is_refused(
 
     with pytest.raises(HTTPException) as exc:
         await exit_service.initiate_exit(
-            session, hr_user, employee_id=employee.id, exit_type=ExitType.RESIGNATION,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            exit_type=ExitType.RESIGNATION,
             resignation_date=date(2026, 7, 1),
         )
     assert exc.value.status_code == 409
@@ -567,7 +596,10 @@ async def test_the_notice_shortfall_is_computed_at_initiation(
     discovering it on their final statement."""
     await _templates(session, tenant)
     record = await _exit(
-        session, tenant, hr_user, employee,
+        session,
+        tenant,
+        hr_user,
+        employee,
         approved_last_working_day=date(2026, 7, 1),
         notice_period_days=90,
     )
@@ -580,15 +612,22 @@ async def test_full_notice_served_leaves_no_shortfall(
 ) -> None:
     await _templates(session, tenant)
     record = await _exit(
-        session, tenant, hr_user, employee,
-        approved_last_working_day=date(2026, 9, 1), notice_period_days=90,
+        session,
+        tenant,
+        hr_user,
+        employee,
+        approved_last_working_day=date(2026, 9, 1),
+        notice_period_days=90,
     )
     assert record.notice_shortfall_days == 0
     assert record.status is ExitStatus.NOTICE_PERIOD
 
 
 async def test_exits_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
     employee: Employee,
 ) -> None:
     await _templates(session, tenant)

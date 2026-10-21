@@ -34,27 +34,59 @@ pytestmark = requires_db
 @pytest.fixture
 async def chain_org(session, tenant, legal_entity, location):
     _hr_emp, hr = await _person(
-        session, tenant, legal_entity, location, code="HRA", name="Asha Admin",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="HRA",
+        name="Asha Admin",
         role=UserRole.ADMIN,
     )
     director_emp, director = await _person(
-        session, tenant, legal_entity, location, code="DIR", name="Dev Director",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="DIR",
+        name="Dev Director",
         role=UserRole.EMPLOYEE,
     )
     boss_emp, boss = await _person(
-        session, tenant, legal_entity, location, code="MGR", name="Mala Manager",
-        role=UserRole.EMPLOYEE, manager=director_emp,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="MGR",
+        name="Mala Manager",
+        role=UserRole.EMPLOYEE,
+        manager=director_emp,
     )
     meera_emp, meera = await _person(
-        session, tenant, legal_entity, location, code="EMP", name="Meera Nair",
-        role=UserRole.EMPLOYEE, manager=boss_emp,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="EMP",
+        name="Meera Nair",
+        role=UserRole.EMPLOYEE,
+        manager=boss_emp,
     )
     _finance_emp, finance = await _person(
-        session, tenant, legal_entity, location, code="FIN", name="Farah Finance",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="FIN",
+        name="Farah Finance",
         role=UserRole.EMPLOYEE,
     )
     _deputy_emp, deputy = await _person(
-        session, tenant, legal_entity, location, code="DEP", name="Deepa Deputy",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="DEP",
+        name="Deepa Deputy",
         role=UserRole.EMPLOYEE,
     )
     earned = LeaveType(tenant_id=tenant.id, name="Earned Leave", code="EL")
@@ -62,15 +94,24 @@ async def chain_org(session, tenant, legal_entity, location):
     await session.flush()
     session.add(
         LeavePolicy(
-            tenant_id=tenant.id, leave_type_id=earned.id, name="Everyone",
-            annual_quota_days=Decimal(24), accrual_frequency="annual",
+            tenant_id=tenant.id,
+            leave_type_id=earned.id,
+            name="Everyone",
+            annual_quota_days=Decimal(24),
+            accrual_frequency="annual",
             effective_from=date(2020, 1, 1),
         )
     )
     await session.commit()
     return {
-        "hr": hr, "director": director, "boss": boss, "meera": meera, "meera_emp": meera_emp,
-        "finance": finance, "deputy": deputy, "earned": earned,
+        "hr": hr,
+        "director": director,
+        "boss": boss,
+        "meera": meera,
+        "meera_emp": meera_emp,
+        "finance": finance,
+        "deputy": deputy,
+        "earned": earned,
     }
 
 
@@ -82,9 +123,15 @@ async def test_without_rules_leave_goes_to_the_line_manager(session, chain_org) 
 async def test_long_leave_also_needs_the_skip_level_manager(session, chain_org) -> None:
     hr, boss, director = chain_org["hr"], chain_org["boss"], chain_org["director"]
     await rules.create_rule(
-        session, hr,
-        {"process": "leave", "name": "A week or more", "priority": 10, "min_days": "5",
-         "steps": [{"kind": "line_manager"}, {"kind": "skip_level"}]},
+        session,
+        hr,
+        {
+            "process": "leave",
+            "name": "A week or more",
+            "priority": 10,
+            "min_days": "5",
+            "steps": [{"kind": "line_manager"}, {"kind": "skip_level"}],
+        },
     )
     await session.commit()
 
@@ -95,7 +142,8 @@ async def test_long_leave_also_needs_the_skip_level_manager(session, chain_org) 
     await leave_service.cancel(session, chain_org["meera"], short.id)
 
     long = await leave_service.apply(
-        session, chain_org["meera"],
+        session,
+        chain_org["meera"],
         _payload(chain_org, start=START + timedelta(days=14), end=START + timedelta(days=18)),
     )
     assert [s.approver_name for s in long.approval_chain] == ["Mala Manager", "Dev Director"]
@@ -119,7 +167,11 @@ async def test_a_delegate_decides_while_the_approver_is_away(session, chain_org)
     boss, deputy = chain_org["boss"], chain_org["deputy"]
     today = datetime.now(UTC).date()
     await rules.create_delegation(
-        session, boss, to_user_id=deputy.id, starts_on=today, ends_on=today + timedelta(days=7),
+        session,
+        boss,
+        to_user_id=deputy.id,
+        starts_on=today,
+        ends_on=today + timedelta(days=7),
         reason="On leave",
     )
     await session.commit()
@@ -131,8 +183,13 @@ async def test_a_delegate_decides_while_the_approver_is_away(session, chain_org)
 
     with pytest.raises(HTTPException) as exc:
         await rules.create_delegation(
-            session, chain_org["meera"], to_user_id=deputy.id, starts_on=today,
-            ends_on=today, reason=None, from_user_id=boss.id,
+            session,
+            chain_org["meera"],
+            to_user_id=deputy.id,
+            starts_on=today,
+            ends_on=today,
+            reason=None,
+            from_user_id=boss.id,
         )
     assert exc.value.status_code == 403, "only HR hands over somebody else's approvals"
 
@@ -140,17 +197,27 @@ async def test_a_delegate_decides_while_the_approver_is_away(session, chain_org)
 async def test_a_large_claim_needs_a_named_approver_before_finance(session, chain_org) -> None:
     hr, boss, finance = chain_org["hr"], chain_org["boss"], chain_org["finance"]
     await rules.create_rule(
-        session, hr,
-        {"process": "expense", "name": "Big claims", "min_amount": "50000",
-         "steps": [{"kind": "line_manager"}, {"kind": "user", "user_id": str(finance.id)}]},
+        session,
+        hr,
+        {
+            "process": "expense",
+            "name": "Big claims",
+            "min_amount": "50000",
+            "steps": [{"kind": "line_manager"}, {"kind": "user", "user_id": str(finance.id)}],
+        },
     )
     await session.commit()
 
     async def claim(amount: str):
         captured = await expenses.capture_claim(
-            session, chain_org["meera"], employee_id=chain_org["meera_emp"].id,
-            category_key="hotel", city_tier=CityTierEnum.A, amount=Decimal(amount),
-            incurred_on=date(2026, 9, 7), has_receipt=True,
+            session,
+            chain_org["meera"],
+            employee_id=chain_org["meera_emp"].id,
+            category_key="hotel",
+            city_tier=CityTierEnum.A,
+            amount=Decimal(amount),
+            incurred_on=date(2026, 9, 7),
+            has_receipt=True,
         )
         return await expenses.submit_claim(
             session, chain_org["meera"], claim_id=uuid.UUID(str(captured["claim_id"]))
@@ -180,9 +247,14 @@ async def test_a_large_claim_needs_a_named_approver_before_finance(session, chai
 async def test_a_step_waiting_too_long_goes_up_a_level(session, chain_org) -> None:
     hr = chain_org["hr"]
     await rules.create_rule(
-        session, hr,
-        {"process": "leave", "name": "Quick answers", "escalate_after_hours": 24,
-         "steps": [{"kind": "line_manager"}]},
+        session,
+        hr,
+        {
+            "process": "leave",
+            "name": "Quick answers",
+            "escalate_after_hours": 24,
+            "steps": [{"kind": "line_manager"}],
+        },
     )
     await session.commit()
     created = await leave_service.apply(session, chain_org["meera"], _payload(chain_org))
@@ -217,23 +289,36 @@ async def test_a_missed_punch_rule_adds_a_named_approver(session, chain_org) -> 
     day = datetime.now(UTC).date() - timedelta(days=2)
 
     plain = await attendance.raise_regularisation(
-        session, chain_org["meera"], employee_id=chain_org["meera_emp"].id,
-        attendance_date=day, requested_status=AttendanceStatus.PRESENT, reason="Status",
+        session,
+        chain_org["meera"],
+        employee_id=chain_org["meera_emp"].id,
+        attendance_date=day,
+        requested_status=AttendanceStatus.PRESENT,
+        reason="Status",
     )
     assert [s["approver_name"] for s in plain.approval_chain] == ["Mala Manager"]
     await attendance.cancel_regularisation(session, chain_org["meera"], plain.id)
 
     await rules.create_rule(
-        session, hr,
-        {"process": "regularisation", "name": "Missed punches", "priority": 10,
-         "expense_categories": ["missed_punch"],
-         "steps": [{"kind": "line_manager"}, {"kind": "user", "user_id": str(finance.id)}]},
+        session,
+        hr,
+        {
+            "process": "regularisation",
+            "name": "Missed punches",
+            "priority": 10,
+            "expense_categories": ["missed_punch"],
+            "steps": [{"kind": "line_manager"}, {"kind": "user", "user_id": str(finance.id)}],
+        },
     )
     await session.commit()
     reg = await attendance.raise_regularisation(
-        session, chain_org["meera"], employee_id=chain_org["meera_emp"].id,
-        attendance_date=day, requested_status=AttendanceStatus.PRESENT,
-        kind=RegularisationKind.MISSED_PUNCH, reason="Forgot to punch out",
+        session,
+        chain_org["meera"],
+        employee_id=chain_org["meera_emp"].id,
+        attendance_date=day,
+        requested_status=AttendanceStatus.PRESENT,
+        kind=RegularisationKind.MISSED_PUNCH,
+        reason="Forgot to punch out",
         requested_first_in=datetime.combine(day, datetime.min.time(), UTC) + timedelta(hours=4),
     )
     assert [s["approver_name"] for s in reg.approval_chain] == ["Mala Manager", "Farah Finance"]
@@ -249,9 +334,14 @@ async def test_a_missed_punch_rule_adds_a_named_approver(session, chain_org) -> 
 
     with pytest.raises(HTTPException) as exc:
         await rules.create_rule(
-            session, hr,
-            {"process": "regularisation", "name": "Bad", "expense_categories": ["vacation"],
-             "steps": [{"kind": "hr"}]},
+            session,
+            hr,
+            {
+                "process": "regularisation",
+                "name": "Bad",
+                "expense_categories": ["vacation"],
+                "steps": [{"kind": "hr"}],
+            },
         )
     assert exc.value.status_code == 422
 
@@ -262,14 +352,21 @@ async def test_a_timesheet_rule_adds_the_skip_level_manager(session, chain_org) 
 
     hr, boss, director = chain_org["hr"], chain_org["boss"], chain_org["director"]
     await rules.create_rule(
-        session, hr,
-        {"process": "timesheet", "name": "Two levels", "priority": 10,
-         "steps": [{"kind": "line_manager"}, {"kind": "skip_level"}]},
+        session,
+        hr,
+        {
+            "process": "timesheet",
+            "name": "Two levels",
+            "priority": 10,
+            "steps": [{"kind": "line_manager"}, {"kind": "skip_level"}],
+        },
     )
     await session.commit()
     monday = date(2026, 9, 7)
     week = await timesheets.save_week(
-        session, chain_org["meera"], monday,
+        session,
+        chain_org["meera"],
+        monday,
         [timesheets.EntryIn(work_date=monday, hours=Decimal("8"))],
     )
     week = await timesheets.submit_week(session, chain_org["meera"], monday)
@@ -289,9 +386,7 @@ async def test_a_timesheet_rule_adds_the_skip_level_manager(session, chain_org) 
     assert done["status"] == TimesheetStatus.APPROVED.value
 
 
-async def test_lifecycle_events_go_to_hr_unless_a_rule_says_otherwise(
-    session, chain_org
-) -> None:
+async def test_lifecycle_events_go_to_hr_unless_a_rule_says_otherwise(session, chain_org) -> None:
     from app.models.lifecycle import LifecycleEventType, LifecycleStatus
     from app.services.approvals import service as approvals
     from app.services.lifecycle import service as lifecycle
@@ -299,9 +394,13 @@ async def test_lifecycle_events_go_to_hr_unless_a_rule_says_otherwise(
     hr, boss = chain_org["hr"], chain_org["boss"]
     effective = datetime.now(UTC).date() + timedelta(days=30)
     plain = await lifecycle.raise_event(
-        session, hr, employee_id=chain_org["meera_emp"].id,
-        event_type=LifecycleEventType.PROMOTION, effective_from=effective,
-        new_values={"designation": "Senior Analyst"}, reason="Strong year.",
+        session,
+        hr,
+        employee_id=chain_org["meera_emp"].id,
+        event_type=LifecycleEventType.PROMOTION,
+        effective_from=effective,
+        new_values={"designation": "Senior Analyst"},
+        reason="Strong year.",
     )
     await session.commit()
     assert [s["role"] for s in plain.approval_chain] == ["hr"]
@@ -311,16 +410,25 @@ async def test_lifecycle_events_go_to_hr_unless_a_rule_says_otherwise(
     await session.commit()
 
     await rules.create_rule(
-        session, hr,
-        {"process": "lifecycle", "name": "Promotions", "priority": 10,
-         "expense_categories": ["promotion"],
-         "steps": [{"kind": "line_manager"}, {"kind": "hr"}]},
+        session,
+        hr,
+        {
+            "process": "lifecycle",
+            "name": "Promotions",
+            "priority": 10,
+            "expense_categories": ["promotion"],
+            "steps": [{"kind": "line_manager"}, {"kind": "hr"}],
+        },
     )
     await session.commit()
     event = await lifecycle.raise_event(
-        session, hr, employee_id=chain_org["meera_emp"].id,
-        event_type=LifecycleEventType.PROMOTION, effective_from=effective,
-        new_values={"designation": "Senior Analyst"}, reason="Strong year.",
+        session,
+        hr,
+        employee_id=chain_org["meera_emp"].id,
+        event_type=LifecycleEventType.PROMOTION,
+        effective_from=effective,
+        new_values={"designation": "Senior Analyst"},
+        reason="Strong year.",
     )
     await session.commit()
     assert [s["approver_name"] for s in event.approval_chain] == ["Mala Manager", "HR team"]

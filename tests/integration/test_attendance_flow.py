@@ -66,9 +66,7 @@ async def _general_shift(session: AsyncSession, tenant: Tenant, employee: Employ
     return shift
 
 
-async def _punch_full_day(
-    session: AsyncSession, user: User, employee: Employee, day: date
-) -> None:
+async def _punch_full_day(session: AsyncSession, user: User, employee: Employee, day: date) -> None:
     for at, direction in ((time(9, 0), PunchDirection.IN), (time(18, 0), PunchDirection.OUT)):
         await attendance_service.record_punch(
             session,
@@ -100,9 +98,7 @@ async def test_recompute_run_twice_produces_identical_rows(
         session, hr_user, employee_ids=[employee.id], start=WORKDAY, end=WORKDAY
     )
     first = (
-        await session.scalars(
-            select(AttendanceDay).where(AttendanceDay.employee_id == employee.id)
-        )
+        await session.scalars(select(AttendanceDay).where(AttendanceDay.employee_id == employee.id))
     ).all()
     snapshot = [
         (
@@ -127,9 +123,7 @@ async def test_recompute_run_twice_produces_identical_rows(
     for row in first:
         await session.refresh(row)
     second = (
-        await session.scalars(
-            select(AttendanceDay).where(AttendanceDay.employee_id == employee.id)
-        )
+        await session.scalars(select(AttendanceDay).where(AttendanceDay.employee_id == employee.id))
     ).all()
 
     assert [
@@ -282,9 +276,7 @@ async def test_retrospective_leave_approval_changes_lop_on_recompute(
         session, hr_user, employee_ids=[employee.id], start=WORKDAY, end=WORKDAY
     )
     await attendance_service.lock_period(session, hr_user, WORKDAY, WORKDAY)
-    before = await attendance_service.get_lop_days(
-        session, hr_user, employee.id, WORKDAY, WORKDAY
-    )
+    before = await attendance_service.get_lop_days(session, hr_user, employee.id, WORKDAY, WORKDAY)
     assert before == Decimal(1)
 
     # Leave approved retrospectively.
@@ -314,9 +306,7 @@ async def test_retrospective_leave_approval_changes_lop_on_recompute(
     )
     await attendance_service.lock_period(session, hr_user, WORKDAY, WORKDAY)
 
-    after = await attendance_service.get_lop_days(
-        session, hr_user, employee.id, WORKDAY, WORKDAY
-    )
+    after = await attendance_service.get_lop_days(session, hr_user, employee.id, WORKDAY, WORKDAY)
     assert after == Decimal(0), "approved paid leave must clear the loss of pay"
 
     day = await session.scalar(

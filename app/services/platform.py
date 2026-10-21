@@ -57,6 +57,7 @@ from app.services.auth import (
 )
 from app.services.gst.gstin import GST_CODES_BY_STATE, validate_gstin
 from app.services.identity.directory import logo_url, normalise_mobile
+from app.services.identity.welcome import send_welcome
 
 __all__ = [
     "AdminIn",
@@ -289,6 +290,8 @@ class WorkspaceIn(CompanyDetails):
     admin_email: EmailStr
     admin_phone: str
     admin_designation: str | None = Field(default=None, max_length=120)
+    #: Email the admin their sign-in page and a link to set their password.
+    send_welcome_email: bool = True
 
     _admin_blanks = field_validator("workspace", "admin_designation", mode="before")(_blank_to_none)
 
@@ -337,6 +340,27 @@ class AdminIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     phone: str | None = Field(default=None, max_length=32)
+    send_welcome_email: bool = True
+
+
+#: Who a platform-made login's welcome email says set it up.
+_PLATFORM_INVITER = "the AskMira team"
+
+
+async def _welcome(
+    session: Any, admin: User, wanted: bool, request: Request | None
+) -> dict[str, Any] | None:
+    if not wanted:
+        return None
+    sent = await send_welcome(
+        session, target=admin, inviter_name=_PLATFORM_INVITER, request=request
+    )
+    return {
+        "status": sent.status,
+        "detail": sent.detail,
+        "sent_to": sent.sent_to,
+        "link_expires_at": sent.link_expires_at.isoformat() if sent.link_expires_at else None,
+    }
 
 
 def _require_super(user: User) -> None:
@@ -492,13 +516,19 @@ async def create(
         summary=f"Created workspace {tenant.name} ({tenant.slug}) with admin {admin.email}",
         request=request,
     )
+    welcome = await _welcome(session, admin, payload.send_welcome_email, request)
     await session.commit()
     return {
         "workspace": {"id": str(tenant.id), "name": tenant.name, "workspace": tenant.slug},
         "admin": {"email": admin.email, "temporary_password": temporary},
+        "welcome_email": welcome,
         "note": (
-            "Give the admin this password yourself. It is shown once, and they choose "
-            "their own at first sign-in."
+            "It is shown once, and they choose their own password at first sign-in. "
+            + (
+                "They were also emailed a link to set it."
+                if welcome and welcome["status"] == "sent"
+                else "Give it to the admin yourself."
+            )
         ),
     }
 
@@ -759,9 +789,11 @@ async def add_admin(
         summary=f"Admin {admin.email} added by the platform",
         request=request,
     )
+    welcome = await _welcome(session, admin, payload.send_welcome_email, request)
     await session.commit()
     return {
         "admin": {"email": admin.email, "temporary_password": temporary},
+        "welcome_email": welcome,
         "note": "Shown once. Their admin can link this login to an employee record.",
     }
 

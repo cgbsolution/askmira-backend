@@ -111,9 +111,7 @@ async def test_a_request_export_is_for_admins_only(client, session, tenant):
 
 async def test_another_tenants_request_is_not_found(client, session, tenant, other_tenant):
     subject = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair")
-    foreign_admin = await make_person(
-        session, other_tenant, role=UserRole.ADMIN, name="Far Admin"
-    )
+    foreign_admin = await make_person(session, other_tenant, role=UserRole.ADMIN, name="Far Admin")
     req = await _request(session, tenant, subject, DprRequestType.ERASURE)
     response = await client.post(
         f"/api/v1/dpdp/requests/{req.id}/execute-erasure", headers=bearer(foreign_admin)
@@ -147,9 +145,7 @@ async def test_erasure_purges_what_may_go_and_keeps_the_record(client, session, 
     assert req.response_payload["plan"]["decisions"]
 
     entry = await session.scalar(
-        select(AuditLog).where(
-            AuditLog.entity_id == req.id, AuditLog.action == AuditAction.DELETE
-        )
+        select(AuditLog).where(AuditLog.entity_id == req.id, AuditLog.action == AuditAction.DELETE)
     )
     assert entry is not None
 

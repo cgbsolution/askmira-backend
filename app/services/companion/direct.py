@@ -272,6 +272,7 @@ def examples(tools: list[Tool]) -> list[str]:
         ("hiring_interviews", "Interviews this week"),
         ("expense_claims", "My pending expense claims"),
         ("expense_summary", "Expense total this month"),
+        ("product_connections", f"Is {_HIRE} connected?"),
         ("open_product", f"Open {_HIRE}"),
     ]
     return [text for key, text in sample if key in keys]
@@ -308,6 +309,16 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
         return _help(tools, name, prefix=f"Hi! I'm {name}.")
 
     chosen: DirectPlan | None = None
+
+    # Whether the products are connected at all.
+    if _has(words, "connect", "linked", "integrat", "set ?up", "configured") and _has(
+        words, "an?y? ?time", "hire", "expense", "genie", "products?\\b", "tools?\\b", "portals?"
+    ):
+        chosen = pick(
+            "product_connections", f"Here is how {_HIRE} and {_EXPENSE} are connected for you."
+        )
+        if chosen:
+            return chosen
 
     # Opening a linked product — unless the words ask for its data.
     opening = re.match(r"^(please |can you )?(open|launch|go to|take me to)\b", words)

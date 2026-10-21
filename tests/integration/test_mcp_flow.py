@@ -175,7 +175,10 @@ async def test_a_bad_range_is_a_tool_error_not_a_crash(
 
 
 async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     client: httpx.AsyncClient,
 ) -> None:
     import base64
@@ -201,7 +204,10 @@ async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
     assert bad.status_code == 400 and bad.json()["error"] == "invalid_redirect_uri"
     registered = await client.post(
         "/api/v1/oauth/register",
-        json={"client_name": "Claude", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]},
+        json={
+            "client_name": "Claude",
+            "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+        },
     )
     assert registered.status_code == 201
     client_id = registered.json()["client_id"]
@@ -224,8 +230,11 @@ async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
     approved = await client.post(
         "/api/v1/oauth/authorize",
         json={
-            "client_id": client_id, "redirect_uri": redirect, "code_challenge": code_challenge,
-            "scope": "employees:read org:read", "state": "xyz",
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "code_challenge": code_challenge,
+            "scope": "employees:read org:read",
+            "state": "xyz",
         },
         headers=as_person,
     )
@@ -236,16 +245,22 @@ async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
     wrong_verifier = await client.post(
         "/api/v1/oauth/token",
         data={
-            "grant_type": "authorization_code", "code": code, "client_id": client_id,
-            "redirect_uri": redirect, "code_verifier": "x" * 50,
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "code_verifier": "x" * 50,
         },
     )
     assert wrong_verifier.status_code == 400
     tokens = await client.post(
         "/api/v1/oauth/token",
         data={
-            "grant_type": "authorization_code", "code": code, "client_id": client_id,
-            "redirect_uri": redirect, "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "code_verifier": verifier,
         },
     )
     assert tokens.status_code == 200, tokens.text
@@ -260,7 +275,8 @@ async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
     refreshed = await client.post(
         "/api/v1/oauth/token",
         data={
-            "grant_type": "refresh_token", "refresh_token": tokens.json()["refresh_token"],
+            "grant_type": "refresh_token",
+            "refresh_token": tokens.json()["refresh_token"],
             "client_id": client_id,
         },
     )
@@ -271,8 +287,11 @@ async def test_a_connector_signs_a_person_in_with_oauth_and_reads_as_them(
     replay = await client.post(
         "/api/v1/oauth/token",
         data={
-            "grant_type": "authorization_code", "code": code, "client_id": client_id,
-            "redirect_uri": redirect, "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "code_verifier": verifier,
         },
     )
     assert replay.status_code == 400

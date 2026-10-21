@@ -58,9 +58,7 @@ async def test_revert_restores_the_record(session, tenant):
     assert proposal.previous_state == {"status": "pending"}
 
     outcome: dict = {}
-    await autonomy.revert(
-        session, hr, proposal_id=proposal.id, reason="Wrong day", outcome=outcome
-    )
+    await autonomy.revert(session, hr, proposal_id=proposal.id, reason="Wrong day", outcome=outcome)
     await session.refresh(row)
     assert outcome["restored_to_record"] is True
     assert row.status is RegularisationStatus.PENDING

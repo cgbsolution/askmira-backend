@@ -142,7 +142,10 @@ async def _ready(session, tenant, legal_entity, employee, hr_user, **kwargs):
     await _account(session, tenant, employee)
     run = await _run_with_pay(session, tenant, legal_entity, employee)
     batch = await disbursement_service.prepare_batch(
-        session, hr_user, payroll_run_id=run.id, bank_profile_id=profile.id,
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
         value_date=date(2026, 6, 30),
     )
     await session.commit()
@@ -155,7 +158,10 @@ async def _ready(session, tenant, legal_entity, employee, hr_user, **kwargs):
 
 
 async def test_the_preparer_cannot_approve_their_own_batch(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate, enforced in the service layer.
@@ -174,7 +180,10 @@ async def test_the_preparer_cannot_approve_their_own_batch(
 
 
 async def test_a_different_user_can_approve(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
@@ -192,7 +201,10 @@ async def test_a_different_user_can_approve(
 
 
 async def test_approving_a_hash_the_approver_did_not_see_is_refused(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """Approving a hash you have not seen is the same as not approving."""
@@ -208,7 +220,10 @@ async def test_approving_a_hash_the_approver_did_not_see_is_refused(
 
 
 async def test_regenerating_after_approval_voids_the_approval(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate.
@@ -225,9 +240,7 @@ async def test_regenerating_after_approval_voids_the_approval(
     await session.commit()
     assert batch.status is DisbursementStatus.APPROVED
 
-    rebuilt = await disbursement_service.regenerate_batch(
-        session, hr_user, batch_id=batch.id
-    )
+    rebuilt = await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
     await session.commit()
 
     assert rebuilt.id != batch.id
@@ -236,16 +249,15 @@ async def test_regenerating_after_approval_voids_the_approval(
     assert batch.status is DisbursementStatus.FAILED
     assert str(rebuilt.id) in (batch.notes or "")
 
-    entries = (
-        await session.scalars(
-            select(AuditLog).where(AuditLog.entity_id == batch.id)
-        )
-    ).all()
+    entries = (await session.scalars(select(AuditLog).where(AuditLog.entity_id == batch.id))).all()
     assert any("Approval voided" in (e.summary or "") for e in entries)
 
 
 async def test_a_rebuilt_batch_cannot_be_released_without_a_fresh_approval(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
@@ -253,9 +265,7 @@ async def test_a_rebuilt_batch_cannot_be_released_without_a_fresh_approval(
     await disbursement_service.approve_batch(
         session, checker, batch_id=batch.id, file_hash=batch.file_hash
     )
-    rebuilt = await disbursement_service.regenerate_batch(
-        session, hr_user, batch_id=batch.id
-    )
+    rebuilt = await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
     await session.commit()
 
     with pytest.raises(HTTPException) as exc:
@@ -264,7 +274,10 @@ async def test_a_rebuilt_batch_cannot_be_released_without_a_fresh_approval(
 
 
 async def test_an_unapproved_batch_cannot_be_released(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
@@ -275,7 +288,10 @@ async def test_an_unapproved_batch_cannot_be_released(
 
 
 async def test_an_approved_batch_releases(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
@@ -283,9 +299,7 @@ async def test_an_approved_batch_releases(
     await disbursement_service.approve_batch(
         session, checker, batch_id=batch.id, file_hash=batch.file_hash
     )
-    released = await disbursement_service.release_batch(
-        session, checker, batch_id=batch.id
-    )
+    released = await disbursement_service.release_batch(session, checker, batch_id=batch.id)
     await session.commit()
 
     assert released.status is DisbursementStatus.RELEASED
@@ -298,7 +312,10 @@ async def test_an_approved_batch_releases(
 
 
 async def test_a_batch_cannot_be_prepared_from_an_unapproved_run(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     profile = await _profile(session, tenant, legal_entity)
@@ -309,14 +326,20 @@ async def test_a_batch_cannot_be_prepared_from_an_unapproved_run(
 
     with pytest.raises(HTTPException) as exc:
         await disbursement_service.prepare_batch(
-            session, hr_user, payroll_run_id=run.id, bank_profile_id=profile.id,
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
             value_date=date(2026, 6, 30),
         )
     assert "only ever disbursed against an approved run" in exc.value.detail
 
 
 async def test_a_missing_bank_account_blocks_the_batch(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     profile = await _profile(session, tenant, legal_entity)
@@ -324,7 +347,10 @@ async def test_a_missing_bank_account_blocks_the_batch(
 
     with pytest.raises(disbursement_service.BatchBlockedError) as exc:
         await disbursement_service.prepare_batch(
-            session, hr_user, payroll_run_id=run.id, bank_profile_id=profile.id,
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
             value_date=date(2026, 6, 30),
         )
     await session.commit()
@@ -336,14 +362,21 @@ async def test_a_missing_bank_account_blocks_the_batch(
 
 
 async def test_a_duplicate_account_across_two_employees_blocks(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """Occasionally legitimate; far more often it pays one person twice."""
     profile = await _profile(session, tenant, legal_entity)
     second = Employee(
-        tenant_id=tenant.id, employee_code="ACM002", first_name="Rahul", last_name="Iyer",
-        work_email="rahul@acme.test", legal_entity_id=legal_entity.id,
+        tenant_id=tenant.id,
+        employee_code="ACM002",
+        first_name="Rahul",
+        last_name="Iyer",
+        work_email="rahul@acme.test",
+        legal_entity_id=legal_entity.id,
     )
     session.add(second)
     await session.flush()
@@ -354,16 +387,23 @@ async def test_a_duplicate_account_across_two_employees_blocks(
     run = await _run_with_pay(session, tenant, legal_entity, employee)
     session.add(
         Payslip(
-            tenant_id=tenant.id, run_id=run.id, employee_id=second.id,
-            working_days=Decimal(30), paid_days=Decimal(30),
-            gross_earnings=Decimal("30000.00"), net_pay=Decimal("29000.00"),
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=second.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(30),
+            gross_earnings=Decimal("30000.00"),
+            net_pay=Decimal("29000.00"),
         )
     )
     await session.commit()
 
     with pytest.raises(disbursement_service.BatchBlockedError) as exc:
         await disbursement_service.prepare_batch(
-            session, hr_user, payroll_run_id=run.id, bank_profile_id=profile.id,
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
             value_date=date(2026, 6, 30),
         )
     await session.commit()
@@ -371,7 +411,10 @@ async def test_a_duplicate_account_across_two_employees_blocks(
 
 
 async def test_the_prepared_file_is_encrypted_at_rest(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A database dump must not be a list of every employee's bank account."""
@@ -383,16 +426,17 @@ async def test_the_prepared_file_is_encrypted_at_rest(
 
 
 async def test_the_line_snapshots_the_account_it_actually_sent(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """An account change next month must not alter what this batch says was
     paid, and a bounced credit is investigated against what was sent."""
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
     lines = (
-        await session.scalars(
-            select(DisbursementLine).where(DisbursementLine.batch_id == batch.id)
-        )
+        await session.scalars(select(DisbursementLine).where(DisbursementLine.batch_id == batch.id))
     ).all()
 
     assert len(lines) == 1
@@ -406,7 +450,10 @@ async def test_the_line_snapshots_the_account_it_actually_sent(
 
 
 async def test_every_download_writes_a_record_and_an_audit_entry(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate.
@@ -421,9 +468,7 @@ async def test_every_download_writes_a_record_and_an_audit_entry(
     )
     await session.commit()
 
-    content, _ = await disbursement_service.download_file(
-        session, checker, batch_id=batch.id
-    )
+    content, _ = await disbursement_service.download_file(session, checker, batch_id=batch.id)
     await session.commit()
 
     assert "50100123456789" in content, "the decrypted file"
@@ -448,7 +493,10 @@ async def test_every_download_writes_a_record_and_an_audit_entry(
 
 
 async def test_an_unapproved_file_cannot_be_downloaded(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """It is released to the approver after sign-off, not before."""
@@ -459,7 +507,10 @@ async def test_an_unapproved_file_cannot_be_downloaded(
 
 
 async def test_the_download_window_expires(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A file this sensitive should not stay downloadable indefinitely."""
@@ -494,13 +545,18 @@ async def _released(session, tenant, legal_entity, employee, hr_user):
 
 
 async def test_reconciliation_marks_credited_and_failed_lines(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
 
     outcome = await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[
             {
                 "account_number": "50100123456789",
@@ -525,12 +581,17 @@ async def test_reconciliation_marks_credited_and_failed_lines(
 
 
 async def test_a_successful_response_marks_the_line_credited(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
     outcome = await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[{"account_number": "50100123456789", "status": "SUCCESS"}],
     )
     await session.commit()
@@ -539,12 +600,17 @@ async def test_a_successful_response_marks_the_line_credited(
 
 
 async def test_a_response_for_an_unknown_account_is_reported_not_swallowed(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
     outcome = await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[{"account_number": "99999999999999", "status": "SUCCESS"}],
     )
     await session.commit()
@@ -552,20 +618,28 @@ async def test_a_response_for_an_unknown_account_is_reported_not_swallowed(
 
 
 async def test_an_unreleased_batch_cannot_be_reconciled(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
     with pytest.raises(HTTPException) as exc:
         await disbursement_service.reconcile(
-            session, hr_user, batch_id=batch.id,
+            session,
+            hr_user,
+            batch_id=batch.id,
             responses=[{"account_number": "50100123456789", "status": "SUCCESS"}],
         )
     assert "not been sent to a bank" in exc.value.detail
 
 
 async def test_failed_credits_reissue_as_a_supplementary_batch(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate.
@@ -576,10 +650,10 @@ async def test_failed_credits_reissue_as_a_supplementary_batch(
     """
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
     await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
-        responses=[
-            {"account_number": "50100123456789", "status": "failed", "reason": "Closed"}
-        ],
+        session,
+        hr_user,
+        batch_id=batch.id,
+        responses=[{"account_number": "50100123456789", "status": "failed", "reason": "Closed"}],
     )
     await session.commit()
 
@@ -602,13 +676,18 @@ async def test_failed_credits_reissue_as_a_supplementary_batch(
 
 
 async def test_a_supplementary_batch_still_needs_a_second_signature(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """It is a payment file like any other."""
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
     await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[{"account_number": "50100123456789", "status": "failed"}],
     )
     supplementary = await disbursement_service.supplementary_batch(
@@ -618,19 +697,26 @@ async def test_a_supplementary_batch_still_needs_a_second_signature(
 
     with pytest.raises(HTTPException) as exc:
         await disbursement_service.approve_batch(
-            session, hr_user, batch_id=supplementary.id,
+            session,
+            hr_user,
+            batch_id=supplementary.id,
             file_hash=supplementary.file_hash,
         )
     assert exc.value.status_code == 403
 
 
 async def test_a_batch_with_no_failures_has_nothing_to_reissue(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
     await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[{"account_number": "50100123456789", "status": "SUCCESS"}],
     )
     await session.commit()
@@ -648,8 +734,12 @@ async def test_a_batch_with_no_failures_has_nothing_to_reissue(
 
 
 async def test_another_tenant_cannot_see_or_approve_a_batch(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
-    legal_entity: LegalEntity, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
 ) -> None:
     _, _, batch = await _ready(session, tenant, legal_entity, employee, hr_user)
 

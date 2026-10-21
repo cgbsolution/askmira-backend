@@ -31,7 +31,8 @@ TOOL_GROUPS: dict[str, str] = {
     "attendance": "Show attendance summaries (HR only).",
     "org": "List departments and office locations.",
     "reports": "Answer counting and reporting questions with the report builder.",
-    "products": "Open the interview or expense tool, where this workspace has one linked.",
+    "products": "Say whether the interview and expense tools are connected, and open the one "
+    "this workspace has linked.",
     "hiring_data": "Read jobs, candidates and interviews from the linked interview tool "
     "(HR and hiring managers; never AI scores).",
     "expense_data": "Read expense claims from the linked expense tool: a person's own, those "

@@ -70,21 +70,32 @@ SEPTEMBER = (2026, 9)
 async def _structure(session: AsyncSession, tenant, effective: date) -> SalaryStructure:
     """BASIC 40% of CTC (the PF base) and a balancing SPECIAL allowance."""
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.PERCENTAGE_OF, base_component_code="CTC",
-        value=Decimal(40), counts_toward_pf=True, display_order=1,
+        calculation_type=CalculationType.PERCENTAGE_OF,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
+        display_order=1,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, special])
     await session.flush()
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=effective,
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=effective,
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, item in enumerate((basic, special)):
         structure.components.append(
@@ -99,41 +110,69 @@ async def _structure(session: AsyncSession, tenant, effective: date) -> SalarySt
 
 
 async def _org(session: AsyncSession, tenant, entity, location, *, rules_from=date(2026, 4, 1)):
-    maker_emp, maker = await person(session, tenant, entity, location, code="MAKER",
-                                    role=UserRole.ADMIN)
-    checker_emp, checker = await person(session, tenant, entity, location, code="CHECKER",
-                                        role=UserRole.SUB_ADMIN)
-    boss_emp, boss = await person(session, tenant, entity, location, code="BOSS",
-                                  role=UserRole.EMPLOYEE)
-    staff_emp, staff = await person(session, tenant, entity, location, code="STAFF",
-                                    role=UserRole.EMPLOYEE, manager=boss_emp)
-    loner_emp, loner = await person(session, tenant, entity, location, code="LONER",
-                                    role=UserRole.EMPLOYEE)
+    maker_emp, maker = await person(
+        session, tenant, entity, location, code="MAKER", role=UserRole.ADMIN
+    )
+    checker_emp, checker = await person(
+        session, tenant, entity, location, code="CHECKER", role=UserRole.SUB_ADMIN
+    )
+    boss_emp, boss = await person(
+        session, tenant, entity, location, code="BOSS", role=UserRole.EMPLOYEE
+    )
+    staff_emp, staff = await person(
+        session, tenant, entity, location, code="STAFF", role=UserRole.EMPLOYEE, manager=boss_emp
+    )
+    loner_emp, loner = await person(
+        session, tenant, entity, location, code="LONER", role=UserRole.EMPLOYEE
+    )
     structure = await _structure(session, tenant, rules_from)
     for employee in (maker_emp, checker_emp, boss_emp, staff_emp, loner_emp):
         await salary_service.assign_salary(
-            session, maker, employee.id,
-            EmployeeSalaryCreate(structure_id=structure.id, ctc_annual=Decimal("1200000"),
-                                 effective_from=rules_from),
+            session,
+            maker,
+            employee.id,
+            EmployeeSalaryCreate(
+                structure_id=structure.id, ctc_annual=Decimal("1200000"), effective_from=rules_from
+            ),
         )
     for rule_type, rules in (("pf", PF_RULES), ("tds", TDS_RULES)):
         created = await rule_set_service.create_rule_set(
-            session, maker,
-            RuleSetCreate(rule_type=rule_type, jurisdiction="IN", effective_from=rules_from,
-                          rules=rules, source_reference="Test fixture, not a statutory source"),
+            session,
+            maker,
+            RuleSetCreate(
+                rule_type=rule_type,
+                jurisdiction="IN",
+                effective_from=rules_from,
+                rules=rules,
+                source_reference="Test fixture, not a statutory source",
+            ),
         )
         await rule_set_service.approve_rule_set(session, checker, created.id, attest=True)
     return {
-        "tenant": tenant, "entity": entity, "location": location, "structure": structure,
-        "maker": maker, "checker": checker, "boss": boss, "boss_emp": boss_emp,
-        "staff": staff, "staff_emp": staff_emp, "loner": loner, "loner_emp": loner_emp,
+        "tenant": tenant,
+        "entity": entity,
+        "location": location,
+        "structure": structure,
+        "maker": maker,
+        "checker": checker,
+        "boss": boss,
+        "boss_emp": boss_emp,
+        "staff": staff,
+        "staff_emp": staff_emp,
+        "loner": loner,
+        "loner_emp": loner_emp,
     }
 
 
 async def _claim(session, org, who: str, amount: str, day: int, *, trip=None) -> uuid.UUID:
     out = await expenses.capture_claim(
-        session, org[who], employee_id=org[f"{who}_emp"].id, category_key="local_travel",
-        city_tier=CityTierEnum.A, amount=Decimal(amount), incurred_on=date(2026, 9, day),
+        session,
+        org[who],
+        employee_id=org[f"{who}_emp"].id,
+        category_key="local_travel",
+        city_tier=CityTierEnum.A,
+        amount=Decimal(amount),
+        incurred_on=date(2026, 9, day),
         travel_request_id=trip,
     )
     return uuid.UUID(out["claim_id"])
@@ -159,8 +198,11 @@ async def _run(session, org, year: int, month: int):
     session.add(_lock(org["tenant"], org["maker"], year, month))
     await session.commit()
     run = await run_service.create_run(
-        session, org["maker"], legal_entity_id=org["entity"].id,
-        period_year=year, period_month=month,
+        session,
+        org["maker"],
+        legal_entity_id=org["entity"].id,
+        period_year=year,
+        period_month=month,
     )
     return run
 
@@ -177,24 +219,36 @@ async def test_a_claim_is_approved_twice_paid_once_and_joiners_and_leavers_are_p
     maker, checker, boss, staff = org["maker"], org["checker"], org["boss"], org["staff"]
 
     # A joiner on the 15th and a leaver whose agreed last day is the 10th.
-    joiner, _ = await person(session, tenant, legal_entity, location, code="JOINER",
-                             role=UserRole.EMPLOYEE)
+    joiner, _ = await person(
+        session, tenant, legal_entity, location, code="JOINER", role=UserRole.EMPLOYEE
+    )
     joiner.date_of_joining = date(2026, 9, 15)
-    leaver, _ = await person(session, tenant, legal_entity, location, code="LEAVER",
-                             role=UserRole.EMPLOYEE)
-    future, _ = await person(session, tenant, legal_entity, location, code="FUTURE",
-                             role=UserRole.EMPLOYEE)
+    leaver, _ = await person(
+        session, tenant, legal_entity, location, code="LEAVER", role=UserRole.EMPLOYEE
+    )
+    future, _ = await person(
+        session, tenant, legal_entity, location, code="FUTURE", role=UserRole.EMPLOYEE
+    )
     future.date_of_joining = date(2026, 10, 5)
     await session.commit()
     for employee, effective in ((joiner, date(2026, 9, 15)), (leaver, date(2026, 4, 1))):
         await salary_service.assign_salary(
-            session, maker, employee.id,
-            EmployeeSalaryCreate(structure_id=org["structure"].id,
-                                 ctc_annual=Decimal("1200000"), effective_from=effective),
+            session,
+            maker,
+            employee.id,
+            EmployeeSalaryCreate(
+                structure_id=org["structure"].id,
+                ctc_annual=Decimal("1200000"),
+                effective_from=effective,
+            ),
         )
     leaver_exit = await exit_service.initiate_exit(
-        session, maker, employee_id=leaver.id, exit_type=ExitType.RESIGNATION,
-        resignation_date=date(2026, 6, 1), approved_last_working_day=date(2026, 9, 10),
+        session,
+        maker,
+        employee_id=leaver.id,
+        exit_type=ExitType.RESIGNATION,
+        resignation_date=date(2026, 6, 1),
+        approved_last_working_day=date(2026, 9, 10),
         notice_period_days=90,
     )
     await session.commit()
@@ -248,8 +302,12 @@ async def test_a_claim_is_approved_twice_paid_once_and_joiners_and_leavers_are_p
 
     # A trip takes the same two stages.
     trip = await expenses.create_travel_request(
-        session, staff, employee_id=org["staff_emp"].id, purpose="Client workshop",
-        from_date=date(2026, 10, 12), to_date=date(2026, 10, 14),
+        session,
+        staff,
+        employee_id=org["staff_emp"].id,
+        purpose="Client workshop",
+        from_date=date(2026, 10, 12),
+        to_date=date(2026, 10, 14),
     )
     assert trip.status is TravelRequestStatusEnum.PENDING_MANAGER
     trip = await expenses.decide_travel_request_as_manager(
@@ -305,9 +363,13 @@ async def test_a_claim_is_approved_twice_paid_once_and_joiners_and_leavers_are_p
 
     # A later run finds nothing left to pay.
     scope = payroll_inputs.RunScope(
-        run=approved, period_start=date(2026, 10, 1), period_end=date(2026, 10, 31),
-        period="2026-10", employee_ids=frozenset({org["staff_emp"].id}),
-        fy_start=date(2026, 4, 1), fy_end=date(2027, 3, 31),
+        run=approved,
+        period_start=date(2026, 10, 1),
+        period_end=date(2026, 10, 31),
+        period="2026-10",
+        employee_ids=frozenset({org["staff_emp"].id}),
+        fy_start=date(2026, 4, 1),
+        fy_end=date(2027, 3, 31),
     )
     later = await payroll_inputs.ExpenseClaimProvider().collect(session, maker, scope)
     assert not later.lines
@@ -367,15 +429,23 @@ async def test_the_balance_over_an_advance_is_paid_in_payroll_and_the_trip_only_
     maker, checker = org["maker"], org["checker"]
 
     trip = await expenses.create_travel_request(
-        session, org["staff"], employee_id=org["staff_emp"].id, purpose="Site visit",
-        from_date=date(2026, 9, 5), to_date=date(2026, 9, 6), advance_requested=Decimal(10000),
+        session,
+        org["staff"],
+        employee_id=org["staff_emp"].id,
+        purpose="Site visit",
+        from_date=date(2026, 9, 5),
+        to_date=date(2026, 9, 6),
+        advance_requested=Decimal(10000),
     )
     await expenses.decide_travel_request_as_manager(
         session, org["boss"], travel_request_id=trip.id, approve=True
     )
     await expenses.decide_travel_request(session, maker, travel_request_id=trip.id, approve=True)
     advance = await expenses.issue_advance(
-        session, maker, travel_request_id=trip.id, amount=Decimal(10000),
+        session,
+        maker,
+        travel_request_id=trip.id,
+        amount=Decimal(10000),
         issued_on=date(2026, 9, 1),
     )
     first = await _claim(session, org, "staff", "6000", 5, trip=trip.id)
@@ -433,18 +503,26 @@ async def test_the_balance_over_an_advance_is_paid_in_payroll_and_the_trip_only_
 async def test_an_approved_settlement_is_recorded_as_paid_once(
     session: AsyncSession, tenant, legal_entity, location
 ) -> None:
-    hr_emp, hr = await person(session, tenant, legal_entity, location, code="HRA",
-                              role=UserRole.ADMIN)
-    leaver, leaver_user = await person(session, tenant, legal_entity, location, code="LEFT",
-                                       role=UserRole.EMPLOYEE)
+    hr_emp, hr = await person(
+        session, tenant, legal_entity, location, code="HRA", role=UserRole.ADMIN
+    )
+    leaver, leaver_user = await person(
+        session, tenant, legal_entity, location, code="LEFT", role=UserRole.EMPLOYEE
+    )
     record = await exit_service.initiate_exit(
-        session, hr, employee_id=leaver.id, exit_type=ExitType.RESIGNATION,
-        resignation_date=date(2026, 6, 1), approved_last_working_day=date(2026, 8, 31),
+        session,
+        hr,
+        employee_id=leaver.id,
+        exit_type=ExitType.RESIGNATION,
+        resignation_date=date(2026, 6, 1),
+        approved_last_working_day=date(2026, 8, 31),
         notice_period_days=90,
     )
     await session.commit()
     settlement = await exit_service.compute_settlement(
-        session, hr, exit_id=record.id,
+        session,
+        hr,
+        exit_id=record.id,
         inputs=settlement_engine.SettlementInput(
             final_month_salary=Decimal(45000), final_month_basis="31 of 31 days."
         ),
@@ -517,9 +595,7 @@ async def test_form_16_part_b_comes_from_a_completed_years_approved_payroll(
     await run_service.approve_run(session, org["checker"], run.id)
     slip = await _slip(session, run.id, org["staff_emp"].id)
 
-    statement = await form16.form16_statement(
-        session, org["staff"], org["staff_emp"].id, "2025-26"
-    )
+    statement = await form16.form16_statement(session, org["staff"], org["staff_emp"].id, "2025-26")
     lines = {line["key"]: Decimal(line["amount"]) for line in statement["lines"]}
     assert statement["assessment_year"] == "2026-27"
     assert statement["employer"]["tan"] == "BLRA12345B"

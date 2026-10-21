@@ -37,9 +37,7 @@ pytestmark = [pytest.mark.asyncio, requires_db]
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_canonical_suites_register_for_every_named_agent(
-    session, hr_user
-):
+async def test_the_canonical_suites_register_for_every_named_agent(session, hr_user):
     written = await evals.seed_canonical_suites(session, hr_user)
     assert set(written) == set(SUITES)
 
@@ -51,8 +49,7 @@ async def test_the_canonical_suites_register_for_every_named_agent(
         "expense_extraction",
     ):
         assert expected in written, (
-            f"{expected} was named in the brief as an agent to backfill and has "
-            "no suite."
+            f"{expected} was named in the brief as an agent to backfill and has no suite."
         )
 
     # Every reference agent is covered. The production agents that call the
@@ -67,19 +64,13 @@ async def test_seeding_is_idempotent(session, hr_user):
     await evals.seed_canonical_suites(session, hr_user)
     await evals.seed_canonical_suites(session, hr_user)
 
-    suites = (
-        await session.execute(select(func.count()).select_from(EvalSuiteRow))
-    ).scalar_one()
-    cases = (
-        await session.execute(select(func.count()).select_from(EvalCaseRow))
-    ).scalar_one()
+    suites = (await session.execute(select(func.count()).select_from(EvalSuiteRow))).scalar_one()
+    cases = (await session.execute(select(func.count()).select_from(EvalCaseRow))).scalar_one()
     assert suites == len(SUITES)
     assert cases == sum(len(s.cases) for s in SUITES.values())
 
 
-async def test_a_scoring_suite_without_discrimination_is_refused_at_write_time(
-    session, hr_user
-):
+async def test_a_scoring_suite_without_discrimination_is_refused_at_write_time(session, hr_user):
     """The gate that would have prevented the incident, enforced on write."""
     from app.services.agenteval.assertions import AssertionKind, AssertionSpec
 
@@ -107,9 +98,7 @@ async def test_a_scoring_suite_without_discrimination_is_refused_at_write_time(
         await evals.register_suite(session, hr_user, suite=bad)
     assert "reached a benchmark" in exc.value.detail
 
-    count = (
-        await session.execute(select(func.count()).select_from(EvalSuiteRow))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(EvalSuiteRow))).scalar_one()
     assert count == 0, "A refused suite was still written."
 
 
@@ -146,9 +135,7 @@ async def test_the_fit_score_defect_blocks_a_merge(session, hr_user):
     results = (
         (
             await session.execute(
-                select(EvalResultRow).where(
-                    EvalResultRow.case_name == "fit_score_discrimination"
-                )
+                select(EvalResultRow).where(EvalResultRow.case_name == "fit_score_discrimination")
             )
         )
         .scalars()
@@ -186,15 +173,11 @@ async def test_the_two_runs_have_different_fingerprints(session, hr_user):
     assert bad.agent_fingerprint != good.agent_fingerprint
 
 
-async def test_every_backfilled_suite_passes_its_reference_implementation(
-    session, hr_user
-):
+async def test_every_backfilled_suite_passes_its_reference_implementation(session, hr_user):
     await evals.seed_canonical_suites(session, hr_user)
     for agent_key in SUITES:
         run = await evals.execute_suite(session, hr_user, agent_key=agent_key)
-        assert run.gate_outcome is EvalGateOutcome.PASS, (
-            f"{agent_key}: {run.blocking_reasons}"
-        )
+        assert run.gate_outcome is EvalGateOutcome.PASS, f"{agent_key}: {run.blocking_reasons}"
 
 
 async def test_running_an_unregistered_agent_is_refused(session, hr_user):
@@ -230,11 +213,7 @@ async def test_a_run_records_cost_latency_and_every_measurement(session, hr_user
     assert run.metrics, "the run stored no measurements"
 
     results = (
-        (
-            await session.execute(
-                select(EvalResultRow).where(EvalResultRow.run_id == run.id)
-            )
-        )
+        (await session.execute(select(EvalResultRow).where(EvalResultRow.run_id == run.id)))
         .scalars()
         .all()
     )
@@ -260,9 +239,7 @@ async def test_the_second_run_diffs_against_the_first(session, hr_user):
     )
 
 
-async def test_the_run_history_shows_whether_each_run_allowed_a_merge(
-    session, hr_user
-):
+async def test_the_run_history_shows_whether_each_run_allowed_a_merge(session, hr_user):
     await evals.seed_canonical_suites(session, hr_user)
     await evals.execute_suite(
         session,
@@ -284,9 +261,7 @@ async def test_a_run_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
     await evals.seed_canonical_suites(session, hr_user)
     await evals.execute_suite(session, hr_user, agent_key="fit_score")
 
-    theirs = await evals.run_history(
-        session, other_hr_user, agent_key="fit_score"
-    )
+    theirs = await evals.run_history(session, other_hr_user, agent_key="fit_score")
     assert theirs["runs"] == []
 
 
@@ -332,9 +307,7 @@ async def test_feedback_can_be_promoted_into_a_regression_case(session, hr_user)
     assert feedback.promoted_to_case_id == case.id
 
     suite_row = (
-        await session.execute(
-            select(EvalSuiteRow).where(EvalSuiteRow.agent_key == "fit_score")
-        )
+        await session.execute(select(EvalSuiteRow).where(EvalSuiteRow.agent_key == "fit_score"))
     ).scalar_one()
     assert suite_row.version > suite_for("fit_score").version, (
         "Promoting a case did not bump the suite version, so a run cannot say "
@@ -377,9 +350,7 @@ async def test_a_promoted_case_runs_and_can_block(session, hr_user):
     names = {
         r.case_name
         for r in (
-            await session.execute(
-                select(EvalResultRow).where(EvalResultRow.run_id == blocked.id)
-            )
+            await session.execute(select(EvalResultRow).where(EvalResultRow.run_id == blocked.id))
         )
         .scalars()
         .all()
@@ -448,9 +419,7 @@ async def test_feedback_rows_survive_and_are_countable(session, hr_user):
             agent_output={},
             was_useful=useful,
         )
-    count = (
-        await session.execute(select(func.count()).select_from(AgentFeedback))
-    ).scalar_one()
+    count = (await session.execute(select(func.count()).select_from(AgentFeedback))).scalar_one()
     assert count == 3
 
 
@@ -459,15 +428,11 @@ async def test_feedback_rows_survive_and_are_countable(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_stored_case_with_an_unknown_assertion_kind_is_refused(
-    session, hr_user
-):
+async def test_a_stored_case_with_an_unknown_assertion_kind_is_refused(session, hr_user):
     """A case that cannot be parsed would be a silent gap in the suite."""
     await evals.seed_canonical_suites(session, hr_user)
     suite_row = (
-        await session.execute(
-            select(EvalSuiteRow).where(EvalSuiteRow.agent_key == "fit_score")
-        )
+        await session.execute(select(EvalSuiteRow).where(EvalSuiteRow.agent_key == "fit_score"))
     ).scalar_one()
     session.add(
         EvalCaseRow(
@@ -490,8 +455,6 @@ async def test_the_run_row_records_the_suite_version_it_ran(session, hr_user):
     run = await evals.execute_suite(session, hr_user, agent_key="fit_score")
     assert run.suite_version == suite_for("fit_score").version
 
-    runs = (
-        (await session.execute(select(EvalRunRow))).scalars().all()
-    )
+    runs = (await session.execute(select(EvalRunRow))).scalars().all()
     assert len(runs) == 1
     assert runs[0].completed_at is not None

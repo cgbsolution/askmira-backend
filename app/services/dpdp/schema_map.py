@@ -160,6 +160,10 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "The key the workspace's webhook deliveries are signed with. A credential of an "
         "integration, about no person; encrypted at rest."
     ),
+    ("product_connections", "secret_encrypted"): (
+        "The key this server signs its calls to one of our products with. A credential of an "
+        "integration, about no person; encrypted at rest."
+    ),
     ("leave_policies", "applies_to_gender"): (
         "Which population a leave policy covers ('female' for maternity leave). A rule "
         "about a group, stored once per policy; it records nobody's gender."
@@ -540,6 +544,10 @@ TABLES: dict[str, TableClassification] = {
     "benefit_member_changes": _p(EMP, "dependent", {"member": "dependent"}),
     "reward_catalogue_items": _none("What recognition points can be spent on."),
     "operator_grants": _p(USER, "account_security", {"operator_email": "identity"}),
+    "product_connections": _none(
+        "Where each of our interview and expense products lives and the secret this server "
+        "shares with it. Platform configuration, about no person."
+    ),
     "product_links": _none(
         "Which organisation in our interview or expense product is this workspace, and how "
         "the last people sync went.",

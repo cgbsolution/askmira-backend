@@ -30,8 +30,12 @@ pytestmark = requires_db
 
 PASSWORD = "Correct-Horse-42"
 PF_RULES = {
-    "wage_ceiling": 15000, "employee_rate": 12, "employer_rate": 12,
-    "eps_wage_ceiling": 15000, "edli_wage_ceiling": 15000, "eps_rate": 8.33,
+    "wage_ceiling": 15000,
+    "employee_rate": 12,
+    "employer_rate": 12,
+    "eps_wage_ceiling": 15000,
+    "edli_wage_ceiling": 15000,
+    "eps_rate": 8.33,
 }
 
 
@@ -52,8 +56,12 @@ async def client(session: AsyncSession):
 
 async def _user(session, tenant, email: str, role: UserRole) -> User:
     user = User(
-        tenant_id=tenant.id, email=email, password_hash=hash_password(PASSWORD),
-        full_name=email.split("@")[0].title(), role=role, is_active=True,
+        tenant_id=tenant.id,
+        email=email,
+        password_hash=hash_password(PASSWORD),
+        full_name=email.split("@")[0].title(),
+        role=role,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
@@ -148,8 +156,11 @@ async def test_a_rule_change_waits_for_fresh_proof(client, session, tenant) -> N
     created = await client.post(
         "/api/v1/payroll/rule-sets",
         json={
-            "rule_type": "pf", "jurisdiction": "IN", "effective_from": str(date(2026, 4, 1)),
-            "rules": PF_RULES, "source_reference": "EPF Scheme 1952, para 29",
+            "rule_type": "pf",
+            "jurisdiction": "IN",
+            "effective_from": str(date(2026, 4, 1)),
+            "rules": PF_RULES,
+            "source_reference": "EPF Scheme 1952, para 29",
         },
         headers=_auth(maker),
     )
@@ -166,7 +177,8 @@ async def test_a_rule_change_waits_for_fresh_proof(client, session, tenant) -> N
 
     challenge = (
         await client.post(
-            "/api/v1/opsec/step-up", json={"action_key": "payroll.rule_change"},
+            "/api/v1/opsec/step-up",
+            json={"action_key": "payroll.rule_change"},
             headers=_auth(checker),
         )
     ).json()
@@ -175,7 +187,8 @@ async def test_a_rule_change_waits_for_fresh_proof(client, session, tenant) -> N
     # The password alone is not enough with two-step sign-in on.
     password_only = await client.post(
         f"/api/v1/opsec/step-up/{challenge['challenge_id']}",
-        json={"password": PASSWORD}, headers=_auth(checker),
+        json={"password": PASSWORD},
+        headers=_auth(checker),
     )
     assert password_only.json()["satisfied"] is False
     still = await client.post(url, json={"attest": True}, headers=_auth(checker))
@@ -220,7 +233,10 @@ async def test_a_workspace_can_require_two_step_of_its_admins(client, session, t
     admin = await _user(session, tenant, "asha@acme-demo.com", UserRole.ADMIN)
     staff = await _user(session, tenant, "ravi@acme-demo.com", UserRole.EMPLOYEE)
     await opsec.configure_sessions(
-        session, admin, idle_timeout_minutes=60, absolute_lifetime_hours=12,
+        session,
+        admin,
+        idle_timeout_minutes=60,
+        absolute_lifetime_hours=12,
         require_two_step="privileged",
     )
 
@@ -243,8 +259,10 @@ async def test_a_workspace_can_require_two_step_of_its_admins(client, session, t
     # While the rule stands, it cannot be switched off.
     refused = await client.post(
         "/api/v1/auth/mfa/disable",
-        json={"password": PASSWORD,
-              "code": totp.code_at(secret, datetime.now(UTC) + timedelta(seconds=30))},
+        json={
+            "password": PASSWORD,
+            "code": totp.code_at(secret, datetime.now(UTC) + timedelta(seconds=30)),
+        },
         headers=_auth(admin),
     )
     assert refused.status_code == 409

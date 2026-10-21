@@ -49,34 +49,53 @@ pytestmark = requires_db
 
 async def _released_batch(session, tenant, legal_entity, employee, hr_user):
     profile = BankProfile(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, bank_name="HDFC Bank",
-        account_number=encrypt_secret("00110123456789", tenant.id), ifsc="HDFC0000123",
-        corporate_id="ACME", file_format=BankFileFormat.HDFC, format_config={},
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        bank_name="HDFC Bank",
+        account_number=encrypt_secret("00110123456789", tenant.id),
+        ifsc="HDFC0000123",
+        corporate_id="ACME",
+        file_format=BankFileFormat.HDFC,
+        format_config={},
     )
     session.add(profile)
     session.add(
         EmployeeBankAccount(
-            tenant_id=tenant.id, employee_id=employee.id,
-            account_number=encrypt_secret("50100123456789", tenant.id), ifsc="HDFC0001234",
-            account_holder_name=employee.full_name, is_primary=True,
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            account_number=encrypt_secret("50100123456789", tenant.id),
+            ifsc="HDFC0001234",
+            account_holder_name=employee.full_name,
+            is_primary=True,
         )
     )
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, period_year=2026,
-        period_month=6, effective_date=date(2026, 6, 30), status=PayrollRunStatus.APPROVED,
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=6,
+        effective_date=date(2026, 6, 30),
+        status=PayrollRunStatus.APPROVED,
     )
     session.add(run)
     await session.flush()
     session.add(
         Payslip(
-            tenant_id=tenant.id, run_id=run.id, employee_id=employee.id,
-            working_days=Decimal(30), paid_days=Decimal(30),
-            gross_earnings=Decimal("50000.00"), net_pay=Decimal("48200.00"),
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=employee.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(30),
+            gross_earnings=Decimal("50000.00"),
+            net_pay=Decimal("48200.00"),
         )
     )
     await session.commit()
     batch = await disbursement_service.prepare_batch(
-        session, hr_user, payroll_run_id=run.id, bank_profile_id=profile.id,
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
         value_date=date(2026, 6, 30),
     )
     await session.commit()
@@ -96,7 +115,9 @@ async def test_a_failed_credit_notifies_hr_ops_in_the_same_transaction(
     batch = await _released_batch(session, tenant, legal_entity, employee, hr_user)
 
     outcome = await disbursement_service.import_bank_response(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         data=b"account_number,status,reason\n50100123456789,FAILED,Account closed\n9,x\n",
     )
     await session.commit()
@@ -121,7 +142,9 @@ async def test_a_clean_reconciliation_notifies_nobody(
     await plain_user(session, tenant, email="ops@acme.test", role=UserRole.SUB_ADMIN)
     batch = await _released_batch(session, tenant, legal_entity, employee, hr_user)
     outcome = await disbursement_service.reconcile(
-        session, hr_user, batch_id=batch.id,
+        session,
+        hr_user,
+        batch_id=batch.id,
         responses=[{"account_number": "50100123456789", "status": "SUCCESS"}],
     )
     await session.commit()
@@ -149,18 +172,29 @@ async def test_an_unreadable_response_file_changes_nothing(
 
 
 async def test_a_filed_return_is_downloaded_exactly_and_audited(
-    session: AsyncSession, tenant, legal_entity, hr_user, other_hr_user,
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    hr_user,
+    other_hr_user,
     storage_root,  # noqa: F811
 ) -> None:
     content = b"#~#ECR#~#UAN|NAME\n100000000001|ANITA SHARMA\n"
     record = FilingRecord(
-        tenant_id=tenant.id, return_type=ReturnType.PF_ECR, legal_entity_id=legal_entity.id,
-        period="2026-06", status=FilingStatus.GENERATED, file_name="ECR_202606.txt",
+        tenant_id=tenant.id,
+        return_type=ReturnType.PF_ECR,
+        legal_entity_id=legal_entity.id,
+        period="2026-06",
+        status=FilingStatus.GENERATED,
+        file_name="ECR_202606.txt",
         file_storage_key=await support.store_generated(tenant.id, "filings", content, ".txt"),
     )
     blocked = FilingRecord(
-        tenant_id=tenant.id, return_type=ReturnType.ESIC, legal_entity_id=legal_entity.id,
-        period="2026-06", status=FilingStatus.BLOCKED,
+        tenant_id=tenant.id,
+        return_type=ReturnType.ESIC,
+        legal_entity_id=legal_entity.id,
+        period="2026-06",
+        status=FilingStatus.BLOCKED,
     )
     session.add_all([record, blocked])
     await session.commit()
@@ -169,9 +203,9 @@ async def test_a_filed_return_is_downloaded_exactly_and_audited(
     await session.commit()
     assert data == content and name == "ECR_202606.txt"
     exports = await session.scalar(
-        select(func.count()).select_from(AuditLog).where(
-            AuditLog.action == AuditAction.EXPORT, AuditLog.entity_id == record.id
-        )
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.action == AuditAction.EXPORT, AuditLog.entity_id == record.id)
     )
     assert exports == 1
 
@@ -191,29 +225,48 @@ async def test_a_filed_return_is_downloaded_exactly_and_audited(
 
 async def _batch(session, tenant, legal_entity, *, computed_by, employee_id, **extra):
     batch = ArrearBatch(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, from_period="2025-11",
-        to_period="2026-05", status=ArrearStatus.PENDING_APPROVAL, employee_count=1,
-        total_earnings_arrear=Decimal("60000"), total_net_payable=Decimal("57840"),
-        computed_at=datetime.now(UTC), computed_by_user_id=computed_by.id,
-        affected_filings=[], **extra,
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        from_period="2025-11",
+        to_period="2026-05",
+        status=ArrearStatus.PENDING_APPROVAL,
+        employee_count=1,
+        total_earnings_arrear=Decimal("60000"),
+        total_net_payable=Decimal("57840"),
+        computed_at=datetime.now(UTC),
+        computed_by_user_id=computed_by.id,
+        affected_filings=[],
+        **extra,
     )
     session.add(batch)
     await session.flush()
     for period, amount in (("2025-11", "10000"), ("2026-01", "20000"), ("2026-05", "30000")):
         session.add(
             ArrearLine(
-                tenant_id=tenant.id, batch_id=batch.id, employee_id=employee_id,
-                period=period, component_code="BASIC", component_name="Basic",
-                component_type="earning", paid_amount=Decimal(0),
-                should_have_been_amount=Decimal(amount), difference=Decimal(amount),
+                tenant_id=tenant.id,
+                batch_id=batch.id,
+                employee_id=employee_id,
+                period=period,
+                component_code="BASIC",
+                component_name="Basic",
+                component_type="earning",
+                paid_amount=Decimal(0),
+                should_have_been_amount=Decimal(amount),
+                difference=Decimal(amount),
             )
         )
     session.add(
         ArrearLine(
-            tenant_id=tenant.id, batch_id=batch.id, employee_id=employee_id,
-            period="2026-05", component_code="PF_EMPLOYEE", component_name="PF",
-            component_type="deduction", paid_amount=Decimal(0),
-            should_have_been_amount=Decimal("2160"), difference=Decimal("2160"),
+            tenant_id=tenant.id,
+            batch_id=batch.id,
+            employee_id=employee_id,
+            period="2026-05",
+            component_code="PF_EMPLOYEE",
+            component_name="PF",
+            component_type="deduction",
+            paid_amount=Decimal(0),
+            should_have_been_amount=Decimal("2160"),
+            difference=Decimal("2160"),
         )
     )
     await session.commit()
@@ -223,8 +276,9 @@ async def _batch(session, tenant, legal_entity, *, computed_by, employee_id, **e
 async def test_the_person_who_computed_arrears_cannot_approve_them(
     session: AsyncSession, tenant, legal_entity, employee, hr_user
 ) -> None:
-    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
-                         employee_id=employee.id)
+    batch = await _batch(
+        session, tenant, legal_entity, computed_by=hr_user, employee_id=employee.id
+    )
     with pytest.raises(HTTPException) as exc:
         await arrears_service.approve_batch(session, hr_user, batch_id=batch.id)
     assert exc.value.status_code == 403
@@ -240,8 +294,9 @@ async def test_nobody_approves_arrears_that_pay_themselves(
     approver_employee, approver = await person(
         session, tenant, legal_entity, location, code="ADM1", role=UserRole.ADMIN
     )
-    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
-                         employee_id=approver_employee.id)
+    batch = await _batch(
+        session, tenant, legal_entity, computed_by=hr_user, employee_id=approver_employee.id
+    )
     with pytest.raises(HTTPException) as exc:
         await arrears_service.approve_batch(session, approver, batch_id=batch.id)
     assert exc.value.status_code == 403
@@ -250,8 +305,14 @@ async def test_nobody_approves_arrears_that_pay_themselves(
 async def test_above_the_threshold_two_different_approvers_are_needed(
     session: AsyncSession, tenant, legal_entity, employee, hr_user
 ) -> None:
-    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
-                         employee_id=employee.id, requires_additional_approval=True)
+    batch = await _batch(
+        session,
+        tenant,
+        legal_entity,
+        computed_by=hr_user,
+        employee_id=employee.id,
+        requires_additional_approval=True,
+    )
     first = await plain_user(session, tenant, email="a1@acme.test", role=UserRole.ADMIN)
     second = await plain_user(session, tenant, email="a2@acme.test", role=UserRole.ADMIN)
 
@@ -273,8 +334,9 @@ async def test_above_the_threshold_two_different_approvers_are_needed(
 async def test_the_payroll_run_reads_approved_arrears_per_component_and_marks_them_paid(
     session: AsyncSession, tenant, legal_entity, employee, hr_user
 ) -> None:
-    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
-                         employee_id=employee.id)
+    batch = await _batch(
+        session, tenant, legal_entity, computed_by=hr_user, employee_id=employee.id
+    )
     checker = await plain_user(session, tenant, email="c@acme.test", role=UserRole.ADMIN)
     await arrears_service.approve_batch(session, checker, batch_id=batch.id)
     await session.commit()
@@ -283,13 +345,18 @@ async def test_the_payroll_run_reads_approved_arrears_per_component_and_marks_th
     assert len(payable) == 1
     row = payable[0]
     assert {c["component_code"]: c["amount"] for c in row["components"]} == {
-        "BASIC": Decimal("60000"), "PF_EMPLOYEE": Decimal("2160"),
+        "BASIC": Decimal("60000"),
+        "PF_EMPLOYEE": Decimal("2160"),
     }
     assert row["net_payable"] == Decimal("57840")
 
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, period_year=2026,
-        period_month=9, effective_date=date(2026, 9, 30), status=PayrollRunStatus.DRAFT,
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=9,
+        effective_date=date(2026, 9, 30),
+        status=PayrollRunStatus.DRAFT,
     )
     session.add(run)
     await session.commit()
@@ -306,7 +373,11 @@ async def test_the_payroll_run_reads_approved_arrears_per_component_and_marks_th
 
 
 async def test_relief_prices_each_year_by_its_own_rule_set_and_issues_form_10e(
-    session: AsyncSession, tenant, legal_entity, location, hr_user,
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    hr_user,
     storage_root,  # noqa: F811
 ) -> None:
     earlier_rules = {
@@ -335,8 +406,7 @@ async def test_relief_prices_each_year_by_its_own_rule_set_and_issues_form_10e(
     leaver, _ = await person(
         session, tenant, legal_entity, location, code="ARR1", role=UserRole.EMPLOYEE
     )
-    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user,
-                         employee_id=leaver.id)
+    batch = await _batch(session, tenant, legal_entity, computed_by=hr_user, employee_id=leaver.id)
     batch.status = ArrearStatus.APPROVED
     batch.approved_at = datetime(2026, 9, 1, tzinfo=UTC)
     await session.commit()
@@ -347,13 +417,22 @@ async def test_relief_prices_each_year_by_its_own_rule_set_and_issues_form_10e(
 
     with pytest.raises(HTTPException) as exc:
         await relief_service.compute_employee_relief(
-            session, hr_user, batch_id=batch.id, employee_id=leaver.id, regime="new",
-            receipt_year_taxable_income=Decimal("1500000"), prior_years=[],
+            session,
+            hr_user,
+            batch_id=batch.id,
+            employee_id=leaver.id,
+            regime="new",
+            receipt_year_taxable_income=Decimal("1500000"),
+            prior_years=[],
         )
     assert "2025-26" in exc.value.detail
 
     record = await relief_service.compute_employee_relief(
-        session, hr_user, batch_id=batch.id, employee_id=leaver.id, regime="new",
+        session,
+        hr_user,
+        batch_id=batch.id,
+        employee_id=leaver.id,
+        regime="new",
         receipt_year_taxable_income=Decimal("1500000"),
         prior_years=[{"financial_year": "2025-26", "original_taxable_income": "400000"}],
     )

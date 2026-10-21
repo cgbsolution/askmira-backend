@@ -27,15 +27,22 @@ async def _people(
     logins = []
     for n in range(count):
         person = Employee(
-            tenant_id=tenant.id, employee_code=f"P{n}", first_name=f"Person{n}",
-            work_email=f"p{n}@acme-demo.com", legal_entity_id=entity.id,
+            tenant_id=tenant.id,
+            employee_code=f"P{n}",
+            first_name=f"Person{n}",
+            work_email=f"p{n}@acme-demo.com",
+            legal_entity_id=entity.id,
             status=EmploymentStatus.ACTIVE,
         )
         session.add(person)
         await session.flush()
         login = User(
-            tenant_id=tenant.id, email=f"p{n}.login@acme-demo.com", password_hash="x",
-            full_name=f"Person{n}", role=UserRole.EMPLOYEE, is_active=True,
+            tenant_id=tenant.id,
+            email=f"p{n}.login@acme-demo.com",
+            password_hash="x",
+            full_name=f"Person{n}",
+            role=UserRole.EMPLOYEE,
+            is_active=True,
             employee_id=person.id,
         )
         session.add(login)
@@ -49,7 +56,8 @@ async def test_a_poll_shows_results_only_after_voting_and_never_who(
 ) -> None:
     people = await _people(session, tenant, legal_entity, 4)
     poll = await engagement.create_poll(
-        session, hr_user,
+        session,
+        hr_user,
         PollCreate(question="Where should the offsite be?", options=["Goa", "Coorg", "Ooty"]),
         request=None,
     )
@@ -89,7 +97,8 @@ async def test_a_full_event_refuses_another_going(
     people = await _people(session, tenant, legal_entity, 3)
     start = datetime.now(UTC) + timedelta(days=10)
     event = await engagement.create_event(
-        session, hr_user,
+        session,
+        hr_user,
         EventCreate(title="Diwali lunch", starts_at=start, venue="Cafeteria", capacity=2),
         request=None,
     )

@@ -212,9 +212,7 @@ async def test_employee_goal_counts_and_its_check_in_is_answered(
     assert started.status_code == 200, started.text
     await session.refresh(cycle)
     assert cycle.status is CycleStatus.IN_CALIBRATION
-    cancelled = await client.post(
-        f"/api/v1/calibration/sessions/{sid}/cancel", headers=bearer(hr)
-    )
+    cancelled = await client.post(f"/api/v1/calibration/sessions/{sid}/cancel", headers=bearer(hr))
     assert cancelled.status_code == 200, cancelled.text
     await session.refresh(cycle)
     assert cycle.status is CycleStatus.ACTIVE
@@ -459,9 +457,7 @@ async def test_feedback_request_responses_and_anonymised_summary(
     reminded = await client.post(f"/api/v1/feedback/requests/{rid}/remind", headers=bearer(maya))
     assert reminded.json() == {"reminded": 1}
     assert await _events(session, "performance.feedback.reminder") == {peers[3].id}
-    swept = await feedback_service.send_due_reminders(
-        session, system_actor(tenant.id), on=due
-    )
+    swept = await feedback_service.send_due_reminders(session, system_actor(tenant.id), on=due)
     assert swept == {"requests": 1, "reminded": 0}
 
     # HR sees every request.
@@ -497,9 +493,7 @@ async def test_feedback_request_responses_and_anonymised_summary(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_employee_acknowledges_a_letter_in_the_portal(
-    client, session, tenant, team
-) -> None:
+async def test_employee_acknowledges_a_letter_in_the_portal(client, session, tenant, team) -> None:
     ravi, hr, peer = team["ravi"], team["hr"], team["p1"]
     template = LetterTemplate(
         tenant_id=tenant.id,
@@ -628,10 +622,9 @@ async def test_a_recurring_one_on_one_books_the_next(client, session, team) -> N
     assert held.status_code == 200, held.text
     listing = await client.get("/api/v1/one-on-ones", headers=bearer(maya))
     upcoming = [
-        m for m in listing.json() if m["status"] == "scheduled"
-        and m["with_employee_id"] == str(ravi.employee_id)
+        m
+        for m in listing.json()
+        if m["status"] == "scheduled" and m["with_employee_id"] == str(ravi.employee_id)
     ]
-    assert [m["scheduled_on"] for m in upcoming] == [
-        (first_day + timedelta(weeks=2)).isoformat()
-    ]
+    assert [m["scheduled_on"] for m in upcoming] == [(first_day + timedelta(weeks=2)).isoformat()]
     assert upcoming[0]["repeat_every_weeks"] == 2

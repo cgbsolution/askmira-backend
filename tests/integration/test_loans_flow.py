@@ -116,8 +116,12 @@ async def test_an_interest_free_loan_stores_a_zero_interest_schedule(
     session: AsyncSession, tenant: Tenant, employee: Employee
 ) -> None:
     scheme = await _scheme(
-        session, tenant, name="Advance", interest_type=InterestType.INTEREST_FREE,
-        interest_rate=Decimal(0), loan_type=LoanType.SALARY_ADVANCE,
+        session,
+        tenant,
+        name="Advance",
+        interest_type=InterestType.INTEREST_FREE,
+        interest_rate=Decimal(0),
+        loan_type=LoanType.SALARY_ADVANCE,
     )
     loan = await _loan(session, tenant, employee, scheme, principal="60000", tenure=6)
 
@@ -218,9 +222,7 @@ async def test_the_full_ledger_reconciles_after_twelve_recoveries(
     await session.commit()
 
     rows = (
-        await session.scalars(
-            select(LoanRepayment).where(LoanRepayment.loan_account_id == loan.id)
-        )
+        await session.scalars(select(LoanRepayment).where(LoanRepayment.loan_account_id == loan.id))
     ).all()
     total_principal = sum((Decimal(str(r.principal_component)) for r in rows), Decimal(0))
     assert total_principal == Decimal(120_000)
@@ -333,13 +335,20 @@ async def test_the_position_reflects_only_verified_claims(
     session.add_all(
         [
             ReimbursementClaim(
-                tenant_id=tenant.id, employee_id=employee.id, component_code="FUEL",
-                financial_year="2026-2027", amount=Decimal(6_000),
-                accepted_amount=Decimal(6_000), status=ClaimStatus.VERIFIED,
+                tenant_id=tenant.id,
+                employee_id=employee.id,
+                component_code="FUEL",
+                financial_year="2026-2027",
+                amount=Decimal(6_000),
+                accepted_amount=Decimal(6_000),
+                status=ClaimStatus.VERIFIED,
             ),
             ReimbursementClaim(
-                tenant_id=tenant.id, employee_id=employee.id, component_code="FUEL",
-                financial_year="2026-2027", amount=Decimal(8_000),
+                tenant_id=tenant.id,
+                employee_id=employee.id,
+                component_code="FUEL",
+                financial_year="2026-2027",
+                amount=Decimal(8_000),
                 status=ClaimStatus.SUBMITTED,
             ),
         ]
@@ -348,9 +357,7 @@ async def test_the_position_reflects_only_verified_claims(
 
     claims = (
         await session.scalars(
-            select(ReimbursementClaim).where(
-                ReimbursementClaim.employee_id == employee.id
-            )
+            select(ReimbursementClaim).where(ReimbursementClaim.employee_id == employee.id)
         )
     ).all()
     position = reimbursements.position(
@@ -378,9 +385,13 @@ async def test_a_partial_acceptance_pays_only_the_accepted_amount(
     """The checklist gate."""
     component = await _component(session, tenant)
     claim = ReimbursementClaim(
-        tenant_id=tenant.id, employee_id=employee.id, component_code="FUEL",
-        financial_year="2026-2027", amount=Decimal(10_000),
-        accepted_amount=Decimal(4_000), status=ClaimStatus.PARTIAL,
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        component_code="FUEL",
+        financial_year="2026-2027",
+        amount=Decimal(10_000),
+        accepted_amount=Decimal(4_000),
+        status=ClaimStatus.PARTIAL,
         verification_note="Only the fuel bills were accepted; the servicing bill was not.",
     )
     session.add(claim)
@@ -407,8 +418,10 @@ async def test_unclaimed_entitlement_at_year_end_is_taxable(
     """
     component = await _component(session, tenant)
     position = reimbursements.position(
-        component_code="FUEL", financial_year="2026-2027",
-        entitlement=Decimal(str(component.annual_entitlement)), claims=[],
+        component_code="FUEL",
+        financial_year="2026-2027",
+        entitlement=Decimal(str(component.annual_entitlement)),
+        claims=[],
     )
     assert position.taxable_if_year_ended_now == Decimal(24_000)
 
@@ -423,7 +436,10 @@ async def test_unclaimed_entitlement_at_year_end_is_taxable(
 
 
 async def test_loans_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
     employee: Employee,
 ) -> None:
     from app.core.deps import tenant_scoped

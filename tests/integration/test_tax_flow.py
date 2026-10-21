@@ -140,42 +140,60 @@ async def _windows(session: AsyncSession, tenant: Tenant, *, proof_open: bool = 
 async def _salary(session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee):
     """A structure with BASIC, HRA and a balance, so HRA has something to work on."""
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="CTC", value=Decimal(40), counts_toward_pf=True,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
         display_order=1,
     )
     hra = SalaryComponent(
-        tenant_id=tenant.id, code="HRA", name="House rent allowance",
+        tenant_id=tenant.id,
+        code="HRA",
+        name="House rent allowance",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="BASIC", value=Decimal(50), display_order=2,
+        base_component_code="BASIC",
+        value=Decimal(50),
+        display_order=2,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, hra, special])
     await session.flush()
 
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2026, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, component in enumerate((basic, hra, special)):
         structure.components.append(
             SalaryStructureComponent(
-                tenant_id=tenant.id, component_id=component.id,
-                component=component, display_order=index,
+                tenant_id=tenant.id,
+                component_id=component.id,
+                component=component,
+                display_order=index,
             )
         )
     session.add(structure)
     await session.commit()
 
     await salary_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
             structure_id=structure.id,
             ctc_annual=Decimal("1500000"),
@@ -204,7 +222,10 @@ async def test_a_regime_switch_after_payroll_has_run_recomputes_the_whole_year(
     await _salary(session, tenant, hr_user, employee)
 
     election, needs_recompute = await tax_service.elect_regime(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         regime=TaxRegime.NEW,
     )
     await session.commit()
@@ -215,15 +236,16 @@ async def test_a_regime_switch_after_payroll_has_run_recomputes_the_whole_year(
     await session.commit()
 
     _, needs_recompute = await tax_service.elect_regime(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         regime=TaxRegime.OLD,
     )
     await session.commit()
     assert needs_recompute is True
 
-    snapshots = await tax_service.recompute_financial_year(
-        session, hr_user, employee.id, FY
-    )
+    snapshots = await tax_service.recompute_financial_year(session, hr_user, employee.id, FY)
 
     assert len(snapshots) == 12, "every month of the year, not just the ones ahead"
     assert {s.computed_for_month for s in snapshots} == set(range(1, 13))
@@ -268,7 +290,10 @@ async def test_the_switch_limit_comes_from_configuration(
 
     with pytest.raises(TaxWorkflowError, match="already changed regime"):
         await tax_service.elect_regime(
-            session, hr_user, employee_id=employee.id, financial_year=FY,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            financial_year=FY,
             regime=TaxRegime.NEW,
         )
 
@@ -326,8 +351,13 @@ async def test_partial_acceptance_flows_through_to_the_tds_computation(
         session, hr_user, employee_id=employee.id, financial_year=FY, regime=TaxRegime.OLD
     )
     declaration = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("150000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("150000"),
     )
     declaration.status = DeclarationStatus.SUBMITTED
     await session.commit()
@@ -335,22 +365,24 @@ async def test_partial_acceptance_flows_through_to_the_tds_computation(
     # The proof is submitted against the declared amount; the verifier decides
     # how much of it the document actually supports.
     proof = TaxProof(
-        tenant_id=tenant.id, declaration_id=declaration.id,
-        proof_amount=Decimal("150000"), document_name="ppf-statement.pdf",
+        tenant_id=tenant.id,
+        declaration_id=declaration.id,
+        proof_amount=Decimal("150000"),
+        document_name="ppf-statement.pdf",
     )
     session.add(proof)
     await session.commit()
 
     await tax_service.verify_proof(
-        session, hr_user, proof.id,
+        session,
+        hr_user,
+        proof.id,
         status_decision=ProofStatus.PARTIALLY_ACCEPTED,
         accepted_amount=Decimal("90000"),
         remarks="PPF statement supports 90,000 of the 150,000 declared.",
     )
 
-    snapshot = await tax_service.compute_and_store(
-        session, hr_user, employee.id, FY, for_month=1
-    )
+    snapshot = await tax_service.compute_and_store(session, hr_user, employee.id, FY, for_month=1)
 
     deduction_80c = next(
         line for line in snapshot.working["deductions"] if line["section"] == "80C"
@@ -372,18 +404,19 @@ async def test_an_unproven_declaration_contributes_nothing_to_the_projection(
         session, hr_user, employee_id=employee.id, financial_year=FY, regime=TaxRegime.OLD
     )
     declaration = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="ELSS", declared_amount=Decimal("150000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="ELSS",
+        declared_amount=Decimal("150000"),
     )
     declaration.status = DeclarationStatus.SUBMITTED
     await session.commit()
 
-    snapshot = await tax_service.compute_and_store(
-        session, hr_user, employee.id, FY, for_month=1
-    )
-    line = next(
-        line for line in snapshot.working["deductions"] if line["section"] == "80C"
-    )
+    snapshot = await tax_service.compute_and_store(session, hr_user, employee.id, FY, for_month=1)
+    line = next(line for line in snapshot.working["deductions"] if line["section"] == "80C")
     assert line["accepted"] == "0.00"
     assert line["allowed"] == "0.00"
 
@@ -400,20 +433,22 @@ async def test_the_live_preview_uses_declared_amounts_while_the_window_is_open(
         session, hr_user, employee_id=employee.id, financial_year=FY, regime=TaxRegime.OLD
     )
     declaration = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("150000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("150000"),
     )
     declaration.status = DeclarationStatus.SUBMITTED
     await session.commit()
 
     preview = await tax_service.live_preview(session, hr_user, employee.id, FY)
-    stored = await tax_service.compute_and_store(
-        session, hr_user, employee.id, FY, for_month=1
-    )
+    stored = await tax_service.compute_and_store(session, hr_user, employee.id, FY, for_month=1)
 
     assert preview.total_deductions > Decimal(str(stored.total_deductions)), (
-        "the preview counts what was declared; the stored projection counts what "
-        "was proved"
+        "the preview counts what was declared; the stored projection counts what was proved"
     )
 
 
@@ -424,8 +459,13 @@ async def test_the_live_preview_uses_declared_amounts_while_the_window_is_open(
 
 async def _pending_proof(session, tenant, hr_user, employee, amount="100000"):
     declaration = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal(amount),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal(amount),
     )
     await session.commit()
     proof = TaxProof(
@@ -446,16 +486,16 @@ async def test_every_verification_decision_writes_an_audit_entry_with_the_remark
     proof = await _pending_proof(session, tenant, hr_user, employee)
 
     await tax_service.verify_proof(
-        session, hr_user, proof.id,
+        session,
+        hr_user,
+        proof.id,
         status_decision=ProofStatus.REJECTED,
         accepted_amount=Decimal(0),
         remarks="The receipt is dated outside this financial year.",
     )
 
     entry = await session.scalar(
-        select(AuditLog).where(
-            AuditLog.entity_type == "tax_proof", AuditLog.entity_id == proof.id
-        )
+        select(AuditLog).where(AuditLog.entity_type == "tax_proof", AuditLog.entity_id == proof.id)
     )
     assert entry is not None
     assert entry.actor_user_id == hr_user.id
@@ -466,14 +506,16 @@ async def test_every_verification_decision_writes_an_audit_entry_with_the_remark
 async def test_a_rejection_without_a_remark_is_refused(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
-    """"Rejected" with no reason is the most common cause of a payroll query."""
+    """ "Rejected" with no reason is the most common cause of a payroll query."""
     await _tds_rules(session, tenant)
     await _windows(session, tenant)
     proof = await _pending_proof(session, tenant, hr_user, employee)
 
     with pytest.raises(TaxWorkflowError, match="remark is required"):
         await tax_service.verify_proof(
-            session, hr_user, proof.id,
+            session,
+            hr_user,
+            proof.id,
             status_decision=ProofStatus.REJECTED,
             accepted_amount=Decimal(0),
             remarks="",
@@ -488,7 +530,9 @@ async def test_a_rejection_forces_the_accepted_amount_to_zero(
     proof = await _pending_proof(session, tenant, hr_user, employee)
 
     result = await tax_service.verify_proof(
-        session, hr_user, proof.id,
+        session,
+        hr_user,
+        proof.id,
         status_decision=ProofStatus.REJECTED,
         # An operator error: a rejection with a non-zero amount.
         accepted_amount=Decimal("50000"),
@@ -505,7 +549,9 @@ async def test_a_full_acceptance_takes_the_whole_proved_amount(
     proof = await _pending_proof(session, tenant, hr_user, employee)
 
     result = await tax_service.verify_proof(
-        session, hr_user, proof.id,
+        session,
+        hr_user,
+        proof.id,
         status_decision=ProofStatus.VERIFIED,
         accepted_amount=Decimal(0),  # ignored on a full acceptance
         remarks="",
@@ -523,7 +569,9 @@ async def test_a_partial_acceptance_equal_to_the_proof_is_refused(
 
     with pytest.raises(TaxWorkflowError, match="less than the amount proved"):
         await tax_service.verify_proof(
-            session, hr_user, proof.id,
+            session,
+            hr_user,
+            proof.id,
             status_decision=ProofStatus.PARTIALLY_ACCEPTED,
             accepted_amount=Decimal("100000"),
             remarks="All good.",
@@ -539,7 +587,9 @@ async def test_a_partial_acceptance_of_zero_is_refused(
 
     with pytest.raises(TaxWorkflowError, match="above zero"):
         await tax_service.verify_proof(
-            session, hr_user, proof.id,
+            session,
+            hr_user,
+            proof.id,
             status_decision=ProofStatus.PARTIALLY_ACCEPTED,
             accepted_amount=Decimal(0),
             remarks="Nothing supported.",
@@ -559,23 +609,35 @@ async def test_closing_the_proof_window_locks_declarations_and_counts_the_unprov
     await _windows(session, tenant)
 
     proved = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("100000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("100000"),
     )
     await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80D", sub_category="health", declared_amount=Decimal("25000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80D",
+        sub_category="health",
+        declared_amount=Decimal("25000"),
     )
     await session.commit()
 
-    proof = TaxProof(
-        tenant_id=tenant.id, declaration_id=proved.id, proof_amount=Decimal("100000")
-    )
+    proof = TaxProof(tenant_id=tenant.id, declaration_id=proved.id, proof_amount=Decimal("100000"))
     session.add(proof)
     await session.commit()
     await tax_service.verify_proof(
-        session, hr_user, proof.id, status_decision=ProofStatus.VERIFIED,
-        accepted_amount=Decimal("100000"), remarks="",
+        session,
+        hr_user,
+        proof.id,
+        status_decision=ProofStatus.VERIFIED,
+        accepted_amount=Decimal("100000"),
+        remarks="",
     )
 
     locked = await tax_service.close_proof_window(session, hr_user, FY)
@@ -601,16 +663,26 @@ async def test_a_locked_declaration_cannot_be_changed(
     await _windows(session, tenant)
 
     await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("100000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("100000"),
     )
     await session.commit()
     await tax_service.close_proof_window(session, hr_user, FY)
 
     with pytest.raises(TaxWorkflowError, match="locked"):
         await tax_service.upsert_declaration(
-            session, hr_user, employee_id=employee.id, financial_year=FY,
-            section="80C", sub_category="PPF", declared_amount=Decimal("150000"),
+            session,
+            hr_user,
+            employee_id=employee.id,
+            financial_year=FY,
+            section="80C",
+            sub_category="PPF",
+            declared_amount=Decimal("150000"),
         )
 
 
@@ -620,9 +692,11 @@ async def test_a_closed_window_refuses_a_submission_and_says_when_it_closed(
     await _tds_rules(session, tenant)
     session.add(
         DeclarationWindow(
-            tenant_id=tenant.id, financial_year=FY,
+            tenant_id=tenant.id,
+            financial_year=FY,
             window_type=WindowType.DECLARATION,
-            opens_at=date(2026, 4, 1), closes_at=date(2026, 4, 30),
+            opens_at=date(2026, 4, 1),
+            closes_at=date(2026, 4, 30),
             allow_late_submission=False,
         )
     )
@@ -630,8 +704,13 @@ async def test_a_closed_window_refuses_a_submission_and_says_when_it_closed(
 
     with pytest.raises(TaxWorkflowError) as exc:
         await tax_service.upsert_declaration(
-            session, hr_user, employee_id=employee.id, financial_year=FY,
-            section="80C", sub_category="PPF", declared_amount=Decimal("100000"),
+            session,
+            hr_user,
+            employee_id=employee.id,
+            financial_year=FY,
+            section="80C",
+            sub_category="PPF",
+            declared_amount=Decimal("100000"),
         )
     assert "2026-04-30" in str(exc.value)
 
@@ -654,10 +733,15 @@ async def test_landlord_pan_is_required_above_the_configured_threshold(
 
     with pytest.raises(TaxWorkflowError, match="landlord's PAN is required"):
         await tax_service.submit_house_rent(
-            session, hr_user, employee_id=employee.id, financial_year=FY,
+            session,
+            hr_user,
+            employee_id=employee.id,
+            financial_year=FY,
             monthly_rent=[{"month": m, "rent": "25000"} for m in range(1, 13)],
-            landlord_name="A Landlord", landlord_pan=None,
-            property_address="Somewhere", is_metro=True,
+            landlord_name="A Landlord",
+            landlord_pan=None,
+            property_address="Somewhere",
+            is_metro=True,
         )
 
 
@@ -668,10 +752,15 @@ async def test_landlord_pan_is_not_required_below_the_threshold(
     await _windows(session, tenant)
 
     record = await tax_service.submit_house_rent(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         monthly_rent=[{"month": m, "rent": "5000"} for m in range(1, 13)],
-        landlord_name="A Landlord", landlord_pan=None,
-        property_address="Somewhere", is_metro=False,
+        landlord_name="A Landlord",
+        landlord_pan=None,
+        property_address="Somewhere",
+        is_metro=False,
     )
     await session.commit()
     assert Decimal(str(record.annual_rent)) == Decimal("60000")
@@ -688,10 +777,15 @@ async def test_the_pan_threshold_comes_from_configuration(
     await session.commit()
 
     record = await tax_service.submit_house_rent(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         monthly_rent=[{"month": m, "rent": "25000"} for m in range(1, 13)],
-        landlord_name="A Landlord", landlord_pan=None,
-        property_address="Somewhere", is_metro=True,
+        landlord_name="A Landlord",
+        landlord_pan=None,
+        property_address="Somewhere",
+        is_metro=True,
     )
     await session.commit()
     assert record.landlord_pan is None
@@ -715,14 +809,15 @@ async def test_a_mid_year_joiner_with_previous_employer_income_computes_correctl
     )
     await session.commit()
 
-    without = await tax_service.compute_and_store(
-        session, hr_user, employee.id, FY, for_month=10
-    )
+    without = await tax_service.compute_and_store(session, hr_user, employee.id, FY, for_month=10)
 
     session.add(
         PreviousEmployerIncome(
-            tenant_id=tenant.id, employee_id=employee.id, financial_year=FY,
-            employer_name="Previous Co", gross_salary=Decimal("600000"),
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            financial_year=FY,
+            employer_name="Previous Co",
+            gross_salary=Decimal("600000"),
             tds_deducted=Decimal("40000"),
         )
     )
@@ -774,8 +869,13 @@ async def test_form_12bb_shows_declared_and_accepted_side_by_side(
     await _windows(session, tenant)
 
     declaration = await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("150000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("150000"),
         description="Public Provident Fund",
     )
     declaration.status = DeclarationStatus.SUBMITTED
@@ -787,9 +887,12 @@ async def test_form_12bb_shows_declared_and_accepted_side_by_side(
     session.add(proof)
     await session.commit()
     await tax_service.verify_proof(
-        session, hr_user, proof.id,
+        session,
+        hr_user,
+        proof.id,
         status_decision=ProofStatus.PARTIALLY_ACCEPTED,
-        accepted_amount=Decimal("90000"), remarks="Partially supported.",
+        accepted_amount=Decimal("90000"),
+        remarks="Partially supported.",
     )
 
     table = await build_claims_table(session, hr_user, employee.id, FY)
@@ -808,10 +911,15 @@ async def test_the_claims_table_escapes_values(
     await _windows(session, tenant)
 
     await tax_service.submit_house_rent(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         monthly_rent=[{"month": 4, "rent": "5000"}],
-        landlord_name="<script>alert(1)</script>", landlord_pan=None,
-        property_address="Somewhere", is_metro=False,
+        landlord_name="<script>alert(1)</script>",
+        landlord_pan=None,
+        property_address="Somewhere",
+        is_metro=False,
     )
     await session.commit()
 
@@ -830,17 +938,20 @@ async def test_one_tenant_cannot_read_anothers_declarations(
     await _tds_rules(session, tenant)
     await _windows(session, tenant)
     await tax_service.upsert_declaration(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
-        section="80C", sub_category="PPF", declared_amount=Decimal("100000"),
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("100000"),
     )
     await session.commit()
 
     from app.core.deps import tenant_scoped
 
     theirs = (
-        await session.scalars(
-            tenant_scoped(select(TaxDeclaration), TaxDeclaration, other_hr_user)
-        )
+        await session.scalars(tenant_scoped(select(TaxDeclaration), TaxDeclaration, other_hr_user))
     ).all()
     assert theirs == []
 
@@ -856,16 +967,19 @@ async def test_a_snapshot_stores_the_full_working(
         session, hr_user, employee_id=employee.id, financial_year=FY, regime=TaxRegime.OLD
     )
     await tax_service.submit_house_rent(
-        session, hr_user, employee_id=employee.id, financial_year=FY,
+        session,
+        hr_user,
+        employee_id=employee.id,
+        financial_year=FY,
         monthly_rent=[{"month": m, "rent": "25000"} for m in range(1, 13)],
-        landlord_name="A Landlord", landlord_pan="ABCDE1234F",
-        property_address="Bengaluru", is_metro=True,
+        landlord_name="A Landlord",
+        landlord_pan="ABCDE1234F",
+        property_address="Bengaluru",
+        is_metro=True,
     )
     await session.commit()
 
-    snapshot = await tax_service.compute_and_store(
-        session, hr_user, employee.id, FY, for_month=4
-    )
+    snapshot = await tax_service.compute_and_store(session, hr_user, employee.id, FY, for_month=4)
 
     assert snapshot.working["hra"]["binding_constraint"]
     assert "limited by" in snapshot.working["hra"]["explanation"]

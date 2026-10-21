@@ -85,8 +85,14 @@ async def test_register_hand_over_acknowledge_and_return(
     worker = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Ravi Worker")
 
     category = await assets.create_category(
-        session, hr, code="LAPTOP", name="Laptops", description=None,
-        custodian_user_id=None, depreciation_months=36, requires_acknowledgement=True,
+        session,
+        hr,
+        code="LAPTOP",
+        name="Laptops",
+        description=None,
+        custodian_user_id=None,
+        depreciation_months=36,
+        requires_acknowledgement=True,
     )
     laptop = await assets.create_asset(session, hr, _asset_payload(category.id, "LT-001"))
     await session.commit()
@@ -139,22 +145,27 @@ async def test_register_hand_over_acknowledge_and_return(
 
     # Nobody receives their own asset back.
     with pytest.raises(HTTPException) as own:
-        await assets.return_asset(
-            session, worker, assignment.id, condition_in=AssetCondition.GOOD
-        )
+        await assets.return_asset(session, worker, assignment.id, condition_in=AssetCondition.GOOD)
     assert own.value.status_code == 403
 
     # A recovery belongs to a damaged return only.
     with pytest.raises(HTTPException) as undamaged:
         await assets.return_asset(
-            session, hr, assignment.id, condition_in=AssetCondition.GOOD,
+            session,
+            hr,
+            assignment.id,
+            condition_in=AssetCondition.GOOD,
             recovery_amount=Decimal("100"),
         )
     assert undamaged.value.status_code == 422
 
     await assets.return_asset(
-        session, hr, assignment.id, condition_in=AssetCondition.DAMAGED,
-        notes="Hinge cracked", recovery_amount=Decimal("2500.00"),
+        session,
+        hr,
+        assignment.id,
+        condition_in=AssetCondition.DAMAGED,
+        notes="Hinge cracked",
+        recovery_amount=Decimal("2500.00"),
         next_status=AssetStatus.IN_REPAIR,
     )
     await session.commit()
@@ -171,9 +182,7 @@ async def test_register_hand_over_acknowledge_and_return(
 
     # Closed means closed: the next holder is a new row.
     with pytest.raises(HTTPException) as reopened:
-        await assets.return_asset(
-            session, hr, assignment.id, condition_in=AssetCondition.GOOD
-        )
+        await assets.return_asset(session, hr, assignment.id, condition_in=AssetCondition.GOOD)
     assert reopened.value.status_code == 409
 
     # Back from repair, then retired with a reason; nothing is ever deleted.
@@ -189,9 +198,7 @@ async def test_register_hand_over_acknowledge_and_return(
     assert dead.value.status_code == 409
 
     trail = (
-        await session.scalars(
-            select(AuditLog.entity_type).where(AuditLog.tenant_id == tenant.id)
-        )
+        await session.scalars(select(AuditLog.entity_type).where(AuditLog.tenant_id == tenant.id))
     ).all()
     assert {"asset_category", "asset", "asset_assignment"} <= set(trail)
 
@@ -208,12 +215,24 @@ async def test_request_is_decided_by_the_line_and_fulfilled_by_hr(
     hr = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Hari Ops")
 
     laptops = await assets.create_category(
-        session, hr, code="LAPTOP", name="Laptops", description=None,
-        custodian_user_id=None, depreciation_months=36, requires_acknowledgement=True,
+        session,
+        hr,
+        code="LAPTOP",
+        name="Laptops",
+        description=None,
+        custodian_user_id=None,
+        depreciation_months=36,
+        requires_acknowledgement=True,
     )
     phones = await assets.create_category(
-        session, hr, code="PHONE", name="Phones", description=None,
-        custodian_user_id=None, depreciation_months=None, requires_acknowledgement=False,
+        session,
+        hr,
+        code="PHONE",
+        name="Phones",
+        description=None,
+        custodian_user_id=None,
+        depreciation_months=None,
+        requires_acknowledgement=False,
     )
     laptop = await assets.create_asset(session, hr, _asset_payload(laptops.id, "LT-100"))
     phone = await assets.create_asset(
@@ -302,19 +321,32 @@ async def test_exit_clearance_closes_assignments_and_recovers_book_value(
     leaver = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Leela Leaver")
 
     laptops = await assets.create_category(
-        session, hr, code="LAPTOP", name="Laptops", description=None,
-        custodian_user_id=custodian.id, depreciation_months=36, requires_acknowledgement=True,
+        session,
+        hr,
+        code="LAPTOP",
+        name="Laptops",
+        description=None,
+        custodian_user_id=custodian.id,
+        depreciation_months=36,
+        requires_acknowledgement=True,
     )
     cards = await assets.create_category(
-        session, hr, code="CARD", name="Access cards", description=None,
-        custodian_user_id=None, depreciation_months=None, requires_acknowledgement=False,
+        session,
+        hr,
+        code="CARD",
+        name="Access cards",
+        description=None,
+        custodian_user_id=None,
+        depreciation_months=None,
+        requires_acknowledgement=False,
     )
     laptop = await assets.create_asset(session, hr, _asset_payload(laptops.id, "LT-900"))
     phone = await assets.create_asset(
         session, hr, _asset_payload(laptops.id, "LT-901", name="MacBook Air")
     )
     card = await assets.create_asset(
-        session, hr,
+        session,
+        hr,
         _asset_payload(cards.id, "AC-900", name="Access card", purchase_cost=Decimal("500")),
     )
     held = {}
@@ -325,7 +357,8 @@ async def test_exit_clearance_closes_assignments_and_recovers_book_value(
     await session.commit()
 
     record = await exit_service.initiate_exit(
-        session, hr,
+        session,
+        hr,
         employee_id=leaver.employee_id,
         exit_type=ExitType.RESIGNATION,
         resignation_date=date(2026, 6, 1),
@@ -359,14 +392,14 @@ async def test_exit_clearance_closes_assignments_and_recovers_book_value(
     # Not returned, no figure typed: the book value on the last working day is
     # recovered — 90,000 bought 31 Aug 2025 over 36 months, 12 gone by 31 Aug 2026.
     signed = await exit_service.clear_item(
-        session, custodian, item_id=laptop_item.id,
+        session,
+        custodian,
+        item_id=laptop_item.id,
         outcome=ClearanceStatus.CLEARED_WITH_RECOVERY,
     )
     assert signed.recovery_amount == Decimal("60000.00")
     # Returned through the register instead: the pending item signs itself off.
-    await assets.return_asset(
-        session, hr, held["AC-900"].id, condition_in=AssetCondition.GOOD
-    )
+    await assets.return_asset(session, hr, held["AC-900"].id, condition_in=AssetCondition.GOOD)
     await session.commit()
 
     for tag, outcome, asset_status in (
@@ -391,7 +424,9 @@ async def test_exit_clearance_closes_assignments_and_recovers_book_value(
 
     # The settlement's existing asset line picks the recovery up.
     settlement = await exit_service.compute_settlement(
-        session, hr, exit_id=record.id,
+        session,
+        hr,
+        exit_id=record.id,
         inputs=settlement_engine.SettlementInput(
             final_month_salary=Decimal("45000"),
             final_month_basis="31 of 31 days worked in August.",

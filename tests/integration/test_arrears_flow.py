@@ -48,29 +48,42 @@ MARCH = date(2026, 3, 1)
 
 async def _structure(session: AsyncSession, tenant: Tenant) -> SalaryStructure:
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="CTC", value=Decimal(40),
-        counts_toward_pf=True, counts_toward_esi=True, display_order=1,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
+        counts_toward_esi=True,
+        display_order=1,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.BALANCE,
-        counts_toward_esi=True, display_order=9,
+        counts_toward_esi=True,
+        display_order=9,
     )
     session.add_all([basic, special])
     await session.flush()
 
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2026, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, item in enumerate((basic, special)):
         structure.components.append(
             SalaryStructureComponent(
-                tenant_id=tenant.id, component_id=item.id, component=item,
+                tenant_id=tenant.id,
+                component_id=item.id,
+                component=item,
                 display_order=index,
             )
         )
@@ -82,10 +95,14 @@ async def _structure(session: AsyncSession, tenant: Tenant) -> SalaryStructure:
 
 async def _pf_rules(session: AsyncSession, tenant: Tenant, *, ceiling: int, effective: date):
     rule_set = PayrollRuleSet(
-        tenant_id=tenant.id, rule_type="pf", jurisdiction="IN",
+        tenant_id=tenant.id,
+        rule_type="pf",
+        jurisdiction="IN",
         effective_from=effective,
         rules={
-            "wage_ceiling": ceiling, "employee_rate": 12, "employer_rate": 12,
+            "wage_ceiling": ceiling,
+            "employee_rate": 12,
+            "employer_rate": 12,
             "apply_wage_ceiling": True,
         },
         approved_at=datetime.now(UTC),
@@ -101,27 +118,48 @@ async def _closed_march(
 ) -> tuple[PayrollRun, Payslip]:
     """A closed March run on the old salary, with its line items snapshotted."""
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id,
-        period_year=2026, period_month=3, effective_date=date(2026, 3, 31),
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=3,
+        effective_date=date(2026, 3, 31),
         status=PayrollRunStatus.PAID,
     )
     session.add(run)
     await session.flush()
 
     payslip = Payslip(
-        tenant_id=tenant.id, run_id=run.id, employee_id=employee.id,
-        working_days=Decimal(31), paid_days=Decimal(31), lop_days=Decimal(0),
-        gross_earnings=Decimal("100000.00"), net_pay=Decimal("98200.00"),
+        tenant_id=tenant.id,
+        run_id=run.id,
+        employee_id=employee.id,
+        working_days=Decimal(31),
+        paid_days=Decimal(31),
+        lop_days=Decimal(0),
+        gross_earnings=Decimal("100000.00"),
+        net_pay=Decimal("98200.00"),
         pf_wage_base=Decimal("40000.00"),
-        pf_employee=Decimal("1800.00"), pf_employer=Decimal("1800.00"),
+        pf_employee=Decimal("1800.00"),
+        pf_employer=Decimal("1800.00"),
         line_items=[
             {"code": "BASIC", "name": "Basic", "type": "earning", "amount": "40000.00"},
-            {"code": "SPECIAL", "name": "Special allowance", "type": "earning",
-             "amount": "60000.00"},
-            {"code": "PF_EMPLOYEE", "name": "Provident Fund (employee)",
-             "type": "deduction", "amount": "1800.00"},
-            {"code": "PF_EMPLOYER", "name": "Provident Fund (employer)",
-             "type": "employer_contribution", "amount": "1800.00"},
+            {
+                "code": "SPECIAL",
+                "name": "Special allowance",
+                "type": "earning",
+                "amount": "60000.00",
+            },
+            {
+                "code": "PF_EMPLOYEE",
+                "name": "Provident Fund (employee)",
+                "type": "deduction",
+                "amount": "1800.00",
+            },
+            {
+                "code": "PF_EMPLOYER",
+                "name": "Provident Fund (employer)",
+                "type": "employer_contribution",
+                "amount": "1800.00",
+            },
         ],
     )
     session.add(payslip)
@@ -145,7 +183,9 @@ async def _new_salary(
 ) -> EmployeeSalary:
     structure = await _structure(session, tenant)
     salary = await salary_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
             structure_id=structure.id, ctc_annual=Decimal(ctc), effective_from=MARCH
         ),
@@ -178,7 +218,10 @@ def _fingerprint(payslip: Payslip) -> str:
 
 
 async def test_the_closed_payslip_is_byte_identical_after_arrear_processing(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate: hashed before and after.
@@ -192,7 +235,8 @@ async def test_the_closed_payslip_is_byte_identical_after_arrear_processing(
 
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
     batch = await arrears_service.revise_salary(
-        session, hr_user,
+        session,
+        hr_user,
         legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
         effective_from=MARCH,
@@ -209,7 +253,10 @@ async def test_the_closed_payslip_is_byte_identical_after_arrear_processing(
 
 
 async def test_the_arrear_is_new_rows_not_a_rewrite(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
@@ -217,21 +264,20 @@ async def test_the_arrear_is_new_rows_not_a_rewrite(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
 
-    lines = (
-        await session.scalars(select(ArrearLine).where(ArrearLine.batch_id == batch.id))
-    ).all()
+    lines = (await session.scalars(select(ArrearLine).where(ArrearLine.batch_id == batch.id))).all()
     assert lines, "arrears exist as their own rows"
     assert all(line.period == "2026-03" for line in lines)
 
-    payslips = (
-        await session.scalars(select(Payslip).where(Payslip.run_id == run.id))
-    ).all()
+    payslips = (await session.scalars(select(Payslip).where(Payslip.run_id == run.id))).all()
     assert len(payslips) == 1, "no new payslip was written into the closed run"
 
 
@@ -241,7 +287,10 @@ async def test_the_arrear_is_new_rows_not_a_rewrite(
 
 
 async def test_recomputation_uses_the_rule_version_in_force_in_the_period(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate, end to end.
@@ -258,9 +307,12 @@ async def test_recomputation_uses_the_rule_version_in_force_in_the_period(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
 
@@ -271,8 +323,7 @@ async def test_recomputation_uses_the_rule_version_in_force_in_the_period(
     )
     if pf_line is not None:
         assert pf_line.rule_set_id == march_rules.id, (
-            "the arrear was computed against a rule version that was not in force in "
-            "March"
+            "the arrear was computed against a rule version that was not in force in March"
         )
         # At March's 15,000 ceiling the PF is unchanged by the raise, so there
         # should be no PF arrear at all. At July's 21,000 ceiling there would be.
@@ -285,7 +336,10 @@ async def test_recomputation_uses_the_rule_version_in_force_in_the_period(
 
 
 async def test_a_revision_before_the_date_of_joining_is_rejected(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate. A salary cannot apply before someone was employed."""
@@ -295,16 +349,22 @@ async def test_a_revision_before_the_date_of_joining_is_rejected(
 
     with pytest.raises(HTTPException) as exc:
         await arrears_service.revise_salary(
-            session, hr_user, legal_entity_id=legal_entity.id,
+            session,
+            hr_user,
+            legal_entity_id=legal_entity.id,
             revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-            effective_from=date(2026, 1, 1), revision_type=RevisionType.INCREMENT,
+            effective_from=date(2026, 1, 1),
+            revision_type=RevisionType.INCREMENT,
         )
     assert exc.value.status_code == 422
     assert "cannot apply before someone was employed" in exc.value.detail
 
 
 async def test_a_revision_into_an_unlocked_period_is_rejected(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """An arrear recomputed against loss-of-pay days that are still moving
@@ -315,16 +375,22 @@ async def test_a_revision_into_an_unlocked_period_is_rejected(
 
     with pytest.raises(HTTPException) as exc:
         await arrears_service.revise_salary(
-            session, hr_user, legal_entity_id=legal_entity.id,
+            session,
+            hr_user,
+            legal_entity_id=legal_entity.id,
             revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-            effective_from=date(2024, 1, 1), revision_type=RevisionType.INCREMENT,
+            effective_from=date(2024, 1, 1),
+            revision_type=RevisionType.INCREMENT,
         )
     assert exc.value.status_code == 409
     assert "is not locked" in exc.value.detail
 
 
 async def test_a_large_arrear_is_flagged_for_additional_approval(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
@@ -332,9 +398,12 @@ async def test_a_large_arrear_is_flagged_for_additional_approval(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
         threshold=Decimal(1_000),
     )
     await session.commit()
@@ -347,7 +416,10 @@ async def test_a_large_arrear_is_flagged_for_additional_approval(
 
 
 async def test_preview_writes_nothing(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate: total liability before anything exists."""
@@ -356,8 +428,11 @@ async def test_preview_writes_nothing(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     _, summary = await arrears_service.preview_arrears(
-        session, hr_user, legal_entity_id=legal_entity.id,
-        employee_salaries={employee.id: salary}, effective_from=MARCH,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        employee_salaries={employee.id: salary},
+        effective_from=MARCH,
     )
     await session.commit()
 
@@ -367,7 +442,10 @@ async def test_preview_writes_nothing(
 
 
 async def test_preview_and_commit_agree(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A preview that does not match what is committed is worse than no
@@ -377,13 +455,19 @@ async def test_preview_and_commit_agree(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     _, summary = await arrears_service.preview_arrears(
-        session, hr_user, legal_entity_id=legal_entity.id,
-        employee_salaries={employee.id: salary}, effective_from=MARCH,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        employee_salaries={employee.id: salary},
+        effective_from=MARCH,
     )
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
 
@@ -397,7 +481,10 @@ async def test_preview_and_commit_agree(
 
 
 async def test_a_bulk_revision_produces_one_batch_not_one_per_employee(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """An increment cycle is one batch.
@@ -409,15 +496,20 @@ async def test_a_bulk_revision_produces_one_batch_not_one_per_employee(
     structure = await _structure(session, tenant)
 
     run = PayrollRun(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id,
-        period_year=2026, period_month=3, effective_date=date(2026, 3, 31),
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=3,
+        effective_date=date(2026, 3, 31),
         status=PayrollRunStatus.PAID,
     )
     session.add(run)
     session.add(
         AttendancePeriodLock(
-            tenant_id=tenant.id, period_start=date(2026, 1, 1),
-            period_end=date(2099, 12, 31), locked_at=datetime.now(UTC),
+            tenant_id=tenant.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2099, 12, 31),
+            locked_at=datetime.now(UTC),
         )
     )
     await session.flush()
@@ -425,39 +517,50 @@ async def test_a_bulk_revision_produces_one_batch_not_one_per_employee(
     revisions = []
     for index in range(30):
         person = Employee(
-            tenant_id=tenant.id, employee_code=f"BULK{index:03d}",
-            first_name="Bulk", last_name=str(index),
-            work_email=f"bulk{index}@acme.test", legal_entity_id=legal_entity.id,
+            tenant_id=tenant.id,
+            employee_code=f"BULK{index:03d}",
+            first_name="Bulk",
+            last_name=str(index),
+            work_email=f"bulk{index}@acme.test",
+            legal_entity_id=legal_entity.id,
             date_of_joining=date(2020, 1, 1),
         )
         session.add(person)
         await session.flush()
         session.add(
             Payslip(
-                tenant_id=tenant.id, run_id=run.id, employee_id=person.id,
-                working_days=Decimal(31), paid_days=Decimal(31),
-                gross_earnings=Decimal("100000.00"), net_pay=Decimal("98200.00"),
+                tenant_id=tenant.id,
+                run_id=run.id,
+                employee_id=person.id,
+                working_days=Decimal(31),
+                paid_days=Decimal(31),
+                gross_earnings=Decimal("100000.00"),
+                net_pay=Decimal("98200.00"),
                 line_items=[
-                    {"code": "BASIC", "name": "Basic", "type": "earning",
-                     "amount": "40000.00"},
+                    {"code": "BASIC", "name": "Basic", "type": "earning", "amount": "40000.00"},
                 ],
             )
         )
         salary = await salary_service.assign_salary(
-            session, hr_user, person.id,
+            session,
+            hr_user,
+            person.id,
             EmployeeSalaryCreate(
-                structure_id=structure.id, ctc_annual=Decimal("1500000"),
+                structure_id=structure.id,
+                ctc_annual=Decimal("1500000"),
                 effective_from=MARCH,
             ),
         )
-        revisions.append(
-            {"employee_id": str(person.id), "new_salary_id": str(salary.id)}
-        )
+        revisions.append({"employee_id": str(person.id), "new_salary_id": str(salary.id)})
     await session.commit()
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id, revisions=revisions,
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        revisions=revisions,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
 
@@ -465,9 +568,7 @@ async def test_a_bulk_revision_produces_one_batch_not_one_per_employee(
     assert len(batches) == 1
     assert batch.employee_count == 30
 
-    lines = (
-        await session.scalars(select(ArrearLine).where(ArrearLine.batch_id == batch.id))
-    ).all()
+    lines = (await session.scalars(select(ArrearLine).where(ArrearLine.batch_id == batch.id))).all()
     assert len({line.employee_id for line in lines}) == 30, "per-employee lines"
 
 
@@ -484,8 +585,12 @@ async def _checker(session: AsyncSession, tenant: Tenant) -> User:
     need two people.
     """
     user = User(
-        tenant_id=tenant.id, email="checker@acme.test", password_hash="not-a-real-hash",
-        full_name="Ravi Checker", role=UserRole.ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="checker@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Ravi Checker",
+        role=UserRole.ADMIN,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
@@ -494,7 +599,10 @@ async def _checker(session: AsyncSession, tenant: Tenant) -> User:
 
 
 async def test_affected_filings_must_be_acknowledged_before_approval(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate: the warning surfaces to HR Ops.
@@ -508,9 +616,12 @@ async def test_affected_filings_must_be_acknowledged_before_approval(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
     assert batch.affected_filings, "a PF movement changes the ECR"
@@ -528,7 +639,10 @@ async def test_affected_filings_must_be_acknowledged_before_approval(
 
 
 async def test_a_batch_with_no_filing_impact_approves_directly(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """At March's ceiling the PF does not move, so no filing is touched."""
@@ -537,9 +651,12 @@ async def test_a_batch_with_no_filing_impact_approves_directly(
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
 
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
     assert batch.affected_filings == []
@@ -551,16 +668,23 @@ async def test_a_batch_with_no_filing_impact_approves_directly(
 
 
 async def test_arrear_batches_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
-    legal_entity: LegalEntity, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
     await _closed_march(session, tenant, legal_entity, employee)
     salary = await _new_salary(session, tenant, hr_user, employee, "1500000")
     batch = await arrears_service.revise_salary(
-        session, hr_user, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
         revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
-        effective_from=MARCH, revision_type=RevisionType.INCREMENT,
+        effective_from=MARCH,
+        revision_type=RevisionType.INCREMENT,
     )
     await session.commit()
 

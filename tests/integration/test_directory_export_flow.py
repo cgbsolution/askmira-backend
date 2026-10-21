@@ -26,9 +26,13 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, **extra
 ) -> Employee:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        status=EmploymentStatus.ACTIVE, **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        **extra,
     )
     session.add(person)
     await session.commit()
@@ -76,8 +80,13 @@ async def test_only_hr_exports_the_directory(
 ) -> None:
     person = await _person(session, tenant, legal_entity, "EMP")
     user = User(
-        tenant_id=tenant.id, email="emp@acme-demo.com", password_hash="x", full_name="Emp",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=person.id,
+        tenant_id=tenant.id,
+        email="emp@acme-demo.com",
+        password_hash="x",
+        full_name="Emp",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
     )
     session.add(user)
     await session.commit()
@@ -101,20 +110,20 @@ async def test_a_job_change_can_be_dated_back_and_the_as_of_view_follows(
 
     with pytest.raises(HTTPException) as future:
         await employee_service.update_employee(
-            session, hr_user, person.id,
+            session,
+            hr_user,
+            person.id,
             EmployeeUpdate(designation="Lead", changes_effective_from=date(2099, 1, 1)),
         )
     assert future.value.status_code == 422
 
     await employee_service.update_employee(
-        session, hr_user, person.id,
+        session,
+        hr_user,
+        person.id,
         EmployeeUpdate(designation="Senior Analyst", changes_effective_from=date(2025, 7, 1)),
     )
-    before = await lifecycle.state_on(
-        session, hr_user, employee_id=person.id, on=date(2025, 6, 30)
-    )
-    after = await lifecycle.state_on(
-        session, hr_user, employee_id=person.id, on=date(2025, 7, 2)
-    )
+    before = await lifecycle.state_on(session, hr_user, employee_id=person.id, on=date(2025, 6, 30))
+    after = await lifecycle.state_on(session, hr_user, employee_id=person.id, on=date(2025, 7, 2))
     assert before["state"]["designation"] == "Analyst"
     assert after["state"]["designation"] == "Senior Analyst"

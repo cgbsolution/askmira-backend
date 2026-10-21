@@ -52,16 +52,25 @@ def _auth(user: User) -> dict[str, str]:
 
 async def _login(session, tenant, entity, location, code) -> User:
     employee = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(), last_name="Test",
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        location_id=location.id, status=EmploymentStatus.ACTIVE,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        last_name="Test",
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        location_id=location.id,
+        status=EmploymentStatus.ACTIVE,
         date_of_joining=date(2024, 1, 1),
     )
     session.add(employee)
     await session.flush()
     user = User(
-        tenant_id=tenant.id, email=f"{code.lower()}@acme-demo.com", password_hash="x",
-        full_name=code.title(), role=UserRole.EMPLOYEE, is_active=True,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
         employee_id=employee.id,
     )
     session.add(user)
@@ -92,8 +101,10 @@ async def test_a_required_photo_is_asked_for_kept_and_shown_to_few(
 
     punched = await client.post(
         "/api/v1/attendance/punch",
-        json={"direction": "in",
-              "photo": "data:image/png;base64," + base64.b64encode(PNG).decode()},
+        json={
+            "direction": "in",
+            "photo": "data:image/png;base64," + base64.b64encode(PNG).decode(),
+        },
         headers=_auth(me),
     )
     assert punched.status_code == 201, punched.text

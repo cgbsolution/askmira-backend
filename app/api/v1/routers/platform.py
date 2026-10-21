@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.services import platform
+from app.services.products import connections
 from app.services.products import service as products
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -153,3 +154,44 @@ async def sync_product(
     tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
     return await products.sync_now(session, user, tenant_id, product, request=request)
+
+
+# ── Connecting this server to a product (the connection key) ───────────────
+
+
+class ConnectionKeyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=10, max_length=4000)
+
+
+@router.get("/product-connections", dependencies=SUPER_ONLY)
+async def list_product_connections(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Whether this server is connected to each product, and how."""
+    return await connections.status_all(session, user)
+
+
+@router.post("/product-connections/{product}", dependencies=SUPER_ONLY)
+async def connect_product(
+    product: str,
+    payload: ConnectionKeyIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Connect with the key the product's super admin generated there."""
+    return await connections.connect(session, user, product, payload.key, request=request)
+
+
+@router.post("/product-connections/{product}/verify", dependencies=SUPER_ONLY)
+async def verify_product_connection(
+    product: str, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    return await connections.verify(session, user, product)
+
+
+@router.delete("/product-connections/{product}", dependencies=SUPER_ONLY)
+async def disconnect_product(
+    product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await connections.disconnect(session, user, product, request=request)

@@ -31,7 +31,10 @@ def test_the_body_is_escaped_and_bullets_become_a_list() -> None:
 
 
 async def test_publishing_files_a_pdf_and_republishing_replaces_it(
-    session: AsyncSession, tenant: Tenant, hr_user: User, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    storage_root,  # noqa: F811
 ) -> None:
     draft = await handbook.create_handbook(
         session, hr_user, HandbookIn(title="Employee handbook", sections=[])
@@ -42,7 +45,9 @@ async def test_publishing_files_a_pdf_and_republishing_replaces_it(
     assert empty.value.status_code == 422
 
     await handbook.update_handbook(
-        session, hr_user, handbook_id,
+        session,
+        hr_user,
+        handbook_id,
         HandbookIn(
             title="Employee handbook",
             sections=[SectionIn(heading="Working hours", body="9:30 to 6:30.")],
@@ -57,7 +62,9 @@ async def test_publishing_files_a_pdf_and_republishing_replaces_it(
     first_hash = document.content_sha256
 
     edited = await handbook.update_handbook(
-        session, hr_user, handbook_id,
+        session,
+        hr_user,
+        handbook_id,
         HandbookIn(
             title="Employee handbook",
             sections=[SectionIn(heading="Working hours", body="10:00 to 7:00.")],

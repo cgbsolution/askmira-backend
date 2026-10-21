@@ -27,15 +27,25 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, **extra
 ) -> tuple[Employee, User]:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        status=EmploymentStatus.ACTIVE, date_of_joining=date(2025, 4, 1), **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        date_of_joining=date(2025, 4, 1),
+        **extra,
     )
     session.add(person)
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email=f"{code.lower()}.tl@acme-demo.com", password_hash="x",
-        full_name=code.title(), role=UserRole.EMPLOYEE, is_active=True, employee_id=person.id,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}.tl@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
     )
     session.add(login)
     await session.commit()
@@ -52,31 +62,50 @@ async def test_the_timeline_gathers_modules_and_hides_pay_from_the_manager(
 
     leave_type = LeaveType(tenant_id=tenant.id, code="CL", name="Casual leave", is_paid=True)
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2025, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2025, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     session.add_all([leave_type, structure])
     await session.flush()
-    session.add_all([
-        LeaveRequest(
-            tenant_id=tenant.id, employee_id=dev.id, leave_type_id=leave_type.id,
-            start_date=date(2026, 5, 4), end_date=date(2026, 5, 5), total_days=2,
-            status=LeaveRequestStatus.APPROVED,
-        ),
-        EmployeeSalary(
-            tenant_id=tenant.id, employee_id=dev.id, structure_id=structure.id,
-            ctc_annual=Decimal("1800000"), effective_from=date(2026, 4, 1),
-        ),
-        LifecycleEvent(
-            tenant_id=tenant.id, employee_id=dev.id, event_type=LifecycleEventType.GRADE_CHANGE,
-            effective_from=date(2026, 7, 1), previous_values={"grade": "L3"},
-            new_values={"grade": "L4"}, reason="Promotion", status=LifecycleStatus.EFFECTED,
-        ),
-        Shoutout(
-            tenant_id=tenant.id, from_employee_id=lead.id, to_employee_id=dev.id,
-            message="Great launch",
-        ),
-    ])
+    session.add_all(
+        [
+            LeaveRequest(
+                tenant_id=tenant.id,
+                employee_id=dev.id,
+                leave_type_id=leave_type.id,
+                start_date=date(2026, 5, 4),
+                end_date=date(2026, 5, 5),
+                total_days=2,
+                status=LeaveRequestStatus.APPROVED,
+            ),
+            EmployeeSalary(
+                tenant_id=tenant.id,
+                employee_id=dev.id,
+                structure_id=structure.id,
+                ctc_annual=Decimal("1800000"),
+                effective_from=date(2026, 4, 1),
+            ),
+            LifecycleEvent(
+                tenant_id=tenant.id,
+                employee_id=dev.id,
+                event_type=LifecycleEventType.GRADE_CHANGE,
+                effective_from=date(2026, 7, 1),
+                previous_values={"grade": "L3"},
+                new_values={"grade": "L4"},
+                reason="Promotion",
+                status=LifecycleStatus.EFFECTED,
+            ),
+            Shoutout(
+                tenant_id=tenant.id,
+                from_employee_id=lead.id,
+                to_employee_id=dev.id,
+                message="Great launch",
+            ),
+        ]
+    )
     await session.commit()
 
     everything = await employee_timeline.timeline(session, hr_user, dev.id)

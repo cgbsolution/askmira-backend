@@ -551,9 +551,48 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _web_app_url() -> str:
+def web_app_url() -> str:
     base = settings.WEB_APP_URL or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "")
     return base.rstrip("/")
+
+
+async def issue_password_link(
+    session: AsyncSession,
+    user: User,
+    *,
+    lifetime: timedelta,
+    request: Request | None = None,
+) -> str:
+    """Mint a single-use set-password token and return it; only its hash is kept.
+
+    Only the newest link works: minting one retires any earlier link still
+    outstanding. A forgotten-password email and a new login's welcome email
+    both go through here, and `reset_password` redeems either.
+    """
+    now = datetime.now(UTC)
+    outstanding = (
+        await session.scalars(
+            select(PasswordResetToken).where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > now,
+            )
+        )
+    ).all()
+    for row in outstanding:
+        row.expires_at = now
+
+    token = secrets.token_urlsafe(32)
+    session.add(
+        PasswordResetToken(
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            token_hash=_token_hash(token),
+            expires_at=now + lifetime,
+            requested_ip=request.client.host if request and request.client else None,
+        )
+    )
+    return token
 
 
 async def request_password_reset(
@@ -579,29 +618,7 @@ async def request_password_reset(
     if (recent or 0) >= RESET_REQUESTS_PER_HOUR:
         return
 
-    # Only the newest link works: asking again retires the earlier ones.
-    outstanding = (
-        await session.scalars(
-            select(PasswordResetToken).where(
-                PasswordResetToken.user_id == user.id,
-                PasswordResetToken.used_at.is_(None),
-                PasswordResetToken.expires_at > now,
-            )
-        )
-    ).all()
-    for row in outstanding:
-        row.expires_at = now
-
-    token = secrets.token_urlsafe(32)
-    session.add(
-        PasswordResetToken(
-            tenant_id=user.tenant_id,
-            user_id=user.id,
-            token_hash=_token_hash(token),
-            expires_at=now + RESET_TOKEN_LIFETIME,
-            requested_ip=request.client.host if request and request.client else None,
-        )
-    )
+    token = await issue_password_link(session, user, lifetime=RESET_TOKEN_LIFETIME, request=request)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -619,7 +636,7 @@ async def request_password_reset(
         recipient_user_ids=[user.id],
         payload={
             "name": user.full_name.split(" ")[0],
-            "link": f"{_web_app_url()}/reset-password?token={token}",
+            "link": f"{web_app_url()}/reset-password?token={token}",
             "minutes": int(RESET_TOKEN_LIFETIME.total_seconds() // 60),
         },
         commit=False,

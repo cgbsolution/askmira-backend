@@ -33,9 +33,12 @@ pytestmark = requires_db
 async def _candidate(session, people, tenant):
     requisition_id = await _open_requisition(session, tenant, people)
     added = await candidate_service.create_candidate(
-        session, people["hr"],
+        session,
+        people["hr"],
         CandidateCreate(
-            requisition_id=requisition_id, full_name="Tanvi Desai", email="tanvi@example.com",
+            requisition_id=requisition_id,
+            full_name="Tanvi Desai",
+            email="tanvi@example.com",
             expected_ctc=Decimal("1600000"),
         ),
     )
@@ -54,7 +57,10 @@ async def test_consent_comes_first_and_outcomes_settle_it(session, tenant, peopl
     candidate_id = await _candidate(session, people, tenant)
 
     check = await bgv.request_check(
-        session, hr, candidate_id=candidate_id, check_types=["employment", "education"],
+        session,
+        hr,
+        candidate_id=candidate_id,
+        check_types=["employment", "education"],
         agency_name="Acme Verify",
     )
     await session.commit()
@@ -68,13 +74,19 @@ async def test_consent_comes_first_and_outcomes_settle_it(session, tenant, peopl
     # Nothing can be recorded, and no second request opened, before they answer.
     with pytest.raises(HTTPException) as exc:
         await bgv.record_results(
-            session, hr, uuid.UUID(check["id"]),
-            results=[{"type": "employment", "status": "clear"}], summary=None,
+            session,
+            hr,
+            uuid.UUID(check["id"]),
+            results=[{"type": "employment", "status": "clear"}],
+            summary=None,
         )
     assert exc.value.status_code == 409
     with pytest.raises(HTTPException) as exc:
         await bgv.request_check(
-            session, hr, candidate_id=candidate_id, check_types=["identity"],
+            session,
+            hr,
+            candidate_id=candidate_id,
+            check_types=["identity"],
             agency_name="Other",
         )
     assert exc.value.status_code == 409
@@ -84,14 +96,24 @@ async def test_consent_comes_first_and_outcomes_settle_it(session, tenant, peopl
     assert seen["status"] == "awaiting_your_answer"
     with pytest.raises(HTTPException) as exc:
         await bgv.respond_to_check(
-            session, token, uuid.UUID(check["id"]), agree=True, typed_name="Someone Else",
-            ip_address="203.0.113.9", user_agent="test",
+            session,
+            token,
+            uuid.UUID(check["id"]),
+            agree=True,
+            typed_name="Someone Else",
+            ip_address="203.0.113.9",
+            user_agent="test",
         )
     assert exc.value.status_code == 422
 
     agreed = await bgv.respond_to_check(
-        session, token, uuid.UUID(check["id"]), agree=True, typed_name="  tanvi   DESAI ",
-        ip_address="203.0.113.9", user_agent="test",
+        session,
+        token,
+        uuid.UUID(check["id"]),
+        agree=True,
+        typed_name="  tanvi   DESAI ",
+        ip_address="203.0.113.9",
+        user_agent="test",
     )
     await session.commit()
     assert agreed["status"] == "agreed"
@@ -99,21 +121,32 @@ async def test_consent_comes_first_and_outcomes_settle_it(session, tenant, peopl
     # A discrepancy needs a note; with one, it settles the check as a discrepancy.
     with pytest.raises(HTTPException) as exc:
         await bgv.record_results(
-            session, hr, uuid.UUID(check["id"]),
-            results=[{"type": "employment", "status": "discrepancy"}], summary=None,
+            session,
+            hr,
+            uuid.UUID(check["id"]),
+            results=[{"type": "employment", "status": "discrepancy"}],
+            summary=None,
         )
     assert exc.value.status_code == 422
     partial = await bgv.record_results(
-        session, hr, uuid.UUID(check["id"]),
-        results=[{"type": "education", "status": "clear"}], summary=None,
+        session,
+        hr,
+        uuid.UUID(check["id"]),
+        results=[{"type": "education", "status": "clear"}],
+        summary=None,
     )
     assert partial["status"] == "in_progress", "one check still pending"
     settled = await bgv.record_results(
-        session, hr, uuid.UUID(check["id"]),
-        results=[{
-            "type": "employment", "status": "discrepancy",
-            "note": "Last day at previous employer was March, not June.",
-        }],
+        session,
+        hr,
+        uuid.UUID(check["id"]),
+        results=[
+            {
+                "type": "employment",
+                "status": "discrepancy",
+                "note": "Last day at previous employer was March, not June.",
+            }
+        ],
         summary="Tenure overstated by three months.",
     )
     await session.commit()
@@ -134,13 +167,22 @@ async def test_a_declined_request_is_closed(session, tenant, people) -> None:
     hr = people["hr"]
     candidate_id = await _candidate(session, people, tenant)
     check = await bgv.request_check(
-        session, hr, candidate_id=candidate_id, check_types=["criminal"], agency_name="Acme",
+        session,
+        hr,
+        candidate_id=candidate_id,
+        check_types=["criminal"],
+        agency_name="Acme",
     )
     await session.commit()
     token = await _portal_token(session, hr, candidate_id)
     declined = await bgv.respond_to_check(
-        session, token, uuid.UUID(check["id"]), agree=False, typed_name=None,
-        ip_address=None, user_agent=None,
+        session,
+        token,
+        uuid.UUID(check["id"]),
+        agree=False,
+        typed_name=None,
+        ip_address=None,
+        user_agent=None,
     )
     await session.commit()
     assert declined["status"] == "declined"
@@ -149,8 +191,13 @@ async def test_a_declined_request_is_closed(session, tenant, people) -> None:
 
     with pytest.raises(HTTPException) as exc:
         await bgv.respond_to_check(
-            session, token, uuid.UUID(check["id"]), agree=True, typed_name="Tanvi Desai",
-            ip_address=None, user_agent=None,
+            session,
+            token,
+            uuid.UUID(check["id"]),
+            agree=True,
+            typed_name="Tanvi Desai",
+            ip_address=None,
+            user_agent=None,
         )
     assert exc.value.status_code == 409, "an answer is final"
 
@@ -159,13 +206,19 @@ async def test_unknown_checks_and_a_missing_agency_are_refused(session, tenant, 
     candidate_id = await _candidate(session, people, tenant)
     with pytest.raises(HTTPException) as exc:
         await bgv.request_check(
-            session, people["hr"], candidate_id=candidate_id, check_types=["horoscope"],
+            session,
+            people["hr"],
+            candidate_id=candidate_id,
+            check_types=["horoscope"],
             agency_name="Acme",
         )
     assert exc.value.status_code == 422
     with pytest.raises(HTTPException) as exc:
         await bgv.request_check(
-            session, people["hr"], candidate_id=candidate_id, check_types=["identity"],
+            session,
+            people["hr"],
+            candidate_id=candidate_id,
+            check_types=["identity"],
             agency_name="  ",
         )
     assert exc.value.status_code == 422

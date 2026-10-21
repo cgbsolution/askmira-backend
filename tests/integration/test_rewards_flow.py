@@ -97,9 +97,7 @@ async def test_an_award_writes_one_immutable_row(session, hr_user, employee):
     rows = list(
         (
             await session.execute(
-                select(PointsLedgerEntry).where(
-                    PointsLedgerEntry.employee_id == employee.id
-                )
+                select(PointsLedgerEntry).where(PointsLedgerEntry.employee_id == employee.id)
             )
         ).scalars()
     )
@@ -218,9 +216,7 @@ async def test_the_balance_survives_a_complex_sequence(session, hr_user, employe
     assert report["chain"]["intact"] is True
 
 
-async def test_the_chain_check_is_reported_beside_the_liability(
-    session, hr_user, employee
-):
+async def test_the_chain_check_is_reported_beside_the_liability(session, hr_user, employee):
     await valued(session, hr_user)
     await rewards.award_points(
         session, hr_user, employee_id=employee.id, points=100, awarded_on=date(2026, 3, 1)
@@ -235,9 +231,7 @@ async def test_the_chain_check_is_reported_beside_the_liability(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_revaluation_does_not_restate_issued_points(
-    session, hr_user, employee
-):
+async def test_a_revaluation_does_not_restate_issued_points(session, hr_user, employee):
     """A tenant that awards at Rs 0.50 and revalues to Rs 1.00 has not doubled
     what it owes on points already issued."""
     await valued(session, hr_user, "2", date(2026, 1, 1))
@@ -336,9 +330,7 @@ async def test_a_redemption_cannot_overdraw(session, hr_user, employee):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_movement_report_reconciles_opening_to_closing(
-    session, hr_user, employee
-):
+async def test_the_movement_report_reconciles_opening_to_closing(session, hr_user, employee):
     await valued(session, hr_user)
     await rewards.award_points(
         session, hr_user, employee_id=employee.id, points=1000, awarded_on=date(2026, 3, 1)
@@ -382,9 +374,7 @@ async def test_an_expiry_policy_needs_a_disclosure(session, hr_user):
     assert "shown at the point of award" in exc.value.detail
 
 
-async def test_the_disclosure_appears_at_the_point_of_award(
-    session, hr_user, employee
-):
+async def test_the_disclosure_appears_at_the_point_of_award(session, hr_user, employee):
     """Not buried in a policy document."""
     await valued(session, hr_user)
     await rewards.set_expiry_policy(
@@ -401,9 +391,7 @@ async def test_the_disclosure_appears_at_the_point_of_award(
     assert out["expiry_disclosure"] == "Points expire twelve months after award."
 
 
-async def test_expiry_reduces_the_liability_and_deletes_nothing(
-    session, hr_user, employee
-):
+async def test_expiry_reduces_the_liability_and_deletes_nothing(session, hr_user, employee):
     await valued(session, hr_user)
     await rewards.set_expiry_policy(
         session,
@@ -429,16 +417,12 @@ async def test_expiry_reduces_the_liability_and_deletes_nothing(
     rows = list(
         (
             await session.execute(
-                select(PointsLedgerEntry).where(
-                    PointsLedgerEntry.employee_id == employee.id
-                )
+                select(PointsLedgerEntry).where(PointsLedgerEntry.employee_id == employee.id)
             )
         ).scalars()
     )
     assert len(rows) == 2
-    assert any(
-        r.transaction_type is PointsTransactionTypeEnum.EXPIRED for r in rows
-    )
+    assert any(r.transaction_type is PointsTransactionTypeEnum.EXPIRED for r in rows)
 
 
 async def test_expiry_does_nothing_without_a_policy(session, hr_user, employee):
@@ -475,9 +459,7 @@ async def budget(session, tenant, scope, key, allocated, consumed, mode):
     return row
 
 
-async def test_a_hard_stop_budget_refuses_the_award(
-    session, hr_user, tenant, employee
-):
+async def test_a_hard_stop_budget_refuses_the_award(session, hr_user, tenant, employee):
     await valued(session, hr_user)
     await budget(
         session,
@@ -496,9 +478,7 @@ async def test_a_hard_stop_budget_refuses_the_award(
     assert "hard stop" in exc.value.detail
 
 
-async def test_a_soft_warning_permits_and_records_the_overspend(
-    session, hr_user, tenant, employee
-):
+async def test_a_soft_warning_permits_and_records_the_overspend(session, hr_user, tenant, employee):
     await valued(session, hr_user)
     row = await budget(
         session,
@@ -561,9 +541,7 @@ async def test_budget_utilisation_reports_rupees(session, hr_user, tenant):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_payroll_refuses_a_perquisite_from_an_unreviewed_rule(
-    session, hr_user, employee
-):
+async def test_payroll_refuses_a_perquisite_from_an_unreviewed_rule(session, hr_user, employee):
     """This is the gate on the whole tax section."""
     await valued(session, hr_user, "1", date(2026, 1, 1))
     await rewards.award_points(
@@ -588,9 +566,7 @@ async def test_payroll_refuses_a_perquisite_from_an_unreviewed_rule(
     assert "reviewed by a tax advisor" in exc.value.detail
 
 
-async def test_a_reviewed_rule_produces_a_perquisite_at_the_threshold(
-    session, hr_user, employee
-):
+async def test_a_reviewed_rule_produces_a_perquisite_at_the_threshold(session, hr_user, employee):
     await valued(session, hr_user, "1", date(2026, 1, 1))
     await rewards.set_tax_rule(
         session,
@@ -688,17 +664,13 @@ async def test_the_perquisite_is_not_handed_to_payroll(session, hr_user, employe
         requested_on=date(2026, 5, 15),
     )
     row = (
-        await session.execute(
-            select(RewardEvent).where(RewardEvent.employee_id == employee.id)
-        )
+        await session.execute(select(RewardEvent).where(RewardEvent.employee_id == employee.id))
     ).scalar_one()
     assert row.payroll_reference is None
     assert row.financial_year == "2026-27"
 
 
-async def test_the_employee_statement_shows_the_tax_position(
-    session, hr_user, employee
-):
+async def test_the_employee_statement_shows_the_tax_position(session, hr_user, employee):
     """Before the payslip rather than in it."""
     await valued(session, hr_user, "1", date(2026, 1, 1))
     await rewards.award_points(
@@ -770,9 +742,7 @@ async def test_a_clean_month_is_recorded_as_clean(session, hr_user, employee, te
     )
     assert report["clean"] is True
 
-    run = (
-        await session.execute(select(ReconciliationRun))
-    ).scalar_one()
+    run = (await session.execute(select(ReconciliationRun))).scalar_one()
     assert run.status is ReconciliationStatusEnum.CLEAN
 
 
@@ -873,9 +843,7 @@ async def test_a_month_cannot_be_reconciled_twice(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_liability_splits_by_department(
-    session, hr_user, tenant, legal_entity, location
-):
+async def test_the_liability_splits_by_department(session, hr_user, tenant, legal_entity, location):
     await valued(session, hr_user, "1", date(2026, 1, 1))
     people = await make_employees(session, tenant, legal_entity, location, 2, "DPT")
     for person in people:
@@ -901,9 +869,7 @@ async def test_the_ageing_report_buckets_by_award_age(session, hr_user, employee
 
 async def test_a_split_finer_than_cost_centre_is_refused(session, hr_user):
     with pytest.raises(HTTPException) as exc:
-        await rewards.liability_report(
-            session, hr_user, as_of=TODAY, group_by="employee_id"
-        )
+        await rewards.liability_report(session, hr_user, as_of=TODAY, group_by="employee_id")
     assert "allocated to individuals" in exc.value.detail
 
 
@@ -924,9 +890,7 @@ async def test_another_tenant_sees_none_of_this_liability(
     assert report["liability"]["rupees"] == "0.00"
 
 
-async def test_another_tenant_cannot_reverse_an_entry(
-    session, hr_user, other_hr_user, employee
-):
+async def test_another_tenant_cannot_reverse_an_entry(session, hr_user, other_hr_user, employee):
     await valued(session, hr_user, "1", date(2026, 1, 1))
     award = await rewards.award_points(
         session, hr_user, employee_id=employee.id, points=500, awarded_on=date(2026, 3, 1)

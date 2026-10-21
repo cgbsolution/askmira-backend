@@ -67,8 +67,11 @@ async def _scale(session: AsyncSession, tenant: Tenant) -> RatingScale:
     ]:
         session.add(
             RatingScaleLevel(
-                tenant_id=tenant.id, scale_id=scale.id, value=Decimal(value),
-                label=label, description=description,
+                tenant_id=tenant.id,
+                scale_id=scale.id,
+                value=Decimal(value),
+                label=label,
+                description=description,
             )
         )
     await session.commit()
@@ -86,8 +89,11 @@ async def _competency(
     values: list[str] | None = None,
 ) -> Competency:
     competency = Competency(
-        tenant_id=tenant.id, code=code, name=name,
-        category=CompetencyCategory.BEHAVIOURAL, scale_id=scale.id,
+        tenant_id=tenant.id,
+        code=code,
+        name=name,
+        category=CompetencyCategory.BEHAVIOURAL,
+        scale_id=scale.id,
     )
     session.add(competency)
     await session.flush()
@@ -95,7 +101,8 @@ async def _competency(
     for value in range(1, 6):
         session.add(
             CompetencyLevelIndicator(
-                tenant_id=tenant.id, competency_id=competency.id,
+                tenant_id=tenant.id,
+                competency_id=competency.id,
                 scale_value=Decimal(value),
                 behaviour_description=(
                     f"At {value}: what '{name}' looks like at this level, concretely."
@@ -115,8 +122,11 @@ async def _competency(
 
 async def _cycle(session: AsyncSession, tenant: Tenant) -> AppraisalCycle:
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name="FY26 review", cycle_type=CycleType.ANNUAL,
-        period_start=PERIOD_START, period_end=PERIOD_END,
+        tenant_id=tenant.id,
+        name="FY26 review",
+        cycle_type=CycleType.ANNUAL,
+        period_start=PERIOD_START,
+        period_end=PERIOD_END,
     )
     session.add(cycle)
     await session.commit()
@@ -145,15 +155,15 @@ async def test_every_competency_has_an_indicator_for_every_scale_level(
     assert competencies
 
     levels = await session.scalar(
-        select(func.count()).select_from(RatingScaleLevel).where(
-            RatingScaleLevel.scale_id == scale.id
-        )
+        select(func.count())
+        .select_from(RatingScaleLevel)
+        .where(RatingScaleLevel.scale_id == scale.id)
     )
     for competency in competencies:
         count = await session.scalar(
-            select(func.count()).select_from(CompetencyLevelIndicator).where(
-                CompetencyLevelIndicator.competency_id == competency.id
-            )
+            select(func.count())
+            .select_from(CompetencyLevelIndicator)
+            .where(CompetencyLevelIndicator.competency_id == competency.id)
         )
         assert count == levels, (
             f"'{competency.name}' has {count} indicator(s) against {levels} scale levels"
@@ -166,9 +176,7 @@ async def test_every_scale_level_carries_a_description(
     """It is what a rater reads to decide between a 3 and a 4."""
     scale = await _scale(session, tenant)
     levels = (
-        await session.scalars(
-            select(RatingScaleLevel).where(RatingScaleLevel.scale_id == scale.id)
-        )
+        await session.scalars(select(RatingScaleLevel).where(RatingScaleLevel.scale_id == scale.id))
     ).all()
     assert len(levels) == 5
     for level in levels:
@@ -202,8 +210,11 @@ async def test_weights_that_do_not_sum_to_a_hundred_never_reach_the_database(
     scoring.validate_weights(good)
     session.add(
         AppraisalTemplate(
-            tenant_id=tenant.id, cycle_id=cycle.id, rating_scale_id=scale.id,
-            goal_weight=good.goal_weight, competency_weight=good.competency_weight,
+            tenant_id=tenant.id,
+            cycle_id=cycle.id,
+            rating_scale_id=scale.id,
+            goal_weight=good.goal_weight,
+            competency_weight=good.competency_weight,
             score_bands=[
                 {"label": "Meets expectations", "lower": 0, "upper": 80},
                 {"label": "Exceeds expectations", "lower": 80, "upper": 100},
@@ -220,8 +231,11 @@ async def test_stored_bands_map_a_score_to_a_rating(
     scale = await _scale(session, tenant)
     cycle = await _cycle(session, tenant)
     template = AppraisalTemplate(
-        tenant_id=tenant.id, cycle_id=cycle.id, rating_scale_id=scale.id,
-        goal_weight=Decimal(70), competency_weight=Decimal(30),
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        rating_scale_id=scale.id,
+        goal_weight=Decimal(70),
+        competency_weight=Decimal(30),
         score_bands=[
             {"label": "Below", "lower": 0, "upper": 50},
             {"label": "Meets", "lower": 50, "upper": 80},
@@ -266,8 +280,10 @@ async def test_a_non_applicable_competency_is_excluded_from_the_stored_template(
     for competency, weight in ((collab, Decimal(50)), (leads, Decimal(50))):
         session.add(
             CompetencyTemplateItem(
-                tenant_id=tenant.id, template_id=template.id,
-                competency_id=competency.id, weight=weight,
+                tenant_id=tenant.id,
+                template_id=template.id,
+                competency_id=competency.id,
+                weight=weight,
             )
         )
     await session.commit()
@@ -288,8 +304,7 @@ async def test_a_non_applicable_competency_is_excluded_from_the_stored_template(
             rating=Decimal(4) if competency.code == "COLLAB" else None,
             is_applicable=competency.code == "COLLAB",
             not_applicable_reason=(
-                None if competency.code == "COLLAB"
-                else "Individual contributor with no reports."
+                None if competency.code == "COLLAB" else "Individual contributor with no reports."
             ),
         )
         for item, competency in items
@@ -324,7 +339,10 @@ async def test_a_non_applicable_competency_is_excluded_from_the_stored_template(
 
 
 async def test_recognition_surfaces_against_the_matching_competency(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
     legal_entity: LegalEntity,
 ) -> None:
     """The checklist gate.
@@ -333,16 +351,16 @@ async def test_recognition_surfaces_against_the_matching_competency(
     for collaboration, during the review period, with who wrote them.
     """
     scale = await _scale(session, tenant)
-    collab = await _competency(
-        session, tenant, scale, values=["collaboration", "teamwork"]
-    )
-    await _competency(session, tenant, scale, code="OWN", name="Ownership",
-                      values=["ownership"])
+    collab = await _competency(session, tenant, scale, values=["collaboration", "teamwork"])
+    await _competency(session, tenant, scale, code="OWN", name="Ownership", values=["ownership"])
     cycle = await _cycle(session, tenant)
 
     colleague = Employee(
-        tenant_id=tenant.id, employee_code="ACM900", first_name="Rahul",
-        last_name="Iyer", work_email="rahul.i@acme.test",
+        tenant_id=tenant.id,
+        employee_code="ACM900",
+        first_name="Rahul",
+        last_name="Iyer",
+        work_email="rahul.i@acme.test",
         legal_entity_id=legal_entity.id,
     )
     session.add(colleague)
@@ -351,13 +369,17 @@ async def test_recognition_surfaces_against_the_matching_competency(
     session.add_all(
         [
             Shoutout(
-                tenant_id=tenant.id, from_employee_id=colleague.id,
-                to_employee_id=employee.id, value_tag="collaboration",
+                tenant_id=tenant.id,
+                from_employee_id=colleague.id,
+                to_employee_id=employee.id,
+                value_tag="collaboration",
                 message="Unblocked the payments migration for our whole team.",
             ),
             Shoutout(
-                tenant_id=tenant.id, from_employee_id=colleague.id,
-                to_employee_id=employee.id, value_tag="ownership",
+                tenant_id=tenant.id,
+                from_employee_id=colleague.id,
+                to_employee_id=employee.id,
+                value_tag="ownership",
                 message="Took the on-call escalation end to end.",
             ),
         ]
@@ -366,15 +388,17 @@ async def test_recognition_surfaces_against_the_matching_competency(
 
     shoutouts = (
         await session.execute(
-            select(Shoutout, Employee).join(
-                Employee, Shoutout.from_employee_id == Employee.id
-            ).where(Shoutout.to_employee_id == employee.id)
+            select(Shoutout, Employee)
+            .join(Employee, Shoutout.from_employee_id == Employee.id)
+            .where(Shoutout.to_employee_id == employee.id)
         )
     ).all()
     recognitions = [
         evidence_service.RecognitionItem(
-            recognition_id=str(s.id), value_code=s.value_tag or "",
-            from_name=giver.full_name, message=s.message,
+            recognition_id=str(s.id),
+            value_code=s.value_tag or "",
+            from_name=giver.full_name,
+            message=s.message,
             given_on=s.created_at.date(),
         )
         for s, giver in shoutouts
@@ -416,9 +440,12 @@ async def test_the_evidence_payload_carries_no_score(
     collab = await _competency(session, tenant, scale, values=["collaboration"])
 
     payload = evidence_service.gather_evidence(
-        competency_code=collab.code, competency_name=collab.name,
-        linked_value_codes=["collaboration"], recognitions=[],
-        period_start=PERIOD_START, period_end=PERIOD_END,
+        competency_code=collab.code,
+        competency_name=collab.name,
+        linked_value_codes=["collaboration"],
+        recognitions=[],
+        period_start=PERIOD_START,
+        period_end=PERIOD_END,
     ).as_dict()
 
     assert not any("score" in key or "rating" in key for key in payload)
@@ -441,9 +468,12 @@ async def test_an_unlinked_competency_says_how_to_fix_it(
         )
     ).all()
     result = evidence_service.gather_evidence(
-        competency_code=orphan.code, competency_name=orphan.name,
-        linked_value_codes=list(links), recognitions=[],
-        period_start=PERIOD_START, period_end=PERIOD_END,
+        competency_code=orphan.code,
+        competency_name=orphan.name,
+        linked_value_codes=list(links),
+        recognitions=[],
+        period_start=PERIOD_START,
+        period_end=PERIOD_END,
     )
     assert "not linked to any company value" in result.note
 
@@ -457,8 +487,6 @@ async def test_competencies_are_tenant_isolated(
     await _competency(session, tenant, scale)
 
     visible = (
-        await session.scalars(
-            tenant_scoped(select(Competency), Competency, other_hr_user)
-        )
+        await session.scalars(tenant_scoped(select(Competency), Competency, other_hr_user))
     ).all()
     assert visible == []

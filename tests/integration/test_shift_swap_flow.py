@@ -34,9 +34,14 @@ async def _shift(session: AsyncSession, hr_user: User, code: str, start: int, **
         session,
         hr_user,
         ShiftCreate(
-            code=code, name=f"{code} shift", start_time=time(start, 0),
-            end_time=time(start + 8, 0), half_day_threshold_minutes=240,
-            full_day_threshold_minutes=420, weekly_off_days=[7], **extra,
+            code=code,
+            name=f"{code} shift",
+            start_time=time(start, 0),
+            end_time=time(start + 8, 0),
+            half_day_threshold_minutes=240,
+            full_day_threshold_minutes=420,
+            weekly_off_days=[7],
+            **extra,
         ),
     )
 
@@ -45,15 +50,25 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, **extra
 ) -> tuple[Employee, User]:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        status=EmploymentStatus.ACTIVE, date_of_joining=date(2025, 1, 1), **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        date_of_joining=date(2025, 1, 1),
+        **extra,
     )
     session.add(person)
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email=f"{code.lower()}.login@acme-demo.com", password_hash="x",
-        full_name=code.title(), role=UserRole.EMPLOYEE, is_active=True, employee_id=person.id,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}.login@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
     )
     session.add(login)
     await session.commit()
@@ -65,7 +80,9 @@ async def _person(
 async def _assign(session: AsyncSession, tenant: Tenant, person: Employee, shift: Shift) -> None:
     session.add(
         ShiftAssignment(
-            tenant_id=tenant.id, employee_id=person.id, shift_id=shift.id,
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            shift_id=shift.id,
             effective_from=date(2026, 1, 1),
         )
     )
@@ -89,8 +106,12 @@ async def test_an_agreed_and_approved_swap_changes_both_schedules_for_that_day_o
     lead_login = await as_caller(session, lead_login)
 
     swap = await shift_swaps.request_swap(
-        session, asha_login, partner_employee_id=ravi.id, swap_date=SWAP_DAY,
-        reason="Doctor's appointment in the morning", today=TODAY,
+        session,
+        asha_login,
+        partner_employee_id=ravi.id,
+        swap_date=SWAP_DAY,
+        reason="Doctor's appointment in the morning",
+        today=TODAY,
     )
     assert swap["status"] == "awaiting_partner"
     assert swap["requester_shift"]["name"] == "MOR shift"
@@ -99,9 +120,7 @@ async def test_an_agreed_and_approved_swap_changes_both_schedules_for_that_day_o
     with pytest.raises(HTTPException):
         await shift_swaps.respond_to_swap(session, lead_login, swap_id(swap), accept=True)
     with pytest.raises(HTTPException):
-        await shift_swaps.decide_swap(
-            session, lead_login, swap_id(swap), approve=True, today=TODAY
-        )
+        await shift_swaps.decide_swap(session, lead_login, swap_id(swap), approve=True, today=TODAY)
 
     agreed = await shift_swaps.respond_to_swap(session, ravi_login, swap_id(swap), accept=True)
     assert agreed["status"] == "awaiting_approval"
@@ -110,9 +129,7 @@ async def test_an_agreed_and_approved_swap_changes_both_schedules_for_that_day_o
     ]
     # Neither party decides their own swap.
     with pytest.raises(HTTPException):
-        await shift_swaps.decide_swap(
-            session, asha_login, swap_id(swap), approve=True, today=TODAY
-        )
+        await shift_swaps.decide_swap(session, asha_login, swap_id(swap), approve=True, today=TODAY)
 
     done = await shift_swaps.decide_swap(
         session, lead_login, swap_id(swap), approve=True, today=TODAY
@@ -140,20 +157,32 @@ async def test_a_swap_needs_two_different_working_shifts_on_a_future_day(
 
     with pytest.raises(HTTPException) as same:
         await shift_swaps.request_swap(
-            session, asha_login, partner_employee_id=ravi.id, swap_date=SWAP_DAY,
-            reason="Swap please", today=TODAY,
+            session,
+            asha_login,
+            partner_employee_id=ravi.id,
+            swap_date=SWAP_DAY,
+            reason="Swap please",
+            today=TODAY,
         )
     assert "nothing to swap" in same.value.detail
     with pytest.raises(HTTPException):
         await shift_swaps.request_swap(
-            session, asha_login, partner_employee_id=ravi.id, swap_date=TODAY,
-            reason="Swap please", today=TODAY,
+            session,
+            asha_login,
+            partner_employee_id=ravi.id,
+            swap_date=TODAY,
+            reason="Swap please",
+            today=TODAY,
         )
     # A Sunday is this shift's weekly off: there is no shift to trade.
     with pytest.raises(HTTPException) as off:
         await shift_swaps.request_swap(
-            session, asha_login, partner_employee_id=ravi.id, swap_date=date(2026, 10, 25),
-            reason="Swap please", today=TODAY,
+            session,
+            asha_login,
+            partner_employee_id=ravi.id,
+            swap_date=date(2026, 10, 25),
+            reason="Swap please",
+            today=TODAY,
         )
     assert "week off" in off.value.detail
 
@@ -171,8 +200,13 @@ async def test_coverage_counts_scheduled_and_on_leave_against_the_minimum(
     await session.flush()
     session.add(
         LeaveRequest(
-            tenant_id=tenant.id, employee_id=ravi.id, leave_type_id=leave_type.id,
-            start_date=SWAP_DAY, end_date=SWAP_DAY, total_days=1, reason="Away",
+            tenant_id=tenant.id,
+            employee_id=ravi.id,
+            leave_type_id=leave_type.id,
+            start_date=SWAP_DAY,
+            end_date=SWAP_DAY,
+            total_days=1,
+            reason="Away",
             status=LeaveRequestStatus.APPROVED,
         )
     )
@@ -218,8 +252,13 @@ async def test_the_schedule_agent_proposes_cover_and_an_approval_puts_them_on(
     await session.flush()
     session.add(
         LeaveRequest(
-            tenant_id=tenant.id, employee_id=kiran.id, leave_type_id=leave_type.id,
-            start_date=monday, end_date=monday, total_days=1, reason="Away",
+            tenant_id=tenant.id,
+            employee_id=kiran.id,
+            leave_type_id=leave_type.id,
+            start_date=monday,
+            end_date=monday,
+            total_days=1,
+            reason="Away",
             status=LeaveRequestStatus.APPROVED,
         )
     )

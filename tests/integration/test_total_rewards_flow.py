@@ -29,18 +29,27 @@ pytestmark = requires_db
 
 
 async def test_the_statement_adds_up_ctc_and_what_was_paid(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2025, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2025, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     session.add(structure)
     await session.flush()
     salary = EmployeeSalary(
-        tenant_id=tenant.id, employee_id=employee.id, structure_id=structure.id,
-        ctc_annual=Decimal("1200000"), effective_from=date(2026, 4, 1),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        structure_id=structure.id,
+        ctc_annual=Decimal("1200000"),
+        effective_from=date(2026, 4, 1),
     )
     session.add(salary)
     await session.flush()
@@ -52,23 +61,35 @@ async def test_the_statement_adds_up_ctc_and_what_was_paid(
     ):
         session.add(
             EmployeeSalaryComponent(
-                tenant_id=tenant.id, employee_salary_id=salary.id, component_code=code,
-                component_name=code.title(), component_type=kind,
-                annual_amount=Decimal(annual), monthly_amount=Decimal(annual) / 12,
+                tenant_id=tenant.id,
+                employee_salary_id=salary.id,
+                component_code=code,
+                component_name=code.title(),
+                component_type=kind,
+                annual_amount=Decimal(annual),
+                monthly_amount=Decimal(annual) / 12,
             )
         )
     for month, status in ((4, PayrollRunStatus.PAID), (5, PayrollRunStatus.DRAFT)):
         run = PayrollRun(
-            tenant_id=tenant.id, legal_entity_id=legal_entity.id, period_year=2026,
-            period_month=month, effective_date=date(2026, month, 28), status=status,
+            tenant_id=tenant.id,
+            legal_entity_id=legal_entity.id,
+            period_year=2026,
+            period_month=month,
+            effective_date=date(2026, month, 28),
+            status=status,
         )
         session.add(run)
         await session.flush()
         session.add(
             Payslip(
-                tenant_id=tenant.id, run_id=run.id, employee_id=employee.id,
-                gross_earnings=Decimal("95200"), net_pay=Decimal("85000"),
-                pf_employer=Decimal("4800"), esi_employer=Decimal("0"),
+                tenant_id=tenant.id,
+                run_id=run.id,
+                employee_id=employee.id,
+                gross_earnings=Decimal("95200"),
+                net_pay=Decimal("85000"),
+                pf_employer=Decimal("4800"),
+                esi_employer=Decimal("0"),
             )
         )
     await session.commit()
@@ -89,15 +110,23 @@ async def test_only_the_person_and_hr_read_it(
     session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, employee: Employee
 ) -> None:
     other = Employee(
-        tenant_id=tenant.id, employee_code="OTH", first_name="Other",
-        work_email="other@acme-demo.com", legal_entity_id=legal_entity.id,
+        tenant_id=tenant.id,
+        employee_code="OTH",
+        first_name="Other",
+        work_email="other@acme-demo.com",
+        legal_entity_id=legal_entity.id,
         status=EmploymentStatus.ACTIVE,
     )
     session.add(other)
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email="other.tr@acme-demo.com", password_hash="x",
-        full_name="Other", role=UserRole.EMPLOYEE, is_active=True, employee_id=other.id,
+        tenant_id=tenant.id,
+        email="other.tr@acme-demo.com",
+        password_hash="x",
+        full_name="Other",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=other.id,
     )
     session.add(login)
     await session.commit()

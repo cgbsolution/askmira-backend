@@ -134,15 +134,23 @@ async def test_an_increment_approved_after_release_is_applied_on_approval(
     cycle = await open_cycle(session, hr_user)
     await _approved_increment(session, hr_user, first, cycle)
     pending = await performance.recommend_increment(
-        session, hr_user, cycle_id=cycle.id, employee_id=late.id, rating_label="Meets",
-        current_ctc=Decimal("1200000"), percentage=Decimal("5"),
+        session,
+        hr_user,
+        cycle_id=cycle.id,
+        employee_id=late.id,
+        rating_label="Meets",
+        current_ctc=Decimal("1200000"),
+        percentage=Decimal("5"),
     )
     await performance.release_letters(
         session, hr_user, cycle_id=cycle.id, today=date(2027, 3, 25), force_partial=True
     )
     await performance.decide_recommendation(
-        session, hr_user, recommendation_id=uuid.UUID(pending["recommendation_id"]),
-        approve=True, note="Late approval.",
+        session,
+        hr_user,
+        recommendation_id=uuid.UUID(pending["recommendation_id"]),
+        approve=True,
+        note="Late approval.",
     )
     salaries = (
         await session.scalars(

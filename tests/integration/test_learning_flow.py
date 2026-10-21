@@ -25,15 +25,23 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str
 ) -> tuple[Employee, User]:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
         status=EmploymentStatus.ACTIVE,
     )
     session.add(person)
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email=f"{code.lower()}.lms@acme-demo.com", password_hash="x",
-        full_name=code.title(), role=UserRole.EMPLOYEE, is_active=True, employee_id=person.id,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}.lms@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
     )
     session.add(login)
     await session.commit()
@@ -46,9 +54,13 @@ async def test_a_posh_course_end_to_end(
     asha, asha_login = await _person(session, tenant, legal_entity, "ASHA")
     ravi, ravi_login = await _person(session, tenant, legal_entity, "RAVI")
     course = await learning.create_course(
-        session, hr_user,
+        session,
+        hr_user,
         CourseIn(
-            title="POSH awareness 2026", kind=CourseKind.POSH, validity_months=12, pass_mark=50,
+            title="POSH awareness 2026",
+            kind=CourseKind.POSH,
+            validity_months=12,
+            pass_mark=50,
             modules=[ModuleIn(title="Our policy", body="Written by the Internal Committee.")],
             quiz=[
                 QuestionIn(question="Who do you report to?", options=["IC", "Nobody"], correct=0),

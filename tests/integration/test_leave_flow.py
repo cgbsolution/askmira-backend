@@ -86,20 +86,42 @@ async def _person(
 @pytest.fixture
 async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, location: Location):
     hr_emp, hr = await _person(
-        session, tenant, legal_entity, location, code="HR1", name="Priya Ramesh",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="HR1",
+        name="Priya Ramesh",
         role=UserRole.ADMIN,
     )
     boss_emp, boss = await _person(
-        session, tenant, legal_entity, location, code="MGR1", name="Vikram Shah",
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="MGR1",
+        name="Vikram Shah",
         role=UserRole.EMPLOYEE,
     )
     meera_emp, meera = await _person(
-        session, tenant, legal_entity, location, code="EMP1", name="Meera Nair",
-        role=UserRole.EMPLOYEE, manager=boss_emp,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="EMP1",
+        name="Meera Nair",
+        role=UserRole.EMPLOYEE,
+        manager=boss_emp,
     )
     ravi_emp, ravi = await _person(
-        session, tenant, legal_entity, location, code="EMP2", name="Ravi Kumar",
-        role=UserRole.EMPLOYEE, manager=hr_emp,
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="EMP2",
+        name="Ravi Kumar",
+        role=UserRole.EMPLOYEE,
+        manager=hr_emp,
     )
 
     earned = LeaveType(tenant_id=tenant.id, name="Earned Leave", code="EL")
@@ -118,8 +140,14 @@ async def org(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity, 
     await session.commit()
     await session.refresh(earned)
     return {
-        "hr": hr, "boss": boss, "meera": meera, "meera_emp": meera_emp,
-        "ravi": ravi, "ravi_emp": ravi_emp, "earned": earned, "tenant": tenant,
+        "hr": hr,
+        "boss": boss,
+        "meera": meera,
+        "meera_emp": meera_emp,
+        "ravi": ravi,
+        "ravi_emp": ravi_emp,
+        "earned": earned,
+        "tenant": tenant,
     }
 
 
@@ -164,9 +192,7 @@ async def test_manager_approval_moves_the_ledger(session: AsyncSession, org) -> 
     assert [r.id for r in inbox] == [created.id]
     assert inbox[0].can_decide
 
-    decided = await leave_service.decide(
-        session, org["boss"], created.id, approve=True, note=None
-    )
+    decided = await leave_service.decide(session, org["boss"], created.id, approve=True, note=None)
     assert decided.status is LeaveRequestStatus.APPROVED
     assert decided.approval_chain[0].decided_by_name == "Vikram Shah"
 
@@ -224,7 +250,9 @@ async def test_a_request_beyond_the_balance_is_refused(session: AsyncSession, or
 
 async def test_pending_requests_count_against_the_next_one(session: AsyncSession, org) -> None:
     await leave_service.apply(
-        session, org["meera"], _payload(org, end=START + timedelta(days=18))  # 15 days
+        session,
+        org["meera"],
+        _payload(org, end=START + timedelta(days=18)),  # 15 days
     )
     later = START + timedelta(days=28)
     preview = await leave_service.preview(
@@ -246,14 +274,20 @@ async def test_overlapping_requests_are_refused(session: AsyncSession, org) -> N
 async def test_a_holiday_in_the_range_is_not_charged(session: AsyncSession, org) -> None:
     session.add(
         Holiday(
-            tenant_id=org["tenant"].id, name="Karnataka Rajyotsava",
-            holiday_date=START + timedelta(days=1), year=START.year, state_code="KA",
+            tenant_id=org["tenant"].id,
+            name="Karnataka Rajyotsava",
+            holiday_date=START + timedelta(days=1),
+            year=START.year,
+            state_code="KA",
         )
     )
     session.add(
         Holiday(
-            tenant_id=org["tenant"].id, name="Maharashtra Day",
-            holiday_date=START + timedelta(days=2), year=START.year, state_code="MH",
+            tenant_id=org["tenant"].id,
+            name="Maharashtra Day",
+            holiday_date=START + timedelta(days=2),
+            year=START.year,
+            state_code="MH",
         )
     )
     await session.commit()
@@ -329,9 +363,7 @@ async def test_the_calendar_shows_colleagues_out_but_not_why(session: AsyncSessi
 
 
 async def test_a_colleagues_balances_are_refused(session: AsyncSession, org) -> None:
-    mine = await leave_service.balances(
-        session, org["meera"], employee_id=None, year=START.year
-    )
+    mine = await leave_service.balances(session, org["meera"], employee_id=None, year=START.year)
     assert [b.leave_type_code for b in mine] == ["EL"]
     with pytest.raises(HTTPException) as refused:
         await leave_service.balances(
@@ -350,9 +382,7 @@ async def test_another_tenant_cannot_see_or_decide_the_request(
     assert await leave_service.approvals_inbox(session, other_hr_user) == []
 
 
-async def test_without_a_manager_login_the_request_goes_to_hr(
-    session: AsyncSession, org
-) -> None:
+async def test_without_a_manager_login_the_request_goes_to_hr(session: AsyncSession, org) -> None:
     ravi_boss = await session.get(Employee, org["ravi_emp"].manager_id)
     assert ravi_boss is not None
     # Ravi reports to the HR admin, who can sign in; detach to force the fallback.
@@ -445,7 +475,5 @@ async def test_the_balance_export_is_formula_safe_and_audited(session: AsyncSess
     lines = content.strip().splitlines()
     assert lines[0].startswith("employee_code,employee_name,department")
     assert len(lines) == 2 and lines[1].startswith("EMP1,'=HYPERLINK(1)")
-    entry = await session.scalar(
-        select(AuditLog).where(AuditLog.entity_type == "leave_balance")
-    )
+    entry = await session.scalar(select(AuditLog).where(AuditLog.entity_type == "leave_balance"))
     assert entry is not None and entry.changes["people"] == 1

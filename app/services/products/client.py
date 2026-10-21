@@ -3,6 +3,7 @@
     POST /integrations/askmira/organizations   create or adopt this company's organisation
     POST /integrations/askmira/users/sync      the full list of people who should have access
     POST /integrations/askmira/query           a read-only question for one person (Ask Mira)
+    POST /integrations/askmira/handshake       accept a connection key's secret (console)
 
 The first two are idempotent on the product side, so a retry after a timeout
 does no harm; the third changes nothing. Each carries a token whose `use` names
@@ -18,7 +19,7 @@ from typing import Any
 import httpx
 
 from app.services.products.settings import Endpoint
-from app.services.products.tokens import provision_token, query_token
+from app.services.products.tokens import handshake_token, provision_token, query_token
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 #: A person is waiting in a chat: a question gets less time than provisioning.
@@ -41,7 +42,7 @@ class ProductError(Exception):
 async def _post(
     endpoint: Endpoint,
     product: str,
-    tenant_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
     path: str,
     payload: dict[str, Any],
     *,
@@ -49,8 +50,11 @@ async def _post(
     timeout: httpx.Timeout = TIMEOUT,
 ) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    sign = query_token if use == "query" else provision_token
-    token = sign(endpoint.secret, product, tenant_id, body)
+    if use == "handshake" or tenant_id is None:
+        token = handshake_token(endpoint.secret, product, body)
+    else:
+        sign = query_token if use == "query" else provision_token
+        token = sign(endpoint.secret, product, tenant_id, body)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -125,5 +129,22 @@ async def query(
         "/integrations/askmira/query",
         {"tenant_id": str(tenant_id), "actor": actor, "kind": kind, "params": params},
         use="query",
+        timeout=QUERY_TIMEOUT,
+    )
+
+
+async def handshake(endpoint: Endpoint, product: str) -> dict[str, Any]:
+    """Prove to the product that AskMira holds its connection key's secret.
+
+    The product answers with which product it is; it accepts that secret for
+    AskMira's calls from then on.
+    """
+    return await _post(
+        endpoint,
+        product,
+        None,
+        "/integrations/askmira/handshake",
+        {"product": product, "from": "askmira"},
+        use="handshake",
         timeout=QUERY_TIMEOUT,
     )

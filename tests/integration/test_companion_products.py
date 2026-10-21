@@ -382,3 +382,66 @@ def test_every_status_and_scope_is_a_choice_the_model_is_given() -> None:
 
     assert set(tools.INPUTS["scope"]["enum"]) == {"none", "mine", "approvals", "company"}
     assert {"open", "applied", "pending", "approved", "none"} <= set(tools.INPUTS["status"]["enum"])
+
+
+async def test_each_candidate_row_opens_its_job_in_the_product(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr: User,
+    products: FakeProducts,
+) -> None:
+    await _link(session, tenant, "interview")
+    products.answers[("interview", "candidates")] = {
+        "total": 2,
+        "candidates": [
+            {"name": "Asha", "job": "Python developer", "status": "Applied", "job_ref": "Jb7_k-2"},
+            # A ref that is not a plain token gives no link, never a crafted one.
+            {"name": "Ravi", "job": "Designer", "status": "Applied", "job_ref": "../../x?y"},
+        ],
+    }
+    with use_backend(FakeModel(plan("hiring_candidates", "Here are the candidates."))):
+        reply = await _say(session, hr, "candidates")
+    card = reply["cards"][0]
+    assert card["links"] == ["/launch/interview?to=/job-openings/Jb7_k-2/candidates", None]
+
+
+# ── The same records as portal pages (Expenses / Hiring when linked) ───────
+
+
+async def test_a_linked_products_pages_read_live_as_the_person(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    products: FakeProducts,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.services.products import views
+
+    await _link(session, tenant, "expense")
+    products.answers[("expense", "claims")] = {"scope": "mine", "total": 0, "claims": []}
+    page = await views.render(
+        session, me, "expense", "mine", {"status": "pending", "scope": "company", "x": "y"}
+    )
+    body = products.calls[-1]["body"]
+    # The page fixes whose claims; asking for the company's on "mine" changes nothing.
+    assert body["params"]["scope"] == "mine" and body["params"]["status"] == "pending"
+    assert body["actor"]["role"] == "employee"
+    assert page["cards"][0]["type"] == "notice"
+
+    # An employee asking for the company's claims gets the product's refusal, not the data.
+    company = await views.render(session, me, "expense", "company", {})
+    assert company["cards"][0]["type"] == "notice"
+
+    # Hiring is not this employee's: AnytimeHire is never asked.
+    before = len(products.calls)
+    await _link(session, tenant, "interview")
+    jobs = await views.render(session, me, "interview", "jobs", {})
+    assert jobs["cards"][0]["tone"] == "warning" and len(products.calls) == before
+
+    bad = await views.render(session, me, "expense", "mine", {"from": "yesterday"})
+    assert bad["cards"][0]["tone"] == "warning"
+
+    with pytest.raises(HTTPException) as missing:
+        await views.render(session, me, "expense", "payroll", {})
+    assert missing.value.status_code == 404

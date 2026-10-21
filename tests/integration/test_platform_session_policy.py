@@ -68,9 +68,7 @@ async def test_an_idle_session_is_ended_and_cannot_be_refreshed_back(client, ses
     assert len(tracked) == 1
 
     # Forty minutes of silence.
-    await session.execute(
-        update(UserSession).values(last_seen_at=now() - timedelta(minutes=40))
-    )
+    await session.execute(update(UserSession).values(last_seen_at=now() - timedelta(minutes=40)))
     await session.commit()
     ended = await client.get("/api/v1/auth/me", headers=access)
     assert ended.status_code == 401

@@ -68,17 +68,27 @@ async def _person(
     role: UserRole,
 ) -> User:
     employee = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(), last_name="Test",
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=legal_entity.id,
-        location_id=location.id, status=EmploymentStatus.ACTIVE,
-        date_of_joining=date(2024, 1, 1), grade="L5",
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        last_name="Test",
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=legal_entity.id,
+        location_id=location.id,
+        status=EmploymentStatus.ACTIVE,
+        date_of_joining=date(2024, 1, 1),
+        grade="L5",
     )
     session.add(employee)
     await session.flush()
     user = User(
-        tenant_id=tenant.id, email=f"{code.lower()}@acme-demo.com",
-        password_hash="not-a-real-hash", full_name=f"{code.title()} Test", role=role,
-        is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email=f"{code.lower()}@acme-demo.com",
+        password_hash="not-a-real-hash",
+        full_name=f"{code.title()} Test",
+        role=role,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()
@@ -108,10 +118,14 @@ async def people(session, tenant, legal_entity, location) -> dict[str, User]:
     for key in ("manager", "outsider"):
         session.add(
             Employee(
-                tenant_id=tenant.id, employee_code=f"{roster[key][0]}R", first_name="Report",
+                tenant_id=tenant.id,
+                employee_code=f"{roster[key][0]}R",
+                first_name="Report",
                 work_email=f"{roster[key][0].lower()}r@acme-demo.com",
-                legal_entity_id=legal_entity.id, location_id=location.id,
-                status=EmploymentStatus.ACTIVE, date_of_joining=date(2024, 1, 1),
+                legal_entity_id=legal_entity.id,
+                location_id=location.id,
+                status=EmploymentStatus.ACTIVE,
+                date_of_joining=date(2024, 1, 1),
                 manager_id=people[key].employee_id,
             )
         )
@@ -127,8 +141,11 @@ async def _open_requisition(session, tenant, people) -> uuid.UUID:
         session,
         people["manager"],
         RequisitionCreate(
-            title="Senior Engineer", openings=1, grade="L5",
-            budget_ctc_min=Decimal("1500000"), budget_ctc_max=Decimal("2000000"),
+            title="Senior Engineer",
+            openings=1,
+            grade="L5",
+            budget_ctc_min=Decimal("1500000"),
+            budget_ctc_max=Decimal("2000000"),
             justification="Backfill after two exits on the platform team.",
             skills=["Python", "Postgres"],
         ),
@@ -161,10 +178,14 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
     # ── Requisition: raised by a manager, never approved by them ──────────
     await _chain(session, tenant)
     requisition = await requisition_service.create_requisition(
-        session, manager,
+        session,
+        manager,
         RequisitionCreate(
-            title="Senior Engineer", openings=1, grade="L5",
-            budget_ctc_min=Decimal("1500000"), budget_ctc_max=Decimal("2000000"),
+            title="Senior Engineer",
+            openings=1,
+            grade="L5",
+            budget_ctc_min=Decimal("1500000"),
+            budget_ctc_max=Decimal("2000000"),
             justification="Backfill after two exits.",
         ),
     )
@@ -195,17 +216,22 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
 
     # ── Candidate, added by hand; a repeat links rather than duplicates ────
     added = await candidate_service.create_candidate(
-        session, hr,
+        session,
+        hr,
         CandidateCreate(
-            requisition_id=requisition.id, full_name="Rohit Verma",
-            email="rohit@example.com", phone="+91 98765 43210",
-            expected_ctc=Decimal("1900000"), notice_period_days=60,
+            requisition_id=requisition.id,
+            full_name="Rohit Verma",
+            email="rohit@example.com",
+            phone="+91 98765 43210",
+            expected_ctc=Decimal("1900000"),
+            notice_period_days=60,
         ),
     )
     await session.commit()
     assert added["created"] is True
     again = await candidate_service.create_candidate(
-        session, hr,
+        session,
+        hr,
         CandidateCreate(
             requisition_id=requisition.id, full_name="Rohit V", email="ROHIT@example.com"
         ),
@@ -236,17 +262,26 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
 
     # ── Interview: panellists see only their own; feedback gates the move ─
     stage = await interview_service.create_stage(
-        session, hr,
+        session,
+        hr,
         values={
-            "requisition_id": requisition.id, "sequence": 1, "name": "Technical",
-            "stage_type": InterviewStageType.TECHNICAL, "duration_minutes": 60,
-            "mode": InterviewMode.VIDEO, "required_competencies": ["design"],
-            "is_eliminating": True, "feedback_required": True,
+            "requisition_id": requisition.id,
+            "sequence": 1,
+            "name": "Technical",
+            "stage_type": InterviewStageType.TECHNICAL,
+            "duration_minutes": 60,
+            "mode": InterviewMode.VIDEO,
+            "required_competencies": ["design"],
+            "is_eliminating": True,
+            "feedback_required": True,
         },
     )
     await session.commit()
     interview = await interview_service.schedule_interview(
-        session, hr, candidate_id=candidate_id, stage_id=stage.id,
+        session,
+        hr,
+        candidate_id=candidate_id,
+        stage_id=stage.id,
         start=datetime.now(UTC) - timedelta(hours=2),
         panelist_user_ids=[alice.id, bob.id],
     )
@@ -264,14 +299,20 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
         assert exc.value.status_code == 404
     with pytest.raises(HTTPException):
         await interview_service.record_response(
-            session, alice, interview_id=interview.id, panelist_user_id=bob.id,
+            session,
+            alice,
+            interview_id=interview.id,
+            panelist_user_id=bob.id,
             response=interview_service.ResponseStatus.DECLINED,
         )
 
     with pytest.raises(HTTPException) as exc:
         await candidate_service.move_stage(
-            session, manager, candidate_id=candidate_id,
-            to_stage=CandidateStage.HUMAN_INTERVIEW, reason=None,
+            session,
+            manager,
+            candidate_id=candidate_id,
+            to_stage=CandidateStage.HUMAN_INTERVIEW,
+            reason=None,
         )
     assert exc.value.status_code == 409 and "still scheduled" in exc.value.detail
 
@@ -280,8 +321,11 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
     )
     await session.commit()
     await interview_service.submit_feedback(
-        session, alice, interview_id=interview.id,
-        recommendation=Recommendation.STRONG_YES, ratings={"design": "9"},
+        session,
+        alice,
+        interview_id=interview.id,
+        recommendation=Recommendation.STRONG_YES,
+        ratings={"design": "9"},
         strengths="Clear on trade-offs.",
     )
     await session.commit()
@@ -290,13 +334,19 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
     assert before["feedback"] == [] and before["withheld_count"] == 1
     with pytest.raises(HTTPException) as exc:
         await candidate_service.move_stage(
-            session, manager, candidate_id=candidate_id,
-            to_stage=CandidateStage.HUMAN_INTERVIEW, reason=None,
+            session,
+            manager,
+            candidate_id=candidate_id,
+            to_stage=CandidateStage.HUMAN_INTERVIEW,
+            reason=None,
         )
     assert "outstanding" in exc.value.detail
     await interview_service.submit_feedback(
-        session, bob, interview_id=interview.id,
-        recommendation=Recommendation.YES, ratings={"design": "7"},
+        session,
+        bob,
+        interview_id=interview.id,
+        recommendation=Recommendation.YES,
+        ratings={"design": "7"},
     )
     await session.commit()
 
@@ -309,8 +359,11 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
         await interview_service.consolidated_view(session, alice, interview_id=interview.id)
 
     await candidate_service.move_stage(
-        session, manager, candidate_id=candidate_id,
-        to_stage=CandidateStage.HUMAN_INTERVIEW, reason=None,
+        session,
+        manager,
+        candidate_id=candidate_id,
+        to_stage=CandidateStage.HUMAN_INTERVIEW,
+        reason=None,
     )
     await session.commit()
     with pytest.raises(HTTPException) as exc:
@@ -322,10 +375,16 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
     # ── Offer: drafted by HR, approved by someone else ─────────────────────
     structure = await _structure(session, tenant)
     offer = await offer_service.create_offer(
-        session, hr, candidate_id=candidate_id, code="OFF-100",
-        salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
-        joining_date=date.today() + timedelta(days=45), designation="Senior Engineer",
-        grade="L5", valid_until=date.today() + timedelta(days=14),
+        session,
+        hr,
+        candidate_id=candidate_id,
+        code="OFF-100",
+        salary_structure_id=structure.id,
+        ctc_annual=Decimal("1800000"),
+        joining_date=date.today() + timedelta(days=45),
+        designation="Senior Engineer",
+        grade="L5",
+        valid_until=date.today() + timedelta(days=14),
     )
     await session.commit()
     await offer_service.submit_offer(session, hr, offer_id=offer.id)
@@ -373,7 +432,9 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
         )
     ).all()
     assert events[:3] == [
-        CandidateStage.APPLIED, CandidateStage.SCREENING, CandidateStage.HUMAN_INTERVIEW
+        CandidateStage.APPLIED,
+        CandidateStage.SCREENING,
+        CandidateStage.HUMAN_INTERVIEW,
     ]
 
     # ── Analytics read the same records ────────────────────────────────────
@@ -389,9 +450,12 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
 async def test_a_rejection_needs_a_note_and_ends_the_chain(session, tenant, people) -> None:
     await _chain(session, tenant)
     requisition = await requisition_service.create_requisition(
-        session, people["hr"],
+        session,
+        people["hr"],
         RequisitionCreate(
-            title="Analyst", openings=1, budget_ctc_max=Decimal("900000"),
+            title="Analyst",
+            openings=1,
+            budget_ctc_max=Decimal("900000"),
             justification="Growth.",
         ),
     )
@@ -407,7 +471,10 @@ async def test_a_rejection_needs_a_note_and_ends_the_chain(session, tenant, peop
         )
     assert exc.value.status_code == 422
     result = await requisition_service.approve_requisition(
-        session, people["admin"], requisition_id=requisition.id, approve=False,
+        session,
+        people["admin"],
+        requisition_id=requisition.id,
+        approve=False,
         note="Hire into the open vacancy first.",
     )
     await session.commit()
@@ -420,12 +487,11 @@ async def test_a_rejection_needs_a_note_and_ends_the_chain(session, tenant, peop
     assert exc.value.status_code == 404
 
 
-async def test_hiring_records_are_tenant_isolated(
-    session, tenant, people, other_hr_user
-) -> None:
+async def test_hiring_records_are_tenant_isolated(session, tenant, people, other_hr_user) -> None:
     requisition_id = await _open_requisition(session, tenant, people)
     added = await candidate_service.create_candidate(
-        session, people["hr"],
+        session,
+        people["hr"],
         CandidateCreate(requisition_id=requisition_id, full_name="Asha", email="asha@example.com"),
     )
     await session.commit()
@@ -454,10 +520,15 @@ async def test_an_employee_refers_in_their_own_name(session, tenant, people) -> 
     assert "budget_ctc_max" not in roles[0]
 
     result = await referral_views.refer_candidate(
-        session, people["employee"],
-        programme_id=uuid.UUID(programme["programme_id"]), requisition_id=requisition_id,
-        candidate_name="Meena Pillai", candidate_email="meena@example.com",
-        candidate_phone=None, channel=None, note="Worked with her at Acme.",
+        session,
+        people["employee"],
+        programme_id=uuid.UUID(programme["programme_id"]),
+        requisition_id=requisition_id,
+        candidate_name="Meena Pillai",
+        candidate_email="meena@example.com",
+        candidate_phone=None,
+        channel=None,
+        note="Worked with her at Acme.",
     )
     assert result["status"] == "submitted"
     assert result["candidate_added"] is True
@@ -473,10 +544,15 @@ async def test_an_employee_refers_in_their_own_name(session, tenant, people) -> 
     # The hiring manager of that role is on its hiring team, whatever the request says.
     with pytest.raises(HTTPException) as exc:
         await referral_views.refer_candidate(
-            session, people["manager"],
-            programme_id=uuid.UUID(programme["programme_id"]), requisition_id=requisition_id,
-            candidate_name="Someone", candidate_email="someone@example.com",
-            candidate_phone=None, channel=None, note=None,
+            session,
+            people["manager"],
+            programme_id=uuid.UUID(programme["programme_id"]),
+            requisition_id=requisition_id,
+            candidate_name="Someone",
+            candidate_email="someone@example.com",
+            candidate_phone=None,
+            channel=None,
+            note=None,
         )
     assert exc.value.status_code == 400
 
@@ -484,22 +560,32 @@ async def test_an_employee_refers_in_their_own_name(session, tenant, people) -> 
 async def test_reminders_reach_panellists_in_the_window(session, tenant, people) -> None:
     requisition_id = await _open_requisition(session, tenant, people)
     added = await candidate_service.create_candidate(
-        session, people["hr"],
+        session,
+        people["hr"],
         CandidateCreate(requisition_id=requisition_id, full_name="Dev", email="dev@example.com"),
     )
     await session.commit()
     stage = await interview_service.create_stage(
-        session, people["hr"],
+        session,
+        people["hr"],
         values={
-            "requisition_id": requisition_id, "sequence": 1, "name": "HR round",
-            "stage_type": InterviewStageType.HR, "duration_minutes": 30,
-            "mode": InterviewMode.PHONE, "required_competencies": [],
-            "is_eliminating": False, "feedback_required": False,
+            "requisition_id": requisition_id,
+            "sequence": 1,
+            "name": "HR round",
+            "stage_type": InterviewStageType.HR,
+            "duration_minutes": 30,
+            "mode": InterviewMode.PHONE,
+            "required_competencies": [],
+            "is_eliminating": False,
+            "feedback_required": False,
         },
     )
     now = datetime.now(UTC).replace(microsecond=0)
     await interview_service.schedule_interview(
-        session, people["hr"], candidate_id=uuid.UUID(added["candidate_id"]), stage_id=stage.id,
+        session,
+        people["hr"],
+        candidate_id=uuid.UUID(added["candidate_id"]),
+        stage_id=stage.id,
         start=now + timedelta(hours=24) - timedelta(minutes=5),
         panelist_user_ids=[people["alice"].id],
     )
@@ -553,7 +639,8 @@ async def test_role_gates_over_http(client, session, tenant, people) -> None:
     response = await client.get("/api/v1/offers", headers=_auth(people["manager"]))
     assert response.status_code == 403
     response = await client.post(
-        "/api/v1/hiring/requisitions", headers=employee,
+        "/api/v1/hiring/requisitions",
+        headers=employee,
         json={"title": "Sneaky", "openings": 1, "employment_type": "full_time"},
     )
     assert response.status_code == 403
@@ -565,7 +652,8 @@ async def test_role_gates_over_http(client, session, tenant, people) -> None:
     assert "budget_ctc_max" not in body["items"][0]
 
     created = await client.post(
-        "/api/v1/hiring/requisitions", headers=_auth(people["manager"]),
+        "/api/v1/hiring/requisitions",
+        headers=_auth(people["manager"]),
         json={"title": "Platform Engineer", "openings": 2, "employment_type": "full_time"},
     )
     assert created.status_code == 201, created.text
@@ -587,7 +675,9 @@ async def test_public_apply_portal_and_throttle(client, session, tenant, people)
     ).json()["items"][0]["code"]
     session.add(
         CareersPageConfig(
-            tenant_id=tenant.id, slug="acme-careers", is_published=True,
+            tenant_id=tenant.id,
+            slug="acme-careers",
+            is_published=True,
             privacy_notice_html="<p>We keep your data for two years.</p><script>x()</script>",
             about_html="<h2>About</h2><p>We build things.</p>",
         )
@@ -617,7 +707,8 @@ async def test_public_apply_portal_and_throttle(client, session, tenant, people)
     assert bot.status_code == 400
 
     not_pdf = await client.post(
-        url, data={**base, "consent_application_processing": "true"},
+        url,
+        data={**base, "consent_application_processing": "true"},
         files={"resume": ("cv.pdf", b"<html>not a pdf</html>", "application/pdf")},
     )
     assert not_pdf.status_code == 422

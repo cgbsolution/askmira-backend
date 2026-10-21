@@ -54,8 +54,13 @@ async def test_a_tick_runs_each_tenant_once_and_records_failures(
         Job("test.ok", "OK", "", Cadence.daily(hour=0), _ok, source="tests"),
         Job("test.boom", "Boom", "", Cadence.daily(hour=0), _boom, source="tests"),
         Job(
-            "test.rewards", "Needs rewards", "", Cadence.every(minutes=5), _ok,
-            source="tests", module="rewards",
+            "test.rewards",
+            "Needs rewards",
+            "",
+            Cadence.every(minutes=5),
+            _ok,
+            source="tests",
+            module="rewards",
         ),
     )
     moment = datetime.now(UTC)

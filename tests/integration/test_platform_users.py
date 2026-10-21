@@ -41,8 +41,11 @@ async def test_nobody_grants_super_admin(client, session, tenant):
 
     created = await client.post(
         f"{API}/users",
-        json={"email": "new.person@acme-demo.com", "full_name": "New Person",
-              "role": "super_admin"},
+        json={
+            "email": "new.person@acme-demo.com",
+            "full_name": "New Person",
+            "role": "super_admin",
+        },
         headers=bearer(owner),
     )
     assert created.status_code == 403

@@ -70,8 +70,13 @@ async def _login(
     session: AsyncSession, tenant: Tenant, employee: Employee | None, role: UserRole, tag: str
 ) -> User:
     user = User(
-        tenant_id=tenant.id, email=f"{tag}@acme.test", password_hash="x", full_name=tag,
-        role=role, is_active=True, employee_id=employee.id if employee else None,
+        tenant_id=tenant.id,
+        email=f"{tag}@acme.test",
+        password_hash="x",
+        full_name=tag,
+        role=role,
+        is_active=True,
+        employee_id=employee.id if employee else None,
     )
     session.add(user)
     await session.commit()
@@ -81,8 +86,11 @@ async def _login(
 
 async def _person(session: AsyncSession, tenant: Tenant, code: str, **extra) -> Employee:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code,
-        work_email=f"{code.lower()}@acme.test", **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code,
+        work_email=f"{code.lower()}@acme.test",
+        **extra,
     )
     session.add(person)
     await session.commit()
@@ -108,9 +116,7 @@ def _fy(on: date) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def test_self_service_changes_contact_details_only(
-    client, session, tenant, employee
-) -> None:
+async def test_self_service_changes_contact_details_only(client, session, tenant, employee) -> None:
     me = await _login(session, tenant, employee, UserRole.EMPLOYEE, "anita")
     record = await client.get("/api/v1/employees/me", headers=_auth(me))
     assert record.status_code == 200
@@ -181,9 +187,7 @@ async def test_the_directory_filters_and_searches(client, session, tenant, hr_us
     dept = await _department(session, tenant, "ENG")
     await _person(session, tenant, "ZED1", department_id=dept.id, designation="Data engineer")
     me = await _login(session, tenant, employee, UserRole.EMPLOYEE, "dir")
-    by_dept = await client.get(
-        f"/api/v1/employees?department_id={dept.id}", headers=_auth(me)
-    )
+    by_dept = await client.get(f"/api/v1/employees?department_id={dept.id}", headers=_auth(me))
     assert [p["employee_code"] for p in by_dept.json()["items"]] == ["ZED1"]
     by_title = await client.get("/api/v1/employees?search=data%20eng", headers=_auth(me))
     assert by_title.json()["total"] == 1
@@ -220,9 +224,9 @@ async def test_admin_creates_and_edits_organisation_structure(
     )
     assert moved.status_code == 200
     summary = await session.scalar(
-        select(AuditLog.summary).where(AuditLog.entity_type == "location").order_by(
-            AuditLog.created_at.desc()
-        )
+        select(AuditLog.summary)
+        .where(AuditLog.entity_type == "location")
+        .order_by(AuditLog.created_at.desc())
     )
     assert "Professional Tax" in summary
 
@@ -302,12 +306,27 @@ async def test_creating_a_position_past_the_budget_is_refused(session, tenant, h
     )
     await session.commit()
 
-    first = PositionCreate(code="ENG-1", title="Engineer", department_id=dept.id,
-                           fte=Decimal("0.5"), effective_from=TODAY)
-    second = PositionCreate(code="ENG-2", title="Engineer", department_id=dept.id,
-                            fte=Decimal("0.5"), effective_from=TODAY)
-    third = PositionCreate(code="ENG-3", title="Engineer", department_id=dept.id,
-                           fte=Decimal("0.5"), effective_from=TODAY)
+    first = PositionCreate(
+        code="ENG-1",
+        title="Engineer",
+        department_id=dept.id,
+        fte=Decimal("0.5"),
+        effective_from=TODAY,
+    )
+    second = PositionCreate(
+        code="ENG-2",
+        title="Engineer",
+        department_id=dept.id,
+        fte=Decimal("0.5"),
+        effective_from=TODAY,
+    )
+    third = PositionCreate(
+        code="ENG-3",
+        title="Engineer",
+        department_id=dept.id,
+        fte=Decimal("0.5"),
+        effective_from=TODAY,
+    )
     await position_service.create_position(session, hr_user, first)
     await position_service.create_position(session, hr_user, second)
     await session.commit()
@@ -329,15 +348,19 @@ async def test_a_company_cost_budget_is_enforced(session, tenant, hr_user) -> No
     )
     await session.commit()
     await position_service.create_position(
-        session, hr_user,
-        PositionCreate(code="A", title="A", budgeted_ctc_max=Decimal("800000"),
-                       effective_from=TODAY),
+        session,
+        hr_user,
+        PositionCreate(
+            code="A", title="A", budgeted_ctc_max=Decimal("800000"), effective_from=TODAY
+        ),
     )
     with pytest.raises(HTTPException) as exc:
         await position_service.create_position(
-            session, hr_user,
-            PositionCreate(code="B", title="B", budgeted_ctc_max=Decimal("300000"),
-                           effective_from=TODAY),
+            session,
+            hr_user,
+            PositionCreate(
+                code="B", title="B", budgeted_ctc_max=Decimal("300000"), effective_from=TODAY
+            ),
         )
     assert "cost" in exc.value.detail
 
@@ -348,7 +371,8 @@ async def test_filling_a_seat_after_a_budget_cut_is_refused(
     dept = await _department(session, tenant, "OPS")
     for code in ("OPS-1", "OPS-2"):
         await position_service.create_position(
-            session, hr_user,
+            session,
+            hr_user,
             PositionCreate(code=code, title=code, department_id=dept.id, effective_from=TODAY),
         )
     await session.commit()
@@ -358,7 +382,8 @@ async def test_filling_a_seat_after_a_budget_cut_is_refused(
         session, hr_user, position_id=seats[0].id, employee_id=other.id, from_date=TODAY
     )
     result = await position_service.upsert_budget(
-        session, hr_user,
+        session,
+        hr_user,
         BudgetUpsert(financial_year=_fy(TODAY), department_id=dept.id, approved_positions=1),
     )
     await session.commit()
@@ -376,8 +401,13 @@ async def test_a_scenario_that_breaks_the_budget_writes_nothing(
 ) -> None:
     dept = await _department(session, tenant, "SAL")
     session.add(
-        HeadcountBudget(tenant_id=tenant.id, financial_year=_fy(TODAY), department_id=dept.id,
-                        approved_positions=1, approved_cost=Decimal(0))
+        HeadcountBudget(
+            tenant_id=tenant.id,
+            financial_year=_fy(TODAY),
+            department_id=dept.id,
+            approved_positions=1,
+            approved_cost=Decimal(0),
+        )
     )
     await session.commit()
     created = await client.post(
@@ -387,8 +417,15 @@ async def test_a_scenario_that_breaks_the_budget_writes_nothing(
             "name": "Growth",
             "as_of": TODAY.isoformat(),
             "changes": [
-                {"kind": "create", "values": {"code": f"S{i}", "title": "Rep",
-                 "department_id": str(dept.id), "budgeted_ctc_max": "900000"}}
+                {
+                    "kind": "create",
+                    "values": {
+                        "code": f"S{i}",
+                        "title": "Rep",
+                        "department_id": str(dept.id),
+                        "budgeted_ctc_max": "900000",
+                    },
+                }
                 for i in range(2)
             ],
         },
@@ -450,8 +487,13 @@ async def test_freeze_and_abolish_are_audited_status_changes(
 async def _confirmation_template(session: AsyncSession, tenant: Tenant, body: str) -> None:
     session.add(
         LetterTemplate(
-            tenant_id=tenant.id, code="CONFIRM", name="Confirmation",
-            category=LetterCategory.CONFIRMATION, body_html=body, version=1, active=True,
+            tenant_id=tenant.id,
+            code="CONFIRM",
+            name="Confirmation",
+            category=LetterCategory.CONFIRMATION,
+            body_html=body,
+            version=1,
+            active=True,
         )
     )
     await session.commit()
@@ -459,9 +501,13 @@ async def _confirmation_template(session: AsyncSession, tenant: Tenant, body: st
 
 async def _approved_confirmation(session, hr_user, employee) -> uuid_type:
     event = await lifecycle_service.raise_event(
-        session, hr_user, employee_id=employee.id,
-        event_type=LifecycleEventType.CONFIRMATION, effective_from=TODAY,
-        new_values={"probation_end_date": TODAY.isoformat()}, reason="Probation passed",
+        session,
+        hr_user,
+        employee_id=employee.id,
+        event_type=LifecycleEventType.CONFIRMATION,
+        effective_from=TODAY,
+        new_values={"probation_end_date": TODAY.isoformat()},
+        reason="Probation passed",
     )
     await lifecycle_service.approve_event(session, hr_user, event_id=event.id)
     await session.commit()
@@ -475,7 +521,8 @@ async def test_effecting_a_confirmation_issues_its_letter(
     session, tenant, hr_user, employee
 ) -> None:
     await _confirmation_template(
-        session, tenant,
+        session,
+        tenant,
         "<p>Dear {{employee.first_name}}, confirmed from {{manual.effective_date}}.</p>",
     )
     event_id = await _approved_confirmation(session, hr_user, employee)
@@ -523,9 +570,13 @@ async def test_nobody_raises_an_event_about_themselves(session, tenant, employee
     own = await _login(session, tenant, employee, UserRole.ADMIN, "selfevent")
     with pytest.raises(HTTPException) as exc:
         await lifecycle_service.raise_event(
-            session, own, employee_id=employee.id,
-            event_type=LifecycleEventType.GRADE_CHANGE, effective_from=TODAY,
-            new_values={"grade": "L9"}, reason="Self promotion",
+            session,
+            own,
+            employee_id=employee.id,
+            event_type=LifecycleEventType.GRADE_CHANGE,
+            effective_from=TODAY,
+            new_values={"grade": "L9"},
+            reason="Self promotion",
         )
     assert exc.value.status_code == 403
 

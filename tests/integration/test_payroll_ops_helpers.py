@@ -105,9 +105,7 @@ async def person(
     return employee, user
 
 
-async def plain_user(
-    session: AsyncSession, tenant: Tenant, *, email: str, role: UserRole
-) -> User:
+async def plain_user(session: AsyncSession, tenant: Tenant, *, email: str, role: UserRole) -> User:
     user = User(
         tenant_id=tenant.id,
         email=email,

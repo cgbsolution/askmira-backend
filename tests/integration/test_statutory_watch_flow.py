@@ -21,8 +21,12 @@ pytestmark = requires_db
 
 async def _platform(session: AsyncSession, tenant: Tenant) -> User:
     user = User(
-        tenant_id=tenant.id, email="platform@askmira-demo.com", password_hash="x",
-        full_name="Platform", role=UserRole.SUPER_ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="platform@askmira-demo.com",
+        password_hash="x",
+        full_name="Platform",
+        role=UserRole.SUPER_ADMIN,
+        is_active=True,
     )
     session.add(user)
     await session.commit()
@@ -30,32 +34,53 @@ async def _platform(session: AsyncSession, tenant: Tenant) -> User:
 
 
 async def test_a_notice_reaches_the_affected_workspace_and_is_drafted(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     location: Location,
 ) -> None:
     platform = await _platform(session, tenant)
     soon = date.today() + timedelta(days=20)
     with pytest.raises(HTTPException):
         await statutory_watch.publish(
-            session, hr_user,
-            NoticeIn(rule_type="professional_tax", jurisdiction="KA", effective_from=soon,
-                     title="Karnataka PT slab change", summary="New slabs from the notification.",
-                     source_reference="Notification 1/2026"),
+            session,
+            hr_user,
+            NoticeIn(
+                rule_type="professional_tax",
+                jurisdiction="KA",
+                effective_from=soon,
+                title="Karnataka PT slab change",
+                summary="New slabs from the notification.",
+                source_reference="Notification 1/2026",
+            ),
             request=None,
         )
     reviewed = await statutory_watch.publish(
-        session, platform,
-        NoticeIn(rule_type="professional_tax", jurisdiction="KA", effective_from=soon,
-                 title="Karnataka PT slab change", summary="New slabs from the notification.",
-                 source_reference="Notification 1/2026",
-                 suggested_rules={"slabs": [{"min": "0", "max": "24999", "amount": "0"}]}),
+        session,
+        platform,
+        NoticeIn(
+            rule_type="professional_tax",
+            jurisdiction="KA",
+            effective_from=soon,
+            title="Karnataka PT slab change",
+            summary="New slabs from the notification.",
+            source_reference="Notification 1/2026",
+            suggested_rules={"slabs": [{"min": "0", "max": "24999", "amount": "0"}]},
+        ),
         request=None,
     )
     await statutory_watch.publish(
-        session, platform,
-        NoticeIn(rule_type="professional_tax", jurisdiction="MH", effective_from=soon,
-                 title="Maharashtra PT change", summary="Not this workspace's state.",
-                 source_reference="Notification 2/2026"),
+        session,
+        platform,
+        NoticeIn(
+            rule_type="professional_tax",
+            jurisdiction="MH",
+            effective_from=soon,
+            title="Maharashtra PT change",
+            summary="Not this workspace's state.",
+            source_reference="Notification 2/2026",
+        ),
         request=None,
     )
 

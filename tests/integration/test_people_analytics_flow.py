@@ -28,11 +28,17 @@ TODAY = date(2026, 10, 13)
 
 def _person(tenant, entity, location, code, *, joined, left=None, manager=None) -> Employee:
     return Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code, last_name="Test",
-        work_email=f"{code.lower()}@acme.test", legal_entity_id=entity.id,
-        location_id=location.id, manager_id=manager,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code,
+        last_name="Test",
+        work_email=f"{code.lower()}@acme.test",
+        legal_entity_id=entity.id,
+        location_id=location.id,
+        manager_id=manager,
         status=EmploymentStatus.EXITED if left else EmploymentStatus.ACTIVE,
-        date_of_joining=joined, date_of_exit=left,
+        date_of_joining=joined,
+        date_of_exit=left,
     )
 
 
@@ -54,12 +60,18 @@ async def test_attrition_is_exits_over_average_headcount(
     session.add_all(
         [
             ExitRecord(
-                tenant_id=tenant.id, employee_id=leaver.id, exit_type=ExitType.RESIGNATION,
-                status=ExitStatus.SETTLED, resignation_date=date(2026, 8, 15),
+                tenant_id=tenant.id,
+                employee_id=leaver.id,
+                exit_type=ExitType.RESIGNATION,
+                status=ExitStatus.SETTLED,
+                resignation_date=date(2026, 8, 15),
             ),
             ExitRecord(
-                tenant_id=tenant.id, employee_id=fired.id, exit_type=ExitType.TERMINATION,
-                status=ExitStatus.SETTLED, resignation_date=date(2026, 9, 20),
+                tenant_id=tenant.id,
+                employee_id=fired.id,
+                exit_type=ExitType.TERMINATION,
+                status=ExitStatus.SETTLED,
+                resignation_date=date(2026, 9, 20),
             ),
         ]
     )
@@ -84,14 +96,20 @@ async def test_a_manager_sees_only_their_line(
     boss = _person(tenant, legal_entity, location, "BOSS", joined=date(2024, 1, 1))
     session.add(boss)
     await session.flush()
-    report = _person(tenant, legal_entity, location, "RPT", joined=date(2024, 1, 1),
-                     manager=boss.id)
+    report = _person(
+        tenant, legal_entity, location, "RPT", joined=date(2024, 1, 1), manager=boss.id
+    )
     other = _person(tenant, legal_entity, location, "OTH", joined=date(2024, 1, 1))
     session.add_all([report, other])
     await session.flush()
     login = User(
-        tenant_id=tenant.id, email="boss@acme.test", password_hash="x", full_name="Boss",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=boss.id,
+        tenant_id=tenant.id,
+        email="boss@acme.test",
+        password_hash="x",
+        full_name="Boss",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=boss.id,
     )
     session.add(login)
     await session.commit()
@@ -111,9 +129,14 @@ async def test_signals_name_their_rule_and_evidence(
         day = TODAY - timedelta(days=offset)
         session.add(
             AttendanceDay(
-                tenant_id=tenant.id, employee_id=worker.id, attendance_date=day,
-                status=AttendanceStatus.PRESENT, payable_fraction=Decimal(1),
-                worked_minutes=600, overtime_minutes=120, computed_at=datetime.now(UTC),
+                tenant_id=tenant.id,
+                employee_id=worker.id,
+                attendance_date=day,
+                status=AttendanceStatus.PRESENT,
+                payable_fraction=Decimal(1),
+                worked_minutes=600,
+                overtime_minutes=120,
+                computed_at=datetime.now(UTC),
             )
         )
     await session.commit()
@@ -131,7 +154,9 @@ async def _days(session, tenant, employee, statuses: dict[date, AttendanceStatus
     for day, status in statuses.items():
         session.add(
             AttendanceDay(
-                tenant_id=tenant.id, employee_id=employee.id, attendance_date=day,
+                tenant_id=tenant.id,
+                employee_id=employee.id,
+                attendance_date=day,
                 status=status,
                 payable_fraction=Decimal(1) if status is AttendanceStatus.PRESENT else Decimal(0),
                 worked_minutes=480 if status is AttendanceStatus.PRESENT else 0,
@@ -176,8 +201,12 @@ async def test_the_pay_signal_is_for_admins_only(
     long_server = _person(tenant, legal_entity, location, "STILL", joined=date(2024, 1, 10))
     session.add(long_server)
     sub_admin = User(
-        tenant_id=tenant.id, email="ops@acme.test", password_hash="x", full_name="Ops",
-        role=UserRole.SUB_ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="ops@acme.test",
+        password_hash="x",
+        full_name="Ops",
+        role=UserRole.SUB_ADMIN,
+        is_active=True,
     )
     session.add(sub_admin)
     await session.commit()
@@ -198,13 +227,19 @@ async def test_the_digest_reaches_hr_and_the_flagged_persons_manager(
     boss = _person(tenant, legal_entity, location, "LEAD", joined=date(2024, 1, 1))
     session.add(boss)
     await session.flush()
-    worker = _person(tenant, legal_entity, location, "TIRED", joined=date(2025, 1, 1),
-                     manager=boss.id)
+    worker = _person(
+        tenant, legal_entity, location, "TIRED", joined=date(2025, 1, 1), manager=boss.id
+    )
     session.add(worker)
     session.add(
         User(
-            tenant_id=tenant.id, email="lead@acme.test", password_hash="x", full_name="Lead",
-            role=UserRole.EMPLOYEE, is_active=True, employee_id=boss.id,
+            tenant_id=tenant.id,
+            email="lead@acme.test",
+            password_hash="x",
+            full_name="Lead",
+            role=UserRole.EMPLOYEE,
+            is_active=True,
+            employee_id=boss.id,
         )
     )
     await session.flush()
@@ -212,10 +247,14 @@ async def test_the_digest_reaches_hr_and_the_flagged_persons_manager(
     for offset in range(1, 21):
         session.add(
             AttendanceDay(
-                tenant_id=tenant.id, employee_id=worker.id,
+                tenant_id=tenant.id,
+                employee_id=worker.id,
                 attendance_date=monday - timedelta(days=offset),
-                status=AttendanceStatus.PRESENT, payable_fraction=Decimal(1),
-                worked_minutes=600, overtime_minutes=120, computed_at=datetime.now(UTC),
+                status=AttendanceStatus.PRESENT,
+                payable_fraction=Decimal(1),
+                worked_minutes=600,
+                overtime_minutes=120,
+                computed_at=datetime.now(UTC),
             )
         )
     await session.commit()
@@ -243,21 +282,32 @@ async def test_performance_overview_shows_trend_goals_and_rater_spread(
     from app.services.reporting import performance_analytics
 
     cycle = AppraisalCycle(
-        tenant_id=tenant.id, name="FY26 annual", cycle_type=CycleType.ANNUAL,
-        status=CycleStatus.CLOSED, period_start=date(2025, 4, 1), period_end=date(2026, 3, 31),
+        tenant_id=tenant.id,
+        name="FY26 annual",
+        cycle_type=CycleType.ANNUAL,
+        status=CycleStatus.CLOSED,
+        period_start=date(2025, 4, 1),
+        period_end=date(2026, 3, 31),
     )
     session.add(cycle)
     await session.flush()
     stage = AppraisalStage(
-        tenant_id=tenant.id, cycle_id=cycle.id, sequence=1, role=StageRole.MANAGER,
+        tenant_id=tenant.id,
+        cycle_id=cycle.id,
+        sequence=1,
+        role=StageRole.MANAGER,
         label="Manager",
     )
     session.add(stage)
     raters = []
     for name in ("Generous", "Tough", "Middle"):
         rater = User(
-            tenant_id=tenant.id, email=f"{name.lower()}@acme.test", password_hash="x",
-            full_name=name, role=UserRole.EMPLOYEE, is_active=True,
+            tenant_id=tenant.id,
+            email=f"{name.lower()}@acme.test",
+            password_hash="x",
+            full_name=name,
+            role=UserRole.EMPLOYEE,
+            is_active=True,
         )
         session.add(rater)
         raters.append(rater)
@@ -272,23 +322,32 @@ async def test_performance_overview_shows_trend_goals_and_rater_spread(
             session.add(person)
             await session.flush()
             appraisal = Appraisal(
-                tenant_id=tenant.id, cycle_id=cycle.id, employee_id=person.id,
+                tenant_id=tenant.id,
+                cycle_id=cycle.id,
+                employee_id=person.id,
                 status=AppraisalStatus.COMPLETED if n % 5 else AppraisalStatus.IN_PROGRESS,
-                final_rating=labels[rater.full_name], final_score=scores[rater.full_name],
+                final_rating=labels[rater.full_name],
+                final_score=scores[rater.full_name],
             )
             session.add(appraisal)
             await session.flush()
             session.add(
                 AppraisalStageEntry(
-                    tenant_id=tenant.id, appraisal_id=appraisal.id, stage_id=stage.id,
-                    actor_user_id=rater.id, score=scores[rater.full_name],
+                    tenant_id=tenant.id,
+                    appraisal_id=appraisal.id,
+                    stage_id=stage.id,
+                    actor_user_id=rater.id,
+                    score=scores[rater.full_name],
                     submitted_at=datetime.now(UTC),
                 )
             )
             session.add(
                 Goal(
-                    tenant_id=tenant.id, owner_employee_id=person.id, title="Ship it",
-                    due_date=date(2026, 3, 31), appraisal_cycle_id=cycle.id,
+                    tenant_id=tenant.id,
+                    owner_employee_id=person.id,
+                    title="Ship it",
+                    due_date=date(2026, 3, 31),
+                    appraisal_cycle_id=cycle.id,
                     status=GoalStatus.COMPLETED if n % 3 == 0 else GoalStatus.ACTIVE,
                     progress_percent=Decimal(100) if n % 3 == 0 else Decimal(40),
                 )
@@ -335,8 +394,11 @@ async def test_the_workspace_sets_the_thresholds_and_team_exits_show(
     for i, person in enumerate(gone):
         session.add(
             ExitRecord(
-                tenant_id=tenant.id, employee_id=person.id, exit_type=ExitType.RESIGNATION,
-                status=ExitStatus.NOTICE_PERIOD, resignation_date=TODAY - timedelta(days=20 + i),
+                tenant_id=tenant.id,
+                employee_id=person.id,
+                exit_type=ExitType.RESIGNATION,
+                status=ExitStatus.NOTICE_PERIOD,
+                resignation_date=TODAY - timedelta(days=20 + i),
             )
         )
     await session.commit()

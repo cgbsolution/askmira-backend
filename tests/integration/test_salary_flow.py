@@ -113,9 +113,7 @@ async def test_a_salary_assignment_writes_exactly_one_audit_entry(
     )
 
     entries = (
-        await session.scalars(
-            select(AuditLog).where(AuditLog.entity_type == "employee_salary")
-        )
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "employee_salary"))
     ).all()
 
     assert len(entries) == 1
@@ -227,9 +225,7 @@ async def test_the_salary_in_force_resolves_by_date_not_by_today(
             ),
         )
 
-    june = await salary_service.active_salary_on(
-        session, hr_user, employee.id, date(2026, 6, 30)
-    )
+    june = await salary_service.active_salary_on(session, hr_user, employee.id, date(2026, 6, 30))
     december = await salary_service.active_salary_on(
         session, hr_user, employee.id, date(2026, 12, 31)
     )
@@ -355,9 +351,7 @@ async def test_one_tenant_cannot_read_anothers_salary_history(
     # Same employee id, wrong workspace.
     assert await salary_service.salary_history(session, other_hr_user, employee.id) == []
     assert (
-        await salary_service.active_salary_on(
-            session, other_hr_user, employee.id, date(2026, 6, 1)
-        )
+        await salary_service.active_salary_on(session, other_hr_user, employee.id, date(2026, 6, 1))
         is None
     )
 

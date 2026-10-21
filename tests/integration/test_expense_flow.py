@@ -91,9 +91,7 @@ async def capture(session, user, employee, **kw):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_verdict_comes_back_in_the_capture_response(
-    session, hr_user, employee
-):
+async def test_the_verdict_comes_back_in_the_capture_response(session, hr_user, employee):
     """The whole point of the slice.
 
     An employee who learns three weeks later that their claim was out of policy
@@ -119,9 +117,7 @@ async def test_the_verdict_comes_back_in_the_capture_response(
     assert claim.status is ExpenseClaimStatusEnum.DRAFT
 
 
-async def test_a_verdict_survives_the_limit_being_tightened_afterwards(
-    session, hr_user, employee
-):
+async def test_a_verdict_survives_the_limit_being_tightened_afterwards(session, hr_user, employee):
     """A March claim must keep reading as having been judged against March.
 
     Recomputing at submission would turn a claim the employee was told was fine
@@ -140,9 +136,7 @@ async def test_a_verdict_survives_the_limit_being_tightened_afterwards(
         rules=[hotel_rule(ViolationActionEnum.BLOCK, limit_amount=D("1000"))],
     )
 
-    claim = await expenses.submit_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"])
-    )
+    claim = await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
     assert claim.status is ExpenseClaimStatusEnum.SUBMITTED
     assert claim.policy_verdict is PolicyVerdictEnum.WITHIN_POLICY
 
@@ -160,9 +154,7 @@ async def test_a_blocked_claim_cannot_be_submitted(session, hr_user, employee):
     assert out["may_submit"] is False
 
     with pytest.raises(HTTPException) as exc:
-        await expenses.submit_claim(
-            session, hr_user, claim_id=uuid.UUID(out["claim_id"])
-        )
+        await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
     assert exc.value.status_code == 400
     assert "cannot be submitted" in exc.value.detail
 
@@ -181,42 +173,30 @@ async def test_a_blocked_claim_is_still_stored(session, hr_user, employee):
     assert claim.status is ExpenseClaimStatusEnum.DRAFT
     violation = (
         await session.execute(
-            select(ExpensePolicyViolation).where(
-                ExpensePolicyViolation.claim_id == claim.id
-            )
+            select(ExpensePolicyViolation).where(ExpensePolicyViolation.claim_id == claim.id)
         )
     ).scalar_one()
     assert violation.violation_action is ViolationActionEnum.BLOCK
     assert violation.overage == D("4000.00")
 
 
-async def test_a_flagged_claim_submits_and_the_approver_sees_the_flag(
-    session, hr_user, employee
-):
+async def test_a_flagged_claim_submits_and_the_approver_sees_the_flag(session, hr_user, employee):
     await make_policy(session, hr_user, [hotel_rule(ViolationActionEnum.FLAG)])
     out = await capture(session, hr_user, employee, amount=D("12000"))
 
-    claim = await expenses.submit_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"])
-    )
+    claim = await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
     assert claim.status is ExpenseClaimStatusEnum.SUBMITTED
     assert claim.flagged_for_approver is True
 
 
-async def test_require_justification_needs_a_written_reason(
-    session, hr_user, employee
-):
-    await make_policy(
-        session, hr_user, [hotel_rule(ViolationActionEnum.REQUIRE_JUSTIFICATION)]
-    )
+async def test_require_justification_needs_a_written_reason(session, hr_user, employee):
+    await make_policy(session, hr_user, [hotel_rule(ViolationActionEnum.REQUIRE_JUSTIFICATION)])
     out = await capture(session, hr_user, employee, amount=D("12000"))
     assert out["verdict"]["kind"] == "needs_justification"
     assert out["may_submit"] is False
 
     with pytest.raises(HTTPException) as exc:
-        await expenses.submit_claim(
-            session, hr_user, claim_id=uuid.UUID(out["claim_id"])
-        )
+        await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
     assert "written reason" in exc.value.detail
 
     claim = await expenses.submit_claim(
@@ -229,12 +209,8 @@ async def test_require_justification_needs_a_written_reason(
     assert "Conference hotel" in claim.justification
 
 
-async def test_whitespace_does_not_satisfy_a_justification(
-    session, hr_user, employee
-):
-    await make_policy(
-        session, hr_user, [hotel_rule(ViolationActionEnum.REQUIRE_JUSTIFICATION)]
-    )
+async def test_whitespace_does_not_satisfy_a_justification(session, hr_user, employee):
+    await make_policy(session, hr_user, [hotel_rule(ViolationActionEnum.REQUIRE_JUSTIFICATION)])
     out = await capture(session, hr_user, employee, amount=D("12000"))
 
     with pytest.raises(HTTPException):
@@ -251,9 +227,7 @@ async def test_whitespace_does_not_satisfy_a_justification(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_per_trip_aggregation_across_several_claims(
-    session, hr_user, employee
-):
+async def test_per_trip_aggregation_across_several_claims(session, hr_user, employee):
     """Four ₹3,000 nights on one trip breach a ₹10,000 trip limit.
 
     Every claim passes on its own, which is exactly the bug.
@@ -299,9 +273,7 @@ async def test_per_trip_aggregation_across_several_claims(
     assert verdicts[3]["overage"] == "2000.00"
 
 
-async def test_another_trips_claims_do_not_consume_this_trips_limit(
-    session, hr_user, employee
-):
+async def test_another_trips_claims_do_not_consume_this_trips_limit(session, hr_user, employee):
     await make_policy(
         session,
         hr_user,
@@ -338,16 +310,12 @@ async def test_another_trips_claims_do_not_consume_this_trips_limit(
             travel_request_id=trips[0].id,
         )
 
-    out = await capture(
-        session, hr_user, employee, amount=D("3000"), travel_request_id=trips[1].id
-    )
+    out = await capture(session, hr_user, employee, amount=D("3000"), travel_request_id=trips[1].id)
     assert out["verdict"]["already_claimed"] == "0.00"
     assert out["verdict"]["kind"] == "within_policy"
 
 
-async def test_per_day_aggregation_counts_only_that_day(
-    session, hr_user, employee
-):
+async def test_per_day_aggregation_counts_only_that_day(session, hr_user, employee):
     await make_policy(
         session,
         hr_user,
@@ -390,9 +358,7 @@ async def test_per_day_aggregation_counts_only_that_day(
     assert same_day["verdict"]["overage"] == "400.00"
 
 
-async def test_a_rejected_claim_stops_consuming_the_limit(
-    session, hr_user, employee
-):
+async def test_a_rejected_claim_stops_consuming_the_limit(session, hr_user, employee):
     """A claim the company refused is not spend.
 
     Counting it would consume a limit the employee never used.
@@ -424,9 +390,7 @@ async def test_a_rejected_claim_stops_consuming_the_limit(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_per_diem_claim_needs_no_receipt(
-    session, hr_user, employee, tenant
-):
+async def test_a_per_diem_claim_needs_no_receipt(session, hr_user, employee, tenant):
     employee.grade = "M3"
     await session.commit()
 
@@ -469,9 +433,7 @@ async def test_a_per_diem_claim_needs_no_receipt(
     assert out["may_submit"] is True
 
 
-async def test_a_receipted_claim_without_a_receipt_stops(
-    session, hr_user, employee
-):
+async def test_a_receipted_claim_without_a_receipt_stops(session, hr_user, employee):
     await make_policy(
         session,
         hr_user,
@@ -496,9 +458,7 @@ async def test_a_receipted_claim_without_a_receipt_stops(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_mileage_claim_is_valued_and_flagged_not_refused(
-    session, hr_user, employee
-):
+async def test_a_mileage_claim_is_valued_and_flagged_not_refused(session, hr_user, employee):
     await expenses.set_mileage_rate(
         session,
         hr_user,
@@ -542,9 +502,7 @@ async def test_a_mileage_claim_is_valued_and_flagged_not_refused(
     assert claim.exceeds_route_tolerance is True
 
 
-async def test_a_march_claim_keeps_the_march_mileage_rate(
-    session, hr_user, employee
-):
+async def test_a_march_claim_keeps_the_march_mileage_rate(session, hr_user, employee):
     await expenses.set_mileage_rate(
         session,
         hr_user,
@@ -579,9 +537,7 @@ async def test_a_march_claim_keeps_the_march_mileage_rate(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_foreign_claim_stores_both_amounts_and_the_convention(
-    session, hr_user, employee
-):
+async def test_a_foreign_claim_stores_both_amounts_and_the_convention(session, hr_user, employee):
     await expenses.record_exchange_rate(
         session,
         hr_user,
@@ -613,9 +569,7 @@ async def test_a_foreign_claim_stores_both_amounts_and_the_convention(
     assert claim.exchange_rate_source == "RBI reference rate"
 
 
-async def test_the_settlement_convention_uses_a_different_date(
-    session, hr_user, employee
-):
+async def test_the_settlement_convention_uses_a_different_date(session, hr_user, employee):
     """Both conventions are in use, so it is a setting rather than an
     assumption — and the difference on a moving rupee is real money."""
     await expenses.set_settings(
@@ -650,9 +604,7 @@ async def test_the_settlement_convention_uses_a_different_date(
     assert out["conversion"]["convention"] == "settlement_date"
 
 
-async def test_a_settlement_convention_with_no_settlement_date_refuses(
-    session, hr_user, employee
-):
+async def test_a_settlement_convention_with_no_settlement_date_refuses(session, hr_user, employee):
     await expenses.set_settings(
         session,
         hr_user,
@@ -670,9 +622,7 @@ async def test_a_settlement_convention_with_no_settlement_date_refuses(
     assert "convention nobody chose" in exc.value.detail
 
 
-async def test_a_missing_rate_refuses_rather_than_guessing(
-    session, hr_user, employee
-):
+async def test_a_missing_rate_refuses_rather_than_guessing(session, hr_user, employee):
     with pytest.raises(HTTPException) as exc:
         await capture(
             session,
@@ -705,9 +655,7 @@ async def approved_trip(session, user, employee, purpose="Client visit"):
     )
 
 
-async def test_an_unsettled_advance_blocks_the_next_one(
-    session, hr_user, employee
-):
+async def test_an_unsettled_advance_blocks_the_next_one(session, hr_user, employee):
     """The control finance actually asks for.
 
     ₹40,000 in March with no claims, another advance in June, and the company is
@@ -804,9 +752,7 @@ async def test_an_advance_needs_an_approved_trip(session, hr_user, employee):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_an_under_spent_advance_leaves_a_recovery_for_payroll(
-    session, hr_user, employee
-):
+async def test_an_under_spent_advance_leaves_a_recovery_for_payroll(session, hr_user, employee):
     """Recorded, not netted. Nothing in payroll picks it up yet, so the balance
     stays visible and unrecovered rather than being quietly written off."""
     await make_policy(
@@ -830,9 +776,7 @@ async def test_an_under_spent_advance_leaves_a_recovery_for_payroll(
         travel_request_id=trip.id,
     )
     await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
-    await expenses.decide_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True
-    )
+    await expenses.decide_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True)
 
     result = await expenses.settle_advance(
         session, hr_user, advance_id=advance.id, settled_on=date(2026, 3, 15)
@@ -851,9 +795,7 @@ async def test_an_under_spent_advance_leaves_a_recovery_for_payroll(
     assert row.payroll_recovery_ref is None
 
 
-async def test_an_over_spent_advance_refunds_the_employee(
-    session, hr_user, employee
-):
+async def test_an_over_spent_advance_refunds_the_employee(session, hr_user, employee):
     await make_policy(
         session, hr_user, [hotel_rule(ViolationActionEnum.FLAG, limit_amount=D("50000"))]
     )
@@ -874,9 +816,7 @@ async def test_an_over_spent_advance_refunds_the_employee(
         travel_request_id=trip.id,
     )
     await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
-    await expenses.decide_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True
-    )
+    await expenses.decide_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True)
 
     result = await expenses.settle_advance(
         session, hr_user, advance_id=advance.id, settled_on=date(2026, 3, 15)
@@ -886,9 +826,7 @@ async def test_an_over_spent_advance_refunds_the_employee(
     assert result["payroll_recovery"] is None
 
 
-async def test_another_trips_claims_do_not_settle_this_advance(
-    session, hr_user, employee
-):
+async def test_another_trips_claims_do_not_settle_this_advance(session, hr_user, employee):
     """The service selects claims by the advance's own trip, so a claim on
     another trip cannot reach the settlement at all."""
     await make_policy(
@@ -913,9 +851,7 @@ async def test_another_trips_claims_do_not_settle_this_advance(
         travel_request_id=other.id,
     )
     await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
-    await expenses.decide_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True
-    )
+    await expenses.decide_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True)
 
     result = await expenses.settle_advance(
         session, hr_user, advance_id=advance.id, settled_on=date(2026, 3, 15)
@@ -946,9 +882,7 @@ async def test_a_settled_advance_stops_blocking(session, hr_user, employee):
         travel_request_id=trip.id,
     )
     await expenses.submit_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]))
-    await expenses.decide_claim(
-        session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True
-    )
+    await expenses.decide_claim(session, hr_user, claim_id=uuid.UUID(out["claim_id"]), approve=True)
     await expenses.settle_advance(
         session, hr_user, advance_id=advance.id, settled_on=date(2026, 3, 15)
     )
@@ -983,9 +917,7 @@ async def test_an_advance_cannot_be_settled_twice(session, hr_user, employee):
     assert "twice" in exc.value.detail
 
 
-async def test_the_ageing_report_buckets_outstanding_advances(
-    session, hr_user, employee
-):
+async def test_the_ageing_report_buckets_outstanding_advances(session, hr_user, employee):
     trip = await approved_trip(session, hr_user, employee)
     await expenses.issue_advance(
         session,
@@ -1029,22 +961,16 @@ async def test_an_unknown_scope_is_refused(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_claim_is_invisible_to_another_tenant(
-    session, hr_user, other_hr_user, employee
-):
+async def test_a_claim_is_invisible_to_another_tenant(session, hr_user, other_hr_user, employee):
     await make_policy(session, hr_user, [hotel_rule(ViolationActionEnum.FLAG)])
     out = await capture(session, hr_user, employee, amount=D("5000"))
 
     with pytest.raises(HTTPException) as exc:
-        await expenses.submit_claim(
-            session, other_hr_user, claim_id=uuid.UUID(out["claim_id"])
-        )
+        await expenses.submit_claim(session, other_hr_user, claim_id=uuid.UUID(out["claim_id"]))
     assert exc.value.status_code == 404
 
 
-async def test_an_advance_is_invisible_to_another_tenant(
-    session, hr_user, other_hr_user, employee
-):
+async def test_an_advance_is_invisible_to_another_tenant(session, hr_user, other_hr_user, employee):
     trip = await approved_trip(session, hr_user, employee)
     advance = await expenses.issue_advance(
         session,
@@ -1130,7 +1056,5 @@ async def test_a_claim_on_someone_elses_trip_is_refused(
 
     trip = await approved_trip(session, hr_user, colleague)
     with pytest.raises(HTTPException) as exc:
-        await capture(
-            session, hr_user, employee, amount=D("1000"), travel_request_id=trip.id
-        )
+        await capture(session, hr_user, employee, amount=D("1000"), travel_request_id=trip.id)
     assert "settle their advance" in exc.value.detail

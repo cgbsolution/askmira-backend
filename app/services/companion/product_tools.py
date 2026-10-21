@@ -202,11 +202,12 @@ def _table(
     *,
     caption: str,
     empty: str,
+    links: list[str | None] | None = None,
 ) -> dict[str, Any]:
     if not rows:
         return _notice(empty)
     product = PRODUCTS[product_key]
-    return {
+    card: dict[str, Any] = {
         "type": "table",
         "title": title,
         "caption": caption,
@@ -216,6 +217,21 @@ def _table(
         "source": product.brand,
         "open": f"/launch/{product.key}",
     }
+    if links and any(links):
+        # Per row: where to open that row in the product, signed in as the person.
+        card["links"] = links
+    return card
+
+
+def _job_page(ref: Any) -> str | None:
+    """A job's candidates in AnytimeHire — where its résumés are — opened through AskMira.
+
+    The ref is AnytimeHire's opaque id for the job; anything else gives no link.
+    """
+    text = str(ref or "")
+    if not text or not text.replace("-", "").replace("_", "").isalnum() or len(text) > 64:
+        return None
+    return f"/launch/interview?to=/job-openings/{text}/candidates"
 
 
 # ── Hiring (AnytimeHire) ────────────────────────────────────────────────────
@@ -267,6 +283,7 @@ async def _hiring_jobs(
         ]
         for job in _items(data, "jobs")
     ]
+    links = [_job_page(job.get("ref")) for job in _items(data, "jobs")]
     caption = _caption(
         len(rows),
         _int(data.get("total")),
@@ -290,6 +307,7 @@ async def _hiring_jobs(
         rows,
         caption=caption,
         empty="No jobs match that in AnytimeHire.",
+        links=links,
     )
     return [card], used
 
@@ -319,6 +337,7 @@ async def _hiring_candidates(
         ]
         for person in _items(data, "candidates")
     ]
+    links = [_job_page(person.get("job_ref")) for person in _items(data, "candidates")]
     caption = _caption(
         len(rows),
         _int(data.get("total")),
@@ -333,6 +352,7 @@ async def _hiring_candidates(
         rows,
         caption=caption,
         empty="No candidates match that in AnytimeHire.",
+        links=links,
     )
     return [card], used
 

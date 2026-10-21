@@ -342,6 +342,19 @@ async def test_without_an_ai_provider_it_answers_by_rule(
     assert (await session.scalars(select(CrossBorderTransfer))).all() == []
 
 
+async def test_anyone_can_ask_whether_the_products_are_connected(
+    session: AsyncSession, me: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    result = await _say(session, me, "is anytimehire connected?")
+    reply = result["messages"][1]
+    assert reply["tool"] == "product_connections"
+    table = reply["cards"][0]
+    assert [row[0] for row in table["rows"]] == ["AnytimeHire", "ExpenseGenie"]
+    # Nothing linked in a fresh workspace, so nothing to read.
+    assert all(row[3] == "None" for row in table["rows"])
+
+
 # ── Each workspace's own agent ──────────────────────────────────────────────
 
 

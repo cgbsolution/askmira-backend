@@ -27,9 +27,13 @@ async def _person(
     session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, grade: str | None
 ) -> Employee:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code.title(),
-        work_email=f"{code.lower()}@acme-demo.com", legal_entity_id=entity.id,
-        status=EmploymentStatus.ACTIVE, grade=grade,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        grade=grade,
     )
     session.add(person)
     await session.commit()
@@ -41,14 +45,24 @@ async def test_positioning_reads_each_ctc_against_the_band(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
 ) -> None:
     l4 = await grades.create_grade(
-        session, hr_user,
-        PayGradeCreate(code="L4", name="Senior engineer", level=4, band_min=Decimal("1500000"),
-                       band_mid=Decimal("2000000"), band_max=Decimal("2500000")),
+        session,
+        hr_user,
+        PayGradeCreate(
+            code="L4",
+            name="Senior engineer",
+            level=4,
+            band_min=Decimal("1500000"),
+            band_mid=Decimal("2000000"),
+            band_max=Decimal("2500000"),
+        ),
         request=None,
     )
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2025, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2025, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     session.add(structure)
     await session.flush()
@@ -58,8 +72,11 @@ async def test_positioning_reads_each_ctc_against_the_band(
     for person, ctc in ((low, "1200000"), (mid, "2200000"), (none, "900000")):
         session.add(
             EmployeeSalary(
-                tenant_id=tenant.id, employee_id=person.id, structure_id=structure.id,
-                ctc_annual=Decimal(ctc), effective_from=date(2026, 4, 1),
+                tenant_id=tenant.id,
+                employee_id=person.id,
+                structure_id=structure.id,
+                ctc_annual=Decimal(ctc),
+                effective_from=date(2026, 4, 1),
             )
         )
     await session.commit()
@@ -86,13 +103,18 @@ async def test_a_record_can_only_carry_a_defined_grade_once_grades_exist(
 ) -> None:
     person = await _person(session, tenant, legal_entity, "P1", None)
     # No grades defined yet: free text is still accepted.
-    await employee_service.update_employee(
-        session, hr_user, person.id, EmployeeUpdate(grade="X9")
-    )
+    await employee_service.update_employee(session, hr_user, person.id, EmployeeUpdate(grade="X9"))
     await grades.create_grade(
-        session, hr_user,
-        PayGradeCreate(code="L2", name="Engineer", level=2, band_min=Decimal("600000"),
-                       band_mid=Decimal("800000"), band_max=Decimal("1000000")),
+        session,
+        hr_user,
+        PayGradeCreate(
+            code="L2",
+            name="Engineer",
+            level=2,
+            band_min=Decimal("600000"),
+            band_mid=Decimal("800000"),
+            band_max=Decimal("1000000"),
+        ),
         request=None,
     )
     with pytest.raises(HTTPException) as refused:

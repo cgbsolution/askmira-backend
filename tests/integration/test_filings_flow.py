@@ -127,7 +127,10 @@ async def test_a_return_cannot_be_built_from_an_unapproved_run(
 
 
 async def test_a_missing_pf_rule_set_refuses_rather_than_assuming_ceilings(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     run = await _run(session, tenant, legal_entity.id)
@@ -146,7 +149,10 @@ async def test_a_missing_pf_rule_set_refuses_rather_than_assuming_ceilings(
 
 
 async def test_a_clean_ecr_generates_and_records(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant)
@@ -167,7 +173,10 @@ async def test_a_clean_ecr_generates_and_records(
 
 
 async def test_a_blank_uan_blocks_the_ecr_and_records_the_fix_list(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate, end to end.
@@ -196,7 +205,10 @@ async def test_a_blank_uan_blocks_the_ecr_and_records_the_fix_list(
 
 
 async def test_an_employee_with_no_pf_is_left_off_the_ecr(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A contractor, or someone excluded. Not a defect, and not on the return."""
@@ -204,8 +216,13 @@ async def test_an_employee_with_no_pf_is_left_off_the_ecr(
     await _identify(session, employee, uan=None)
     run = await _run(session, tenant, legal_entity.id)
     await _payslip(
-        session, tenant, run, employee,
-        pf_employee=Decimal(0), pf_employer=Decimal(0), pf_wage_base=Decimal(0),
+        session,
+        tenant,
+        run,
+        employee,
+        pf_employee=Decimal(0),
+        pf_employer=Decimal(0),
+        pf_wage_base=Decimal(0),
     )
 
     generated = await filing_service.generate_ecr(
@@ -216,7 +233,10 @@ async def test_an_employee_with_no_pf_is_left_off_the_ecr(
 
 
 async def test_ncp_days_reach_the_ecr_from_attendance(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate: NCP derives from LOP, not from a zero."""
@@ -233,7 +253,10 @@ async def test_ncp_days_reach_the_ecr_from_attendance(
 
 
 async def test_ecr_generation_is_deterministic(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """Two runs, identical bytes — which is what makes the recorded hash a
@@ -263,13 +286,19 @@ async def test_ecr_generation_is_deterministic(
 
 
 async def test_esic_lists_only_contributing_employees(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     await _identify(session, employee, esi_number="3100123456")
     run = await _run(session, tenant, legal_entity.id)
     await _payslip(
-        session, tenant, run, employee,
+        session,
+        tenant,
+        run,
+        employee,
         esi_wage_base=Decimal("18000.00"),
         esi_employee=Decimal("135.00"),
         esi_employer=Decimal("585.00"),
@@ -285,12 +314,18 @@ async def test_esic_lists_only_contributing_employees(
 
 
 async def test_a_missing_insurance_number_blocks_the_esic_return(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     run = await _run(session, tenant, legal_entity.id)
     await _payslip(
-        session, tenant, run, employee,
+        session,
+        tenant,
+        run,
+        employee,
         esi_wage_base=Decimal("18000.00"),
         esi_employee=Decimal("135.00"),
         esi_employer=Decimal("585.00"),
@@ -310,21 +345,34 @@ async def test_a_missing_insurance_number_blocks_the_esic_return(
 
 
 async def test_pt_generates_one_challan_per_state(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
-    employee: Employee, location,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+    location,
 ) -> None:
     from app.models.org import Location
 
     pune = Location(
-        tenant_id=tenant.id, legal_entity_id=legal_entity.id, name="Pune",
-        code="PNQ", city="Pune", state_code="MH",
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        name="Pune",
+        code="PNQ",
+        city="Pune",
+        state_code="MH",
     )
     session.add(pune)
     await session.flush()
 
     second = Employee(
-        tenant_id=tenant.id, employee_code="ACM002", first_name="Rahul", last_name="Iyer",
-        work_email="rahul@acme.test", legal_entity_id=legal_entity.id, location_id=pune.id,
+        tenant_id=tenant.id,
+        employee_code="ACM002",
+        first_name="Rahul",
+        last_name="Iyer",
+        work_email="rahul@acme.test",
+        legal_entity_id=legal_entity.id,
+        location_id=pune.id,
     )
     session.add(second)
     legal_entity.pt_registrations = {"KA": "PT/BLR/12345", "MH": "PT/PNQ/67890"}
@@ -347,8 +395,12 @@ async def test_pt_generates_one_challan_per_state(
 
 
 async def test_a_state_with_no_registration_blocks_its_challan(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
-    employee: Employee, location,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+    location,
 ) -> None:
     run = await _run(session, tenant, legal_entity.id)
     await _payslip(session, tenant, run, employee, professional_tax=Decimal("200.00"))
@@ -388,7 +440,10 @@ async def _challan(
 
 
 async def test_an_unmapped_deduction_blocks_the_24q(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """The checklist gate: challan mapping is enforced before generation.
@@ -403,8 +458,11 @@ async def test_an_unmapped_deduction_blocks_the_24q(
 
     with pytest.raises(filing_service.FilingBlockedError) as exc:
         await filing_service.generate_tds_24q(
-            session, hr_user, legal_entity_id=legal_entity.id,
-            financial_year="2026-2027", quarter=1,
+            session,
+            hr_user,
+            legal_entity_id=legal_entity.id,
+            financial_year="2026-2027",
+            quarter=1,
         )
     await session.commit()
 
@@ -414,7 +472,10 @@ async def test_an_unmapped_deduction_blocks_the_24q(
 
 
 async def test_a_mapped_deduction_generates_the_24q(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     legal_entity.tan = "BLRA12345B"
@@ -437,8 +498,11 @@ async def test_a_mapped_deduction_generates_the_24q(
     await session.commit()
 
     generated = await filing_service.generate_tds_24q(
-        session, hr_user, legal_entity_id=legal_entity.id,
-        financial_year="2026-2027", quarter=1,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        financial_year="2026-2027",
+        quarter=1,
     )
     await session.commit()
 
@@ -450,7 +514,10 @@ async def test_a_mapped_deduction_generates_the_24q(
 
 
 async def test_a_missing_pan_blocks_the_24q(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     legal_entity.tan = "BLRA12345B"
@@ -460,8 +527,11 @@ async def test_a_missing_pan_blocks_the_24q(
     challan = await _challan(session, tenant, legal_entity.id)
     session.add(
         TdsChallanMapping(
-            tenant_id=tenant.id, challan_id=challan.id, employee_id=employee.id,
-            payslip_id=payslip.id, tds_amount=Decimal("45000.00"),
+            tenant_id=tenant.id,
+            challan_id=challan.id,
+            employee_id=employee.id,
+            payslip_id=payslip.id,
+            tds_amount=Decimal("45000.00"),
             deduction_date=date(2026, 6, 30),
         )
     )
@@ -469,15 +539,21 @@ async def test_a_missing_pan_blocks_the_24q(
 
     with pytest.raises(filing_service.FilingBlockedError) as exc:
         await filing_service.generate_tds_24q(
-            session, hr_user, legal_entity_id=legal_entity.id,
-            financial_year="2026-2027", quarter=1,
+            session,
+            hr_user,
+            legal_entity_id=legal_entity.id,
+            financial_year="2026-2027",
+            quarter=1,
         )
     await session.commit()
     assert "PAN_MISSING" in {e["code"] for e in exc.value.result.as_list()}
 
 
 async def test_q4_pulls_annexure_ii_from_the_years_tax_snapshots(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """Where slice 07's declarations reach a statutory return."""
@@ -490,8 +566,11 @@ async def test_q4_pulls_annexure_ii_from_the_years_tax_snapshots(
     challan = await _challan(session, tenant, legal_entity.id, quarter=4)
     session.add(
         TdsChallanMapping(
-            tenant_id=tenant.id, challan_id=challan.id, employee_id=employee.id,
-            payslip_id=payslip.id, tds_amount=Decimal("45000.00"),
+            tenant_id=tenant.id,
+            challan_id=challan.id,
+            employee_id=employee.id,
+            payslip_id=payslip.id,
+            tds_amount=Decimal("45000.00"),
             deduction_date=date(2027, 1, 31),
         )
     )
@@ -515,8 +594,11 @@ async def test_q4_pulls_annexure_ii_from_the_years_tax_snapshots(
     await session.commit()
 
     generated = await filing_service.generate_tds_24q(
-        session, hr_user, legal_entity_id=legal_entity.id,
-        financial_year="2026-2027", quarter=4,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        financial_year="2026-2027",
+        quarter=4,
     )
     await session.commit()
 
@@ -525,7 +607,10 @@ async def test_q4_pulls_annexure_ii_from_the_years_tax_snapshots(
 
 
 async def test_q4_without_a_tax_snapshot_blocks(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """An incomplete Q4 return is not filed and then corrected — it is refused."""
@@ -536,8 +621,11 @@ async def test_q4_without_a_tax_snapshot_blocks(
     challan = await _challan(session, tenant, legal_entity.id, quarter=4)
     session.add(
         TdsChallanMapping(
-            tenant_id=tenant.id, challan_id=challan.id, employee_id=employee.id,
-            payslip_id=payslip.id, tds_amount=Decimal("45000.00"),
+            tenant_id=tenant.id,
+            challan_id=challan.id,
+            employee_id=employee.id,
+            payslip_id=payslip.id,
+            tds_amount=Decimal("45000.00"),
             deduction_date=date(2027, 1, 31),
         )
     )
@@ -545,15 +633,21 @@ async def test_q4_without_a_tax_snapshot_blocks(
 
     with pytest.raises(filing_service.FilingBlockedError) as exc:
         await filing_service.generate_tds_24q(
-            session, hr_user, legal_entity_id=legal_entity.id,
-            financial_year="2026-2027", quarter=4,
+            session,
+            hr_user,
+            legal_entity_id=legal_entity.id,
+            financial_year="2026-2027",
+            quarter=4,
         )
     await session.commit()
     assert "ANNEXURE_II_MISSING" in {e["code"] for e in exc.value.result.as_list()}
 
 
 async def test_the_quarter_maps_to_financial_year_months_not_calendar_ones(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """April-June is Q1. A payslip from January belongs to Q4, not Q1."""
@@ -568,8 +662,11 @@ async def test_the_quarter_maps_to_financial_year_months_not_calendar_ones(
 
     # Q1 sees nothing, because January is not in April-June.
     generated = await filing_service.generate_tds_24q(
-        session, hr_user, legal_entity_id=legal_entity.id,
-        financial_year="2026-2027", quarter=1,
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        financial_year="2026-2027",
+        quarter=1,
     )
     await session.commit()
     assert generated.record.record_count == 0
@@ -581,7 +678,10 @@ async def test_the_quarter_maps_to_financial_year_months_not_calendar_ones(
 
 
 async def test_an_acknowledgement_closes_the_loop(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant)
@@ -595,7 +695,9 @@ async def test_an_acknowledgement_closes_the_loop(
     await session.commit()
 
     record = await filing_service.record_acknowledgement(
-        session, hr_user, record_id=generated.record.id,
+        session,
+        hr_user,
+        record_id=generated.record.id,
         acknowledgement_number="TRRN2026060012345",
     )
     await session.commit()
@@ -607,7 +709,10 @@ async def test_an_acknowledgement_closes_the_loop(
 
 
 async def test_a_return_cannot_be_acknowledged_twice(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A correction is a fresh filing, not an edit of the record."""
@@ -632,7 +737,10 @@ async def test_a_return_cannot_be_acknowledged_twice(
 
 
 async def test_a_blocked_return_cannot_be_acknowledged(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """There was never a file, so there was never an upload."""
@@ -655,8 +763,12 @@ async def test_a_blocked_return_cannot_be_acknowledged(
 
 
 async def test_filing_records_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
-    legal_entity: LegalEntity, employee: Employee,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
 ) -> None:
     await _pf_rules(session, tenant)
     await _identify(session, employee, uan="100123456789", first_name="Anita", last_name="Sharma")
@@ -669,17 +781,22 @@ async def test_filing_records_are_tenant_isolated(
 
     with pytest.raises(HTTPException) as exc:
         await filing_service.record_acknowledgement(
-            session, other_hr_user, record_id=generated.record.id,
+            session,
+            other_hr_user,
+            record_id=generated.record.id,
             acknowledgement_number="TRRN1",
         )
     assert exc.value.status_code == 404
 
 
 async def test_a_regeneration_leaves_the_earlier_record_intact(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
-    """"Which file did we actually upload in July" is what an inspection asks."""
+    """ "Which file did we actually upload in July" is what an inspection asks."""
     await _pf_rules(session, tenant)
     await _identify(session, employee, uan="100123456789", first_name="Anita", last_name="Sharma")
     run = await _run(session, tenant, legal_entity.id)

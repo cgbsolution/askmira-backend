@@ -32,29 +32,40 @@ TODAY = date(2026, 9, 11)
 
 async def _setup(session: AsyncSession, tenant: Tenant, employee: Employee) -> User:
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2025, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2025, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     session.add(structure)
     await session.flush()
     salary = EmployeeSalary(
-        tenant_id=tenant.id, employee_id=employee.id, structure_id=structure.id,
-        ctc_annual=Decimal("360000"), effective_from=date(2026, 4, 1),
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        structure_id=structure.id,
+        ctc_annual=Decimal("360000"),
+        effective_from=date(2026, 4, 1),
     )
     session.add(salary)
     await session.flush()
     session.add(
         EmployeeSalaryComponent(
-            tenant_id=tenant.id, employee_salary_id=salary.id, component_code="GROSS",
-            component_name="Gross", component_type=ComponentType.EARNING,
-            annual_amount=Decimal("360000"), monthly_amount=Decimal("30000"),
+            tenant_id=tenant.id,
+            employee_salary_id=salary.id,
+            component_code="GROSS",
+            component_name="Gross",
+            component_type=ComponentType.EARNING,
+            annual_amount=Decimal("360000"),
+            monthly_amount=Decimal("30000"),
         )
     )
     # Ten days judged so far this month: nine present, one half day.
     for day in range(1, 11):
         session.add(
             AttendanceDay(
-                tenant_id=tenant.id, employee_id=employee.id,
+                tenant_id=tenant.id,
+                employee_id=employee.id,
                 attendance_date=date(2026, 9, day),
                 status=AttendanceStatus.HALF_DAY if day == 5 else AttendanceStatus.PRESENT,
                 payable_fraction=Decimal("0.5") if day == 5 else Decimal("1"),
@@ -62,8 +73,13 @@ async def _setup(session: AsyncSession, tenant: Tenant, employee: Employee) -> U
             )
         )
     user = User(
-        tenant_id=tenant.id, email="anita.ewa@acme-demo.com", password_hash="x", full_name="Anita",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.ewa@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()

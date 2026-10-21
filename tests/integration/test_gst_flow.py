@@ -106,9 +106,7 @@ async def test_a_malformed_gstin_is_captured_and_flagged(session, hr_user):
 
     row = (
         await session.execute(
-            select(GstInputCredit).where(
-                GstInputCredit.id == uuid.UUID(out["credit_id"])
-            )
+            select(GstInputCredit).where(GstInputCredit.id == uuid.UUID(out["credit_id"]))
         )
     ).scalar_one()
     assert row.gstin_is_valid is False
@@ -125,17 +123,13 @@ async def test_the_portal_status_is_recorded_as_not_checked(session, hr_user):
     out = await capture(session, hr_user)
     row = (
         await session.execute(
-            select(GstInputCredit).where(
-                GstInputCredit.id == uuid.UUID(out["credit_id"])
-            )
+            select(GstInputCredit).where(GstInputCredit.id == uuid.UUID(out["credit_id"]))
         )
     ).scalar_one()
     assert row.gstin_portal_status is GstinPortalStatusEnum.NOT_CHECKED
 
 
-async def test_the_companys_own_bad_gstin_is_refused(
-    session, hr_user, legal_entity
-):
+async def test_the_companys_own_bad_gstin_is_refused(session, hr_user, legal_entity):
     """This one *is* worth blocking: a wrong entity GSTIN misclassifies the
     place of supply on every invoice that follows."""
     with pytest.raises(HTTPException) as exc:
@@ -145,9 +139,7 @@ async def test_the_companys_own_bad_gstin_is_refused(
     assert "misclassifies the place of supply" in exc.value.detail
 
 
-async def test_the_companys_registration_records_its_state(
-    session, hr_user, legal_entity
-):
+async def test_the_companys_registration_records_its_state(session, hr_user, legal_entity):
     row = await gst.register_entity_gstin(
         session, hr_user, legal_entity_id=legal_entity.id, gstin=KA
     )
@@ -160,12 +152,8 @@ async def test_the_companys_registration_records_its_state(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_an_intra_state_supply_in_our_state_is_claimable(
-    session, hr_user, legal_entity
-):
-    await gst.register_entity_gstin(
-        session, hr_user, legal_entity_id=legal_entity.id, gstin=MH
-    )
+async def test_an_intra_state_supply_in_our_state_is_claimable(session, hr_user, legal_entity):
+    await gst.register_entity_gstin(session, hr_user, legal_entity_id=legal_entity.id, gstin=MH)
     out = await capture(
         session,
         hr_user,
@@ -177,14 +165,10 @@ async def test_an_intra_state_supply_in_our_state_is_claimable(
     assert out["assessment"]["eligibility"] == "eligible"
 
 
-async def test_the_hotel_bill_case_is_ineligible_with_the_reason(
-    session, hr_user, legal_entity
-):
+async def test_the_hotel_bill_case_is_ineligible_with_the_reason(session, hr_user, legal_entity):
     """A Karnataka-registered company's Delhi hotel: real CGST and SGST, and no
     credit, on an invoice that looks exactly like a claimable one."""
-    await gst.register_entity_gstin(
-        session, hr_user, legal_entity_id=legal_entity.id, gstin=KA
-    )
+    await gst.register_entity_gstin(session, hr_user, legal_entity_id=legal_entity.id, gstin=KA)
     out = await capture(
         session,
         hr_user,
@@ -199,12 +183,8 @@ async def test_the_hotel_bill_case_is_ineligible_with_the_reason(
     assert "this entity is registered in 29" in out["assessment"]["reason"]
 
 
-async def test_a_proper_inter_state_invoice_is_eligible(
-    session, hr_user, legal_entity
-):
-    await gst.register_entity_gstin(
-        session, hr_user, legal_entity_id=legal_entity.id, gstin=KA
-    )
+async def test_a_proper_inter_state_invoice_is_eligible(session, hr_user, legal_entity):
+    await gst.register_entity_gstin(session, hr_user, legal_entity_id=legal_entity.id, gstin=KA)
     out = await capture(
         session,
         hr_user,
@@ -220,15 +200,11 @@ async def test_a_proper_inter_state_invoice_is_eligible(
 
 
 async def test_the_tax_split_is_stored_on_the_row(session, hr_user, legal_entity):
-    await gst.register_entity_gstin(
-        session, hr_user, legal_entity_id=legal_entity.id, gstin=MH
-    )
+    await gst.register_entity_gstin(session, hr_user, legal_entity_id=legal_entity.id, gstin=MH)
     out = await capture(session, hr_user, legal_entity_id=legal_entity.id)
     row = (
         await session.execute(
-            select(GstInputCredit).where(
-                GstInputCredit.id == uuid.UUID(out["credit_id"])
-            )
+            select(GstInputCredit).where(GstInputCredit.id == uuid.UUID(out["credit_id"]))
         )
     ).scalar_one()
     assert row.tax_split is GstTaxSplitEnum.CGST_SGST
@@ -245,9 +221,7 @@ async def test_an_unknown_place_of_supply_goes_to_review(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_blocked_category_is_ineligible_with_the_section_cited(
-    session, hr_user
-):
+async def test_a_blocked_category_is_ineligible_with_the_section_cited(session, hr_user):
     out = await capture(session, hr_user, category_key="club_membership")
     assert out["assessment"]["eligibility"] == "ineligible"
     assert "17(5)" in out["assessment"]["reference"]
@@ -305,9 +279,7 @@ async def test_a_review_records_the_person_and_the_rationale(session, hr_user):
 
     review = (
         await session.execute(
-            select(GstCreditReview).where(
-                GstCreditReview.credit_id == uuid.UUID(out["credit_id"])
-            )
+            select(GstCreditReview).where(GstCreditReview.credit_id == uuid.UUID(out["credit_id"]))
         )
     ).scalar_one()
     assert review.decided_by_user_id == hr_user.id
@@ -460,9 +432,7 @@ async def test_all_three_match_states_are_reported(session, hr_user):
     assert report["at_risk_from_unfiled_vendors"] == "1800.00"
 
 
-async def test_a_differently_punctuated_invoice_number_still_matches(
-    session, hr_user
-):
+async def test_a_differently_punctuated_invoice_number_still_matches(session, hr_user):
     """`INV/2026/0001` from OCR and `inv-2026-0001` from the portal are the same
     document; matching the raw strings chases a vendor who filed."""
     await capture(session, hr_user, invoice_number="INV/2026/0001")
@@ -495,9 +465,7 @@ async def test_a_differently_punctuated_invoice_number_still_matches(
 
 async def test_the_match_state_is_written_back_to_the_row(session, hr_user):
     out = await capture(session, hr_user)
-    await gst.import_gstr2b(
-        session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
-    )
+    await gst.import_gstr2b(session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[])
     await gst.reconcile_period(
         session,
         hr_user,
@@ -507,26 +475,18 @@ async def test_the_match_state_is_written_back_to_the_row(session, hr_user):
     )
     row = (
         await session.execute(
-            select(GstInputCredit).where(
-                GstInputCredit.id == uuid.UUID(out["credit_id"])
-            )
+            select(GstInputCredit).where(GstInputCredit.id == uuid.UUID(out["credit_id"]))
         )
     ).scalar_one()
     assert row.reconciliation_status is Gstr2bMatchEnum.MISSING_IN_2B
 
 
-async def test_an_ineligible_line_does_not_inflate_the_at_risk_figure(
-    session, hr_user
-):
+async def test_an_ineligible_line_does_not_inflate_the_at_risk_figure(session, hr_user):
     """Inflating it with blocked categories is how a finance team stops
     believing the number."""
     await capture(session, hr_user, invoice_number="GOOD-1")
-    await capture(
-        session, hr_user, invoice_number="CLUB-1", category_key="club_membership"
-    )
-    await gst.import_gstr2b(
-        session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
-    )
+    await capture(session, hr_user, invoice_number="CLUB-1", category_key="club_membership")
+    await gst.import_gstr2b(session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[])
     report = await gst.reconcile_period(
         session,
         hr_user,
@@ -539,9 +499,7 @@ async def test_an_ineligible_line_does_not_inflate_the_at_risk_figure(
 
 
 async def test_importing_the_same_period_twice_is_refused(session, hr_user):
-    await gst.import_gstr2b(
-        session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
-    )
+    await gst.import_gstr2b(session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[])
     with pytest.raises(HTTPException) as exc:
         await gst.import_gstr2b(
             session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
@@ -550,9 +508,7 @@ async def test_importing_the_same_period_twice_is_refused(session, hr_user):
 
 
 async def test_a_reconciliation_is_recorded(session, hr_user):
-    await gst.import_gstr2b(
-        session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
-    )
+    await gst.import_gstr2b(session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[])
     await gst.reconcile_period(
         session,
         hr_user,
@@ -565,9 +521,7 @@ async def test_a_reconciliation_is_recorded(session, hr_user):
 
 
 async def test_a_period_cannot_be_reconciled_twice(session, hr_user):
-    await gst.import_gstr2b(
-        session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[]
-    )
+    await gst.import_gstr2b(session, hr_user, period_label="2026-09", imported_on=TODAY, lines=[])
     await gst.reconcile_period(
         session,
         hr_user,
@@ -598,12 +552,8 @@ async def test_the_same_invoice_from_two_employees_is_detected(
     first = await make_employee(session, tenant, legal_entity, location, "DUP1")
     second = await make_employee(session, tenant, legal_entity, location, "DUP2")
 
-    await capture(
-        session, hr_user, invoice_number="INV/2026/0042", employee_id=first.id
-    )
-    out = await capture(
-        session, hr_user, invoice_number="inv-2026-0042", employee_id=second.id
-    )
+    await capture(session, hr_user, invoice_number="INV/2026/0042", employee_id=first.id)
+    out = await capture(session, hr_user, invoice_number="inv-2026-0042", employee_id=second.id)
     assert out["duplicate_of"]
     assert out["duplicate_across_employees"] is True
 
@@ -626,9 +576,7 @@ async def test_two_different_vendors_are_not_a_duplicate(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_the_dashboard_confirms_nothing_before_reconciliation(
-    session, hr_user
-):
+async def test_the_dashboard_confirms_nothing_before_reconciliation(session, hr_user):
     """A figure that turns out to be optimistic destroys the conversation this
     dashboard exists to have."""
     await capture(session, hr_user)
@@ -665,9 +613,7 @@ async def test_the_dashboard_separates_confirmed_from_at_risk(session, hr_user):
         period_start=date(2026, 9, 1),
         period_end=TODAY,
     )
-    dashboard = await gst.credit_dashboard(
-        session, hr_user, period_label="2026-09"
-    )
+    dashboard = await gst.credit_dashboard(session, hr_user, period_label="2026-09")
     assert dashboard["confirmed_claimable_tax"] == "1800.00"
     assert dashboard["at_risk_from_unfiled_vendors"] == "1800.00"
 
@@ -721,30 +667,22 @@ async def test_the_export_lists_uncertain_lines_separately(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_another_tenant_sees_none_of_this_register(
-    session, hr_user, other_hr_user
-):
+async def test_another_tenant_sees_none_of_this_register(session, hr_user, other_hr_user):
     await capture(session, hr_user)
     dashboard = await gst.credit_dashboard(session, other_hr_user)
     assert dashboard["captured_tax"] == "0.00"
 
 
-async def test_a_duplicate_is_not_detected_across_tenants(
-    session, hr_user, other_hr_user
-):
+async def test_a_duplicate_is_not_detected_across_tenants(session, hr_user, other_hr_user):
     """Two different companies legitimately hold invoices from the same vendor
     with the same numbering."""
     await capture(session, hr_user, invoice_number="INV/1")
     await capture(session, other_hr_user, invoice_number="INV/1")
     assert (await gst.duplicate_report(session, hr_user))["duplicate_groups"] == 0
-    assert (
-        await gst.duplicate_report(session, other_hr_user)
-    )["duplicate_groups"] == 0
+    assert (await gst.duplicate_report(session, other_hr_user))["duplicate_groups"] == 0
 
 
-async def test_another_tenant_cannot_review_this_line(
-    session, hr_user, other_hr_user
-):
+async def test_another_tenant_cannot_review_this_line(session, hr_user, other_hr_user):
     out = await capture(session, hr_user, category_key="food_and_beverage")
     with pytest.raises(HTTPException) as exc:
         await gst.review_credit(

@@ -22,13 +22,16 @@ pytestmark = requires_db
 
 async def _entry(session, tenant, actor) -> AuditLog:
     await audit.record(
-        session, tenant_id=tenant.id, actor=actor, action=AuditAction.UPDATE,
-        entity_type="employee", entity_id=None, summary="Salary revised",
+        session,
+        tenant_id=tenant.id,
+        actor=actor,
+        action=AuditAction.UPDATE,
+        entity_type="employee",
+        entity_id=None,
+        summary="Salary revised",
     )
     await session.commit()
-    return await session.scalar(
-        select(AuditLog).where(AuditLog.summary == "Salary revised")
-    )
+    return await session.scalar(select(AuditLog).where(AuditLog.summary == "Salary revised"))
 
 
 async def test_an_update_is_refused_by_the_database(session, tenant, hr_user) -> None:
@@ -52,8 +55,12 @@ async def test_a_delete_is_refused_by_the_database(session, tenant, hr_user) -> 
 
 async def test_removing_a_user_only_unlinks_their_rows(session, tenant) -> None:
     leaver = User(
-        tenant_id=tenant.id, email="leaver@acme.test", password_hash="x", full_name="Leaver",
-        role=UserRole.SUB_ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="leaver@acme.test",
+        password_hash="x",
+        full_name="Leaver",
+        role=UserRole.SUB_ADMIN,
+        is_active=True,
     )
     session.add(leaver)
     await session.commit()
@@ -78,10 +85,16 @@ async def test_pan_and_bank_account_are_ciphertext_in_the_table(
     from app.models.employee import Employee, EmploymentStatus
 
     person = Employee(
-        tenant_id=tenant.id, employee_code="ENC1", first_name="Asha", last_name="Rao",
-        work_email="asha@acme-demo.com", legal_entity_id=legal_entity.id,
-        location_id=location.id, status=EmploymentStatus.ACTIVE,
-        pan="ABCDE1234F", bank_account_number="50100012345678",
+        tenant_id=tenant.id,
+        employee_code="ENC1",
+        first_name="Asha",
+        last_name="Rao",
+        work_email="asha@acme-demo.com",
+        legal_entity_id=legal_entity.id,
+        location_id=location.id,
+        status=EmploymentStatus.ACTIVE,
+        pan="ABCDE1234F",
+        bank_account_number="50100012345678",
     )
     session.add(person)
     await session.commit()
@@ -96,8 +109,8 @@ async def test_pan_and_bank_account_are_ciphertext_in_the_table(
     assert raw.bank_account_number.startswith("encf:v1:")
 
     read = (
-        await session.execute(select(Employee.pan, Employee.bank_account_number).where(
-            Employee.id == person.id
-        ))
+        await session.execute(
+            select(Employee.pan, Employee.bank_account_number).where(Employee.id == person.id)
+        )
     ).one()
     assert (read.pan, read.bank_account_number) == ("ABCDE1234F", "50100012345678")

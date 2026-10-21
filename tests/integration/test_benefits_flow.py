@@ -29,8 +29,13 @@ TODAY = date(2026, 4, 10)
 
 async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> User:
     user = User(
-        tenant_id=tenant.id, email="anita.bn@acme-demo.com", password_hash="x", full_name="Anita",
-        role=UserRole.EMPLOYEE, is_active=True, employee_id=employee.id,
+        tenant_id=tenant.id,
+        email="anita.bn@acme-demo.com",
+        password_hash="x",
+        full_name="Anita",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
     )
     session.add(user)
     await session.commit()
@@ -39,16 +44,30 @@ async def _login(session: AsyncSession, tenant: Tenant, employee: Employee) -> U
 
 async def _plan(session: AsyncSession, hr_user: User) -> uuid.UUID:
     plan = await benefits.create_plan(
-        session, hr_user,
+        session,
+        hr_user,
         PlanCreate(
-            name="Group health", kind=BenefitKind.HEALTH, insurer="Acme Insurance",
-            tpa="Acme TPA", policy_number="GH-2026", policy_start=date(2026, 4, 1),
-            policy_end=date(2027, 3, 31), sum_insured=Decimal("500000"),
-            covers=["spouse", "child"], max_children=2,
+            name="Group health",
+            kind=BenefitKind.HEALTH,
+            insurer="Acme Insurance",
+            tpa="Acme TPA",
+            policy_number="GH-2026",
+            policy_start=date(2026, 4, 1),
+            policy_end=date(2027, 3, 31),
+            sum_insured=Decimal("500000"),
+            covers=["spouse", "child"],
+            max_children=2,
             employer_premium_per_member=Decimal("8000"),
-            top_ups=[TopUp(code="TOP5", name="+5 lakh", sum_insured=Decimal("500000"),
-                           employee_premium_annual=Decimal("6000"))],
-            enrolment_opens=date(2026, 4, 1), enrolment_closes=date(2026, 4, 30),
+            top_ups=[
+                TopUp(
+                    code="TOP5",
+                    name="+5 lakh",
+                    sum_insured=Decimal("500000"),
+                    employee_premium_annual=Decimal("6000"),
+                )
+            ],
+            enrolment_opens=date(2026, 4, 1),
+            enrolment_closes=date(2026, 4, 30),
         ),
         request=None,
     )
@@ -63,13 +82,18 @@ async def test_enrolment_life_event_and_insurer_files(
 
     with pytest.raises(HTTPException) as parent:
         await benefits.enrol(
-            session, me, plan_id,
-            EnrolIn(members=[Member(name="Father", relationship="parent")]), today=TODAY,
+            session,
+            me,
+            plan_id,
+            EnrolIn(members=[Member(name="Father", relationship="parent")]),
+            today=TODAY,
         )
     assert "does not cover a parent" in parent.value.detail
 
     enrolled = await benefits.enrol(
-        session, me, plan_id,
+        session,
+        me,
+        plan_id,
         EnrolIn(members=[Member(name="Ravi", relationship="spouse")], top_up_code="TOP5"),
         today=TODAY,
     )
@@ -80,8 +104,11 @@ async def test_enrolment_life_event_and_insurer_files(
 
     # Re-enrolling without the top-up cancels that deduction.
     await benefits.enrol(
-        session, me, plan_id,
-        EnrolIn(members=[Member(name="Ravi", relationship="spouse")]), today=TODAY,
+        session,
+        me,
+        plan_id,
+        EnrolIn(members=[Member(name="Ravi", relationship="spouse")]),
+        today=TODAY,
     )
     await session.refresh(deduction)
     assert deduction.status is AdjustmentStatus.CANCELLED
@@ -92,16 +119,25 @@ async def test_enrolment_life_event_and_insurer_files(
         await benefits.enrol(session, me, plan_id, EnrolIn(), today=later)
     with pytest.raises(HTTPException):
         await benefits.raise_life_event(
-            session, me,
-            LifeEventIn(plan_id=plan_id, kind=LifeEventKind.BIRTH,
-                        event_date=later - timedelta(days=45),
-                        add_members=[Member(name="Baby", relationship="child")]),
+            session,
+            me,
+            LifeEventIn(
+                plan_id=plan_id,
+                kind=LifeEventKind.BIRTH,
+                event_date=later - timedelta(days=45),
+                add_members=[Member(name="Baby", relationship="child")],
+            ),
             today=later,
         )
     event = await benefits.raise_life_event(
-        session, me,
-        LifeEventIn(plan_id=plan_id, kind=LifeEventKind.BIRTH, event_date=later - timedelta(days=3),
-                    add_members=[Member(name="Baby", relationship="child")]),
+        session,
+        me,
+        LifeEventIn(
+            plan_id=plan_id,
+            kind=LifeEventKind.BIRTH,
+            event_date=later - timedelta(days=3),
+            add_members=[Member(name="Baby", relationship="child")],
+        ),
         today=later,
     )
     pending = await benefits.list_life_events(session, hr_user)
@@ -120,7 +156,8 @@ async def test_enrolment_life_event_and_insurer_files(
         )
     )
     assert [(r["Change"], r["Member name"]) for r in endorsements] == [
-        ("Addition", "Ravi"), ("Addition", "Baby"),
+        ("Addition", "Ravi"),
+        ("Addition", "Baby"),
     ]
 
 

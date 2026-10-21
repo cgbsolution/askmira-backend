@@ -75,35 +75,51 @@ async def _structure(session: AsyncSession, tenant: Tenant) -> SalaryStructure:
     """The same shape payroll uses everywhere else: a percentage, an HRA off
     that percentage, and a BALANCE component that absorbs the residual."""
     basic = SalaryComponent(
-        tenant_id=tenant.id, code="BASIC", name="Basic",
+        tenant_id=tenant.id,
+        code="BASIC",
+        name="Basic",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="CTC", value=Decimal(40),
-        counts_toward_pf=True, display_order=1,
+        base_component_code="CTC",
+        value=Decimal(40),
+        counts_toward_pf=True,
+        display_order=1,
     )
     hra = SalaryComponent(
-        tenant_id=tenant.id, code="HRA", name="House rent allowance",
+        tenant_id=tenant.id,
+        code="HRA",
+        name="House rent allowance",
         component_type=ComponentType.EARNING,
         calculation_type=CalculationType.PERCENTAGE_OF,
-        base_component_code="BASIC", value=Decimal(50), display_order=2,
+        base_component_code="BASIC",
+        value=Decimal(50),
+        display_order=2,
     )
     special = SalaryComponent(
-        tenant_id=tenant.id, code="SPECIAL", name="Special allowance",
+        tenant_id=tenant.id,
+        code="SPECIAL",
+        name="Special allowance",
         component_type=ComponentType.EARNING,
-        calculation_type=CalculationType.BALANCE, display_order=9,
+        calculation_type=CalculationType.BALANCE,
+        display_order=9,
     )
     session.add_all([basic, hra, special])
     await session.flush()
 
     structure = SalaryStructure(
-        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1),
-        applicable_grades=[], applicable_locations=[],
+        tenant_id=tenant.id,
+        name="Standard",
+        effective_from=date(2026, 1, 1),
+        applicable_grades=[],
+        applicable_locations=[],
     )
     for index, component in enumerate((basic, hra, special)):
         structure.components.append(
             SalaryStructureComponent(
-                tenant_id=tenant.id, component_id=component.id,
-                component=component, display_order=index,
+                tenant_id=tenant.id,
+                component_id=component.id,
+                component=component,
+                display_order=index,
             )
         )
     session.add(structure)
@@ -114,7 +130,9 @@ async def _structure(session: AsyncSession, tenant: Tenant) -> SalaryStructure:
 
 async def _offer_template(session: AsyncSession, tenant: Tenant) -> LetterTemplate:
     template = LetterTemplate(
-        tenant_id=tenant.id, code="OFFER_19", name="Offer letter",
+        tenant_id=tenant.id,
+        code="OFFER_19",
+        name="Offer letter",
         category=LetterCategory.OFFER,
         body_html=(
             "<p>Dear {{employee.first_name}},</p>"
@@ -122,12 +140,16 @@ async def _offer_template(session: AsyncSession, tenant: Tenant) -> LetterTempla
             "joining on {{employee.date_of_joining}}.</p>"
             "{{computed.ctc_table}}"
         ),
-        version=1, active=True,
+        version=1,
+        active=True,
     )
     template.fields.append(
         LetterTemplateField(
-            tenant_id=tenant.id, token="employee.first_name", label="First name",
-            source=FieldSource.EMPLOYEE, required=True,
+            tenant_id=tenant.id,
+            token="employee.first_name",
+            label="First name",
+            source=FieldSource.EMPLOYEE,
+            required=True,
         )
     )
     session.add(template)
@@ -141,9 +163,14 @@ async def _chain(session: AsyncSession, tenant: Tenant) -> None:
     session.add_all(
         [
             ApprovalChainRule(
-                tenant_id=tenant.id, scope=scope, sequence=sequence,
-                approver_role=role, ctc_min=lo, ctc_max=hi,
-                only_when_over_band=over_band, label=role,
+                tenant_id=tenant.id,
+                scope=scope,
+                sequence=sequence,
+                approver_role=role,
+                ctc_min=lo,
+                ctc_max=hi,
+                only_when_over_band=over_band,
+                label=role,
             )
             for scope in (ApprovalScope.REQUISITION, ApprovalScope.OFFER)
             for sequence, role, lo, hi, over_band in (
@@ -157,13 +184,22 @@ async def _chain(session: AsyncSession, tenant: Tenant) -> None:
 
 
 async def _requisition(
-    session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity,
-    *, code: str = "REQ-001", openings: int = 1, headcount: int | None = 5,
+    session: AsyncSession,
+    tenant: Tenant,
+    legal_entity: LegalEntity,
+    *,
+    code: str = "REQ-001",
+    openings: int = 1,
+    headcount: int | None = 5,
 ) -> Requisition:
     requisition = Requisition(
-        tenant_id=tenant.id, code=code, title="Senior Engineer",
-        openings=openings, grade="L5",
-        budget_ctc_min=BAND_MIN, budget_ctc_max=BAND_MAX,
+        tenant_id=tenant.id,
+        code=code,
+        title="Senior Engineer",
+        openings=openings,
+        grade="L5",
+        budget_ctc_min=BAND_MIN,
+        budget_ctc_max=BAND_MAX,
         justification="Backfill for the platform team after two exits.",
         approved_headcount=headcount,
         status=RequisitionStatus.OPEN,
@@ -175,14 +211,25 @@ async def _requisition(
 
 
 async def _candidate(
-    session: AsyncSession, tenant: Tenant, requisition: Requisition,
-    *, name: str = "Rohit Verma", email: str = "rohit@example.test",
+    session: AsyncSession,
+    tenant: Tenant,
+    requisition: Requisition,
+    *,
+    name: str = "Rohit Verma",
+    email: str = "rohit@example.test",
 ) -> Candidate:
     candidate = Candidate(
-        tenant_id=tenant.id, requisition_id=requisition.id, full_name=name,
-        email=email, phone="+91 90000 12345", current_company="Acme Labs",
-        current_ctc=Decimal("1400000"), expected_ctc=Decimal("1900000"),
-        notice_period_days=90, source="referral", fit_score=Decimal("82.5"),
+        tenant_id=tenant.id,
+        requisition_id=requisition.id,
+        full_name=name,
+        email=email,
+        phone="+91 90000 12345",
+        current_company="Acme Labs",
+        current_ctc=Decimal("1400000"),
+        expected_ctc=Decimal("1900000"),
+        notice_period_days=90,
+        source="referral",
+        fit_score=Decimal("82.5"),
         stage=CandidateStage.HUMAN_INTERVIEW,
     )
     session.add(candidate)
@@ -192,21 +239,33 @@ async def _candidate(
 
 
 async def _draft(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
-    *, ctc: Decimal = Decimal("1800000"), code: str = "OFF-001",
-    requisition: Requisition | None = None, candidate: Candidate | None = None,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    *,
+    ctc: Decimal = Decimal("1800000"),
+    code: str = "OFF-001",
+    requisition: Requisition | None = None,
+    candidate: Candidate | None = None,
     components: list[dict] | None = None,
 ) -> tuple[Offer, SalaryStructure, Candidate, Requisition]:
     structure = await _structure(session, tenant)
     requisition = requisition or await _requisition(session, tenant, legal_entity)
     candidate = candidate or await _candidate(session, tenant, requisition)
     offer = await offer_service.create_offer(
-        session, hr_user,
-        candidate_id=candidate.id, code=code,
-        salary_structure_id=structure.id, ctc_annual=ctc,
-        joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", legal_entity_id=legal_entity.id,
-        valid_until=VALID_UNTIL, components=components or [],
+        session,
+        hr_user,
+        candidate_id=candidate.id,
+        code=code,
+        salary_structure_id=structure.id,
+        ctc_annual=ctc,
+        joining_date=date(2026, 11, 3),
+        designation="Senior Engineer",
+        grade="L5",
+        legal_entity_id=legal_entity.id,
+        valid_until=VALID_UNTIL,
+        components=components or [],
     )
     await session.commit()
     # The commit expired everything. Reload through awaits so the selectin
@@ -224,8 +283,12 @@ async def _approver(session: AsyncSession, tenant: Tenant) -> User:
     if existing is not None:
         return existing
     person = User(
-        tenant_id=tenant.id, email="admin@acme.test", password_hash="not-a-real-hash",
-        full_name="Kavya Iyer", role=UserRole.ADMIN, is_active=True,
+        tenant_id=tenant.id,
+        email="admin@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Kavya Iyer",
+        role=UserRole.ADMIN,
+        is_active=True,
     )
     session.add(person)
     await session.commit()
@@ -275,9 +338,7 @@ async def test_the_stored_breakup_reconciles_to_the_offered_ctc(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
 ) -> None:
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
-    total = sum(
-        Decimal(str(c.annual_amount)) for c in offer.salary_components if c.part_of_ctc
-    )
+    total = sum(Decimal(str(c.annual_amount)) for c in offer.salary_components if c.part_of_ctc)
     assert total == Decimal("1800000.00")
 
 
@@ -310,9 +371,7 @@ async def test_the_approval_payload_leads_with_the_budget_deviation(
     Approvers approve. A deviation that is merely present on the page is a
     deviation that gets approved.
     """
-    offer, _, _, _ = await _draft(
-        session, tenant, hr_user, legal_entity, ctc=Decimal("2400000")
-    )
+    offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity, ctc=Decimal("2400000"))
     payload = await offer_service.approval_payload(session, hr_user, offer_id=offer.id)
 
     deviation = payload["budget_deviation"]
@@ -325,7 +384,10 @@ async def test_the_approval_payload_leads_with_the_budget_deviation(
 
 
 async def test_internal_parity_returns_the_right_comparable_employees(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     location: Location,
 ) -> None:
     """The checklist gate.
@@ -351,16 +413,24 @@ async def test_internal_parity_returns_the_right_comparable_employees(
     ]
     for code, grade, department, ctc in people:
         person = Employee(
-            tenant_id=tenant.id, employee_code=code, first_name="Comparable",
-            last_name=code, work_email=f"{code.lower()}@acme.test",
-            legal_entity_id=legal_entity.id, location_id=location.id,
-            department_id=department.id, grade=grade,
-            status=EmploymentStatus.ACTIVE, date_of_joining=date(2025, 4, 1),
+            tenant_id=tenant.id,
+            employee_code=code,
+            first_name="Comparable",
+            last_name=code,
+            work_email=f"{code.lower()}@acme.test",
+            legal_entity_id=legal_entity.id,
+            location_id=location.id,
+            department_id=department.id,
+            grade=grade,
+            status=EmploymentStatus.ACTIVE,
+            date_of_joining=date(2025, 4, 1),
         )
         session.add(person)
         await session.flush()
         await payroll_service.assign_salary(
-            session, hr_user, person.id,
+            session,
+            hr_user,
+            person.id,
             EmployeeSalaryCreate(
                 structure_id=structure.id, ctc_annual=ctc, effective_from=date(2026, 1, 1)
             ),
@@ -369,10 +439,17 @@ async def test_internal_parity_returns_the_right_comparable_employees(
     requisition = await _requisition(session, tenant, legal_entity)
     candidate = await _candidate(session, tenant, requisition)
     offer = await offer_service.create_offer(
-        session, hr_user, candidate_id=candidate.id, code="OFF-PAR",
-        salary_structure_id=structure.id, ctc_annual=Decimal("2200000"),
-        joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", department_id=engineering.id, legal_entity_id=legal_entity.id,
+        session,
+        hr_user,
+        candidate_id=candidate.id,
+        code="OFF-PAR",
+        salary_structure_id=structure.id,
+        ctc_annual=Decimal("2200000"),
+        joining_date=date(2026, 11, 3),
+        designation="Senior Engineer",
+        grade="L5",
+        department_id=engineering.id,
+        legal_entity_id=legal_entity.id,
         valid_until=VALID_UNTIL,
     )
     await session.commit()
@@ -388,7 +465,10 @@ async def test_internal_parity_returns_the_right_comparable_employees(
 
 
 async def test_parity_ignores_superseded_salary_revisions(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
     """A closed revision is what somebody used to earn. Comparing against
@@ -397,33 +477,47 @@ async def test_parity_ignores_superseded_salary_revisions(
     employee.grade = "L5"
     await session.flush()
     await payroll_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
-            structure_id=structure.id, ctc_annual=Decimal("1200000"),
+            structure_id=structure.id,
+            ctc_annual=Decimal("1200000"),
             effective_from=date(2026, 1, 1),
         ),
     )
     await payroll_service.assign_salary(
-        session, hr_user, employee.id,
+        session,
+        hr_user,
+        employee.id,
         EmployeeSalaryCreate(
-            structure_id=structure.id, ctc_annual=Decimal("1600000"),
-            effective_from=date(2026, 4, 1), revision_reason="Annual increment",
+            structure_id=structure.id,
+            ctc_annual=Decimal("1600000"),
+            effective_from=date(2026, 4, 1),
+            revision_reason="Annual increment",
         ),
     )
 
     requisition = await _requisition(session, tenant, legal_entity)
     candidate = await _candidate(session, tenant, requisition)
     offer = await offer_service.create_offer(
-        session, hr_user, candidate_id=candidate.id, code="OFF-REV",
-        salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
-        joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
+        session,
+        hr_user,
+        candidate_id=candidate.id,
+        code="OFF-REV",
+        salary_structure_id=structure.id,
+        ctc_annual=Decimal("1800000"),
+        joining_date=date(2026, 11, 3),
+        designation="Senior Engineer",
+        grade="L5",
+        legal_entity_id=legal_entity.id,
+        valid_until=VALID_UNTIL,
     )
     await session.commit()
 
-    parity = (
-        await offer_service.approval_payload(session, hr_user, offer_id=offer.id)
-    )["internal_parity"]
+    parity = (await offer_service.approval_payload(session, hr_user, offer_id=offer.id))[
+        "internal_parity"
+    ]
     assert parity["comparable_count"] == 1
     assert parity["median"] == "1600000.00", "the live revision, not the superseded one"
 
@@ -511,9 +605,7 @@ async def test_editing_a_non_material_field_leaves_the_approval_standing(
 async def test_going_over_the_band_adds_the_finance_step(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
 ) -> None:
-    offer, _, _, _ = await _draft(
-        session, tenant, hr_user, legal_entity, ctc=Decimal("2400000")
-    )
+    offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity, ctc=Decimal("2400000"))
     await _chain(session, tenant)
     result = await offer_service.submit_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
@@ -565,7 +657,10 @@ async def test_release_produces_a_letter_through_the_letter_engine(
 
 
 async def test_the_standard_offer_template_releases_from_the_offers_own_terms(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     location: Location,
 ) -> None:
     """The seeded template asks for a joining date, location and deadline.
@@ -585,7 +680,10 @@ async def test_the_standard_offer_template_releases_from_the_offers_own_terms(
     )
 
     result = await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id,
+        session,
+        hr_user,
+        offer_id=offer.id,
+        template_id=template.id,
         valid_until=VALID_UNTIL + timedelta(days=5),
     )
     await session.commit()
@@ -617,19 +715,24 @@ async def test_a_second_offer_cannot_take_a_seat_that_is_already_held(
     offer, structure, _, requisition = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
 
     second_candidate = await _candidate(
         session, tenant, requisition, name="Priya Nair", email="priya@example.test"
     )
     second = await offer_service.create_offer(
-        session, hr_user, candidate_id=second_candidate.id, code="OFF-002",
-        salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
-        joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
+        session,
+        hr_user,
+        candidate_id=second_candidate.id,
+        code="OFF-002",
+        salary_structure_id=structure.id,
+        ctc_annual=Decimal("1800000"),
+        joining_date=date(2026, 11, 3),
+        designation="Senior Engineer",
+        grade="L5",
+        legal_entity_id=legal_entity.id,
+        valid_until=VALID_UNTIL,
     )
     await session.commit()
     await offer_service.submit_offer(session, hr_user, offer_id=second.id)
@@ -657,9 +760,7 @@ async def test_an_offer_lapses_on_its_validity_date_and_reopens_the_seat(
     offer, _, _, requisition = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
 
     result = await offer_service.lapse_due_offers(
@@ -681,9 +782,7 @@ async def test_an_offer_inside_its_validity_does_not_lapse(
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
 
     result = await offer_service.lapse_due_offers(
@@ -709,15 +808,15 @@ async def test_a_drop_records_a_reason_and_the_facts_needed_to_report_on_it(
     offer, _, _, requisition = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await offer_service.accept_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
 
     await offer_service.record_drop(
-        session, hr_user, offer_id=offer.id,
+        session,
+        hr_user,
+        offer_id=offer.id,
         reason="Counter-offered by current employer at 20% above.",
     )
     await session.commit()
@@ -728,8 +827,9 @@ async def test_a_drop_records_a_reason_and_the_facts_needed_to_report_on_it(
 
     events = (
         await session.scalars(
-            select(OfferEvent)
-            .where(OfferEvent.offer_id == offer.id, OfferEvent.to_status == OfferStatus.DROPPED)
+            select(OfferEvent).where(
+                OfferEvent.offer_id == offer.id, OfferEvent.to_status == OfferStatus.DROPPED
+            )
         )
     ).all()
     assert len(events) == 1
@@ -746,9 +846,7 @@ async def test_a_drop_without_a_reason_is_refused(
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await offer_service.accept_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
@@ -766,16 +864,12 @@ async def test_a_drop_is_not_a_decline(
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
 
     # Still only released: a drop needs an acceptance first.
     with pytest.raises(HTTPException) as exc:
-        await offer_service.record_drop(
-            session, hr_user, offer_id=offer.id, reason="Did not join"
-        )
+        await offer_service.record_drop(session, hr_user, offer_id=offer.id, reason="Did not join")
     assert "anything else is a decline" in exc.value.detail
 
 
@@ -786,9 +880,7 @@ async def test_revocation_reopens_the_vacancy(
     offer, _, _, requisition = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await session.refresh(requisition)
     assert requisition.open_vacancies == 0
@@ -812,16 +904,17 @@ async def test_revoking_on_someone_who_already_resigned_escalates_to_hr(
     offer, _, candidate, _ = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await offer_service.accept_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
 
     result = await offer_service.revoke_offer(
-        session, hr_user, offer_id=offer.id,
-        reason="Requisition cancelled.", candidate_resigned_elsewhere=True,
+        session,
+        hr_user,
+        offer_id=offer.id,
+        reason="Requisition cancelled.",
+        candidate_resigned_elsewhere=True,
     )
     await session.commit()
 
@@ -838,7 +931,10 @@ async def test_revoking_on_someone_who_already_resigned_escalates_to_hr(
 
 
 async def test_joining_creates_an_employee_with_nothing_re_keyed(
-    session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
     location: Location,
 ) -> None:
     """The checklist gate, verified field by field.
@@ -856,26 +952,36 @@ async def test_joining_creates_an_employee_with_nothing_re_keyed(
     requisition = await _requisition(session, tenant, legal_entity)
     candidate = await _candidate(session, tenant, requisition)
     offer = await offer_service.create_offer(
-        session, hr_user, candidate_id=candidate.id, code="OFF-JOIN",
-        salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
-        joining_date=date(2026, 11, 3), designation="Senior Engineer",
-        grade="L5", joining_location_id=location.id, department_id=engineering.id,
-        legal_entity_id=legal_entity.id, probation_months=6, notice_period_days=90,
+        session,
+        hr_user,
+        candidate_id=candidate.id,
+        code="OFF-JOIN",
+        salary_structure_id=structure.id,
+        ctc_annual=Decimal("1800000"),
+        joining_date=date(2026, 11, 3),
+        designation="Senior Engineer",
+        grade="L5",
+        joining_location_id=location.id,
+        department_id=engineering.id,
+        legal_entity_id=legal_entity.id,
+        probation_months=6,
+        notice_period_days=90,
         valid_until=VALID_UNTIL,
     )
     await session.commit()
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await offer_service.accept_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
 
     result = await offer_service.convert_to_employee(
-        session, hr_user, offer_id=offer.id,
-        employee_code="ACM900", work_email="rohit@acme.test",
+        session,
+        hr_user,
+        offer_id=offer.id,
+        employee_code="ACM900",
+        work_email="rohit@acme.test",
     )
     await session.commit()
 
@@ -926,15 +1032,16 @@ async def test_the_joined_employees_salary_matches_the_offer_component_for_compo
     offer, structure, _, _ = await _draft(session, tenant, hr_user, legal_entity)
     await _through_approval(session, tenant, hr_user, offer)
     template = await _offer_template(session, tenant)
-    await offer_service.release_offer(
-        session, hr_user, offer_id=offer.id, template_id=template.id
-    )
+    await offer_service.release_offer(session, hr_user, offer_id=offer.id, template_id=template.id)
     await session.commit()
     await offer_service.accept_offer(session, hr_user, offer_id=offer.id)
     await session.commit()
     result = await offer_service.convert_to_employee(
-        session, hr_user, offer_id=offer.id,
-        employee_code="ACM901", work_email="joined@acme.test",
+        session,
+        hr_user,
+        offer_id=offer.id,
+        employee_code="ACM901",
+        work_email="joined@acme.test",
     )
     await session.commit()
 
@@ -964,8 +1071,11 @@ async def test_an_unaccepted_offer_cannot_be_converted(
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)
     with pytest.raises(HTTPException) as exc:
         await offer_service.convert_to_employee(
-            session, hr_user, offer_id=offer.id,
-            employee_code="ACM902", work_email="nope@acme.test",
+            session,
+            hr_user,
+            offer_id=offer.id,
+            employee_code="ACM902",
+            work_email="nope@acme.test",
         )
     assert "Only an accepted offer converts" in exc.value.detail
 
@@ -984,9 +1094,7 @@ async def test_a_requisition_over_approved_headcount_flags_at_approval(
     a time.
     """
     await _chain(session, tenant)
-    requisition = await _requisition(
-        session, tenant, legal_entity, openings=3, headcount=5
-    )
+    requisition = await _requisition(session, tenant, legal_entity, openings=3, headcount=5)
     requisition.status = RequisitionStatus.DRAFT
     await session.commit()
 
@@ -1005,9 +1113,7 @@ async def test_a_requisition_over_approved_headcount_flags_at_approval(
 
     steps = (
         await session.scalars(
-            select(RequisitionApproval).where(
-                RequisitionApproval.requisition_id == requisition.id
-            )
+            select(RequisitionApproval).where(RequisitionApproval.requisition_id == requisition.id)
         )
     ).all()
     assert steps
@@ -1018,9 +1124,7 @@ async def test_a_requisition_inside_its_headcount_raises_no_headcount_flag(
     session: AsyncSession, tenant: Tenant, hr_user: User, legal_entity: LegalEntity
 ) -> None:
     await _chain(session, tenant)
-    requisition = await _requisition(
-        session, tenant, legal_entity, openings=1, headcount=5
-    )
+    requisition = await _requisition(session, tenant, legal_entity, openings=1, headcount=5)
     requisition.status = RequisitionStatus.DRAFT
     await session.commit()
 
@@ -1074,14 +1178,15 @@ async def test_a_rejection_ends_the_chain(
     requisition = await _requisition(session, tenant, legal_entity)
     requisition.status = RequisitionStatus.DRAFT
     await session.commit()
-    await requisition_service.submit_requisition(
-        session, hr_user, requisition_id=requisition.id
-    )
+    await requisition_service.submit_requisition(session, hr_user, requisition_id=requisition.id)
     await session.commit()
 
     result = await requisition_service.approve_requisition(
-        session, await _approver(session, tenant), requisition_id=requisition.id,
-        approve=False, note="Hire into the existing vacancy first.",
+        session,
+        await _approver(session, tenant),
+        requisition_id=requisition.id,
+        approve=False,
+        note="Hire into the existing vacancy first.",
     )
     await session.commit()
 
@@ -1100,7 +1205,10 @@ async def test_offer_level_components_are_material_but_not_salary_components(
     """A joining bonus is part of what was agreed. Putting it in the structure
     would fold it into every month's PF base."""
     offer, _, _, _ = await _draft(
-        session, tenant, hr_user, legal_entity,
+        session,
+        tenant,
+        hr_user,
+        legal_entity,
         components=[
             {
                 "kind": OfferComponentKind.JOINING_BONUS,
@@ -1116,9 +1224,7 @@ async def test_offer_level_components_are_material_but_not_salary_components(
     assert offer.components[0].amount == Decimal("200000.00")
     assert "JOINING_BONUS" not in {c.component_code for c in offer.salary_components}
     # The CTC still reconciles: the bonus is outside it.
-    total = sum(
-        Decimal(str(c.annual_amount)) for c in offer.salary_components if c.part_of_ctc
-    )
+    total = sum(Decimal(str(c.annual_amount)) for c in offer.salary_components if c.part_of_ctc)
     assert total == Decimal("1800000.00")
 
 
@@ -1128,16 +1234,26 @@ async def test_a_candidate_cannot_hold_two_live_offers(
     offer, structure, candidate, _ = await _draft(session, tenant, hr_user, legal_entity)
     with pytest.raises(HTTPException) as exc:
         await offer_service.create_offer(
-            session, hr_user, candidate_id=candidate.id, code="OFF-DUP",
-            salary_structure_id=structure.id, ctc_annual=Decimal("1800000"),
-            joining_date=date(2026, 11, 3), designation="Senior Engineer",
-            grade="L5", legal_entity_id=legal_entity.id, valid_until=VALID_UNTIL,
+            session,
+            hr_user,
+            candidate_id=candidate.id,
+            code="OFF-DUP",
+            salary_structure_id=structure.id,
+            ctc_annual=Decimal("1800000"),
+            joining_date=date(2026, 11, 3),
+            designation="Senior Engineer",
+            grade="L5",
+            legal_entity_id=legal_entity.id,
+            valid_until=VALID_UNTIL,
         )
     assert "already has a live offer" in exc.value.detail
 
 
 async def test_offers_are_tenant_isolated(
-    session: AsyncSession, tenant: Tenant, hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
     legal_entity: LegalEntity,
 ) -> None:
     offer, _, _, _ = await _draft(session, tenant, hr_user, legal_entity)

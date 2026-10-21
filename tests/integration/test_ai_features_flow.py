@@ -388,9 +388,7 @@ async def test_only_comments_their_writers_opened_to_ai_are_read(
 ) -> None:
     comments = [f"The new shift timings make the commute very hard, comment {i}" for i in range(7)]
     # Four of seven ticked the box: below the floor of five, nothing is sent.
-    survey, _ = await _survey_with_comments(
-        session, tenant, employee, comments, ai_ok={0, 1, 2, 3}
-    )
+    survey, _ = await _survey_with_comments(session, tenant, employee, comments, ai_ok={0, 1, 2, 3})
     await _ai_on(session, hr_user)
 
     model = FakeModel()
@@ -402,12 +400,25 @@ async def test_only_comments_their_writers_opened_to_ai_are_read(
 
     # Five ticked: those five are sent, and the two that did not tick are not.
     other, _ = await _survey_with_comments(
-        session, tenant, employee, [f"Second survey comment number {i}" for i in range(7)],
-        ai_ok={0, 1, 2, 3, 4}, code_prefix="T",
+        session,
+        tenant,
+        employee,
+        [f"Second survey comment number {i}" for i in range(7)],
+        ai_ok={0, 1, 2, 3, 4},
+        code_prefix="T",
     )
     model = FakeModel(
-        {"topics": [{"theme": "Comments", "summary": "People left comments.", "mentions": 5,
-                     "sentiment": "mixed"}], "confidence": 0.6}
+        {
+            "topics": [
+                {
+                    "theme": "Comments",
+                    "summary": "People left comments.",
+                    "mentions": 5,
+                    "sentiment": "mixed",
+                }
+            ],
+            "confidence": 0.6,
+        }
     )
     with use_backend(model):
         result = await survey_topics.generate(session, hr_user, other.id)

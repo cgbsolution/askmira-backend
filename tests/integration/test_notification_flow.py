@@ -280,9 +280,7 @@ async def test_one_channel_failing_leaves_the_others_delivered(
 
     rows = (await session.scalars(select(Notification))).all()
     by_channel = {row.channel: row.status for row in rows}
-    assert by_channel[Channel.IN_APP] in {
-        NotificationStatus.SENT, NotificationStatus.DELIVERED
-    }
+    assert by_channel[Channel.IN_APP] in {NotificationStatus.SENT, NotificationStatus.DELIVERED}
     assert by_channel[Channel.EMAIL] is NotificationStatus.QUEUED  # awaiting retry
 
 
@@ -307,8 +305,11 @@ async def test_one_bad_recipient_does_not_lose_the_rest_of_a_bulk_send(
 
     # One user with an address the adapter will reject.
     broken = User(
-        tenant_id=tenant.id, email="not-an-email", password_hash="!x",
-        full_name="Broken Address", role=UserRole.EMPLOYEE,
+        tenant_id=tenant.id,
+        email="not-an-email",
+        password_hash="!x",
+        full_name="Broken Address",
+        role=UserRole.EMPLOYEE,
     )
     session.add(broken)
     await session.commit()
@@ -344,8 +345,11 @@ async def test_a_transient_failure_schedules_a_retry(
     notification_service.register_adapter(Channel.EMAIL, AlwaysFailsAdapter())
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     row = await session.scalar(select(Notification))
@@ -360,13 +364,14 @@ async def test_a_permanent_failure_does_not_schedule_a_retry(
 ) -> None:
     """Retrying an unsubscribe is worse than not sending."""
     await _template(session, tenant, "system.announcement", Channel.EMAIL)
-    notification_service.register_adapter(
-        Channel.EMAIL, AlwaysFailsAdapter(permanent=True)
-    )
+    notification_service.register_adapter(Channel.EMAIL, AlwaysFailsAdapter(permanent=True))
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     row = await session.scalar(select(Notification))
@@ -384,8 +389,11 @@ async def test_retries_are_bounded_and_dead_letter(
     notification_service.register_adapter(Channel.EMAIL, adapter)
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     # Drive the retries.
@@ -409,21 +417,20 @@ async def test_a_failed_notification_is_queryable_not_only_logged(
 ) -> None:
     """The checklist gate: dead-letter visibility."""
     await _template(session, tenant, "system.announcement", Channel.EMAIL)
-    notification_service.register_adapter(
-        Channel.EMAIL, AlwaysFailsAdapter(permanent=True)
-    )
+    notification_service.register_adapter(Channel.EMAIL, AlwaysFailsAdapter(permanent=True))
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     findable = (
         await session.scalars(
             select(Notification).where(
-                Notification.status.in_(
-                    [NotificationStatus.FAILED, NotificationStatus.DEAD_LETTER]
-                )
+                Notification.status.in_([NotificationStatus.FAILED, NotificationStatus.DEAD_LETTER])
             )
         )
     ).all()
@@ -443,8 +450,11 @@ async def test_quiet_hours_defer_non_urgent_and_pass_urgent(
     # A window covering every hour of the day, so the test does not depend on
     # when it runs.
     await _policy(
-        session, tenant, quiet_hours_enabled=True,
-        quiet_start=time(0, 0), quiet_end=time(23, 59),
+        session,
+        tenant,
+        quiet_hours_enabled=True,
+        quiet_start=time(0, 0),
+        quiet_end=time(23, 59),
     )
     await _template(session, tenant, "system.announcement", Channel.EMAIL)
     await _template(session, tenant, "payroll.run.failed", Channel.EMAIL)
@@ -453,16 +463,22 @@ async def test_quiet_hours_defer_non_urgent_and_pass_urgent(
     notification_service.register_adapter(Channel.EMAIL, recorder)
 
     ordinary = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
     assert ordinary.deferred == 2, "both the email and the in-app notice wait"
     assert ordinary.sent == 0
     assert recorder.sent == []
 
     urgent = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.run.failed",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.run.failed",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
     assert urgent.sent == 2, "a payroll failure does not wait until morning"
     assert len(recorder.sent) == 1
@@ -472,14 +488,20 @@ async def test_a_deferred_notification_records_when_it_will_send(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:
     await _policy(
-        session, tenant, quiet_hours_enabled=True,
-        quiet_start=time(0, 0), quiet_end=time(23, 59),
+        session,
+        tenant,
+        quiet_hours_enabled=True,
+        quiet_start=time(0, 0),
+        quiet_end=time(23, 59),
     )
     await _template(session, tenant, "system.announcement", Channel.EMAIL)
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     row = await session.scalar(select(Notification))
@@ -499,7 +521,9 @@ async def test_the_rate_cap_stops_a_bulk_operation_flooding_one_person(
 
     for index in range(20):
         await notification_service.notify(
-            session, tenant_id=tenant.id, event_key="system.announcement",
+            session,
+            tenant_id=tenant.id,
+            event_key="system.announcement",
             recipient_user_ids=[hr_user.id],
             payload={"name": "P", "thing": f"item {index}"},
         )
@@ -526,13 +550,19 @@ async def test_urgent_bypasses_the_rate_cap(
 
     for _ in range(5):
         await notification_service.notify(
-            session, tenant_id=tenant.id, event_key="system.announcement",
-            recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+            session,
+            tenant_id=tenant.id,
+            event_key="system.announcement",
+            recipient_user_ids=[hr_user.id],
+            payload={"name": "P", "thing": "x"},
         )
 
     urgent = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.run.failed",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "failure"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.run.failed",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "failure"},
     )
     assert urgent.sent == 2, "email and in-app, both past the cap"
 
@@ -550,8 +580,9 @@ async def _whatsapp_setup(
         meta_name="payslip_ready_v1",
         status=status,
         parameter_names=["name", "period"],
-        rejection_reason="Contains promotional content" if status
-        is WhatsAppTemplateStatus.REJECTED else None,
+        rejection_reason="Contains promotional content"
+        if status is WhatsAppTemplateStatus.REJECTED
+        else None,
     )
     session.add(meta)
     await session.commit()
@@ -570,21 +601,30 @@ async def test_whatsapp_without_recorded_consent_is_rejected_before_enqueue(
     """
     meta = await _whatsapp_setup(session, tenant, WhatsAppTemplateStatus.APPROVED)
     await _template(
-        session, tenant, "payroll.payslip.published", Channel.WHATSAPP,
+        session,
+        tenant,
+        "payroll.payslip.published",
+        Channel.WHATSAPP,
         whatsapp_template_id=meta.id,
     )
     session.add(
         NotificationPreference(
-            tenant_id=tenant.id, user_id=hr_user.id,
-            event_key="payroll.payslip.published", channel=Channel.WHATSAPP,
-            enabled=True, digest_mode=DigestMode.IMMEDIATE,
+            tenant_id=tenant.id,
+            user_id=hr_user.id,
+            event_key="payroll.payslip.published",
+            channel=Channel.WHATSAPP,
+            enabled=True,
+            digest_mode=DigestMode.IMMEDIATE,
         )
     )
     await session.commit()
 
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.payslip.published",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "period": "April"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.payslip.published",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "period": "April"},
     )
 
     assert outcome.queued == 0, "nothing was enqueued"
@@ -599,27 +639,40 @@ async def test_an_unapproved_whatsapp_template_fails_at_enqueue_with_a_named_err
     """The checklist gate: the error names the template and its status."""
     meta = await _whatsapp_setup(session, tenant, WhatsAppTemplateStatus.REJECTED)
     await _template(
-        session, tenant, "payroll.payslip.published", Channel.WHATSAPP,
+        session,
+        tenant,
+        "payroll.payslip.published",
+        Channel.WHATSAPP,
         whatsapp_template_id=meta.id,
     )
     session.add_all(
         [
             NotificationPreference(
-                tenant_id=tenant.id, user_id=hr_user.id,
-                event_key="payroll.payslip.published", channel=Channel.WHATSAPP,
-                enabled=True, digest_mode=DigestMode.IMMEDIATE,
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                event_key="payroll.payslip.published",
+                channel=Channel.WHATSAPP,
+                enabled=True,
+                digest_mode=DigestMode.IMMEDIATE,
             ),
             WhatsAppConsent(
-                tenant_id=tenant.id, user_id=hr_user.id, phone_e164="+919000000000",
-                opted_in=True, opted_in_at=datetime.now(UTC), source="ess_settings",
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                phone_e164="+919000000000",
+                opted_in=True,
+                opted_in_at=datetime.now(UTC),
+                source="ess_settings",
             ),
         ]
     )
     await session.commit()
 
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.payslip.published",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "period": "April"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.payslip.published",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "period": "April"},
     )
 
     assert outcome.queued == 0
@@ -634,19 +687,29 @@ async def test_whatsapp_with_consent_and_an_approved_template_enqueues(
 ) -> None:
     meta = await _whatsapp_setup(session, tenant, WhatsAppTemplateStatus.APPROVED)
     await _template(
-        session, tenant, "payroll.payslip.published", Channel.WHATSAPP,
+        session,
+        tenant,
+        "payroll.payslip.published",
+        Channel.WHATSAPP,
         whatsapp_template_id=meta.id,
     )
     session.add_all(
         [
             NotificationPreference(
-                tenant_id=tenant.id, user_id=hr_user.id,
-                event_key="payroll.payslip.published", channel=Channel.WHATSAPP,
-                enabled=True, digest_mode=DigestMode.IMMEDIATE,
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                event_key="payroll.payslip.published",
+                channel=Channel.WHATSAPP,
+                enabled=True,
+                digest_mode=DigestMode.IMMEDIATE,
             ),
             WhatsAppConsent(
-                tenant_id=tenant.id, user_id=hr_user.id, phone_e164="+919000000000",
-                opted_in=True, opted_in_at=datetime.now(UTC), source="ess_settings",
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                phone_e164="+919000000000",
+                opted_in=True,
+                opted_in_at=datetime.now(UTC),
+                source="ess_settings",
             ),
         ]
     )
@@ -656,8 +719,11 @@ async def test_whatsapp_with_consent_and_an_approved_template_enqueues(
     notification_service.register_adapter(Channel.WHATSAPP, recorder)
 
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.payslip.published",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "period": "April"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.payslip.published",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "period": "April"},
     )
 
     assert outcome.sent == 1
@@ -671,28 +737,41 @@ async def test_a_withdrawn_consent_blocks_further_whatsapp(
 ) -> None:
     meta = await _whatsapp_setup(session, tenant, WhatsAppTemplateStatus.APPROVED)
     await _template(
-        session, tenant, "payroll.payslip.published", Channel.WHATSAPP,
+        session,
+        tenant,
+        "payroll.payslip.published",
+        Channel.WHATSAPP,
         whatsapp_template_id=meta.id,
     )
     session.add_all(
         [
             NotificationPreference(
-                tenant_id=tenant.id, user_id=hr_user.id,
-                event_key="payroll.payslip.published", channel=Channel.WHATSAPP,
-                enabled=True, digest_mode=DigestMode.IMMEDIATE,
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                event_key="payroll.payslip.published",
+                channel=Channel.WHATSAPP,
+                enabled=True,
+                digest_mode=DigestMode.IMMEDIATE,
             ),
             WhatsAppConsent(
-                tenant_id=tenant.id, user_id=hr_user.id, phone_e164="+919000000000",
-                opted_in=True, opted_in_at=datetime.now(UTC) - timedelta(days=30),
-                opted_out_at=datetime.now(UTC), source="ess_settings",
+                tenant_id=tenant.id,
+                user_id=hr_user.id,
+                phone_e164="+919000000000",
+                opted_in=True,
+                opted_in_at=datetime.now(UTC) - timedelta(days=30),
+                opted_out_at=datetime.now(UTC),
+                source="ess_settings",
             ),
         ]
     )
     await session.commit()
 
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="payroll.payslip.published",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "period": "April"},
+        session,
+        tenant_id=tenant.id,
+        event_key="payroll.payslip.published",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "period": "April"},
     )
     assert outcome.queued == 0
     assert any("not opted in" in e for e in outcome.errors)
@@ -704,21 +783,25 @@ async def test_a_withdrawn_consent_blocks_further_whatsapp(
 
 
 async def test_notifications_are_tenant_scoped(
-    session: AsyncSession, tenant: Tenant, other_tenant: Tenant,
-    hr_user: User, other_hr_user: User,
+    session: AsyncSession,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
 ) -> None:
     await _template(session, tenant, "system.announcement", Channel.EMAIL)
     notification_service.register_adapter(Channel.EMAIL, RecordingAdapter())
 
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
 
     theirs = (
-        await session.scalars(
-            select(Notification).where(Notification.tenant_id == other_tenant.id)
-        )
+        await session.scalars(select(Notification).where(Notification.tenant_id == other_tenant.id))
     ).all()
     assert theirs == []
 
@@ -732,8 +815,11 @@ async def test_a_missing_template_suppresses_that_channel_with_an_explanation(
     added and never worded.
     """
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="custom.never_worded",
-        recipient_user_ids=[hr_user.id], payload={"name": "P", "thing": "x"},
+        session,
+        tenant_id=tenant.id,
+        event_key="custom.never_worded",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "P", "thing": "x"},
     )
     assert outcome.sent == 0
     assert any("No in_app template" in e for e in outcome.errors)
@@ -758,8 +844,12 @@ async def test_push_goes_to_the_phone_the_app_registered_and_stops_when_gone(
     await _template(session, tenant, "system.announcement", Channel.PUSH)
     session.add(
         NotificationPreference(
-            tenant_id=tenant.id, user_id=hr_user.id, event_key="system.announcement",
-            channel=Channel.PUSH, enabled=True, digest_mode=DigestMode.IMMEDIATE,
+            tenant_id=tenant.id,
+            user_id=hr_user.id,
+            event_key="system.announcement",
+            channel=Channel.PUSH,
+            enabled=True,
+            digest_mode=DigestMode.IMMEDIATE,
         )
     )
     await session.commit()
@@ -773,8 +863,11 @@ async def test_push_goes_to_the_phone_the_app_registered_and_stops_when_gone(
     recorder = RecordingAdapter()
     notification_service.register_adapter(Channel.PUSH, recorder)
     outcome = await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "thing": "the move"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "thing": "the move"},
     )
     assert outcome.sent == 1 and recorder.sent[0].push_token == token
 
@@ -784,8 +877,11 @@ async def test_push_goes_to_the_phone_the_app_registered_and_stops_when_gone(
 
     notification_service.register_adapter(Channel.PUSH, Gone())
     await notification_service.notify(
-        session, tenant_id=tenant.id, event_key="system.announcement",
-        recipient_user_ids=[hr_user.id], payload={"name": "Priya", "thing": "again"},
+        session,
+        tenant_id=tenant.id,
+        event_key="system.announcement",
+        recipient_user_ids=[hr_user.id],
+        payload={"name": "Priya", "thing": "again"},
     )
     await session.refresh(stored)
     assert stored.revoked_at is not None, "a phone Expo calls gone is not pushed to again"

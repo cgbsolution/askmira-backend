@@ -41,13 +41,19 @@ async def _setup(session, tenant, legal_entity, location):
     session.add_all(
         [
             DeclarationWindow(
-                tenant_id=tenant.id, financial_year=FY, window_type=WindowType.DECLARATION,
-                opens_at=date(2026, 4, 1), closes_at=date(2027, 3, 31),
+                tenant_id=tenant.id,
+                financial_year=FY,
+                window_type=WindowType.DECLARATION,
+                opens_at=date(2026, 4, 1),
+                closes_at=date(2027, 3, 31),
                 allow_late_submission=True,
             ),
             DeclarationWindow(
-                tenant_id=tenant.id, financial_year=FY, window_type=WindowType.PROOF,
-                opens_at=date(2026, 4, 1), closes_at=date(2027, 3, 31),
+                tenant_id=tenant.id,
+                financial_year=FY,
+                window_type=WindowType.PROOF,
+                opens_at=date(2026, 4, 1),
+                closes_at=date(2027, 3, 31),
                 allow_late_submission=True,
             ),
         ]
@@ -67,8 +73,13 @@ async def _setup(session, tenant, legal_entity, location):
 
 async def _submitted(session, user, employee_id):
     declaration = await tax_service.upsert_declaration(
-        session, user, employee_id=employee_id, financial_year=FY, section="80C",
-        sub_category="PPF", declared_amount=Decimal("100000"),
+        session,
+        user,
+        employee_id=employee_id,
+        financial_year=FY,
+        section="80C",
+        sub_category="PPF",
+        declared_amount=Decimal("100000"),
     )
     await tax_service.submit_declaration(session, user, declaration.id)
     await session.commit()
@@ -76,7 +87,11 @@ async def _submitted(session, user, employee_id):
 
 
 async def test_a_proof_document_is_stored_and_readable_only_by_owner_and_payroll(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     owner, owner_user, colleague_user, _, payroll_user = await _setup(
         session, tenant, legal_entity, location
@@ -84,8 +99,12 @@ async def test_a_proof_document_is_stored_and_readable_only_by_owner_and_payroll
     declaration = await _submitted(session, owner_user, owner.id)
 
     proof = await tax_service.submit_proof(
-        session, owner_user, declaration_id=declaration.id, proof_amount=Decimal("60000"),
-        data=PNG_BYTES, document_name="../../etc/passwd receipt.png",
+        session,
+        owner_user,
+        declaration_id=declaration.id,
+        proof_amount=Decimal("60000"),
+        data=PNG_BYTES,
+        document_name="../../etc/passwd receipt.png",
     )
     await session.commit()
     assert proof.document_storage_key.startswith(f"{tenant.id}/tax-proofs/")
@@ -104,65 +123,101 @@ async def test_a_proof_document_is_stored_and_readable_only_by_owner_and_payroll
     await tax_service.proof_document(session, payroll_user, proof.id)
     await session.commit()
     reads = await session.scalar(
-        select(func.count()).select_from(AuditLog).where(
-            AuditLog.action == AuditAction.SENSITIVE_READ, AuditLog.entity_id == proof.id
-        )
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.action == AuditAction.SENSITIVE_READ, AuditLog.entity_id == proof.id)
     )
     assert reads == 1, "payroll opening someone's proof is recorded; the owner's own read is not"
 
 
 async def test_an_upload_that_is_not_an_accepted_type_is_refused(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     owner, owner_user, *_ = await _setup(session, tenant, legal_entity, location)
     declaration = await _submitted(session, owner_user, owner.id)
     with pytest.raises(HTTPException) as exc:
         await tax_service.submit_proof(
-            session, owner_user, declaration_id=declaration.id,
-            proof_amount=Decimal("1"), data=b"<html>not a pdf</html>", document_name="x.pdf",
+            session,
+            owner_user,
+            declaration_id=declaration.id,
+            proof_amount=Decimal("1"),
+            data=b"<html>not a pdf</html>",
+            document_name="x.pdf",
         )
     assert exc.value.status_code == 422
 
 
 async def test_a_colleague_cannot_attach_a_proof_to_someone_elses_declaration(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     owner, owner_user, colleague_user, *_ = await _setup(session, tenant, legal_entity, location)
     declaration = await _submitted(session, owner_user, owner.id)
     with pytest.raises(HTTPException) as exc:
         await tax_service.submit_proof(
-            session, colleague_user, declaration_id=declaration.id,
-            proof_amount=Decimal("1"), data=PNG_BYTES, document_name="x.png",
+            session,
+            colleague_user,
+            declaration_id=declaration.id,
+            proof_amount=Decimal("1"),
+            data=PNG_BYTES,
+            document_name="x.png",
         )
     assert exc.value.status_code == 403
 
 
 async def test_nobody_verifies_a_proof_against_their_own_declaration(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     _, _, _, payroll, payroll_user = await _setup(session, tenant, legal_entity, location)
     declaration = await _submitted(session, payroll_user, payroll.id)
     proof = await tax_service.submit_proof(
-        session, payroll_user, declaration_id=declaration.id, proof_amount=Decimal("50000"),
-        data=PNG_BYTES, document_name="own.png",
+        session,
+        payroll_user,
+        declaration_id=declaration.id,
+        proof_amount=Decimal("50000"),
+        data=PNG_BYTES,
+        document_name="own.png",
     )
     await session.commit()
     with pytest.raises(HTTPException) as exc:
         await tax_service.verify_proof(
-            session, payroll_user, proof.id, status_decision=ProofStatus.VERIFIED,
-            accepted_amount=Decimal(0), remarks="",
+            session,
+            payroll_user,
+            proof.id,
+            status_decision=ProofStatus.VERIFIED,
+            accepted_amount=Decimal(0),
+            remarks="",
         )
     assert exc.value.status_code == 403
 
 
 async def test_the_queue_names_the_employee_and_the_section(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     owner, owner_user, _, _, payroll_user = await _setup(session, tenant, legal_entity, location)
     declaration = await _submitted(session, owner_user, owner.id)
     await tax_service.submit_proof(
-        session, owner_user, declaration_id=declaration.id, proof_amount=Decimal("100"),
-        data=PNG_BYTES, document_name="a.png",
+        session,
+        owner_user,
+        declaration_id=declaration.id,
+        proof_amount=Decimal("100"),
+        data=PNG_BYTES,
+        document_name="a.png",
     )
     await session.commit()
     rows = await tax_service.proof_queue(session, payroll_user, financial_year=FY)
@@ -181,10 +236,15 @@ async def test_taxable_gratuity_reaches_the_projection(
 
     session.add(
         GratuityPayout(
-            tenant_id=tenant.id, employee_id=owner.id, exit_date=date(2026, 9, 30),
-            exit_reason=ExitReason.RESIGNATION, service_days=3000,
-            service_years=Decimal(8), monthly_wages=Decimal(50000),
-            gross_amount=Decimal(3500000), exempt_amount=Decimal(2000000),
+            tenant_id=tenant.id,
+            employee_id=owner.id,
+            exit_date=date(2026, 9, 30),
+            exit_reason=ExitReason.RESIGNATION,
+            service_days=3000,
+            service_years=Decimal(8),
+            monthly_wages=Decimal(50000),
+            gross_amount=Decimal(3500000),
+            exempt_amount=Decimal(2000000),
             taxable_amount=Decimal(1500000),
         )
     )
@@ -203,8 +263,11 @@ async def test_window_reminders_are_raised_once_per_day_and_kind(
     await tds_rule_set(session, tenant, effective=date(2000, 4, 1))
     session.add(
         DeclarationWindow(
-            tenant_id=tenant.id, financial_year="2099-00", window_type=WindowType.DECLARATION,
-            opens_at=today - timedelta(days=10), closes_at=today + timedelta(days=7),
+            tenant_id=tenant.id,
+            financial_year="2099-00",
+            window_type=WindowType.DECLARATION,
+            opens_at=today - timedelta(days=10),
+            closes_at=today + timedelta(days=7),
             reminder_days_before=[7, 1],
         )
     )
@@ -220,7 +283,9 @@ async def test_window_reminders_are_raised_once_per_day_and_kind(
     assert second.events == [], "nothing is sent twice"
 
     rows = await session.scalar(
-        select(func.count()).select_from(Notification).where(
+        select(func.count())
+        .select_from(Notification)
+        .where(
             Notification.tenant_id == tenant.id,
             Notification.event_key.in_([reminders.EVENT_OPENED, reminders.EVENT_CLOSING]),
         )
@@ -230,14 +295,22 @@ async def test_window_reminders_are_raised_once_per_day_and_kind(
 
 
 async def test_form_12bb_issues_through_the_letter_engine(
-    session: AsyncSession, tenant, legal_entity, location, storage_root  # noqa: F811
+    session: AsyncSession,
+    tenant,
+    legal_entity,
+    location,
+    storage_root,  # noqa: F811
 ) -> None:
     owner, owner_user, colleague_user, *_ = await _setup(session, tenant, legal_entity, location)
     await _submitted(session, owner_user, owner.id)
 
     letter = await tax_service.issue_form_12bb(
-        session, owner_user, employee_id=owner.id, financial_year=FY,
-        parent_name="R. Test", place="Bengaluru",
+        session,
+        owner_user,
+        employee_id=owner.id,
+        financial_year=FY,
+        parent_name="R. Test",
+        place="Bengaluru",
     )
     await session.commit()
     assert "80C (PPF): declared 1,00,000.00, accepted 0.00" in letter.merged_html
@@ -263,16 +336,25 @@ async def test_form_12bb_refuses_without_a_pan(
     )
     with pytest.raises(tax_service.TaxWorkflowError):
         await tax_service.issue_form_12bb(
-            session, nopan_user, employee_id=nopan.id, financial_year=FY,
-            parent_name="X", place="Y",
+            session,
+            nopan_user,
+            employee_id=nopan.id,
+            financial_year=FY,
+            parent_name="X",
+            place="Y",
         )
 
 
 async def test_a_moved_window_is_audited(session: AsyncSession, tenant, hr_user) -> None:
     await tax_service.upsert_window(
-        session, hr_user, financial_year=FY, window_type=WindowType.PROOF,
-        opens_at=date(2027, 1, 1), closes_at=date(2027, 1, 31),
-        allow_late_submission=False, reminder_days_before=[1, 7, 7],
+        session,
+        hr_user,
+        financial_year=FY,
+        window_type=WindowType.PROOF,
+        opens_at=date(2027, 1, 1),
+        closes_at=date(2027, 1, 31),
+        allow_late_submission=False,
+        reminder_days_before=[1, 7, 7],
     )
     await session.commit()
     window = await tax_service.window_for(session, hr_user, FY, WindowType.PROOF)

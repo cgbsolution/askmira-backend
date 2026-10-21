@@ -114,9 +114,7 @@ async def test_a_cookie_write_without_the_csrf_header_is_refused(
     assert any(c.startswith("askmira_access=") and "max-age=0" in c.lower() for c in cleared)
 
 
-async def test_a_bearer_write_needs_no_csrf_header(
-    client: httpx.AsyncClient, person: User
-) -> None:
+async def test_a_bearer_write_needs_no_csrf_header(client: httpx.AsyncClient, person: User) -> None:
     token = (
         await client.post("/api/v1/auth/login", json={"email": person.email, "password": PASSWORD})
     ).json()["access_token"]
@@ -134,9 +132,7 @@ async def test_refresh_from_the_cookie_needs_the_csrf_header(
     refused = await client.post("/api/v1/auth/refresh", headers=WEB)
     assert refused.status_code == 401
     token = client.cookies.get("askmira_csrf")
-    renewed = await client.post(
-        "/api/v1/auth/refresh", headers={**WEB, "X-CSRF-Token": token}
-    )
+    renewed = await client.post("/api/v1/auth/refresh", headers={**WEB, "X-CSRF-Token": token})
     assert renewed.status_code == 200
     assert renewed.json()["access_token"] == ""
 

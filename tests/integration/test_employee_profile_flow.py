@@ -72,8 +72,13 @@ async def _login(
     session: AsyncSession, tenant: Tenant, employee: Employee | None, role: UserRole, tag: str
 ) -> User:
     user = User(
-        tenant_id=tenant.id, email=f"{tag}@acme.test", password_hash="x", full_name=tag,
-        role=role, is_active=True, employee_id=employee.id if employee else None,
+        tenant_id=tenant.id,
+        email=f"{tag}@acme.test",
+        password_hash="x",
+        full_name=tag,
+        role=role,
+        is_active=True,
+        employee_id=employee.id if employee else None,
     )
     session.add(user)
     await session.commit()
@@ -83,8 +88,11 @@ async def _login(
 
 async def _person(session: AsyncSession, tenant: Tenant, code: str, **extra) -> Employee:
     person = Employee(
-        tenant_id=tenant.id, employee_code=code, first_name=code,
-        work_email=f"{code.lower()}@acme.test", **extra,
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code,
+        work_email=f"{code.lower()}@acme.test",
+        **extra,
     )
     session.add(person)
     await session.commit()
@@ -253,9 +261,7 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     colleague = await _login(
         session, tenant, await _person(session, tenant, "COL1"), UserRole.EMPLOYEE, "col"
     )
-    refused = await client.get(
-        f"/api/v1/employees/{employee.id}/profile", headers=_auth(colleague)
-    )
+    refused = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(colleague))
     assert refused.status_code == 403
 
 
@@ -320,12 +326,19 @@ async def test_a_self_read_carries_no_hiring_or_sensitive_custom_fields(
     session.add_all(
         [
             CustomFieldDefinition(
-                tenant_id=tenant.id, entity="employee", key="tshirt_size", label="T-shirt",
+                tenant_id=tenant.id,
+                entity="employee",
+                key="tshirt_size",
+                label="T-shirt",
                 field_type="text",
             ),
             CustomFieldDefinition(
-                tenant_id=tenant.id, entity="employee", key="bgv_vendor_ref",
-                label="BGV reference", field_type="text", is_sensitive=True,
+                tenant_id=tenant.id,
+                entity="employee",
+                key="bgv_vendor_ref",
+                label="BGV reference",
+                field_type="text",
+                is_sensitive=True,
             ),
         ]
     )
@@ -356,12 +369,12 @@ async def test_a_self_read_carries_no_hiring_or_sensitive_custom_fields(
     for leaked in ("fit_score", "expected_ctc", "current_ctc_at_offer", "1800000"):
         assert leaked not in own.text
 
-    assert (
-        await client.get(f"/api/v1/employees/{person.id}", headers=_auth(colleague))
-    ).json()["custom_fields"] == {}
-    assert (
-        await client.get(f"/api/v1/employees/{person.id}", headers=_auth(hr_user))
-    ).json()["custom_fields"]["fit_score"] == "82.50"
+    assert (await client.get(f"/api/v1/employees/{person.id}", headers=_auth(colleague))).json()[
+        "custom_fields"
+    ] == {}
+    assert (await client.get(f"/api/v1/employees/{person.id}", headers=_auth(hr_user))).json()[
+        "custom_fields"
+    ]["fit_score"] == "82.50"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -440,13 +453,20 @@ async def test_a_resignation_is_submitted_withdrawn_and_accepted(
     )
     session.add(
         ClearanceTemplate(
-            tenant_id=tenant.id, department="IT", description="Laptop returned",
-            owner_role="named_user", owner_user_id=it_admin.id,
+            tenant_id=tenant.id,
+            department="IT",
+            description="Laptop returned",
+            owner_role="named_user",
+            owner_user_id=it_admin.id,
         )
     )
     await session.commit()
     leaver = await _person(
-        session, tenant, "LEAVE1", manager_id=boss.id, notice_period_days=30,
+        session,
+        tenant,
+        "LEAVE1",
+        manager_id=boss.id,
+        notice_period_days=30,
         status=EmploymentStatus.ACTIVE,
     )
     me = await _login(session, tenant, leaver, UserRole.EMPLOYEE, "leaver")
@@ -506,7 +526,11 @@ async def test_a_resignation_is_submitted_withdrawn_and_accepted(
     # A second leaver resigns asking for an earlier day; the manager accepts,
     # after which the leaver can no longer withdraw it themselves.
     second = await _person(
-        session, tenant, "LEAVE2", manager_id=boss.id, notice_period_days=30,
+        session,
+        tenant,
+        "LEAVE2",
+        manager_id=boss.id,
+        notice_period_days=30,
     )
     second_login = await _login(session, tenant, second, UserRole.EMPLOYEE, "leaver2")
     early = await client.post(
