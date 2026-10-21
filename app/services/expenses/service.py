@@ -79,6 +79,7 @@ from app.models.expenses import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.attendance.service import local_today
 from app.services.documents.indian_numbers import group_indian
 from app.services.expenses import advances as advance_engine
@@ -1116,6 +1117,7 @@ async def submit_claim(
                 "claim_id": str(claim.id),
             },
             commit=False,
+            approval=ApprovalRef("expense_claim_manager", claim.id),
         )
     await session.commit()
     await session.refresh(claim)
@@ -1273,6 +1275,7 @@ async def decide_claim_as_manager(
                     "claim_id": str(claim.id),
                 },
                 commit=False,
+                approval=ApprovalRef("expense_claim_manager", claim.id),
             )
         await session.commit()
         await session.refresh(claim)
@@ -1512,6 +1515,7 @@ async def create_travel_request(
                 "travel_request_id": str(row.id),
             },
             commit=False,
+            approval=ApprovalRef("travel_request_manager", row.id),
         )
     await session.commit()
     await session.refresh(row)

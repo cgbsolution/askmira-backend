@@ -33,6 +33,7 @@ from app.models.leave import LeaveRequest, LeaveRequestStatus
 from app.models.shift_swaps import ShiftSwapRequest, ShiftSwapStatus
 from app.models.user import User
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.attendance import qualifications
 from app.services.attendance.service import (
     ShiftResolver,
@@ -365,6 +366,7 @@ async def respond_to_swap(
                     "swap_date": row.swap_date.strftime("%d %b %Y"),
                 },
                 commit=False,
+                approval=ApprovalRef("shift_swap", row.id),
             )
     else:
         await _tell_requester(session, user, row, "declined by your colleague", None)

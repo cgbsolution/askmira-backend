@@ -21,6 +21,7 @@ Three rules shape this module:
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,6 +40,7 @@ from app.models.interview import Interview, InterviewMode
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
+from app.services.notifications import email_brand
 from app.services.notifications.adapters import (
     OutboundMessage,
     PermanentFailure,
@@ -524,6 +526,18 @@ async def deliver_due(
         parameters = [
             str(value).replace(LINK_SHOWN, link) for value in (message.whatsapp_parameters or [])
         ]
+        email_fields: dict[str, Any] = {"body": body}
+        if not is_whatsapp:
+            with contextlib.suppress(Exception):
+                email_fields = email_brand.as_message_fields(
+                    await email_brand.compose(
+                        session,
+                        actor.tenant_id,
+                        subject=message.subject or "",
+                        body=body,
+                        audience="candidate",
+                    )
+                )
         message.attempt_count += 1
         try:
             result = await adapter.send(
@@ -532,8 +546,8 @@ async def deliver_due(
                     recipient_email=None if is_whatsapp else message.to_address,
                     recipient_phone=message.to_address if is_whatsapp else None,
                     subject=message.subject,
-                    body=body,
                     event_key=message.event_key,
+                    **email_fields,
                     whatsapp_template_name=message.whatsapp_template_name,
                     whatsapp_parameters=parameters if is_whatsapp else None,
                 )

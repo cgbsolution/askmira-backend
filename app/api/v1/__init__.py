@@ -20,6 +20,7 @@ from app.api.v1.routers import (
     companion,
     company_documents,
     competency,
+    connectors,
     contractors,
     culture,
     culture_depth,
@@ -29,6 +30,7 @@ from app.api.v1.routers import (
     disbursement,
     documents,
     dpdp,
+    email_actions,
     employees,
     esop,
     ewa,
@@ -165,4 +167,6 @@ api_router.include_router(oauth.router)
 api_router.include_router(operators.router)
 api_router.include_router(platform.router)
 api_router.include_router(products.router)
+api_router.include_router(connectors.router)
 api_router.include_router(public_workspaces.router)
+api_router.include_router(email_actions.router)

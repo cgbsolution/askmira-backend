@@ -83,7 +83,7 @@ def _read(product: Product, row: ProductLink | None, *, configured: bool) -> dic
     }
 
 
-def _mirror(tenant: Tenant, product: str, on: bool) -> None:
+def mirror(tenant: Tenant, product: str, on: bool) -> None:
     """Keep Tenant.linked_products — what the portal's nav reads — in step."""
     settings = dict(tenant.settings or {})
     linked = dict(settings.get("linked_products") or {})
@@ -194,7 +194,7 @@ async def list_for_workspace(
         _read(
             p,
             await _link_row(session, tenant_id, p.key),
-            configured=await endpoint(session, p.key) is not None,
+            configured=await endpoint(session, p.key, tenant_id) is not None,
         )
         for p in PRODUCTS.values()
     ]
@@ -211,7 +211,7 @@ async def link(
     """Create or adopt the company in the product, switch the module over, push its people."""
     _require_super(user)
     product = _product(product_key)
-    target = await endpoint(session, product.key)
+    target = await endpoint(session, product.key, tenant_id)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -238,7 +238,7 @@ async def link(
     row.external_ref = external_ref
     row.linked_by_user_id = user.id
     row.last_error = None
-    _mirror(tenant, product.key, True)
+    mirror(tenant, product.key, True)
     await session.flush()
     await audit.record(
         session,
@@ -274,7 +274,7 @@ async def unlink(
     if row is None or row.status != ACTIVE:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Not linked.")
     row.status = DISABLED
-    _mirror(tenant, product.key, False)
+    mirror(tenant, product.key, False)
     await audit.record(
         session,
         tenant_id=tenant.id,
@@ -288,7 +288,9 @@ async def unlink(
         request=request,
     )
     await session.commit()
-    return _read(product, row, configured=await endpoint(session, product.key) is not None)
+    return _read(
+        product, row, configured=await endpoint(session, product.key, tenant.id) is not None
+    )
 
 
 async def sync_now(
@@ -309,7 +311,7 @@ async def sync_now(
     return _read(
         product,
         await _link_row(session, tenant_id, product.key),
-        configured=await endpoint(session, product.key) is not None,
+        configured=await endpoint(session, product.key, tenant_id) is not None,
     )
 
 
@@ -331,7 +333,7 @@ async def sync(
     """
     product = _product(product_key)
     row = await _link_row(session, tenant_id, product.key)
-    target = await endpoint(session, product.key)
+    target = await endpoint(session, product.key, tenant_id)
     if row is None or row.status != ACTIVE:
         return {"skipped": "not linked"}
     if target is None:
@@ -436,7 +438,7 @@ async def launch(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"{product.name} is for HR and hiring managers.",
         )
-    target = await endpoint(session, product.key)
+    target = await endpoint(session, product.key, user.tenant_id)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

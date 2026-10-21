@@ -48,7 +48,7 @@ async def role_in(session: AsyncSession, user: User, product_key: str) -> str | 
     person's AskMira role gives them no role there.
     """
     product = PRODUCTS.get(product_key)
-    if product is None or await endpoint(session, product_key) is None:
+    if product is None or await endpoint(session, product_key, user.tenant_id) is None:
         return None
     if getattr(user, "operator_grant_id", None):
         return None
@@ -69,7 +69,7 @@ async def connection(session: AsyncSession, user: User, product_key: str) -> dic
     product itself.
     """
     product = PRODUCTS[product_key]
-    if await endpoint(session, product_key) is None:
+    if await endpoint(session, product_key, user.tenant_id) is None:
         return {
             "server": "Not set up",
             "workspace": "Can't be linked until the server is set up",
@@ -121,7 +121,7 @@ async def ask(
     """Ask the product one read-only question as `user`; its answer, as it gave it."""
     product = PRODUCTS[product_key]
     role = await role_in(session, user, product_key)
-    target = await endpoint(session, product_key)
+    target = await endpoint(session, product_key, user.tenant_id)
     if role is None or target is None:
         raise ProductUnavailableError(f"{product.brand} is not linked to your workspace for you.")
     try:

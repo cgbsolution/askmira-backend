@@ -36,7 +36,7 @@ from app.models.notifications import (
 )
 from app.models.user import User
 from app.services import audit
-from app.services.notifications import dispatch
+from app.services.notifications import dispatch, email_brand
 from app.services.notifications.adapters import OutboundMessage, PermanentFailure, TransientFailure
 
 __all__ = [
@@ -509,19 +509,24 @@ async def test_smtp(
         raise _bad_request("Save and enable this workspace's mail relay before testing it.")
 
     adapter, source = await dispatch.email_adapter_for(session, user.tenant_id)
+    subject = "AskMira mail relay test"
+    body = (
+        "This is a test message from AskMira. If you can read it, this workspace's mail "
+        "relay delivers, in the email design set under Settings → Notifications."
+    )
     ok, error = True, None
     try:
+        rendered = await email_brand.compose(
+            session, user.tenant_id, subject=subject, body=body, audience="admin"
+        )
         await adapter.send(
             OutboundMessage(
                 recipient_name=user.full_name,
                 recipient_email=user.email,
                 recipient_phone=None,
-                subject="AskMira mail relay test",
-                body=(
-                    "This is a test message from AskMira. If you can read it, this "
-                    "workspace's mail relay delivers."
-                ),
+                subject=subject,
                 event_key="system.smtp_test",
+                **email_brand.as_message_fields(rendered),
             )
         )
     except (PermanentFailure, TransientFailure) as exc:

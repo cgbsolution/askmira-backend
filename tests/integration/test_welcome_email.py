@@ -129,7 +129,9 @@ async def test_a_new_login_is_emailed_its_sign_in_details_at_its_work_address(
     assert LINK.search(message.body)
     # Never the password itself: rendered bodies are stored.
     assert body["temporary_password"] not in message.body
-    stored = await session.scalar(select(Notification).where(Notification.event_key == WELCOME_EVENT))
+    stored = await session.scalar(
+        select(Notification).where(Notification.event_key == WELCOME_EVENT)
+    )
     assert body["temporary_password"] not in stored.rendered_body
 
     audit_row = await session.scalar(
@@ -215,9 +217,7 @@ async def test_an_admin_can_choose_not_to_send_it(
     assert await session.scalar(select(func.count(Notification.id))) == 0
 
 
-async def test_without_a_mail_relay_the_admin_is_told_nothing_left(
-    client, session, tenant: Tenant
-):
+async def test_without_a_mail_relay_the_admin_is_told_nothing_left(client, session, tenant: Tenant):
     owner = await make_person(session, tenant, role=UserRole.ADMIN, name="Owner One")
     employee = await _joiner_without_login(session, tenant)
 
@@ -252,9 +252,7 @@ async def test_resending_retires_the_old_link_and_stops_once_they_have_a_passwor
     created = (await _create(client, owner, employee)).json()["user"]
     old_token = LINK.search(mailbox.sent[0].body).group(1)
 
-    resent = await client.post(
-        f"{API}/users/{created['id']}/welcome-email", headers=bearer(owner)
-    )
+    resent = await client.post(f"{API}/users/{created['id']}/welcome-email", headers=bearer(owner))
     assert resent.status_code == 200
     assert resent.json()["status"] == "sent"
     new_token = LINK.search(mailbox.sent[1].body).group(1)
@@ -287,7 +285,9 @@ async def test_only_an_admin_resends_and_only_in_their_own_workspace(
     path = f"{API}/users/{target.id}/welcome-email"
     assert (await client.post(path, headers=bearer(sub_admin))).status_code == 403
     assert (await client.post(path, headers=bearer(outsider))).status_code == 404
-    assert (await client.post(f"{API}/users/{uuid.uuid4()}/welcome-email", headers=bearer(owner))).status_code == 404
+    assert (
+        await client.post(f"{API}/users/{uuid.uuid4()}/welcome-email", headers=bearer(owner))
+    ).status_code == 404
     assert mailbox.sent == []
 
 

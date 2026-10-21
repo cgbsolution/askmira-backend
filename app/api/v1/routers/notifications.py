@@ -25,6 +25,8 @@ from app.models.notifications import (
 from app.models.user import UserRole
 from app.services.notifications import admin as notification_admin
 from app.services.notifications import dispatch as notification_service
+from app.services.notifications import email_admin
+from app.services.notifications.email_brand import BrandSettings
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -117,6 +119,71 @@ async def save_template(
     """Save the next version of a template. The previous version is kept, inactive."""
     return await notification_admin.save_template(
         session, user, **payload.model_dump(), request=request
+    )
+
+
+class TemplateReset(BaseModel):
+    event_key: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_.]+$")
+    channel: Channel
+    locale: str = Field(default="en-IN", min_length=2, max_length=16)
+
+
+class EmailDraft(BaseModel):
+    """An email to preview or test-send: wording, and optionally unsaved design choices."""
+
+    event_key: str | None = Field(default=None, max_length=128, pattern=r"^[a-z0-9_.]+$")
+    subject: str = Field(default="", max_length=512)
+    body: str = Field(min_length=1, max_length=8000)
+    branding: BrandSettings | None = None
+
+
+@router.post("/admin/templates/reset", dependencies=ADMIN_ONLY)
+async def reset_template(
+    payload: TemplateReset, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Go back to the built-in wording; the workspace's versions are kept, inactive."""
+    return await email_admin.reset_template(session, user, **payload.model_dump(), request=request)
+
+
+@router.get("/admin/emails", dependencies=ADMIN_ONLY)
+async def email_catalogue(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Every email the workspace can send, with its built-in and its own wording."""
+    return await email_admin.catalogue(session, user)
+
+
+@router.get("/admin/email-design", dependencies=ADMIN_ONLY)
+async def get_email_design(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await email_admin.get_branding(session, user)
+
+
+@router.put("/admin/email-design", dependencies=ADMIN_ONLY)
+async def save_email_design(
+    payload: BrandSettings, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await email_admin.save_branding(session, user, payload, request=request)
+
+
+@router.post("/admin/emails/preview", dependencies=ADMIN_ONLY)
+async def preview_email(
+    payload: EmailDraft, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """The email as it will look, with sample values. Nothing is saved or sent."""
+    return await email_admin.preview(
+        session, user, **payload.model_dump(exclude={"branding"}), branding=payload.branding
+    )
+
+
+@router.post("/admin/emails/test", dependencies=ADMIN_ONLY)
+async def send_test_email(
+    payload: EmailDraft, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Send the previewed email to the admin who asked."""
+    return await email_admin.send_test(
+        session,
+        user,
+        **payload.model_dump(exclude={"branding"}),
+        branding=payload.branding,
+        request=request,
     )
 
 

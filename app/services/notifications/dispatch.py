@@ -25,6 +25,7 @@ Two things this deliberately does *not* do:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -53,6 +54,7 @@ from app.models.notifications import (
     WhatsAppTemplate,
 )
 from app.models.user import User
+from app.services.notifications import email_brand
 from app.services.notifications.adapters import (
     ChannelAdapter,
     ConsoleEmailAdapter,
@@ -83,6 +85,9 @@ __all__ = [
     "whatsapp_adapter_for",
     "whatsapp_template_for",
 ]
+
+
+logger = logging.getLogger("askmira.notifications")
 
 
 class NotificationError(RuntimeError):
@@ -590,13 +595,19 @@ async def notify(
     payload: dict[str, Any] | None = None,
     locale: str = "en-IN",
     commit: bool = True,
+    approval: Any = None,
 ) -> DispatchOutcome:
     """Raise a notification event.
 
     The only function other modules call. They pass an event key and
     recipients; everything about delivery is resolved here.
+
+    `approval` (an `email_actions.ApprovalRef`) marks a request waiting on the
+    recipients: their email then carries Approve and Reject buttons.
     """
-    payload = payload or {}
+    payload = dict(payload or {})
+    if approval is not None:
+        payload["_approval"] = approval.as_payload()
     outcome = DispatchOutcome()
     policy = await _policy(session, tenant_id)
     urgent = event_key in URGENT_EVENT_KEYS
@@ -744,13 +755,41 @@ async def _dispatch_one(
             .limit(1)
         )
 
+    email_fields: dict[str, Any] = {"body": notification.rendered_body}
+    if notification.channel is Channel.EMAIL:
+        # The wording goes out inside the workspace's branded email. A brand
+        # that cannot be built (storage down for the logo) still sends.
+        try:
+            # Local: approvals imports half the services, which import this module.
+            from app.services.approvals import email_actions
+
+            buttons = await email_actions.buttons_for(
+                session, user, (notification.payload or {}).get("_approval")
+            )
+            email_fields = email_brand.as_message_fields(
+                await email_brand.compose(
+                    session,
+                    notification.tenant_id,
+                    subject=notification.rendered_subject or notification.event_key,
+                    body=notification.rendered_body,
+                    actions=buttons,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Branded email could not be built for %s; sending plain text",
+                notification.id,
+                exc_info=True,
+            )
+            email_fields = {"body": notification.rendered_body}
+
     message = OutboundMessage(
         recipient_name=user.full_name,
         recipient_email=user.email,
         recipient_phone=phone or user.phone,
         subject=notification.rendered_subject,
-        body=notification.rendered_body,
         event_key=notification.event_key,
+        **email_fields,
         whatsapp_template_name=meta_template.meta_name if meta_template else None,
         whatsapp_parameters=[
             str(notification.payload.get(name, ""))
@@ -903,6 +942,7 @@ async def send_digests(session: AsyncSession, tenant_id: uuid.UUID) -> int:
             digest.status = NotificationStatus.FAILED
             continue
 
+        # "- " lines: the branded email lays them out as a list.
         lines = "\n".join(f"- {item['subject'] or item['body']}" for item in digest.items)
         notification = Notification(
             tenant_id=tenant_id,

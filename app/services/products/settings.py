@@ -1,13 +1,16 @@
-"""Where each product lives and the secret it shares with AskMira, from the environment.
+"""Where each product lives, and the older server-wide secret, from the environment.
 
 Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…):
 
     _API_URL  the product's backend, which AskMira calls server to server
-    _APP_URL  the product's web app, where a launch lands (/sso/askmira)
-    _SECRET   a long random value set on both sides; signs every token
+    _APP_URL  the product's web app, where Connect and a launch land
+    _SECRET   optional: a server-wide secret set on both sides, for workspaces
+              linked before Connectors. A workspace that connected from
+              Connectors has a secret of its own (products/connections.py).
 
-A product with any of the three unset is "not configured": it can't be linked,
-and the console says so.
+The addresses are public facts, not secrets. AnytimeHire's production
+addresses are built in; set the variables to point somewhere else (a local or
+staging copy) or to give ExpenseGenie's.
 """
 
 from __future__ import annotations
@@ -58,6 +61,25 @@ def endpoint(product: str) -> Endpoint | None:
     if not api_url or not app_url or not secret or len(secret) < MIN_SECRET_LENGTH:
         return None
     return Endpoint(api_url=api_url.rstrip("/"), app_url=app_url.rstrip("/"), secret=secret)
+
+
+#: Production addresses of our own products, used when the environment names none.
+DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
+    "interview": ("https://anytimehire-api-prod.epfassist.com", "https://app.anytimehire.ai"),
+}
+
+
+def addresses(product: str) -> tuple[str, str] | None:
+    """The product's (api_url, app_url), or None when this server does not know where it is."""
+    prefix = {"interview": "interview_tool", "expense": "expense_tool"}.get(product)
+    if prefix is None:
+        return None
+    s = _settings()
+    api_url = getattr(s, f"{prefix}_api_url")
+    app_url = getattr(s, f"{prefix}_app_url")
+    if api_url and app_url:
+        return api_url.rstrip("/"), app_url.rstrip("/")
+    return DEFAULT_ADDRESSES.get(product)
 
 
 def reset_cache() -> None:

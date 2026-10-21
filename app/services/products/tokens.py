@@ -9,9 +9,8 @@ Four kinds, all HS256 with the product's own secret, all good for 60 seconds:
 * **query** — the same shape, for a read-only question asked on behalf of one
   person (Ask Mira). A separate `use`, so a query token can never provision
   and a provisioning token can never read.
-* **handshake** — sent once, when the platform admin pastes the product's
-  connection key into the console: the product accepts the key's secret as
-  AskMira's from then on. `bh` binds it to the body, as above.
+* **revoke** — sent when a workspace's admin disconnects the product from
+  Connectors: the product forgets that workspace's secret. `bh` as above.
 * **launch** — carried in the URL fragment when a person opens the product. It
   names the person and their role there; the product accepts each `jti` once.
 
@@ -63,9 +62,9 @@ def query_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) ->
     return _sign(secret, product, str(tenant_id), "query", {"bh": body_hash(body)})
 
 
-def handshake_token(secret: str, product: str, body: bytes) -> str:
-    """Proves AskMira holds the secret in a connection key; the product then trusts it."""
-    return _sign(secret, product, ISSUER, "handshake", {"bh": body_hash(body)})
+def revoke_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:
+    """The workspace disconnected: the product forgets the secret this token is signed with."""
+    return _sign(secret, product, str(tenant_id), "revoke", {"bh": body_hash(body)})
 
 
 def launch_token(

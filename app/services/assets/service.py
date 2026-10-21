@@ -49,6 +49,7 @@ from app.models.notifications import Channel, DigestMode
 from app.models.org import Location
 from app.models.user import User
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.assets import exit_hooks
 from app.services.assets.depreciation import book_value
 from app.services.notifications.dispatch import notify, register_event
@@ -1817,6 +1818,7 @@ async def create_request(
                 "link": "/assets/requests",
             },
             commit=False,
+            approval=ApprovalRef("asset_request", asked.id),
         )
     return asked
 

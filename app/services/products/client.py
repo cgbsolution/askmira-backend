@@ -3,7 +3,8 @@
     POST /integrations/askmira/organizations   create or adopt this company's organisation
     POST /integrations/askmira/users/sync      the full list of people who should have access
     POST /integrations/askmira/query           a read-only question for one person (Ask Mira)
-    POST /integrations/askmira/handshake       accept a connection key's secret (console)
+    POST /integrations/askmira/connect/token   swap a one-time connect code for a secret
+    POST /integrations/askmira/connect/revoke  the workspace disconnected
 
 The first two are idempotent on the product side, so a retry after a timeout
 does no harm; the third changes nothing. Each carries a token whose `use` names
@@ -19,7 +20,7 @@ from typing import Any
 import httpx
 
 from app.services.products.settings import Endpoint
-from app.services.products.tokens import handshake_token, provision_token, query_token
+from app.services.products.tokens import provision_token, query_token, revoke_token
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 #: A person is waiting in a chat: a question gets less time than provisioning.
@@ -42,7 +43,7 @@ class ProductError(Exception):
 async def _post(
     endpoint: Endpoint,
     product: str,
-    tenant_id: uuid.UUID | None,
+    tenant_id: uuid.UUID,
     path: str,
     payload: dict[str, Any],
     *,
@@ -50,11 +51,8 @@ async def _post(
     timeout: httpx.Timeout = TIMEOUT,
 ) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    if use == "handshake" or tenant_id is None:
-        token = handshake_token(endpoint.secret, product, body)
-    else:
-        sign = query_token if use == "query" else provision_token
-        token = sign(endpoint.secret, product, tenant_id, body)
+    sign = {"query": query_token, "revoke": revoke_token}.get(use, provision_token)
+    token = sign(endpoint.secret, product, tenant_id, body)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -133,18 +131,47 @@ async def query(
     )
 
 
-async def handshake(endpoint: Endpoint, product: str) -> dict[str, Any]:
-    """Prove to the product that AskMira holds its connection key's secret.
+async def connect_token(
+    api_url: str, product: str, *, code: str, verifier: str, tenant_id: uuid.UUID
+) -> dict[str, Any]:
+    """Swap the one-time code from the product's Allow for this workspace's own secret.
 
-    The product answers with which product it is; it accepts that secret for
-    AskMira's calls from then on.
+    Unsigned: there is no secret yet. The verifier — which only this server
+    holds — is what proves the code was issued to us (PKCE).
     """
-    return await _post(
+    body = {"code": code, "verifier": verifier, "tenant_id": str(tenant_id)}
+    try:
+        async with httpx.AsyncClient(timeout=QUERY_TIMEOUT) as client:
+            response = await client.post(
+                f"{api_url}/integrations/askmira/connect/token",
+                json=body,
+            )
+    except httpx.HTTPError as exc:
+        raise ProductError(f"Could not reach the product: {exc.__class__.__name__}.") from exc
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if response.status_code >= 400 or not isinstance(data, dict):
+        detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
+        raise ProductError(
+            f"The product answered {response.status_code}.",
+            status=response.status_code,
+            detail=detail if isinstance(detail, str) else None,
+        )
+    if data.get("product") != product or not isinstance(data.get("secret"), str):
+        raise ProductError("The product's answer was not a connection.")
+    return data
+
+
+async def revoke(endpoint: Endpoint, product: str, tenant_id: uuid.UUID) -> None:
+    """Tell the product this workspace disconnected, so it forgets the secret."""
+    await _post(
         endpoint,
         product,
-        None,
-        "/integrations/askmira/handshake",
-        {"product": product, "from": "askmira"},
-        use="handshake",
+        tenant_id,
+        "/integrations/askmira/connect/revoke",
+        {"tenant_id": str(tenant_id)},
+        use="revoke",
         timeout=QUERY_TIMEOUT,
     )

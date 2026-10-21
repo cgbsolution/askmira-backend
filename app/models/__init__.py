@@ -547,7 +547,7 @@ from app.models.position import (
     ScenarioChange,
     ScenarioStatus,
 )
-from app.models.product_link import ProductConnection, ProductLink
+from app.models.product_link import ProductLink
 from app.models.recruiting import (
     CandidateDiversityDisclosure,
     CostComponentEnum,
@@ -1032,7 +1032,6 @@ __all__ = [
     "ProbationPolicy",
     "ProbationReminder",
     "ProbationReview",
-    "ProductConnection",
     "ProductLink",
     "ProfileChangeRequest",
     "ProfileChangeStatus",

@@ -31,6 +31,7 @@ __all__ = [
     "DeliveryResult",
     "ExpoPushAdapter",
     "InAppAdapter",
+    "InlineImage",
     "NullPushAdapter",
     "PermanentFailure",
     "SmtpEmailAdapter",
@@ -55,6 +56,19 @@ class DeliveryResult:
 
 
 @dataclass(frozen=True, slots=True)
+class InlineImage:
+    """An image an HTML email shows by `cid:`, carried inside the message itself.
+
+    Inline rather than linked, so the logo shows on a private relay and in a
+    client that blocks remote images, and nothing has to be publicly hosted.
+    """
+
+    cid: str
+    data: bytes
+    mime_type: str = "image/png"
+
+
+@dataclass(frozen=True, slots=True)
 class OutboundMessage:
     """What an adapter needs, decoupled from the ORM.
 
@@ -72,6 +86,10 @@ class OutboundMessage:
     whatsapp_template_name: str | None = None
     whatsapp_parameters: list[str] | None = None
     push_token: str | None = None
+    # Email only: the branded HTML version of `body`, and the images it embeds.
+    # `body` stays the plain-text part, for clients that do not show HTML.
+    html: str | None = None
+    inline_images: tuple[InlineImage, ...] = ()
 
 
 class ChannelAdapter(ABC):
@@ -379,6 +397,21 @@ class SmtpEmailAdapter(ChannelAdapter):
         message_id = make_msgid(domain=self._from_address.rsplit("@", 1)[-1])
         email["Message-ID"] = message_id
         email.set_content(message.body)
+        if message.html:
+            # multipart/alternative: the plain text first, the branded HTML
+            # second (clients show the last part they understand), and the
+            # logo related to the HTML part so `cid:` resolves.
+            email.add_alternative(message.html, subtype="html")
+            html_part = email.get_payload()[-1]
+            for image in message.inline_images:
+                maintype, _, subtype = image.mime_type.partition("/")
+                html_part.add_related(
+                    image.data,
+                    maintype=maintype or "image",
+                    subtype=subtype or "png",
+                    cid=f"<{image.cid}>",
+                    disposition="inline",
+                )
 
         await asyncio.to_thread(self._deliver, email, address)
         return DeliveryResult(provider_message_id=message_id.strip("<>"))

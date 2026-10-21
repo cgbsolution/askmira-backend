@@ -75,6 +75,10 @@ async def record(
     if api_key is not None and actor_type == "user":
         actor_type = "api_key"
         changes = {**(changes or {}), "api_key": api_key}
+    # A decision taken from the link in an approval email says so.
+    via = getattr(actor, "decided_via", None) if actor is not None else None
+    if via is not None:
+        changes = {**(changes or {}), "via": via}
     entry = AuditLog(
         tenant_id=tenant_id,
         actor_user_id=actor_user_id if actor_user_id is not None else (actor.id if actor else None),

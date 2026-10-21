@@ -60,6 +60,7 @@ from app.schemas.leave import (
     WhoIsOutRead,
 )
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.leave import attachments, engine
 from app.services.leave.holidays import holidays_for_employees
 from app.services.notifications import dispatch
@@ -894,6 +895,7 @@ async def apply(
             "end_date": payload.end_date.isoformat(),
         },
         commit=False,
+        approval=ApprovalRef("leave", leave.id),
     )
     await session.commit()
     await session.refresh(leave)
@@ -1032,6 +1034,7 @@ async def decide(
             recipient_user_ids=await _recipients(session, user, chain),
             payload=template_payload,
             commit=False,
+            approval=ApprovalRef("leave", leave.id),
         )
     else:
         applicant = await session.scalar(

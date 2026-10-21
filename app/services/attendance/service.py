@@ -50,6 +50,7 @@ from app.models.org import Location
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.attendance.computation import (
     ComputedDay,
     DayInputs,
@@ -1138,6 +1139,7 @@ async def raise_regularisation(
                 "reason": reason,
             },
             commit=False,
+            approval=ApprovalRef("attendance_regularisation", regularisation.id),
         )
     if commit:
         await session.commit()
@@ -1346,6 +1348,7 @@ async def decide_regularisation(
                         "reason": regularisation.reason,
                     },
                     commit=False,
+                    approval=ApprovalRef("attendance_regularisation", regularisation.id),
                 )
             await session.commit()
             await session.refresh(regularisation)

@@ -48,6 +48,7 @@ from app.models.timesheets import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
@@ -580,6 +581,7 @@ async def submit_week(
                 "timesheet_id": str(sheet.id),
             },
             commit=False,
+            approval=ApprovalRef("timesheet", sheet.id),
         )
     await audit.record(
         session,
@@ -738,6 +740,7 @@ async def decide(
                         "timesheet_id": str(sheet.id),
                     },
                     commit=False,
+                    approval=ApprovalRef("timesheet", sheet.id),
                 )
             await audit.record(
                 session,

@@ -19,7 +19,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from app.core.config import settings
 
-TokenType = Literal["access", "refresh", "reset", "verify", "mfa"]
+TokenType = Literal["access", "refresh", "reset", "verify", "mfa", "email_action"]
 
 _hasher = PasswordHasher(
     time_cost=settings.ARGON2_TIME_COST,
@@ -125,6 +125,24 @@ def create_single_use_token(
     keep clean.
     """
     return _encode({"sub": user_id}, timedelta(hours=expires_in_hours), token_type)
+
+
+def create_email_action_token(
+    *, user_id: str, tenant_id: str, queue: str, item_id: str, expires_in_hours: int = 72
+) -> str:
+    """The link in an approval email: one approver, one request, a few days.
+
+    It decides nothing on its own. It opens a page that shows the request and
+    asks for a comment; the decision is a separate POST, made as the approver
+    and re-checked against what is waiting on them at that moment. Its `typ`
+    keeps it out of everywhere an access token is expected, and a forced
+    logout or password change (`tokens_valid_from`) kills it like a session.
+    """
+    return _encode(
+        {"sub": user_id, "tid": tenant_id, "q": queue, "i": item_id},
+        timedelta(hours=expires_in_hours),
+        "email_action",
+    )
 
 
 def decode_token(token: str, *, expected_type: TokenType) -> dict[str, Any]:

@@ -29,6 +29,7 @@ from app.models.leave import CompOffRequest, CompOffStatus
 from app.models.user import User
 from app.schemas.leave import CompOffCreate, CompOffRead
 from app.services import audit
+from app.services.approvals.email_actions import ApprovalRef
 from app.services.leave import ledger
 from app.services.leave import service as core
 from app.services.notifications import dispatch
@@ -194,6 +195,7 @@ async def create(
             "worked_day": label,
         },
         commit=False,
+        approval=ApprovalRef("leave_comp_off", claim.id),
     )
     await session.commit()
     await session.refresh(claim)
