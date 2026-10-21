@@ -25,6 +25,13 @@ class CompleteIn(BaseModel):
     state: str = Field(min_length=10, max_length=4000)
 
 
+class AddressIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_url: str = Field(min_length=8, max_length=500)
+    app_url: str = Field(min_length=8, max_length=500)
+
+
 @router.get("")
 async def list_connectors(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     """Each product: whether this workspace is connected, to which organisation, last sync."""
@@ -59,3 +66,20 @@ async def disconnect(
     product: str, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
     return await connectors.disconnect(session, user, product, request=request)
+
+
+@router.put("/{product}/address")
+async def set_address(
+    product: str, payload: AddressIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Where the product is for this workspace, when its standard address has changed."""
+    return await connectors.set_address(
+        session, user, product, api_url=payload.api_url, app_url=payload.app_url, request=request
+    )
+
+
+@router.delete("/{product}/address")
+async def reset_address(
+    product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await connectors.reset_address(session, user, product, request=request)

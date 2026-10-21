@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_filter
 from app.models.product_link import ProductLink
 from app.models.user import User, UserRole
-from app.services.products.settings import Endpoint
+from app.services.products.settings import Endpoint, addresses
 from app.services.products.settings import endpoint as env_endpoint
 
 __all__ = ["endpoint", "require_super"]
@@ -40,6 +40,12 @@ async def endpoint(session: AsyncSession, product: str, tenant_id: uuid.UUID) ->
             tenant_filter(ProductLink, tenant_id), ProductLink.product == product
         )
     )
-    if row is not None and row.secret_encrypted and row.api_url and row.app_url:
-        return Endpoint(api_url=row.api_url, app_url=row.app_url, secret=row.secret_encrypted)
+    if row is not None and row.secret_encrypted:
+        # The workspace's own address if its admin set one, else the standard one.
+        standard = addresses(product)
+        api_url = row.api_url or (standard[0] if standard else None)
+        app_url = row.app_url or (standard[1] if standard else None)
+        if api_url and app_url:
+            return Endpoint(api_url=api_url, app_url=app_url, secret=row.secret_encrypted)
+        return None
     return env_endpoint(product)

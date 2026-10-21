@@ -164,6 +164,27 @@ async def connect_token(
     return data
 
 
+async def answers_as(api_url: str, product: str) -> bool:
+    """Whether `api_url` is that product's server: its connect endpoint refuses a made-up code.
+
+    Changes nothing there. Used before an admin's new address is saved.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=QUERY_TIMEOUT) as client:
+            response = await client.post(
+                f"{api_url}/integrations/askmira/connect/token",
+                json={"code": "address-check", "verifier": "address-check", "tenant_id": ""},
+            )
+    except httpx.HTTPError:
+        return False
+    if response.status_code not in (400, 422):
+        return False
+    try:
+        return isinstance(response.json(), dict)
+    except ValueError:
+        return False
+
+
 async def revoke(endpoint: Endpoint, product: str, tenant_id: uuid.UUID) -> None:
     """Tell the product this workspace disconnected, so it forgets the secret."""
     await _post(

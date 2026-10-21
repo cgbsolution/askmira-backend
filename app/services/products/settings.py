@@ -8,9 +8,9 @@ Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…):
               linked before Connectors. A workspace that connected from
               Connectors has a secret of its own (products/connections.py).
 
-The addresses are public facts, not secrets. AnytimeHire's production
-addresses are built in; set the variables to point somewhere else (a local or
-staging copy) or to give ExpenseGenie's.
+The addresses are public facts, not secrets. Both products' production
+addresses are built in; set the variables only to point somewhere else (a
+local or staging copy).
 """
 
 from __future__ import annotations
@@ -66,6 +66,10 @@ def endpoint(product: str) -> Endpoint | None:
 #: Production addresses of our own products, used when the environment names none.
 DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
     "interview": ("https://anytimehire-api-prod.epfassist.com", "https://app.anytimehire.ai"),
+    "expense": (
+        "https://expanse-backend-api.epfassist.com",
+        "https://standalone-expenses-ginie-dashboard.vercel.app",
+    ),
 }
 
 

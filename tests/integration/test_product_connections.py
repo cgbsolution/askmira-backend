@@ -56,6 +56,8 @@ class FakeProduct:
         return code, query["state"]
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host not in ("api.anytimehire.test", "new-api.anytimehire.test"):
+            return httpx.Response(404, text="Not Found")  # some other server
         path = request.url.path
         body = json.loads(request.content)
         if path.endswith("/connect/token"):
@@ -134,7 +136,7 @@ async def test_a_workspace_admin_connects_with_one_click_and_its_own_secret(
 ) -> None:
     before = {row["key"]: row for row in await connectors.overview(session, admin)}
     assert before["interview"]["available"] is True and before["interview"]["connected"] is False
-    assert before["expense"]["available"] is False  # this server does not know where it is
+    assert before["expense"]["available"] is True  # its production address is built in
 
     started = await connectors.start(session, admin, "interview")
     url = urlparse(started["authorize_url"])
@@ -238,9 +240,58 @@ async def test_without_a_server_encryption_key_connect_says_why_instead_of_faili
 ) -> None:
     # Production with no SECRET_ENCRYPTION_KEY: the product's key could not be stored safely.
     monkeypatch.setattr(connectors, "can_encrypt", lambda: False)
+    monkeypatch.setattr(product_settings, "DEFAULT_ADDRESSES", {})
+    nowhere = {r["key"]: r for r in await connectors.overview(session, admin)}["expense"]
+    assert nowhere["available"] is False and nowhere["unavailable_reason"] == "address"
     row = {r["key"]: r for r in await connectors.overview(session, admin)}["interview"]
     assert row["available"] is False and row["unavailable_reason"] == "server_key"
     with pytest.raises(HTTPException) as refused:
         await connectors.start(session, admin, "interview")
     assert refused.value.status_code == 503
     assert "SECRET_ENCRYPTION_KEY" in refused.value.detail
+
+
+async def test_the_admin_can_change_where_the_product_is(
+    session: AsyncSession,
+    admin: User,
+    tenant: Tenant,
+    product: FakeProduct,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_api, new_app = "https://new-api.anytimehire.test", "https://new.anytimehire.test"
+    # Connected on the standard address, then the product moves.
+    started = await connectors.start(session, admin, "interview")
+    code, state = product.allow(started["authorize_url"])
+    await connectors.complete(session, admin, "interview", code=code, state=state, request=None)
+    secret = (await connections.endpoint(session, "interview", tenant.id)).secret
+
+    for api, app_url, why in (
+        ("not a url", new_app, "web address"),
+        ("https://elsewhere.test", new_app, "does not answer as AnytimeHire"),
+        ("https://new-api.anytimehire.test?x=1", new_app, "web address"),
+    ):
+        with pytest.raises(HTTPException) as refused:
+            await connectors.set_address(
+                session, admin, "interview", api_url=api, app_url=app_url, request=None
+            )
+        assert refused.value.status_code == 422 and why in refused.value.detail
+
+    row = await connectors.set_address(
+        session, admin, "interview", api_url=new_api + "/", app_url=new_app, request=None
+    )
+    assert row["custom_address"] is True and row["api_url"] == new_api and row["connected"]
+    moved = await connections.endpoint(session, "interview", tenant.id)
+    assert moved.api_url == new_api and moved.app_url == new_app and moved.secret == secret
+    restarted = await connectors.start(session, admin, "interview")
+    assert restarted["authorize_url"].startswith(f"{new_app}/connect/askmira?")
+
+    back = await connectors.reset_address(session, admin, "interview", request=None)
+    assert back["custom_address"] is False and back["api_url"] == API
+    assert (await connections.endpoint(session, "interview", tenant.id)).api_url == API
+
+    # In production: https only, and never an address inside AskMira's own network.
+    monkeypatch.setattr(connectors.settings, "ENVIRONMENT", "production")
+    for bad in ("http://new-api.anytimehire.test", "https://localhost", "https://127.0.0.1:8000"):
+        with pytest.raises(HTTPException) as refused:
+            await connectors._clean_address(bad, "server address")
+        assert refused.value.status_code == 422, bad
