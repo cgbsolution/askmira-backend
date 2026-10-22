@@ -62,6 +62,7 @@ from app.schemas.org import INDIAN_STATE_CODES
 from app.services import audit
 from app.services.auth import (
     DEFAULT_ENABLED_MODULES,
+    RELEASED_EMAIL_DOMAIN,
     RESERVED_SLUGS,
     create_workspace,
     email_in_use,
@@ -389,6 +390,29 @@ def _require_super(user: User) -> None:
         raise permissions.forbidden("Only the platform's super admin manages workspaces.")
 
 
+async def _require_free_email(session: Any, email: str) -> None:
+    """409 when the address already signs in somewhere, naming the workspace.
+
+    Only the platform may say which: it sees every workspace's logins. The
+    holder's own admin frees the address by deleting that login.
+    """
+    if not await email_in_use(session, email):
+        return
+    holder = await session.scalar(
+        select(Tenant.name)
+        .join(User, User.tenant_id == Tenant.id)
+        .where(func.lower(User.email) == email.strip().lower())
+        .limit(1)
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"That email already signs in to AskMira, in {holder}. Each person has one "
+            "login: delete that login there (Settings → Users), or use another address."
+        ),
+    )
+
+
 def _temporary_password() -> str:
     # Meets the password policy: letters, a digit, length.
     return secrets.token_urlsafe(12) + "-Aa1"
@@ -502,6 +526,7 @@ async def create(
                 detail="Another workspace already has that address.",
             )
 
+    await _require_free_email(session, str(payload.admin_email))
     temporary = _temporary_password()
     tenant, admin = await create_workspace(
         session,
@@ -785,11 +810,7 @@ async def add_admin(
     _require_super(user)
     tenant = await _workspace(session, tenant_id)
     email = str(payload.email).strip().lower()
-    if await email_in_use(session, email):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="That email already signs in to AskMira. Each person has one login.",
-        )
+    await _require_free_email(session, email)
     temporary = _temporary_password()
     admin = User(
         tenant_id=tenant.id,
@@ -898,11 +919,7 @@ async def change_admin_email(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="That is already their email.",
         )
-    if await email_in_use(session, new):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="That email already signs in to AskMira. Each person has one login.",
-        )
+    await _require_free_email(session, new)
 
     now = datetime.now(UTC)
     await session.execute(
@@ -987,10 +1004,6 @@ async def set_active(
     return {"id": str(tenant.id), "is_active": tenant.is_active}
 
 
-#: Where a deleted workspace's logins are renamed to, freeing their emails.
-#: `.invalid` is reserved (RFC 2606): nothing is ever delivered there.
-_RELEASED_EMAIL_DOMAIN = "deleted.askmira.invalid"
-
 #: What reaches a workspace without a person signing in, revoked on deletion.
 _REVOCABLE: tuple[tuple[str, Any], ...] = (
     ("api_keys", ApiKey),
@@ -1049,7 +1062,8 @@ async def delete(
         .values(
             is_active=False,
             tokens_valid_from=now,
-            email=func.concat("deleted-", cast(User.id, String), f"@{_RELEASED_EMAIL_DOMAIN}"),
+            # The same address `released_email` gives one deleted login.
+            email=func.concat("deleted-", cast(User.id, String), f"@{RELEASED_EMAIL_DOMAIN}"),
         )
     )
     revoked: dict[str, int] = {}

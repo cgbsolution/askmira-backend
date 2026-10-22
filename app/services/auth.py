@@ -113,6 +113,16 @@ async def issue_session(session: AsyncSession, user: User) -> AuthResponse:
     return await _build_response(session, user, tenant)
 
 
+#: Where a deleted login's email is moved, so the address can be given a
+#: login again while the row stays for the audit trail. `.invalid` is
+#: reserved (RFC 2606): nothing is ever delivered there.
+RELEASED_EMAIL_DOMAIN = "deleted.askmira.invalid"
+
+
+def released_email(user_id: uuid.UUID) -> str:
+    return f"deleted-{user_id}@{RELEASED_EMAIL_DOMAIN}"
+
+
 async def email_in_use(session: AsyncSession, email: str) -> bool:
     """Whether any login on the platform already uses this address.
 

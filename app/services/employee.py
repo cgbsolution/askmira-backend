@@ -567,11 +567,15 @@ async def update_own_contact(
 async def deactivate_employee(
     session: AsyncSession, user: User, employee_id: uuid.UUID, request: Request | None = None
 ) -> None:
-    """Soft-delete.
+    """Soft-delete, and switch off the person's login.
 
     Payroll runs and audit entries reference employees historically, so a hard
-    delete would orphan records that must stay reproducible.
+    delete would orphan records that must stay reproducible. Their login is
+    switched off with it — somebody who has left the directory must not still
+    sign in — and an admin can then delete it to free the email.
     """
+    from app.services.identity import users as user_admin
+
     if user.employee_id is not None and employee_id == user.employee_id:
         raise permissions.forbidden("You cannot deactivate your own record.")
     employee = await get_employee(session, user, employee_id)
@@ -582,6 +586,7 @@ async def deactivate_employee(
         )
     employee.deleted_at = datetime.now(UTC)
     employee.is_active = False
+    logins_off = await user_admin.end_logins_for_employee(session, user, employee.id)
 
     await audit.record(
         session,
@@ -590,6 +595,7 @@ async def deactivate_employee(
         entity_type="employee",
         entity_id=employee.id,
         actor=user,
+        changes={"logins_switched_off": logins_off},
         summary=f"Deactivated employee {employee.employee_code}",
         request=request,
     )

@@ -1020,7 +1020,13 @@ async def raise_regularisation(
 
     Allowed for a locked period — people forget — but it cannot be approved
     until the period is unlocked, and the approver is told so.
+
+    HR's correction is the decision, not a request: it is applied at once,
+    approved by them and the day recomputed, for anyone, their own day
+    included. Nobody is asked. A locked period still needs its audited unlock
+    first, because the day it changes has been paid.
     """
+    direct = permissions.is_hr(user)
     today = await local_today(session, user)
     if kind in ADVANCE_KINDS:
         if attendance_date > today + timedelta(days=MAX_ADVANCE_DAYS):
@@ -1068,9 +1074,24 @@ async def raise_regularisation(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"There is already a pending request for {attendance_date}. "
-                "Withdraw it first to ask for something different."
+                + (
+                    "Approve or reject it instead."
+                    if direct
+                    else "Withdraw it first to ask for something different."
+                )
             ),
         )
+    if direct:
+        lock = await active_lock_covering(session, user, attendance_date, attendance_date)
+        if lock is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Attendance for {lock.period_start} to {lock.period_end} is locked for "
+                    "payroll. Unlock the period, with a recorded reason, before changing a day "
+                    "in it."
+                ),
+            )
 
     regularisation = AttendanceRegularisation(
         tenant_id=user.tenant_id,
@@ -1084,6 +1105,42 @@ async def raise_regularisation(
     )
     session.add(regularisation)
     await session.flush()
+
+    if direct:
+        regularisation.status = RegularisationStatus.APPROVED
+        regularisation.approver_user_id = user.id
+        regularisation.decided_at = datetime.now(UTC)
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.APPROVE,
+            entity_type="attendance_regularisation",
+            entity_id=regularisation.id,
+            actor=user,
+            changes={
+                "employee_id": str(employee_id),
+                "attendance_date": attendance_date.isoformat(),
+                "kind": kind.value,
+                "requested_status": requested_status.value,
+                "applied_directly": True,
+            },
+            summary=f"{KIND_LABELS[kind].capitalize()} for {attendance_date} applied by HR",
+            request=request,
+        )
+        # Same transaction, as an approval: the day must agree with its correction.
+        await recompute_range(
+            session,
+            user,
+            employee_ids=[employee_id],
+            start=attendance_date,
+            end=attendance_date,
+            request=request,
+            commit=False,
+        )
+        if commit:
+            await session.commit()
+            await session.refresh(regularisation)
+        return regularisation
 
     from app.models.approval_rules import ApprovalProcess
     from app.services.approvals import rules

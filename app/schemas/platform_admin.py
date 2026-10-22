@@ -103,5 +103,9 @@ class ActiveChange(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class LoginDelete(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class ModuleToggle(BaseModel):
     modules: dict[str, bool] = Field(min_length=1)

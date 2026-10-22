@@ -12,7 +12,11 @@ The escalation rules, all enforced here and all audited as PERMISSION_CHANGE:
   existing sessions end at once instead of carrying the old role until expiry.
 - The designated break-glass account cannot be demoted or deactivated while it
   is designated; a workspace whose SSO fails must still have a way in.
-- The last active admin cannot be demoted or deactivated.
+- The last active admin cannot be demoted, deactivated or deleted.
+- A deleted login keeps its row, for the audit trail, but leaves the list for
+  good: its email is moved aside so the address can be given a login again,
+  here or in another workspace, and its employee is unlinked so that person
+  can be given a new one.
 """
 
 from __future__ import annotations
@@ -43,10 +47,13 @@ from app.schemas.platform_admin import (
     WelcomeEmailRead,
 )
 from app.services import audit
+from app.services.auth import RELEASED_EMAIL_DOMAIN, released_email
 from app.services.identity.welcome import WelcomeEmail, send_welcome
 
 __all__ = [
     "create_user",
+    "delete_login",
+    "end_logins_for_employee",
     "list_users",
     "module_state",
     "resend_welcome",
@@ -92,9 +99,13 @@ def _read(target: User, caller: User, tenant: Tenant, emp: Employee | None) -> M
     )
 
 
+def _is_deleted(target: User) -> bool:
+    return target.email.endswith(f"@{RELEASED_EMAIL_DOMAIN}")
+
+
 async def _target(session: AsyncSession, user: User, user_id: uuid.UUID) -> User:
     target = await session.scalar(tenant_scoped(select(User).where(User.id == user_id), User, user))
-    if target is None:
+    if target is None or _is_deleted(target):
         # Another tenant's login is not found, not forbidden.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.role is UserRole.SUPER_ADMIN:
@@ -127,7 +138,10 @@ async def list_users(session: AsyncSession, user: User) -> list[ManagedUserRead]
             tenant_scoped(
                 select(User, Employee)
                 .outerjoin(Employee, Employee.id == User.employee_id)
-                .where(User.role != UserRole.SUPER_ADMIN)
+                .where(
+                    User.role != UserRole.SUPER_ADMIN,
+                    ~User.email.endswith(f"@{RELEASED_EMAIL_DOMAIN}"),
+                )
                 .order_by(User.full_name),
                 User,
                 user,
@@ -459,6 +473,92 @@ async def set_active(
     await session.refresh(target)
     emp = await session.get(Employee, target.employee_id) if target.employee_id else None
     return _read(target, user, tenant, emp)
+
+
+async def _check_can_close(session: AsyncSession, user: User, target: User) -> None:
+    """The guards deactivation applies, for anything that ends a login for good."""
+    tenant = await _tenant(session, user)
+    if target.email.lower() == _break_glass_email(tenant):
+        raise _bad_request(
+            "This is the break-glass account. Designate another one before removing it."
+        )
+    if (
+        target.role is UserRole.ADMIN
+        and target.is_active
+        and await _active_admins(session, user) <= 1
+    ):
+        raise _bad_request("This is the last active admin; the workspace needs one.")
+
+
+async def delete_login(
+    session: AsyncSession,
+    user: User,
+    *,
+    user_id: uuid.UUID,
+    reason: str,
+    request: Request | None = None,
+) -> None:
+    """Delete a login: it never signs in again, and its email is free.
+
+    For a login made with the wrong address, or for somebody who has gone. The
+    row stays because the audit trail points at it; everything else about it
+    ends here (see the module docstring).
+    """
+    if user_id == user.id:
+        raise _forbidden("You cannot delete your own login.")
+    target = await _target(session, user, user_id)
+    await _check_can_close(session, user, target)
+
+    email, employee_id = target.email, target.employee_id
+    target.is_active = False
+    target.tokens_valid_from = datetime.now(UTC)
+    target.email = released_email(target.id)
+    target.employee_id = None
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="user",
+        entity_id=target.id,
+        actor=user,
+        changes={
+            "email": email,
+            "employee_id": str(employee_id) if employee_id else None,
+            "reason": reason,
+        },
+        summary=f"Deleted the login for {email}; the address can be used again",
+        request=request,
+    )
+    await session.commit()
+
+
+async def end_logins_for_employee(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> list[str]:
+    """Switch off the logins of an employee being deactivated, in the caller's
+    transaction. A person who has left the directory must not still sign in.
+
+    Returns the emails switched off, for the caller's audit row.
+    """
+    logins = (
+        await session.scalars(
+            tenant_scoped(
+                select(User).where(
+                    User.employee_id == employee_id,
+                    User.is_active.is_(True),
+                    User.role != UserRole.SUPER_ADMIN,
+                ),
+                User,
+                user,
+            )
+        )
+    ).all()
+    now = datetime.now(UTC)
+    for login in logins:
+        await _check_can_close(session, user, login)
+        login.is_active = False
+        login.tokens_valid_from = now
+    return [login.email for login in logins]
 
 
 # ── Modules ─────────────────────────────────────────────────────────────────

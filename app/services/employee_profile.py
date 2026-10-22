@@ -7,8 +7,9 @@ Three rules live here.
    statutory return or decide where money goes, so an employee proposes them
    and HR approves. Everything else on the profile the employee edits
    directly. The split is `DIRECT_SECTIONS` / `SENSITIVE_SECTIONS` in the
-   schema module, and it holds for HR's own record too: an HR admin changes
-   their own PAN by raising a request that *another* HR person decides.
+   schema module. HR edits their own record directly, as they edit anyone's:
+   a request would only come back to them, and a company with one admin has
+   nobody else to decide it. The audit log records every such edit.
 2. **An approval applies what was proposed, in the same transaction**, with
    the status change and the audit row — and refuses if the record moved
    since the request was raised, rather than overwriting a correction HR made
@@ -585,7 +586,7 @@ async def read_profile(
         session, user, employee_id=employee_id, status_filter=ProfileChangeStatus.PENDING
     )
 
-    if is_self:
+    if is_self and not hr:
         direct = sorted(DIRECT_SECTIONS, key=lambda s: s.value)
         requestable = sorted(SENSITIVE_SECTIONS, key=lambda s: s.value)
     else:
@@ -633,13 +634,13 @@ async def write_section(
 ) -> EmployeeProfileRead:
     """Save one section straight away.
 
-    Yourself: the non-sensitive sections only. HR: any section of anybody else
-    — HR's own record goes through a change request like everybody's.
+    Yourself: the non-sensitive sections only. HR: any section of anybody's
+    record, their own included.
     """
     section = ProfileSection(change.section)
     is_self = user.employee_id is not None and employee_id == user.employee_id
     if is_self:
-        if section not in DIRECT_SECTIONS:
+        if section not in DIRECT_SECTIONS and not permissions.is_hr(user):
             raise permissions.forbidden(
                 f"Changes to your {SECTION_LABELS[section]} go through a request HR "
                 "approves, not a direct edit. Raise a change request instead."

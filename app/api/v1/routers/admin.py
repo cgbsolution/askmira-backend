@@ -24,6 +24,7 @@ from app.schemas.common import Page
 from app.schemas.platform_admin import (
     ActiveChange,
     EmployeeLink,
+    LoginDelete,
     ManagedUserCreate,
     ManagedUserCreated,
     ManagedUserRead,
@@ -165,6 +166,20 @@ async def change_active(
         active=payload.active,
         reason=payload.reason,
         request=request,
+    )
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_login(
+    user_id: uuid.UUID,
+    payload: LoginDelete,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> None:
+    """Delete a login for good; its email can be given a login again."""
+    await user_admin.delete_login(
+        session, user, user_id=user_id, reason=payload.reason, request=request
     )
 
 
