@@ -27,6 +27,14 @@ class StatusIn(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class DeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The workspace address, typed out: a delete is never one stray click.
+    confirm: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 @router.get("/workspaces", dependencies=SUPER_ONLY)
 async def list_workspaces(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     return await platform.list_workspaces(session, user)
@@ -49,6 +57,20 @@ async def update_workspace(
     request: Request,
 ) -> dict[str, Any]:
     return await platform.update(session, user, tenant_id, payload, request=request)
+
+
+@router.delete("/workspaces/{tenant_id}", dependencies=SUPER_ONLY)
+async def delete_workspace(
+    tenant_id: uuid.UUID,
+    payload: DeleteIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Close a workspace for good. Its records are kept, out of reach."""
+    return await platform.delete(
+        session, user, tenant_id, confirm=payload.confirm, reason=payload.reason, request=request
+    )
 
 
 @router.post("/workspaces", status_code=status.HTTP_201_CREATED, dependencies=SUPER_ONLY)

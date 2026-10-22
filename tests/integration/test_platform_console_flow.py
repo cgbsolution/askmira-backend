@@ -15,13 +15,13 @@ from app.core.security import create_access_token
 from app.db.session import get_session
 from app.main import app
 from app.models.attendance import Shift
-from app.models.audit import AuditLog
+from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.auth import LoginRequest
 from app.services import auth as auth_service
-from app.services import platform
+from app.services import integrations, platform
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -223,6 +223,82 @@ async def test_suspending_a_workspace_stops_it_on_the_next_request(
             session, super_admin, super_admin.tenant_id, active=False, reason="x" * 5, request=None
         )
     assert own.value.status_code == 422
+
+
+async def test_deleting_a_workspace_closes_it_for_good_and_keeps_its_records(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    super_admin: User,
+    client: httpx.AsyncClient,
+) -> None:
+    created = await platform.create(session, super_admin, _new(workspace="newco"), request=None)
+    tenant_id = uuid.UUID(created["workspace"]["id"])
+    temporary = created["admin"]["temporary_password"]
+    admin = await session.scalar(select(User).where(User.tenant_id == tenant_id))
+    key = await integrations.create_key(
+        session,
+        admin,
+        integrations.ApiKeyIn(name="Payroll sync", scopes=["employees:read"]),
+        request=None,
+    )
+    url = f"/api/v1/platform/workspaces/{tenant_id}"
+    body = {"confirm": "newco", "reason": "Pilot ended"}
+
+    # Only the super admin, only with the address typed out, never their own.
+    refused = await client.request("DELETE", url, json=body, headers=_bearer(hr_user))
+    assert refused.status_code == 403
+    mistyped = await client.request(
+        "DELETE", url, json={**body, "confirm": "newc"}, headers=_bearer(super_admin)
+    )
+    assert mistyped.status_code == 422
+    with pytest.raises(HTTPException) as own:
+        await platform.delete(
+            session, super_admin, tenant.id, confirm=tenant.slug, reason="Test", request=None
+        )
+    assert own.value.status_code == 422
+
+    deleted = await client.request("DELETE", url, json=body, headers=_bearer(super_admin))
+    assert deleted.status_code == 200
+    assert deleted.json()["logins_closed"] == 1
+    assert deleted.json()["revoked"]["api_keys"] == 1
+
+    # Nobody gets in: not on a live token, not with the password, not with a key.
+    assert (await client.get("/api/v1/auth/me", headers=_bearer(admin))).status_code == 401
+    with pytest.raises(HTTPException):
+        await auth_service.login(
+            session, LoginRequest(email="founder@newco-demo.com", password=temporary)
+        )
+    with pytest.raises(HTTPException) as key_refused:
+        await integrations.authenticate_key(session, key["key"], "employees:read")
+    assert key_refused.value.status_code == 401
+
+    # It leaves the console, and nothing more can be done to it from there.
+    listed = await platform.list_workspaces(session, super_admin)
+    assert str(tenant_id) not in {row["id"] for row in listed}
+    with pytest.raises(HTTPException) as gone:
+        await platform.set_active(
+            session, super_admin, tenant_id, active=True, reason="Undo", request=None
+        )
+    assert gone.value.status_code == 404
+    again = await client.request("DELETE", url, json=body, headers=_bearer(super_admin))
+    assert again.status_code == 404
+
+    # Its records stay, and its own audit trail says who deleted it and why.
+    closed = await session.get(Tenant, tenant_id)
+    assert closed.deleted_at is not None and closed.is_active is False
+    assert await session.scalar(select(Employee.id).where(Employee.tenant_id == tenant_id))
+    trail = (await session.scalars(select(AuditLog).where(AuditLog.tenant_id == tenant_id))).all()
+    deletion = next(row for row in trail if row.action is AuditAction.DELETE)
+    assert deletion.actor_type == "platform"
+    assert deletion.changes["workspace"] == "newco"
+    assert "Pilot ended" in deletion.summary
+
+    # Its admin's email and its address can be used again.
+    await session.refresh(admin)
+    assert admin.email.endswith("@deleted.askmira.invalid")
+    reused = await platform.create(session, super_admin, _new(workspace="newco"), request=None)
+    assert reused["workspace"]["workspace"] == "newco"
 
 
 async def test_a_locked_out_admin_gets_a_temporary_password(

@@ -9,7 +9,7 @@ from sqlalchemy import Boolean, Enum, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.org import LegalEntity
@@ -22,8 +22,13 @@ class TenantPlan(str, enum.Enum):
     ENTERPRISE = "enterprise"
 
 
-class Tenant(Base, UUIDMixin, TimestampMixin):
-    """A customer company. Everything else in the schema hangs off this."""
+class Tenant(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
+    """A customer company. Everything else in the schema hangs off this.
+
+    `deleted_at` is set when the platform deletes the company. The row stays:
+    its audit trail hangs off it and is insert-only, and its payroll and
+    statutory records are kept for as long as the law requires.
+    """
 
     __tablename__ = "tenants"
 

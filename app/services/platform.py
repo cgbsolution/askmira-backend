@@ -17,6 +17,10 @@ it touched.
 
 A new admin gets a temporary password, shown once to the super admin, and has
 to choose their own at first sign-in. Nothing is emailed from here.
+
+Deleting a workspace closes it for good without erasing it: its audit trail is
+insert-only and its payroll and statutory records must be kept, so the rows
+stay where nobody can reach them. See `delete`.
 """
 
 from __future__ import annotations
@@ -37,13 +41,20 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
+from sqlalchemy import update as sql_update
 
 from app.core import permissions
 from app.core.deps import tenant_filter
 from app.core.security import hash_password
 from app.models.audit import AuditAction
 from app.models.employee import Employee
+from app.models.identity import DeviceIntegration, DeviceStatus, ScimToken
+from app.models.integrations import ApiKey
+from app.models.jobboard import CandidatePortalToken, CareersPageConfig
+from app.models.oauth import OAuthGrant
+from app.models.operators import OperatorGrant
+from app.models.opsec import UserSession
 from app.models.org import LegalEntity, Location
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -66,6 +77,7 @@ __all__ = [
     "WorkspaceUpdate",
     "add_admin",
     "create",
+    "delete",
     "list_workspaces",
     "remove_logo",
     "reset_admin_password",
@@ -375,7 +387,8 @@ def _temporary_password() -> str:
 
 async def _workspace(session: Any, tenant_id: uuid.UUID) -> Tenant:
     tenant = await session.get(Tenant, tenant_id)
-    if tenant is None:
+    # A deleted workspace is gone as far as this console is concerned.
+    if tenant is None or tenant.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such workspace.")
     return tenant
 
@@ -394,7 +407,11 @@ def _admin_read(row: User) -> dict[str, Any]:
 async def list_workspaces(session: Any, user: User) -> list[dict[str, Any]]:
     """Every workspace, with its admins and how big it is. Nothing from inside it."""
     _require_super(user)
-    tenants = (await session.scalars(select(Tenant).order_by(Tenant.created_at))).all()
+    tenants = (
+        await session.scalars(
+            select(Tenant).where(Tenant.deleted_at.is_(None)).order_by(Tenant.created_at)
+        )
+    ).all()
     out: list[dict[str, Any]] = []
     for tenant in tenants:
         admins = (
@@ -878,3 +895,134 @@ async def set_active(
         )
         await session.commit()
     return {"id": str(tenant.id), "is_active": tenant.is_active}
+
+
+#: Where a deleted workspace's logins are renamed to, freeing their emails.
+#: `.invalid` is reserved (RFC 2606): nothing is ever delivered there.
+_RELEASED_EMAIL_DOMAIN = "deleted.askmira.invalid"
+
+#: What reaches a workspace without a person signing in, revoked on deletion.
+_REVOCABLE: tuple[tuple[str, Any], ...] = (
+    ("api_keys", ApiKey),
+    ("scim_tokens", ScimToken),
+    ("mcp_connections", OAuthGrant),
+    ("operator_grants", OperatorGrant),
+    ("sessions", UserSession),
+    ("candidate_links", CandidatePortalToken),
+)
+
+
+async def delete(
+    session: Any,
+    user: User,
+    tenant_id: uuid.UUID,
+    *,
+    confirm: str,
+    reason: str,
+    request: Request | None,
+) -> dict[str, Any]:
+    """Delete a workspace: closed for good, its emails and its address freed.
+
+    Nothing in it is erased. Its audit trail is insert-only and its payroll and
+    statutory records have to be kept, so the rows stay, out of everyone's
+    reach: every login is switched off and its sessions ended; every key,
+    token, grant and device that reaches it without a login is revoked; its
+    careers page comes down; and it leaves this console. Each login's email
+    and the workspace's address are renamed, so a person from it can be given
+    a login elsewhere and the address can be used again.
+
+    Purging the rows at the end of the retention period is a DBA's job,
+    outside the app, because the audit log's trigger refuses it from here.
+    """
+    _require_super(user)
+    tenant = await _workspace(session, tenant_id)
+    if tenant.id == user.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The platform's own workspace cannot be deleted.",
+        )
+    if confirm.strip().lower() != tenant.slug:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Type the workspace address, {tenant.slug}, to confirm.",
+        )
+    if not reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Give a reason."
+        )
+
+    now = datetime.now(UTC)
+    name, slug = tenant.name, tenant.slug
+    logins = await session.execute(
+        sql_update(User)
+        .where(tenant_filter(User, tenant.id))
+        .values(
+            is_active=False,
+            tokens_valid_from=now,
+            email=func.concat("deleted-", cast(User.id, String), f"@{_RELEASED_EMAIL_DOMAIN}"),
+        )
+    )
+    revoked: dict[str, int] = {}
+    for label, model in _REVOCABLE:
+        values: dict[str, Any] = {"revoked_at": now}
+        if model is ScimToken:
+            values["active"] = False
+        if model is UserSession:
+            values["revoked_reason"] = "Workspace deleted"
+        result = await session.execute(
+            sql_update(model)
+            .where(tenant_filter(model, tenant.id), model.revoked_at.is_(None))
+            .values(**values)
+        )
+        revoked[label] = result.rowcount
+    devices = await session.execute(
+        sql_update(DeviceIntegration)
+        .where(
+            tenant_filter(DeviceIntegration, tenant.id),
+            DeviceIntegration.status != DeviceStatus.DISABLED,
+        )
+        .values(status=DeviceStatus.DISABLED)
+    )
+    revoked["devices"] = devices.rowcount
+    await session.execute(
+        sql_update(CareersPageConfig)
+        .where(tenant_filter(CareersPageConfig, tenant.id))
+        .values(is_published=False)
+    )
+
+    tenant.is_active = False
+    tenant.deleted_at = now
+    tenant.slug = f"deleted-{tenant.id.hex}"
+
+    changes = {"workspace": slug, "logins_closed": logins.rowcount, "revoked": revoked}
+    await audit.record(
+        session,
+        tenant_id=tenant.id,
+        action=AuditAction.DELETE,
+        entity_type="tenant",
+        entity_id=tenant.id,
+        actor_user_id=user.id,
+        actor_type="platform",
+        changes=changes,
+        summary=f"Workspace deleted by the platform: {reason.strip()}",
+        request=request,
+    )
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="platform_workspace",
+        entity_id=tenant.id,
+        actor=user,
+        changes=changes,
+        summary=f"Deleted workspace {name} ({slug}): {reason.strip()}",
+        request=request,
+    )
+    await session.commit()
+    return {
+        "id": str(tenant.id),
+        "name": name,
+        "deleted_at": now.isoformat(),
+        "logins_closed": logins.rowcount,
+        "revoked": revoked,
+    }
