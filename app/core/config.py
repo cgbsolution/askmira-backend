@@ -27,8 +27,16 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/askmira"
     DATABASE_URL_SYNC: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/askmira"
     DB_ECHO: bool = False
+    # Supabase's session pooler (port 5432) admits 15 clients per project by
+    # default, shared by every process on the database: this API, its scheduler
+    # lock, a deploy's second instance, migrations and any script. 5 + 5 here,
+    # plus the lock, keeps one instance at 11.
     DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
+    DB_MAX_OVERFLOW: int = 5
+    #: Seconds a request waits for a connection, from the pool or the pooler,
+    #: before it is answered 503. Well inside the 120 s after which the portal's
+    #: proxy gives up with a bare 502.
+    DB_POOL_TIMEOUT: int = 10
 
     # ── Auth ────────────────────────────────────────────────────────────────
     JWT_SECRET_KEY: str = "change-me"
@@ -52,6 +60,10 @@ class Settings(BaseSettings):
     # Where the web portal lives, for links in emails (password reset). Falls
     # back to the first CORS origin, which is the portal in every deployment.
     WEB_APP_URL: str | None = None
+    #: Shared with the portal (its `PROXY_SHARED_SECRET`). With it, the client
+    #: address the portal forwards is believed; see app/core/proxy.py. Unset,
+    #: every request through the portal looks like it comes from Vercel.
+    PROXY_SHARED_SECRET: str | None = None
     # Where this API is reached from outside, for OAuth discovery documents
     # (the MCP connector flow). Falls back to the address the request came in on.
     PUBLIC_API_URL: str | None = None

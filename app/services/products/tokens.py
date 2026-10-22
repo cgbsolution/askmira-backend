@@ -1,6 +1,6 @@
 """The signed assertions AskMira hands a product.
 
-Four kinds, all HS256 with the product's own secret, all good for 60 seconds:
+Five kinds, all HS256 with the product's own secret, all good for 60 seconds:
 
 * **provision** — sent as the Bearer token on AskMira's server-to-server calls
   that change the product (the organisation, the roster). `bh` is the SHA-256
@@ -9,6 +9,10 @@ Four kinds, all HS256 with the product's own secret, all good for 60 seconds:
 * **query** — the same shape, for a read-only question asked on behalf of one
   person (Ask Mira). A separate `use`, so a query token can never provision
   and a provisioning token can never read.
+* **act** — the same shape again, for something one person does in the product
+  from AskMira (raise a helpdesk ticket, reply on one). Its own `use`, so a
+  read can never write; the product accepts each `jti` once, so a captured
+  request can't be carried out twice.
 * **revoke** — sent when a workspace's admin disconnects the product from
   Connectors: the product forgets that workspace's secret. `bh` as above.
 * **launch** — carried in the URL fragment when a person opens the product. It
@@ -60,6 +64,11 @@ def provision_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes
 
 def query_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:
     return _sign(secret, product, str(tenant_id), "query", {"bh": body_hash(body)})
+
+
+def action_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:
+    """One person's action in the product; the product carries out each `jti` once."""
+    return _sign(secret, product, str(tenant_id), "act", {"bh": body_hash(body)})
 
 
 def revoke_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:

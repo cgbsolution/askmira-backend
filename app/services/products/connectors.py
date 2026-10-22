@@ -1,4 +1,4 @@
-"""Settings → Connectors: a workspace's admin connects AnytimeHire or ExpenseGenie.
+"""Settings → Connectors: a workspace's admin connects AnytimeHire, ExpenseGenie or CGB Helpdesk.
 
 Like "Sign in with…", started here and allowed there:
 
@@ -74,6 +74,11 @@ DESCRIPTIONS = {
     "expense": (
         "Expense claims. Everyone opens it without a second login; their claims, "
         "approvals and totals show under Expenses and in Ask Mira."
+    ),
+    "helpdesk": (
+        "IT tickets and assets. Everyone raises and follows tickets and sees the assets "
+        "they hold under Helpdesk and Assets, without a second login; HR sees the "
+        "company's tickets and asset register, and Ask Mira can read them."
     ),
 }
 

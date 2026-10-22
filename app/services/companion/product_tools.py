@@ -1,5 +1,5 @@
-"""Ask Mira's tools that read a linked product: AnytimeHire for hiring and
-ExpenseGenie for expense claims.
+"""Ask Mira's tools that read a linked product: AnytimeHire for hiring,
+ExpenseGenie for expense claims and CGB Helpdesk for IT tickets and assets.
 
 Each asks the product as the person (products.data.ask): only the caller's own
 workspace, and only what their role in that product shows them when they open
@@ -32,7 +32,16 @@ from app.services.hiring.signals import JUDGEMENT_WORDS
 from app.services.products import data as products
 from app.services.products.catalogue import PRODUCTS
 
-__all__ = ["CLAIM_STATUSES", "SCOPES", "STATUS_CHOICES", "run"]
+__all__ = [
+    "ASSET_STATUSES",
+    "CLAIM_STATUSES",
+    "SCOPES",
+    "STATUS_CHOICES",
+    "TICKET_SCOPES",
+    "TICKET_STATUSES",
+    "run",
+    "ticket_page",
+]
 
 IST = ZoneInfo("Asia/Kolkata")
 MAX_DAYS = 93
@@ -42,9 +51,27 @@ LIMIT = 25
 JOB_STATUSES = ("open", "draft", "inactive", "finished")
 CANDIDATE_STATUSES = ("applied", "interview", "offered", "selected", "hired", "rejected")
 CLAIM_STATUSES = ("pending", "approved", "rejected", "draft")
+TICKET_STATUSES = ("new", "open", "in_progress", "hold", "closed")
+ASSET_STATUSES = ("in_use", "spare", "retired")
 #: Every status the model may set, for whichever tool it picks.
-STATUS_CHOICES = tuple(dict.fromkeys(("none", *JOB_STATUSES, *CANDIDATE_STATUSES, *CLAIM_STATUSES)))
-SCOPES = ("mine", "approvals", "company")
+STATUS_CHOICES = tuple(
+    dict.fromkeys(
+        (
+            "none",
+            *JOB_STATUSES,
+            *CANDIDATE_STATUSES,
+            *CLAIM_STATUSES,
+            *TICKET_STATUSES,
+            *ASSET_STATUSES,
+        )
+    )
+)
+EXPENSE_SCOPES = ("mine", "approvals", "company")
+#: Tickets: raised by the person, assigned to them, the unassigned queue, everyone's.
+TICKET_SCOPES = ("mine", "assigned", "queue", "company")
+ASSET_SCOPES = ("mine", "company")
+#: Every scope the model may set, for whichever tool it picks.
+SCOPES = tuple(dict.fromkeys((*EXPENSE_SCOPES, *TICKET_SCOPES, *ASSET_SCOPES)))
 
 _CANDIDATE_ROWS = (
     ("Applied", "Candidates who applied"),
@@ -70,9 +97,9 @@ def _status(inputs: dict[str, Any], allowed: tuple[str, ...]) -> str | None:
     return value if value in allowed else None
 
 
-def _scope(inputs: dict[str, Any]) -> str:
+def _scope(inputs: dict[str, Any], allowed: tuple[str, ...] = EXPENSE_SCOPES) -> str:
     value = str(inputs.get("scope") or "none").strip().lower()
-    return value if value in SCOPES else "mine"
+    return value if value in allowed else "mine"
 
 
 def _search(inputs: dict[str, Any]) -> str:
@@ -542,6 +569,176 @@ async def _expense_summary(
     return cards, used
 
 
+# ── IT tickets and assets (CGB Helpdesk) ────────────────────────────────────
+
+_HELPDESK = PRODUCTS["helpdesk"].brand
+_TICKET_STATUS = {
+    "new": "New",
+    "open": "Open",
+    "in_progress": "In progress",
+    "hold": "On hold",
+    "closed": "Closed",
+}
+_ASSET_STATUS = {"in_use": "In use", "spare": "Spare", "retired": "Retired"}
+_TICKET_TITLE = {
+    "mine": "Your tickets",
+    "assigned": "Tickets assigned to you",
+    "queue": "Unassigned tickets",
+    "company": "All the company's tickets",
+}
+
+
+def _label(value: Any, labels: dict[str, str]) -> str:
+    text = _text(value)
+    return labels.get(text, text.replace("_", " ").capitalize())
+
+
+def ticket_page(ticket_id: Any) -> str | None:
+    """A ticket's page in the portal, where the person reads and answers it."""
+    text = str(ticket_id or "")
+    if not text or len(text) > 64 or not text.replace("-", "").isalnum():
+        return None
+    return f"/linked/helpdesk/tickets/{text}"
+
+
+async def _helpdesk_tickets(
+    session: AsyncSession, user: User, inputs: dict[str, Any], today: date
+) -> Result:
+    scope = _scope(inputs, TICKET_SCOPES)
+    status = _status(inputs, TICKET_STATUSES)
+    days = _days(inputs, None)
+    search = _search(inputs)
+    used: dict[str, Any] = {"scope": scope, "status": status or "none", "query": search}
+    params: dict[str, Any] = {"scope": scope, "status": status, "query": search, "limit": LIMIT}
+    if days:
+        params["from"], params["to"] = _instants(days)
+        used |= {"from": days[0].isoformat(), "to": days[1].isoformat()}
+    data = await products.ask(session, user, "helpdesk", "tickets", params)
+
+    tickets = _items(data, "tickets")
+    staff = scope != "mine"
+    rows = []
+    for ticket in tickets:
+        row: list[Any] = [
+            f"#{_text(ticket.get('ref'), 12)}",
+            _text(ticket.get("subject")),
+            _text(ticket.get("category")),
+            _text(ticket.get("priority")).capitalize(),
+            _label(ticket.get("status"), _TICKET_STATUS),
+            _text(ticket.get("assignee")) or "Not yet",
+            _day(ticket.get("created_at")),
+        ]
+        if staff:
+            row.insert(2, _text(ticket.get("requester")))
+            row.append("Breached" if ticket.get("sla_breached") else "")
+        rows.append(row)
+    columns = ["Ticket", "Subject", "Category", "Priority", "Status", "Assigned to", "Raised"]
+    if staff:
+        columns.insert(2, "Raised by")
+        columns.append("SLA")
+    caption = _caption(
+        len(rows),
+        _int(data.get("total")),
+        "ticket",
+        _label(status, _TICKET_STATUS) if status else "",
+        _span(days) if days else "",
+        f"matching “{search}”" if search else "",
+    )
+    card = _table(
+        "helpdesk",
+        _TICKET_TITLE[scope],
+        columns,
+        rows,
+        caption=caption,
+        empty=f"No tickets match that in {_HELPDESK}.",
+        links=[ticket_page(ticket.get("id")) for ticket in tickets],
+    )
+    return [card], used
+
+
+def _status_rows(counts: dict[str, Any], prefix: str) -> list[list[Any]]:
+    return [
+        [f"{prefix} — {label.lower()}", _int(counts.get(key))]
+        for key, label in _TICKET_STATUS.items()
+    ]
+
+
+async def _helpdesk_overview(
+    session: AsyncSession, user: User, inputs: dict[str, Any], today: date
+) -> Result:
+    data = await products.ask(session, user, "helpdesk", "overview", {})
+    rows: list[list[Any]] = _status_rows(_counts(data, "mine"), "Your tickets")
+    if "assigned" in data:
+        rows += _status_rows(_counts(data, "assigned"), "Assigned to you")
+        rows.append(["Unassigned tickets in the queue", _int(data.get("queue"))])
+    if "company" in data:
+        rows += _status_rows(_counts(data, "company"), "Company")
+    rows.append(["Assets you hold", _int(data.get("my_assets"))])
+    card = _table(
+        "helpdesk",
+        "Helpdesk at a glance",
+        ["Measure", "Count"],
+        rows,
+        caption="As of now",
+        empty="",
+    )
+    return [card], {}
+
+
+async def _helpdesk_assets(
+    session: AsyncSession, user: User, inputs: dict[str, Any], today: date
+) -> Result:
+    scope = _scope(inputs, ASSET_SCOPES)
+    status = _status(inputs, ASSET_STATUSES)
+    search = _search(inputs)
+    used = {"scope": scope, "status": status or "none", "query": search}
+    data = await products.ask(
+        session,
+        user,
+        "helpdesk",
+        "assets",
+        {"scope": scope, "status": status, "query": search, "limit": LIMIT},
+    )
+    mine = scope == "mine"
+    rows = []
+    for item in _items(data, "assets"):
+        row: list[Any] = [
+            _text(item.get("code")),
+            _text(item.get("type")),
+            _text(item.get("model")),
+            _text(item.get("serial_no")),
+            _label(item.get("status"), _ASSET_STATUS),
+            _day(item.get("assigned_at")),
+            _day(item.get("warranty_expiry")),
+        ]
+        if not mine:
+            row.insert(5, _text(item.get("holder")) or "Nobody")
+        rows.append(row)
+    columns = ["Asset", "Type", "Model", "Serial no", "Status", "Since", "Warranty until"]
+    if not mine:
+        columns.insert(5, "Held by")
+    caption = _caption(
+        len(rows),
+        _int(data.get("total")),
+        "asset",
+        _label(status, _ASSET_STATUS) if status else "",
+        f"matching “{search}”" if search else "",
+    )
+    card = _table(
+        "helpdesk",
+        "Assets you hold" if mine else "Asset register",
+        columns,
+        rows,
+        caption=caption,
+        empty=(
+            f"{_HELPDESK} shows no assets assigned to you."
+            if mine
+            else f"No assets match that in {_HELPDESK}."
+        ),
+    )
+    return [card], used
+
+
 _RUNNERS = {
     "hiring_overview": _hiring_overview,
     "hiring_jobs": _hiring_jobs,
@@ -549,6 +746,9 @@ _RUNNERS = {
     "hiring_interviews": _hiring_interviews,
     "expense_claims": _expense_claims,
     "expense_summary": _expense_summary,
+    "helpdesk_tickets": _helpdesk_tickets,
+    "helpdesk_overview": _helpdesk_overview,
+    "helpdesk_assets": _helpdesk_assets,
 }
 
 

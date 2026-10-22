@@ -5,18 +5,21 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import asyncpg
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.api import well_known
 from app.api.v1 import api_router
 from app.api.v1.routers import devices as devices_router
 from app.api.v1.routers import scim as scim_router
 from app.core.config import settings
+from app.core.proxy import TrustedProxyMiddleware
 from app.db.session import engine
 
 logging.basicConfig(
@@ -51,6 +54,13 @@ async def lifespan(app: FastAPI):
             "File storage is the container's local disk in production. Files are lost "
             "when the container is replaced unless FILE_STORAGE_ROOT is a mounted "
             "volume. Set STORAGE_BACKEND=supabase."
+        )
+
+    if settings.is_production and not settings.PROXY_SHARED_SECRET:
+        logger.warning(
+            "PROXY_SHARED_SECRET is not set. Requests through the portal all carry "
+            "Vercel's address: sign-in rate limits are shared by every user and the "
+            "audit log and IP allowlists see Vercel."
         )
 
     # Background jobs: one instance runs them, chosen by a Postgres advisory lock.
@@ -139,6 +149,8 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Auth-Transport"],
     expose_headers=["Content-Disposition", "Retry-After", "X-Step-Up-Action"],
 )
+# Added last, so it runs first: everything after it sees the person's address.
+app.add_middleware(TrustedProxyMiddleware, secret=settings.PROXY_SHARED_SECRET)
 
 
 def _problem(err: dict) -> str:
@@ -165,14 +177,51 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
     )
 
 
+def _busy() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "AskMira is busy right now. Please try again in a moment."},
+        headers={"Retry-After": "5"},
+    )
+
+
 @app.exception_handler(SQLAlchemyError)
 async def database_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """Never leak SQL or schema detail to a client."""
+    if isinstance(exc, PoolTimeoutError):
+        logger.warning(
+            "No free database connection within %ss on %s %s",
+            settings.DB_POOL_TIMEOUT,
+            request.method,
+            request.url.path,
+        )
+        return _busy()
     logger.exception("Database error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "A database error occurred. Please try again."},
     )
+
+
+@app.exception_handler(TimeoutError)
+@app.exception_handler(ConnectionError)
+@app.exception_handler(asyncpg.PostgresError)
+async def unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A connection the request needed could not be opened.
+
+    SQLAlchemy does not wrap errors raised while asyncpg connects, so a timeout
+    or a refusal from the Supabase pooler ("max client connections reached")
+    arrives here raw. Errors from queries themselves are wrapped and handled
+    above.
+    """
+    logger.warning(
+        "Could not open a connection on %s %s: %s: %s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+    )
+    return _busy()
 
 
 @app.get("/health", tags=["meta"])

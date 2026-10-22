@@ -3,12 +3,15 @@
     POST /integrations/askmira/organizations   create or adopt this company's organisation
     POST /integrations/askmira/users/sync      the full list of people who should have access
     POST /integrations/askmira/query           a read-only question for one person (Ask Mira)
+    POST /integrations/askmira/act             something one person does there (a helpdesk ticket)
     POST /integrations/askmira/connect/token   swap a one-time connect code for a secret
     POST /integrations/askmira/connect/revoke  the workspace disconnected
 
 The first two are idempotent on the product side, so a retry after a timeout
-does no harm; the third changes nothing. Each carries a token whose `use` names
-the endpoint's kind (tokens.py) and whose `bh` binds it to the exact body.
+does no harm; the third changes nothing. An action is never retried here: the
+product carries out each token once, and the person sees whether it worked.
+Each carries a token whose `use` names the endpoint's kind (tokens.py) and
+whose `bh` binds it to the exact body.
 """
 
 from __future__ import annotations
@@ -20,7 +23,12 @@ from typing import Any
 import httpx
 
 from app.services.products.settings import Endpoint
-from app.services.products.tokens import provision_token, query_token, revoke_token
+from app.services.products.tokens import (
+    action_token,
+    provision_token,
+    query_token,
+    revoke_token,
+)
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 #: A person is waiting in a chat: a question gets less time than provisioning.
@@ -51,7 +59,9 @@ async def _post(
     timeout: httpx.Timeout = TIMEOUT,
 ) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
-    sign = {"query": query_token, "revoke": revoke_token}.get(use, provision_token)
+    sign = {"query": query_token, "act": action_token, "revoke": revoke_token}.get(
+        use, provision_token
+    )
     token = sign(endpoint.secret, product, tenant_id, body)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -128,6 +138,27 @@ async def query(
         {"tenant_id": str(tenant_id), "actor": actor, "kind": kind, "params": params},
         use="query",
         timeout=QUERY_TIMEOUT,
+    )
+
+
+async def act(
+    endpoint: Endpoint,
+    product: str,
+    tenant_id: uuid.UUID,
+    *,
+    actor: dict[str, str],
+    kind: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Do one thing in the product as `actor`, such as raising a helpdesk ticket."""
+    return await _post(
+        endpoint,
+        product,
+        tenant_id,
+        "/integrations/askmira/act",
+        {"tenant_id": str(tenant_id), "actor": actor, "kind": kind, "params": params},
+        use="act",
+        timeout=TIMEOUT,
     )
 
 

@@ -350,7 +350,7 @@ async def test_anyone_can_ask_whether_the_products_are_connected(
     reply = result["messages"][1]
     assert reply["tool"] == "product_connections"
     table = reply["cards"][0]
-    assert [row[0] for row in table["rows"]] == ["AnytimeHire", "ExpenseGenie"]
+    assert [row[0] for row in table["rows"]] == ["AnytimeHire", "ExpenseGenie", "CGB Helpdesk"]
     # Nothing linked in a fresh workspace, so nothing to read.
     assert all(row[3] == "None" for row in table["rows"])
 

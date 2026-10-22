@@ -1,6 +1,6 @@
 """Where each product lives, and the older server-wide secret, from the environment.
 
-Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…):
+Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…, HELPDESK_TOOL_…):
 
     _API_URL  the product's backend, which AskMira calls server to server
     _APP_URL  the product's web app, where Connect and a launch land
@@ -8,9 +8,10 @@ Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…):
               linked before Connectors. A workspace that connected from
               Connectors has a secret of its own (products/connections.py).
 
-The addresses are public facts, not secrets. Both products' production
+The addresses are public facts, not secrets. The products' production
 addresses are built in; set the variables only to point somewhere else (a
-local or staging copy).
+local or staging copy). The helpdesk is one Next.js app: its API is the web
+app's /api.
 """
 
 from __future__ import annotations
@@ -35,6 +36,9 @@ class ProductSettings(BaseSettings):
     expense_tool_api_url: str | None = None
     expense_tool_app_url: str | None = None
     expense_tool_secret: str | None = None
+    helpdesk_tool_api_url: str | None = None
+    helpdesk_tool_app_url: str | None = None
+    helpdesk_tool_secret: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +48,10 @@ class Endpoint:
     secret: str
 
 
+#: The environment variables' prefix for each product.
+_PREFIX = {"interview": "interview_tool", "expense": "expense_tool", "helpdesk": "helpdesk_tool"}
+
+
 @lru_cache
 def _settings() -> ProductSettings:
     return ProductSettings()
@@ -51,7 +59,7 @@ def _settings() -> ProductSettings:
 
 def endpoint(product: str) -> Endpoint | None:
     """The product's addresses and secret, or None when it is not fully configured."""
-    prefix = {"interview": "interview_tool", "expense": "expense_tool"}.get(product)
+    prefix = _PREFIX.get(product)
     if prefix is None:
         return None
     s = _settings()
@@ -70,12 +78,13 @@ DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
         "https://expanse-backend-api.epfassist.com",
         "https://standalone-expenses-ginie-dashboard.vercel.app",
     ),
+    "helpdesk": ("https://cgb-helpdesk.vercel.app/api", "https://cgb-helpdesk.vercel.app"),
 }
 
 
 def addresses(product: str) -> tuple[str, str] | None:
     """The product's (api_url, app_url), or None when this server does not know where it is."""
-    prefix = {"interview": "interview_tool", "expense": "expense_tool"}.get(product)
+    prefix = _PREFIX.get(product)
     if prefix is None:
         return None
     s = _settings()

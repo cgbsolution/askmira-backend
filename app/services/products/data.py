@@ -15,6 +15,10 @@ product's own secret, on behalf of the person asking:
   configured on this server, not linked, or switched off is never asked.
 
 What comes back is shown to the person who asked. It is never sent to a model.
+
+`act` is the one way to change something in a product from here — a helpdesk
+ticket raised or answered in the portal — and is signed separately (use=act),
+so nothing read-only can ever write. It is never offered to Ask Mira's model.
 """
 
 from __future__ import annotations
@@ -32,11 +36,18 @@ from app.services.products.catalogue import PRODUCTS
 from app.services.products.connections import endpoint
 from app.services.products.service import ACTIVE
 
-__all__ = ["ProductUnavailableError", "ask", "connection", "role_in"]
+__all__ = ["ProductUnavailableError", "act", "ask", "connection", "role_in"]
 
 
 class ProductUnavailableError(Exception):
-    """The product can't answer this person now. The message is safe to show."""
+    """The product can't answer this person now. The message is safe to show.
+
+    `status` is the product's own HTTP status when it answered, else None.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 async def role_in(session: AsyncSession, user: User, product_key: str) -> str | None:
@@ -81,7 +92,7 @@ async def connection(session: AsyncSession, user: User, product_key: str) -> dic
         )
     )
     if row is None:
-        workspace = "Not linked; the platform admin links it from the console"
+        workspace = "Not connected; your admin connects it from Settings → Connectors"
     elif row.status != ACTIVE:
         workspace = "Linked but switched off"
     else:
@@ -102,16 +113,16 @@ def _explain(brand: str, exc: client.ProductError) -> str:
         return exc.detail[:300]
     if exc.status == 404:
         return (
-            f"{brand} does not have your company linked any more. "
-            "The platform admin can link it again from the console."
+            f"{brand} does not have your company connected any more. "
+            "Your admin can connect it again from Settings → Connectors."
         )
     if exc.status == 401:
         return (
             f"{brand} did not accept AskMira's request. "
-            "The platform admin should check the shared secret on both sides."
+            "Your admin can connect it again from Settings → Connectors."
         )
-    if exc.status == 422 and exc.detail:
-        return f"{brand} could not answer that: {exc.detail[:200]}"
+    if exc.status in (409, 422) and exc.detail:
+        return f"{brand} could not do that: {exc.detail[:200]}"
     return f"{brand} could not be reached just now. Try again in a minute."
 
 
@@ -134,7 +145,36 @@ async def ask(
             params=params,
         )
     except client.ProductError as exc:
-        raise ProductUnavailableError(_explain(product.brand, exc)) from exc
+        raise ProductUnavailableError(_explain(product.brand, exc), status=exc.status) from exc
     if data.get("kind") != kind:
         raise ProductUnavailableError(f"{product.brand} answered a different question. Try again.")
+    return data
+
+
+async def act(
+    session: AsyncSession, user: User, product_key: str, kind: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Do one thing in the product as `user` (raise a helpdesk ticket); its answer, as it gave it.
+
+    Same checks as `ask`: the caller's own workspace, its active link, the role
+    AskMira gives them there. The product checks the person again itself.
+    """
+    product = PRODUCTS[product_key]
+    role = await role_in(session, user, product_key)
+    target = await endpoint(session, product_key, user.tenant_id)
+    if role is None or target is None:
+        raise ProductUnavailableError(f"{product.brand} is not linked to your workspace for you.")
+    try:
+        data = await client.act(
+            target,
+            product_key,
+            user.tenant_id,
+            actor={"id": str(user.id), "email": user.email.lower(), "role": role},
+            kind=kind,
+            params=params,
+        )
+    except client.ProductError as exc:
+        raise ProductUnavailableError(_explain(product.brand, exc), status=exc.status) from exc
+    if data.get("kind") != kind:
+        raise ProductUnavailableError(f"{product.brand} answered something else. Try again.")
     return data

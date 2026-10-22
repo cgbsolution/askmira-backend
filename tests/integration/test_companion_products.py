@@ -380,8 +380,18 @@ async def test_a_product_that_cannot_answer_is_said_plainly(
 def test_every_status_and_scope_is_a_choice_the_model_is_given() -> None:
     from app.services.companion import tools
 
-    assert set(tools.INPUTS["scope"]["enum"]) == {"none", "mine", "approvals", "company"}
+    assert set(tools.INPUTS["scope"]["enum"]) == {
+        "none",
+        "mine",
+        "approvals",
+        "company",
+        # CGB Helpdesk: tickets assigned to the asker, and the unassigned queue.
+        "assigned",
+        "queue",
+    }
     assert {"open", "applied", "pending", "approved", "none"} <= set(tools.INPUTS["status"]["enum"])
+    assert {"in_progress", "hold", "closed", "spare"} <= set(tools.INPUTS["status"]["enum"])
+    assert set(tools.INPUTS["product"]["enum"]) == {"none", "interview", "expense", "helpdesk"}
 
 
 async def test_each_candidate_row_opens_its_job_in_the_product(

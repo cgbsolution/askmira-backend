@@ -211,7 +211,11 @@ async def test_unconfigured_product_cannot_be_linked(
     session: AsyncSession, super_admin: User, tenant: Tenant, unconfigured: None
 ) -> None:
     listed = await products.list_for_workspace(session, super_admin, tenant.id)
-    assert {p["key"]: p["configured"] for p in listed} == {"interview": False, "expense": False}
+    assert {p["key"]: p["configured"] for p in listed} == {
+        "interview": False,
+        "expense": False,
+        "helpdesk": False,
+    }
     with pytest.raises(HTTPException) as refused:
         await products.link(session, super_admin, tenant.id, "interview", request=None)
     assert refused.value.status_code == 409

@@ -46,6 +46,22 @@ def _plan(text: str, tools=ALL) -> direct.DirectPlan:
             {"scope": "company", "from": "2026-09-01"},
         ),
         ("Expense total this month", "expense_summary", {"scope": "mine", "to": "2026-10-31"}),
+        ("My open tickets", "helpdesk_tickets", {"scope": "mine", "status": "open"}),
+        # "open tickets" asks to see them; it does not open the product or raise one.
+        ("open tickets", "helpdesk_tickets", {"scope": "mine", "status": "open"}),
+        ("tickets assigned to me", "helpdesk_tickets", {"scope": "assigned"}),
+        ("new tickets in the queue", "helpdesk_tickets", {"scope": "queue", "status": "new"}),
+        ("all tickets in the company", "helpdesk_tickets", {"scope": "company"}),
+        ("closed tickets about vpn", "helpdesk_tickets", {"status": "closed", "query": "vpn"}),
+        ("helpdesk overview", "helpdesk_overview", {}),
+        ("What assets do I have?", "helpdesk_assets", {"scope": "mine"}),
+        (
+            "spare laptops in the asset register",
+            "helpdesk_assets",
+            {"scope": "company", "status": "spare", "query": "laptop"},
+        ),
+        ("Open the helpdesk", "open_product", {"product": "helpdesk"}),
+        ("is the helpdesk connected?", "product_connections", {}),
     ],
 )
 def test_words_are_matched_to_a_tool(text: str, tool: str, inputs: dict) -> None:
@@ -62,6 +78,15 @@ def test_only_an_offered_tool_is_ever_chosen() -> None:
     assert "AnytimeHire is not available to you" in plan.reply
     without_expenses = [tool for tool in ALL if tool.group != "expense_data"]
     assert _plan("my expense claims", without_expenses).tool is None
+
+
+def test_raising_a_ticket_points_to_the_form() -> None:
+    for text in ("raise a ticket", "I want to raise a new IT ticket", "open a ticket"):
+        plan = _plan(text)
+        assert plan.tool is None and "Raise a ticket" in plan.reply
+    without_helpdesk = [tool for tool in ALL if tool.group != "helpdesk_data"]
+    assert "CGB Helpdesk is not available" in _plan("raise a ticket", without_helpdesk).reply
+    assert _plan("my tickets", without_helpdesk).tool is None
 
 
 def test_policy_and_report_questions_wait_for_ai() -> None:

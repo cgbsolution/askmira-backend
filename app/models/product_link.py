@@ -27,7 +27,7 @@ class ProductLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
         UniqueConstraint("tenant_id", "product", name="uq_product_links_tenant_product"),
     )
 
-    #: "interview" or "expense" — the keys of app.services.products.catalogue.PRODUCTS.
+    #: "interview", "expense" or "helpdesk" — the keys of app.services.products.catalogue.PRODUCTS.
     product: Mapped[str] = mapped_column(String(32), nullable=False)
     #: "active" or "disabled". A disabled link keeps its external_ref for relinking.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")

@@ -1,8 +1,11 @@
 """The products a workspace can be linked to, and who may use each.
 
-A product *replaces* one AskMira module for a linked workspace: the portal hides
-that module's pages and shows a launcher instead. The role a person gets in the
-product is decided here, from their AskMira role — the product never decides it.
+A product *replaces* AskMira's own module for a linked workspace: the portal
+hides that module's pages and shows the product's records instead (the
+helpdesk replaces two: Helpdesk and Assets). The role a person gets in the
+product is decided here, from their AskMira role — the product never decides it
+(the helpdesk keeps the engineers and admins its own IT team sets up, and
+treats this role as the least a person gets).
 """
 
 from __future__ import annotations
@@ -33,6 +36,9 @@ class Product:
         if self.key == "expense":
             # Everybody files expenses; HR runs the workspace.
             return "admin" if role in _HR else "employee"
+        if self.key == "helpdesk":
+            # Everybody raises tickets and has assets; HR looks after the company there.
+            return "admin" if role in _HR else "user"
         return None
 
 
@@ -41,6 +47,7 @@ PRODUCTS: dict[str, Product] = {
         key="interview", name="Interviews", replaces="hiring", brand="AnytimeHire"
     ),
     "expense": Product(key="expense", name="Expenses", replaces="expenses", brand="ExpenseGenie"),
+    "helpdesk": Product(key="helpdesk", name="Helpdesk", replaces="helpdesk", brand="CGB Helpdesk"),
 }
 
 

@@ -32,6 +32,23 @@ ENDPOINTS: dict[str, str] = {
         "the product is asked as them (identity from the token, workspace from tid), answers "
         "only what that role there may see, and a page's fixed scope cannot be widened."
     ),
+    "GET /products/helpdesk/ticket-options": (
+        "scoped:_ask: through products.data, which answers only someone AskMira gives a role "
+        "in the linked helpdesk; it is asked as the caller (identity from the token, workspace "
+        "from tid) and offers only their own assets."
+    ),
+    "GET /products/helpdesk/tickets/{ticket_id}": (
+        "scoped:_ask: through products.data, as the caller; the helpdesk opens a ticket only "
+        "for its requester or the company's IT staff who may work it, and refuses anyone else."
+    ),
+    "POST /products/helpdesk/tickets": (
+        "scoped:_act: through products.data, signed use=act, as the caller: the ticket is "
+        "always the caller's own, and a linked asset must be one they hold."
+    ),
+    "POST /products/helpdesk/tickets/{ticket_id}/replies": (
+        "scoped:_act: through products.data, signed use=act, as the caller; the helpdesk "
+        "accepts a reply only on a ticket the caller may open."
+    ),
     # ── Notifications ───────────────────────────────────────────────────────
     "GET /notifications/unread-count": "own: the caller's own unread count.",
     "GET /oauth/authorize/details": (

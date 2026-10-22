@@ -11,7 +11,7 @@ access — the MCP gateway's read tools, the policy assistant, the report
 compiler. Each returns cards for the screen. Nothing a tool returns is given to
 the model.
 
-A tool that reads a linked product (AnytimeHire, ExpenseGenie) is offered only
+A tool that reads a linked product (AnytimeHire, ExpenseGenie, CGB Helpdesk) is offered only
 when the workspace has that product linked and the person has a role in it;
 it asks the product as them (product_tools.py).
 """
@@ -36,6 +36,7 @@ from app.services.products.catalogue import PRODUCTS
 
 _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
+_HELPDESK = PRODUCTS["helpdesk"].brand
 
 __all__ = ["INPUTS", "TOOLS", "Tool", "offered", "run"]
 
@@ -219,13 +220,52 @@ TOOLS: dict[str, Tool] = {
             inputs=("scope", "status", "from", "to"),
         ),
         Tool(
+            key="helpdesk_tickets",
+            group="helpdesk_data",
+            product="helpdesk",
+            title="Helpdesk tickets",
+            description=(
+                f"IT tickets in {_HELPDESK}, the company's helpdesk. Set `scope`: mine (tickets "
+                "the asker raised), assigned (assigned to the asker, for IT staff), queue (the "
+                "unassigned queue, for IT staff) or company (all the company's, for helpdesk "
+                "admins). Optionally set `status` (new, open, in_progress, hold or closed), "
+                "`from` and `to` (when raised) and `query` (a subject, category or person)."
+            ),
+            inputs=("scope", "status", "from", "to", "query"),
+        ),
+        Tool(
+            key="helpdesk_overview",
+            group="helpdesk_data",
+            product="helpdesk",
+            title="Helpdesk at a glance",
+            description=(
+                f"Counts from {_HELPDESK}: the asker's tickets by status, and for IT staff their "
+                "assigned tickets, the unassigned queue and the company's tickets; and how many "
+                "assets the asker holds."
+            ),
+        ),
+        Tool(
+            key="helpdesk_assets",
+            group="helpdesk_data",
+            product="helpdesk",
+            title="Assets",
+            description=(
+                f"Assets in {_HELPDESK}: laptops, monitors, phones and the like. Set `scope`: "
+                "mine (assigned to the asker now) or company (the company's asset register, for "
+                "IT staff). Optionally set `status` (in_use, spare or retired) and `query` (an "
+                "asset code, type or model)."
+            ),
+            inputs=("scope", "status", "query"),
+        ),
+        Tool(
             key="product_connections",
             group="products",
             title="Linked products",
             description=(
-                f"Whether {_HIRE} (interviews) and {_EXPENSE} (expenses) are connected to this "
-                "workspace, and what the asker may read from each. Use it when the person asks "
-                "whether a product is connected, linked or set up."
+                f"Whether {_HIRE} (interviews), {_EXPENSE} (expenses) and {_HELPDESK} (IT "
+                "tickets and assets) are connected to this workspace, and what the asker may "
+                "read from each. Use it when the person asks whether a product is connected, "
+                "linked or set up."
             ),
         ),
         Tool(
@@ -234,8 +274,8 @@ TOOLS: dict[str, Tool] = {
             title="Open a linked product",
             description=(
                 "Opens a product this workspace uses instead of an AskMira module: "
-                "'interview' for hiring and interviews, 'expense' for expense claims. Set "
-                "`product`."
+                "'interview' for hiring and interviews, 'expense' for expense claims, "
+                "'helpdesk' for IT tickets and assets. Set `product`."
             ),
             inputs=("product",),
         ),
@@ -251,7 +291,7 @@ INPUTS: dict[str, dict[str, Any]] = {
     "include_exited": {"type": "boolean"},
     "from": {"type": "string", "description": "First day, YYYY-MM-DD, or empty."},
     "to": {"type": "string", "description": "Last day, YYYY-MM-DD, or empty."},
-    "product": {"type": "string", "enum": ["none", "interview", "expense"]},
+    "product": {"type": "string", "enum": ["none", *PRODUCTS]},
     "status": {"type": "string", "enum": list(product_tools.STATUS_CHOICES)},
     "scope": {"type": "string", "enum": ["none", *product_tools.SCOPES]},
 }

@@ -11,6 +11,10 @@ engine = create_async_engine(
     echo=settings.DB_ECHO,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
+    # A full pool, or a full Supabase pooler (which queues a client for up to a
+    # minute), fails the request in seconds instead of holding it.
+    pool_timeout=settings.DB_POOL_TIMEOUT,
+    connect_args={"timeout": settings.DB_POOL_TIMEOUT},
     pool_pre_ping=True,  # Supabase poolers drop idle connections
 )
 

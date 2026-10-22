@@ -29,6 +29,7 @@ __all__ = ["DirectPlan", "examples", "plan"]
 
 _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
+_HELPDESK = PRODUCTS["helpdesk"].brand
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,22 @@ _STOP = {
     "hire",
     "expensegenie",
     "genie",
+    "ticket",
+    "tickets",
+    "helpdesk",
+    "help",
+    "desk",
+    "support",
+    "asset",
+    "assets",
+    "raised",
+    "assigned",
+    "queue",
+    "unassigned",
+    "register",
+    "hold",
+    "progress",
+    "cgb",
     "askmira",
     "mira",
 }
@@ -237,6 +254,50 @@ def _search_text(text: str, drop: tuple[str, ...] = ()) -> str:
     words = [w for w in re.findall(r"[a-z0-9][a-z0-9.@+'-]*", cleaned) if w.strip("'")]
     kept = [w for w in words if w not in _STOP and w not in drop and not w.endswith("'s")]
     return " ".join(kept)[:100]
+
+
+def _ticket_status(text: str) -> str:
+    if _has(text, "in[ -]?progress", "being worked", "working on"):
+        return "in_progress"
+    if _has(text, "on hold", "hold\\b", "paused"):
+        return "hold"
+    if _has(text, "closed", "resolved", "done\\b", "fixed"):
+        return "closed"
+    if _has(text, "new\\b", "not picked", "unacknowledged"):
+        return "new"
+    if _has(text, "open\\b", "pending", "unresolved", "active"):
+        return "open"
+    return "none"
+
+
+def _asset_status(text: str) -> str:
+    if _has(text, "in use", "in-use", "allocated"):
+        return "in_use"
+    if _has(text, "spare", "unused", "free\\b", "available"):
+        return "spare"
+    if _has(text, "retired", "scrapped", "disposed"):
+        return "retired"
+    return "none"
+
+
+def _asset_search(words: str) -> str:
+    """Asset words to search by, singular: "laptops" finds "Laptop"."""
+    text = _search_text(
+        words,
+        (
+            "in",
+            "use",
+            "spare",
+            "retired",
+            "unused",
+            "available",
+            "free",
+            "allocated",
+            "held",
+            "hold",
+        ),
+    )
+    return " ".join(w[:-1] if len(w) > 4 and w.endswith("s") else w for w in text.split())
 
 
 def _status(text: str, allowed: tuple[str, ...]) -> str:
@@ -272,6 +333,9 @@ def examples(tools: list[Tool]) -> list[str]:
         ("hiring_interviews", "Interviews this week"),
         ("expense_claims", "My pending expense claims"),
         ("expense_summary", "Expense total this month"),
+        ("helpdesk_tickets", "My open tickets"),
+        ("helpdesk_assets", "What assets do I have?"),
+        ("helpdesk_overview", "Helpdesk overview"),
         ("product_connections", f"Is {_HIRE} connected?"),
         ("open_product", f"Open {_HIRE}"),
     ]
@@ -312,23 +376,60 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
 
     # Whether the products are connected at all.
     if _has(words, "connect", "linked", "integrat", "set ?up", "configured") and _has(
-        words, "an?y? ?time", "hire", "expense", "genie", "products?\\b", "tools?\\b", "portals?"
+        words,
+        "an?y? ?time",
+        "hire",
+        "expense",
+        "genie",
+        "help ?desk",
+        "products?\\b",
+        "tools?\\b",
+        "portals?",
     ):
         chosen = pick(
-            "product_connections", f"Here is how {_HIRE} and {_EXPENSE} are connected for you."
+            "product_connections",
+            f"Here is how {_HIRE}, {_EXPENSE} and {_HELPDESK} are connected for you.",
         )
         if chosen:
             return chosen
 
+    # Raising a ticket happens on the Helpdesk page, where the form is.
+    if re.match(
+        r"^(please |can you |could you |i want to |i need to |i'd like to |help me |"
+        r"how (do|can) i )?"
+        r"(raise|create|open|log|file|submit|make|register) (a |an |one )?(new )?(it |helpdesk )?"
+        # Singular: "open tickets" asks to see them.
+        r"(ticket|request|complaint|issue)\b",
+        words,
+    ):
+        if "helpdesk_tickets" in offered:
+            return DirectPlan(
+                reply=(
+                    "Raise it under Helpdesk → My tickets → Raise a ticket. It goes straight to "
+                    f"{_HELPDESK}, and you can follow the replies there or here."
+                )
+            )
+        return _unavailable(_HELPDESK)
+
     # Opening a linked product — unless the words ask for its data.
     opening = re.match(r"^(please |can you )?(open|launch|go to|take me to)\b", words)
     if opening and not _has(
-        words, r"jobs?\b", "candidate", "applicant", r"interviews\b", r"claims?\b", r"expenses\b"
+        words,
+        r"jobs?\b",
+        "candidate",
+        "applicant",
+        r"interviews\b",
+        r"claims?\b",
+        r"expenses\b",
+        r"tickets\b",
+        r"assets\b",
     ):
         if _has(words, "anytime", "hire", "interview tool", "hiring tool", "recruit"):
             chosen = pick("open_product", f"Opening {_HIRE}.", product="interview")
         elif _has(words, "expense"):
             chosen = pick("open_product", f"Opening {_EXPENSE}.", product="expense")
+        elif _has(words, "help ?desk", "cgb", "it support", "it portal", "ticket"):
+            chosen = pick("open_product", f"Opening {_HELPDESK}.", product="helpdesk")
         if chosen:
             return chosen
 
@@ -409,6 +510,82 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
         if chosen:
             return chosen
         return _unavailable(_EXPENSE)
+
+    # IT tickets and assets (CGB Helpdesk).
+    if _has(words, "tickets?\\b", "help ?desk", "it support", "it issues?", "support requests?"):
+        if _has(words, "overview", "summary", "at a glance", "how many", "count", "stats"):
+            chosen = pick(
+                "helpdesk_overview", f"Here is the helpdesk at a glance from {_HELPDESK}."
+            )
+        else:
+            scope = "mine"
+            if _has(
+                words, "assigned to me", "my queue", "on my plate", "i am working", "i'm working"
+            ):
+                scope = "assigned"
+            elif _has(words, "unassigned", "queue", "not assigned", "nobody"):
+                scope = "queue"
+            elif _has(
+                words,
+                "company",
+                "everyone",
+                "everybody",
+                "all tickets",
+                "all the tickets",
+                "whole",
+                "organi[sz]ation",
+                "org\\b",
+            ):
+                scope = "company"
+            chosen = pick(
+                "helpdesk_tickets",
+                f"Here are the tickets from {_HELPDESK}.",
+                scope=scope,
+                status=_ticket_status(words),
+                **when,
+                query=_search_text(
+                    words,
+                    (
+                        "open",
+                        "closed",
+                        "new",
+                        "pending",
+                        "resolved",
+                        "done",
+                        "fixed",
+                        "raised",
+                        "unresolved",
+                        "active",
+                        "about",
+                        "regarding",
+                    ),
+                ),
+            )
+        if chosen:
+            return chosen
+        return _unavailable(_HELPDESK)
+    if _has(
+        words,
+        "assets?\\b",
+        "laptops?\\b",
+        "devices?\\b",
+        "equipment",
+        "hardware",
+        "monitors?\\b",
+    ):
+        company = _has(
+            words, "register", "company", "all assets", "everyone", "whole", "inventory", "spare"
+        )
+        chosen = pick(
+            "helpdesk_assets",
+            f"Here are the assets from {_HELPDESK}.",
+            scope="company" if company else "mine",
+            status=_asset_status(words),
+            query=_asset_search(words) if company else "",
+        )
+        if chosen:
+            return chosen
+        return _unavailable(_HELPDESK)
 
     # Hiring (AnytimeHire).
     asked_hiring = True

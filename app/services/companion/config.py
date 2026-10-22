@@ -31,12 +31,15 @@ TOOL_GROUPS: dict[str, str] = {
     "attendance": "Show attendance summaries (HR only).",
     "org": "List departments and office locations.",
     "reports": "Answer counting and reporting questions with the report builder.",
-    "products": "Say whether the interview and expense tools are connected, and open the one "
-    "this workspace has linked.",
+    "products": "Say whether the interview, expense and helpdesk tools are connected, and open "
+    "the ones this workspace has linked.",
     "hiring_data": "Read jobs, candidates and interviews from the linked interview tool "
     "(HR and hiring managers; never AI scores).",
     "expense_data": "Read expense claims from the linked expense tool: a person's own, those "
     "waiting for their approval, and the whole company's for HR.",
+    "helpdesk_data": "Read IT tickets and assets from the linked helpdesk: a person's own tickets "
+    "and the assets they hold, IT staff's queues, and the company's tickets and asset register "
+    "for helpdesk admins.",
 }
 
 #: One to three plain words. The name is written into the agent's instructions,

@@ -1,8 +1,10 @@
-"""A linked product's records as pages in the portal: Expenses and Hiring, read live.
+"""A linked product's records as pages in the portal: Expenses, Hiring, Helpdesk and
+Assets, read live.
 
-When a workspace links ExpenseGenie or AnytimeHire, its Expenses or Hiring
-section shows that product's own records — the person's claims, what waits on
-their approval, jobs, candidates, interviews — instead of a lone launcher.
+When a workspace links ExpenseGenie, AnytimeHire or CGB Helpdesk, its Expenses,
+Hiring, Helpdesk or Assets section shows that product's own records — the
+person's claims, what waits on their approval, jobs, candidates, interviews,
+tickets, the assets they hold — instead of a lone launcher.
 
 Nothing is copied into AskMira. Each page asks the product as the person, with
 the same lookups Ask Mira uses (companion.product_tools): the caller's own
@@ -47,6 +49,13 @@ VIEWS: dict[tuple[str, str], tuple[str, dict[str, str]]] = {
     ("interview", "jobs"): ("hiring_jobs", {}),
     ("interview", "candidates"): ("hiring_candidates", {}),
     ("interview", "interviews"): ("hiring_interviews", {}),
+    ("helpdesk", "tickets"): ("helpdesk_tickets", {"scope": "mine"}),
+    ("helpdesk", "assigned"): ("helpdesk_tickets", {"scope": "assigned"}),
+    ("helpdesk", "queue"): ("helpdesk_tickets", {"scope": "queue"}),
+    ("helpdesk", "all"): ("helpdesk_tickets", {"scope": "company"}),
+    ("helpdesk", "overview"): ("helpdesk_overview", {}),
+    ("helpdesk", "assets"): ("helpdesk_assets", {"scope": "mine"}),
+    ("helpdesk", "register"): ("helpdesk_assets", {"scope": "company"}),
 }
 
 #: What a person may set on a page. Anything else in the query string is ignored.
