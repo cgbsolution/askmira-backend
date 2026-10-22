@@ -386,3 +386,95 @@ def test_the_computation_stays_deterministic(pf_rules, lwf_rules) -> None:
     assert first.net_pay == second.net_pay
     assert first.lwf_employee == second.lwf_employee
     assert first.vpf == second.vpf
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Contributions in whole rupees, as the ECR and the ESIC return carry them
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _lop_salary_input(rules, *, lop: str, ctc: str = "228000", **kwargs):
+    """19,000 a month (basic 7,600), with loss of pay: wages that land on paise."""
+    return make_input(salary(ctc), rules=rules, lop_days=Decimal(lop), **kwargs)
+
+
+def test_pf_is_twelve_percent_of_whole_rupee_wages_to_the_nearest_rupee(pf_rules) -> None:
+    """Basic 7,600 x 29/30 = 7,346.67: the ECR files 7,347 and 882, so does the payslip."""
+    result = compute_payroll(_lop_salary_input({"pf": pf_rules}, lop="1"))
+    assert result.pf_wage_base == Decimal("7346.67")
+    assert result.pf_employee == Decimal("882.00")
+    assert result.pf_employer == Decimal("882.00")
+    line = next(line for line in result.lines if line.code == "PF_EMPLOYEE")
+    assert "7347 (7346.67 to the rupee)" in line.basis
+
+
+def test_esi_is_rounded_up_to_the_next_rupee(pf_rules, esi_rules) -> None:
+    """ESI wages 18,366.67: 0.75% is 137.75 and 3.25% is 596.92; ESIC collects 138 and 597."""
+    result = compute_payroll(_lop_salary_input({"pf": pf_rules, "esi": esi_rules}, lop="1"))
+    assert result.esi_employee == Decimal("138.00")
+    assert result.esi_employer == Decimal("597.00")
+
+
+def test_a_rule_set_may_keep_contributions_in_paise(pf_rules) -> None:
+    paise = rule_set("pf", {**pf_rules.rules, "contribution_rounding": "paise"})
+    result = compute_payroll(_lop_salary_input({"pf": paise}, lop="1"))
+    assert result.pf_employee == Decimal("881.60")
+
+
+def test_an_unknown_contribution_rounding_is_refused(pf_rules) -> None:
+    odd = rule_set("pf", {**pf_rules.rules, "contribution_rounding": "banker"})
+    with pytest.raises(PayrollRuleError, match="contribution_rounding"):
+        compute_payroll(_lop_salary_input({"pf": odd}, lop="1"))
+
+
+def test_vpf_by_percentage_is_rounded_with_the_employee_share(pf_rules) -> None:
+    election = PfElection(vpf_percent=Decimal("5"))
+    result = compute_payroll(_lop_salary_input({"pf": pf_rules}, lop="1", pf_election=election))
+    # 5% of 7,346.67 is 367.33; remitted with the employee's share in whole rupees.
+    assert result.vpf == Decimal("367.00")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Professional Tax: a month's own amount, and slabs that differ for women
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mh_pt():
+    """Shaped like Maharashtra's schedule: 300 in February, women exempt below 25,000."""
+    return rule_set(
+        "professional_tax",
+        {
+            "slabs": [
+                {"up_to": 7500, "amount": 0},
+                {"up_to": 10000, "amount": 175},
+                {"up_to": None, "amount": 200, "month_amounts": {"2": 300}},
+            ],
+            "slabs_by_gender": {
+                "female": [
+                    {"up_to": 25000, "amount": 0},
+                    {"up_to": None, "amount": 200, "month_amounts": {"2": 300}},
+                ]
+            },
+        },
+        jurisdiction="MH",
+    )
+
+
+def test_a_slab_charges_its_february_amount_in_february(pf_rules, mh_pt) -> None:
+    rules = {"pf": pf_rules, "professional_tax": mh_pt}
+    january = compute_payroll(make_input(salary("228000"), month=1, rules=rules))
+    february = compute_payroll(make_input(salary("228000"), month=2, rules=rules))
+    assert january.professional_tax == Decimal("200.00")
+    assert february.professional_tax == Decimal("300.00")
+
+
+def test_slabs_for_women_replace_the_general_ones(pf_rules, mh_pt) -> None:
+    rules = {"pf": pf_rules, "professional_tax": mh_pt}
+    # 19,000 a month: 200 under the general slabs, nothing under the women's.
+    woman = compute_payroll(make_input(salary("228000"), rules=rules, gender="female"))
+    man = compute_payroll(make_input(salary("228000"), rules=rules, gender="male"))
+    unknown = compute_payroll(make_input(salary("228000"), rules=rules))
+    assert woman.professional_tax == Decimal("0.00")
+    assert man.professional_tax == Decimal("200.00")
+    assert unknown.professional_tax == Decimal("200.00")

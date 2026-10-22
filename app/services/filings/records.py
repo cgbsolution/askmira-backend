@@ -21,6 +21,8 @@ from datetime import date
 from decimal import Decimal
 
 __all__ = [
+    "ArrearEcrLine",
+    "ArrearEcrReturn",
     "EcrLine",
     "EcrReturn",
     "EsicLine",
@@ -64,6 +66,38 @@ class EcrReturn:
     @property
     def total_epf_wages(self) -> Decimal:
         return sum((line.epf_wages for line in self.lines), start=Decimal(0))
+
+    @property
+    def total_contributions(self) -> Decimal:
+        return sum(
+            (
+                line.employee_share + line.employer_epf_share + line.eps_contribution
+                for line in self.lines
+            ),
+            start=Decimal(0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArrearEcrLine:
+    """One member's PF arrears paid in a month, over every month they cover."""
+
+    uan: str
+    member_name: str
+    epf_wages: Decimal
+    eps_wages: Decimal
+    edli_wages: Decimal
+    employee_share: Decimal
+    employer_epf_share: Decimal
+    eps_contribution: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class ArrearEcrReturn:
+    establishment_code: str
+    # The month the arrears were paid with, "102026".
+    wage_month: str
+    lines: list[ArrearEcrLine] = field(default_factory=list)
 
     @property
     def total_contributions(self) -> Decimal:

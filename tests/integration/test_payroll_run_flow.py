@@ -14,7 +14,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import AttendancePeriodLock
@@ -39,6 +39,7 @@ from app.models.payroll import (
     ComponentType,
     PayrollRuleSet,
     PayrollRunStatus,
+    PayrollRunType,
     Payslip,
     SalaryComponent,
     SalaryStructure,
@@ -53,6 +54,7 @@ from app.services.payroll import rule_sets as rule_set_service
 from app.services.payroll import run as run_service
 from app.services.payroll import service as salary_service
 from app.services.payroll import statutory_service
+from app.services.tax import service as tax_service
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -295,6 +297,26 @@ async def test_a_rule_set_missing_an_engine_key_is_refused(session: AsyncSession
         )
     assert exc.value.status_code == 422
     assert "employee_rate" in exc.value.detail
+
+
+async def test_a_slab_table_payroll_would_misread_is_refused_at_entry(
+    session: AsyncSession, org
+) -> None:
+    with pytest.raises(HTTPException) as exc:
+        await rule_set_service.create_rule_set(
+            session,
+            org["maker"],
+            RuleSetCreate(
+                rule_type="professional_tax",
+                jurisdiction="KA",
+                effective_from=date(2026, 4, 1),
+                rules={"slabs": [{"max": 24999, "amount": 0}, {"amount": 200}]},
+                source_reference="fixture",
+            ),
+        )
+    assert exc.value.status_code == 422
+    assert "slab 1 has no up_to" in exc.value.detail
+    assert (await session.scalar(select(func.count()).select_from(PayrollRuleSet))) == 0
 
 
 async def test_approving_a_new_version_closes_the_old_one_and_leaves_its_rules(
@@ -693,3 +715,151 @@ async def test_a_scheduled_statutory_bonus_rides_the_run(session: AsyncSession, 
     await session.refresh(bonus)
     assert bonus.status is BonusStatus.PAID
     assert bonus.paid_on is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cancelling a run opened in error
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_a_computed_run_can_be_cancelled_and_its_month_opened_again(
+    session: AsyncSession, org
+) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    computed = await run_service.compute_run(session, org["maker"], run.id)
+    assert computed.employee_count == 4
+
+    with pytest.raises(HTTPException) as exc:
+        await run_service.cancel_run(session, org["maker"], run.id, reason="   ")
+    assert exc.value.status_code == 422
+
+    cancelled = await run_service.cancel_run(
+        session, org["maker"], run.id, reason="Opened for the wrong legal entity"
+    )
+    assert cancelled.status is PayrollRunStatus.CANCELLED
+    assert cancelled.cancel_reason == "Opened for the wrong legal entity"
+    assert cancelled.cancelled_by_user_id == org["maker"].id
+    assert cancelled.employee_count == 0
+    left = (await session.scalars(select(Payslip).where(Payslip.run_id == run.id))).all()
+    assert left == [], "a cancelled run keeps no payslips"
+    audit_rows = (await session.scalars(select(AuditLog).where(AuditLog.entity_id == run.id))).all()
+    assert any((row.changes or {}).get("step") == "cancel" for row in audit_rows)
+
+    # The month is free again, and a cancelled run cannot be revived.
+    again = await _open_run(session, org, 4)
+    assert again.id != run.id
+    with pytest.raises(HTTPException) as exc:
+        await run_service.compute_run(session, org["maker"], run.id)
+    assert exc.value.status_code == 409
+
+
+async def test_an_approved_run_cannot_be_cancelled(session: AsyncSession, org) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    await run_service.compute_run(session, org["maker"], run.id)
+    await run_service.approve_run(session, org["checker"], run.id)
+
+    with pytest.raises(HTTPException) as exc:
+        await run_service.cancel_run(session, org["maker"], run.id, reason="Too late")
+    assert exc.value.status_code == 409
+    assert "arrears or off-cycle" in exc.value.detail
+
+
+async def test_an_off_cycle_run_stands_on_the_live_regular_run_not_a_cancelled_one(
+    session: AsyncSession, org
+) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    wrong = await _open_run(session, org, 4)
+    await run_service.cancel_run(session, org["maker"], wrong.id, reason="Opened in error")
+    regular = await _open_run(session, org, 4)
+    await run_service.compute_run(session, org["maker"], regular.id)
+    await run_service.approve_run(session, org["checker"], regular.id)
+
+    off_cycle = await run_service.create_run(
+        session,
+        org["maker"],
+        legal_entity_id=org["entity"].id,
+        period_year=2026,
+        period_month=4,
+        run_type=PayrollRunType.OFF_CYCLE,
+        employee_ids=[org["meera_emp"].id],
+        reason="Late incentive",
+    )
+    assert off_cycle.run_type is PayrollRunType.OFF_CYCLE
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The employee's projection reads the year as payroll pays it
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def test_the_projection_reads_paid_months_and_the_salary_in_force_after_them(
+    session: AsyncSession, org
+) -> None:
+    """Two months paid at 1 L, a revision to 1.5 L from August: 16 L, not 12 L."""
+    await _approved_rules(session, org)
+    for month in (4, 5):
+        session.add(_lock(org["tenant"], org["maker"], 2026, month))
+        await session.commit()
+        run = await _open_run(session, org, month)
+        await run_service.compute_run(session, org["maker"], run.id)
+        await run_service.approve_run(session, org["checker"], run.id)
+    await salary_service.assign_salary(
+        session,
+        org["maker"],
+        org["meera_emp"].id,
+        EmployeeSalaryCreate(
+            structure_id=org["structure"].id,
+            ctc_annual=Decimal("1800000"),
+            effective_from=date(2026, 8, 1),
+        ),
+    )
+    await session.commit()
+
+    projection = await tax_service.live_preview(
+        session, org["meera"], org["meera_emp"].id, "2026-27"
+    )
+    # April and May as paid, June and July at 1 L, August to March at 1.5 L.
+    assert projection.gross_annual_income == Decimal("1600000.00")
+
+
+async def test_a_mid_year_joiner_is_projected_from_the_day_they_joined(
+    session: AsyncSession, org
+) -> None:
+    await _approved_rules(session, org)
+    employee = Employee(
+        tenant_id=org["tenant"].id,
+        employee_code="SANA",
+        first_name="Sana",
+        last_name="Test",
+        work_email="sana@acme.test",
+        legal_entity_id=org["entity"].id,
+        location_id=org["meera_emp"].location_id,
+        status=EmploymentStatus.ACTIVE,
+        date_of_joining=date(2026, 10, 19),
+    )
+    session.add(employee)
+    await session.commit()
+    await salary_service.assign_salary(
+        session,
+        org["maker"],
+        employee.id,
+        EmployeeSalaryCreate(
+            structure_id=org["structure"].id,
+            ctc_annual=Decimal("1200000"),
+            effective_from=date(2026, 10, 19),
+        ),
+    )
+    await session.commit()
+
+    projection = await tax_service.live_preview(session, org["maker"], employee.id, "2026-27")
+    # 13 of October's 31 days, then November to March: about 5.42 L, not 12 L or nothing.
+    expected = Decimal("100000") * 13 / 31 + Decimal("100000") * 5
+    assert abs(projection.gross_annual_income - expected) < Decimal("1")

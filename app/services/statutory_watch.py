@@ -98,6 +98,9 @@ async def publish(
     session: AsyncSession, user: User, payload: NoticeIn, *, request: Request | None
 ) -> dict[str, Any]:
     _require_platform(user)
+    if payload.suggested_rules is not None:
+        # Every workspace drafts from these: refused once here, not in each of them.
+        rule_sets.refuse_unreadable(payload.rule_type, payload.suggested_rules)
     row = StatutoryNotice(**payload.model_dump(), published_by_user_id=user.id)
     session.add(row)
     await session.flush()

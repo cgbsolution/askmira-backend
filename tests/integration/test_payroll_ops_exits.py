@@ -318,6 +318,12 @@ async def test_a_hold_blocks_letters_and_nobody_approves_their_own_settlement(
     approved = await operations.approve_settlement(session, org["hr"], settlement.id)
     await session.commit()
     assert approved.status is SettlementStatus.DEMAND_RAISED
+    # Settled, but still employed: the letter states the relieving date, which is
+    # recorded when access is revoked on the last working day.
+    gate = await operations.letter_gate(session, org["hr"], org["leaver"].id)
+    assert gate["allowed"] is False and "once the employee has left" in gate["reason"]
+    org["leaver"].date_of_exit = date(2026, 8, 31)
+    await session.commit()
     gate = await operations.letter_gate(session, org["hr"], org["leaver"].id)
     assert gate["allowed"] is True
 
@@ -336,6 +342,7 @@ async def test_the_letter_policy_is_configurable(
     org = await _org(session, tenant, legal_entity, location)
     await _exit(session, org)
     await operations.set_exit_policy(session, org["hr"], letters_require_settlement=False)
+    org["leaver"].date_of_exit = date(2026, 8, 31)
     await session.commit()
     gate = await operations.letter_gate(session, org["hr"], org["leaver"].id)
     assert gate == {
@@ -496,3 +503,97 @@ async def test_claims_owed_to_a_leaver_are_settled_once_in_full_and_final(
     await session.refresh(claim)
     assert claim.settled_in_settlement_id is None
     assert claim.status is ExpenseClaimStatusEnum.APPROVED
+
+
+async def test_an_encashment_the_policy_reduces_to_nothing_is_refused_with_the_reason(
+    session: AsyncSession, tenant, legal_entity, location
+) -> None:
+    """Not a 0-day request for a manager to approve: the employee is told why now."""
+    from app.models.leave import LeaveType
+
+    org = await _org(session, tenant, legal_entity, location)
+    session.add(LeaveType(tenant_id=tenant.id, name="Earned Leave", code="EL"))
+    session.add(
+        EncashmentPolicy(
+            tenant_id=tenant.id,
+            leave_type_code="EL",
+            encashable_in_service=True,
+            formula_basis=["BASIC"],
+            days_per_month_divisor=30,
+            min_balance_after_encashment=Decimal(10),
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await benefits_service.request_encashment(
+            session,
+            org["leaver_user"],
+            employee_id=org["leaver"].id,
+            leave_type_code="EL",
+            days=Decimal(500),
+            financial_year="2026-27",
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail.startswith("No EL can be encashed right now")
+    assert not (await session.scalars(select(EncashmentRequest))).all()
+
+
+async def test_leave_is_encashed_at_exit_only_once_the_last_working_day_arrives(
+    session: AsyncSession, tenant, legal_entity, location
+) -> None:
+    """Until the last day the employee can still take leave, and more accrues."""
+    from datetime import timedelta
+
+    org = await _org(session, tenant, legal_entity, location)
+    session.add(
+        EncashmentPolicy(
+            tenant_id=tenant.id,
+            leave_type_code="EL",
+            encashable_on_exit=True,
+            formula_basis=["BASIC"],
+            days_per_month_divisor=30,
+        )
+    )
+    today = date.today()
+    record = await exit_service.initiate_exit(
+        session,
+        org["hr"],
+        employee_id=org["leaver"].id,
+        exit_type=ExitType.RESIGNATION,
+        resignation_date=today,
+        approved_last_working_day=today + timedelta(days=40),
+        notice_period_days=30,
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await benefits_service.compute_exit_encashments(session, org["hr"], exit_id=record.id)
+    assert exc.value.status_code == 409
+    assert "last working day" in exc.value.detail
+
+
+async def test_a_settlement_is_approved_only_once_the_employee_has_left(
+    session: AsyncSession, tenant, legal_entity, location
+) -> None:
+    """It can be prepared during the notice period, but not signed off before the last day."""
+    from datetime import timedelta
+
+    org = await _org(session, tenant, legal_entity, location)
+    record = await _cleared(session, org)
+    record.approved_last_working_day = date.today() + timedelta(days=20)
+    await session.commit()
+    settlement = await exit_service.compute_settlement(
+        session,
+        org["hr"],
+        exit_id=record.id,
+        inputs=engine.SettlementInput(
+            final_month_salary=Decimal(45000), final_month_basis="Paid by the final run."
+        ),
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await operations.approve_settlement(session, org["hr"], settlement.id)
+    assert exc.value.status_code == 409
+    assert "once the employee has left" in exc.value.detail

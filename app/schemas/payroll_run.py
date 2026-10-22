@@ -59,6 +59,10 @@ class VarianceAcknowledge(BaseModel):
         return stripped
 
 
+class RunCancel(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class RunMarkPaid(BaseModel):
     payment_date: date | None = None
 
@@ -142,6 +146,10 @@ class PayrollRunRead(BaseModel):
     published_by_name: str | None
     paid_at: datetime | None
     paid_by_name: str | None
+    #: A run discarded before approval: when, by whom and why.
+    cancelled_at: datetime | None = None
+    cancelled_by_name: str | None = None
+    cancel_reason: str | None = None
     created_at: datetime
     #: Off-cycle, bonus and arrear runs: who and what they pay, and why.
     employee_scope: list[uuid.UUID] = Field(default_factory=list)

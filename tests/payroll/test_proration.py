@@ -124,9 +124,10 @@ def test_the_10th_leaver_is_paid_10_of_31_days(pf_rules) -> None:
     # 1,00,000 x 10/31.
     assert result.gross_earnings == Decimal("32258.07")
     basic = next(line for line in result.lines if line.code == "BASIC")
-    # 40,000 x 10/31 = 12,903.23, under the PF ceiling: 12% of it.
+    # 40,000 x 10/31 = 12,903.23, under the PF ceiling: 12% of it, on wages in whole
+    # rupees as the ECR reports them (12,903), to the nearest rupee.
     assert basic.amount == Decimal("12903.23")
-    assert result.pf_employee == Decimal("1548.39")
+    assert result.pf_employee == Decimal("1548.00")
 
 
 def test_loss_of_pay_and_days_outside_employment_both_reduce_pay(pf_rules) -> None:

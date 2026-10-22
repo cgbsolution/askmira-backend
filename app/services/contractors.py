@@ -70,11 +70,12 @@ __all__ = [
 ]
 
 RULE_TYPE = "tds_non_salary"
-#: 26Q's section codes.
+#: 26Q's section codes. Since FY 2020-21 section 194J is split in the statement:
+#: 194J(a), fees for technical services, and 194J(b), professional fees.
 _26Q_CODE = {
     TdsSection.S194C: "94C",
-    TdsSection.S194J_PROFESSIONAL: "94J",
-    TdsSection.S194J_TECHNICAL: "94J",
+    TdsSection.S194J_PROFESSIONAL: "4JB",
+    TdsSection.S194J_TECHNICAL: "4JA",
 }
 _ONE = Decimal(1)
 _HUNDRED = Decimal(100)

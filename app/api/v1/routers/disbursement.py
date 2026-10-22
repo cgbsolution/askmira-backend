@@ -103,10 +103,19 @@ class BankAccountRead(BaseModel):
     # No account number, for the same reason as above.
 
 
+class HoldItem(BaseModel):
+    """A salary kept out of the file, and why. Either the id or the code names it."""
+
+    employee_id: uuid.UUID | None = None
+    employee_code: str | None = Field(default=None, max_length=64)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class BatchPrepare(BaseModel):
     payroll_run_id: uuid.UUID
     bank_profile_id: uuid.UUID
     value_date: date
+    hold: list[HoldItem] = Field(default_factory=list, max_length=500)
 
 
 class BatchApprove(BaseModel):
@@ -142,6 +151,7 @@ class BatchRead(BaseModel):
     approved_at: datetime | None
     released_at: datetime | None
     validation_exceptions: list[dict[str, Any]]
+    held: list[dict[str, Any]] = Field(default_factory=list)
     notes: str | None
 
 
@@ -382,6 +392,7 @@ async def prepare(
             payroll_run_id=payload.payroll_run_id,
             bank_profile_id=payload.bank_profile_id,
             value_date=payload.value_date,
+            hold=[item.model_dump(mode="json") for item in payload.hold],
             request=request,
         )
     except disbursement_service.BatchBlockedError as exc:
@@ -613,6 +624,28 @@ async def supplementary(
 ) -> BatchRead:
     """Reissue only the failed credits, not the whole run."""
     batch = await disbursement_service.supplementary_batch(
+        session, user, batch_id=batch_id, value_date=payload.value_date, request=request
+    )
+    await session.commit()
+    await session.refresh(batch)
+    return await _named(session, user, batch)
+
+
+@router.post(
+    "/disbursement/batches/{batch_id}/pay-held",
+    response_model=BatchRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_roles(*PREPARER_ROLES))],
+)
+async def pay_held(
+    batch_id: uuid.UUID,
+    payload: SupplementaryRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> BatchRead:
+    """Pay the salaries held out of a sent file, as a supplementary batch."""
+    batch = await disbursement_service.pay_held(
         session, user, batch_id=batch_id, value_date=payload.value_date, request=request
     )
     await session.commit()

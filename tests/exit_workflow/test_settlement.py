@@ -291,3 +291,13 @@ def test_a_float_wage_is_refused() -> None:
             shortfall_days=15, monthly_wage=60000.0, days_in_month=30,
             wage_basis_label="basic",
         )
+
+
+def test_the_recovery_is_the_stated_day_rate_times_the_days() -> None:
+    """17 days at 1,222.23 is 20,777.91 — the figure the basis line promises."""
+    amount, basis = notice_shortfall_recovery(
+        shortfall_days=17, monthly_wage=D(36_667), days_in_month=30,
+        wage_basis_label="basic salary",
+    )
+    assert "1222.23 per day" in basis
+    assert amount == D("20777.91")

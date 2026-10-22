@@ -25,10 +25,12 @@ from app.models.org import LegalEntity
 from app.models.payroll import (
     CalculationType,
     ComponentType,
+    EmployeePfElection,
     EmployeeSalary,
     PayrollRuleSet,
     PayrollRun,
     PayrollRunStatus,
+    PayrollRunType,
     Payslip,
     SalaryComponent,
     SalaryStructure,
@@ -39,6 +41,7 @@ from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services.arrears import service as arrears_service
 from app.services.payroll import service as salary_service
+from app.services.payroll import statutory_service
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -691,3 +694,334 @@ async def test_arrear_batches_are_tenant_isolated(
     with pytest.raises(HTTPException) as exc:
         await arrears_service.approve_batch(session, other_hr_user, batch_id=batch.id)
     assert exc.value.status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# What a recomputation must carry over from the month it reopens
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _closed_month(
+    session: AsyncSession,
+    tenant: Tenant,
+    legal_entity: LegalEntity,
+    employee: Employee,
+    month: int,
+    *,
+    lines: list[dict],
+    run_type: PayrollRunType = PayrollRunType.REGULAR,
+    supplementary: bool = False,
+    lock: bool = True,
+) -> Payslip:
+    """A closed run for `month` with one payslip whose line items are `lines`."""
+    import calendar
+
+    last = calendar.monthrange(2026, month)[1]
+    run = PayrollRun(
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=month,
+        effective_date=date(2026, month, last),
+        run_type=run_type,
+        status=PayrollRunStatus.PAID,
+    )
+    session.add(run)
+    await session.flush()
+    earnings = sum(
+        (Decimal(item["amount"]) for item in lines if item["type"] == "earning"), Decimal(0)
+    )
+    payslip = Payslip(
+        tenant_id=tenant.id,
+        run_id=run.id,
+        employee_id=employee.id,
+        working_days=Decimal(last),
+        paid_days=Decimal(last),
+        lop_days=Decimal(0),
+        gross_earnings=earnings,
+        net_pay=earnings,
+        is_supplementary=supplementary,
+        line_items=lines,
+    )
+    session.add(payslip)
+    if lock:
+        session.add(
+            AttendancePeriodLock(
+                tenant_id=tenant.id,
+                period_start=date(2026, 1, 1),
+                period_end=date(2099, 12, 31),
+                locked_at=datetime.now(UTC),
+            )
+        )
+    await session.commit()
+    return payslip
+
+
+def _lines(basic: str, special: str, **statutory: str) -> list[dict]:
+    names = {
+        "PF_EMPLOYEE": ("Provident Fund (employee)", "deduction"),
+        "PF_EMPLOYER": ("Provident Fund (employer)", "employer_contribution"),
+        "ESI_EMPLOYEE": ("ESI (employee)", "deduction"),
+        "ESI_EMPLOYER": ("ESI (employer)", "employer_contribution"),
+    }
+    rows = [
+        {"code": "BASIC", "name": "Basic", "type": "earning", "amount": basic},
+        {"code": "SPECIAL", "name": "Special allowance", "type": "earning", "amount": special},
+    ]
+    for code, amount in statutory.items():
+        name, kind = names[code]
+        rows.append({"code": code, "name": name, "type": kind, "amount": amount})
+    return rows
+
+
+async def _salary_from(session, hr_user, employee, structure, ctc: str, effective: date):
+    salary = await salary_service.assign_salary(
+        session,
+        hr_user,
+        employee.id,
+        EmployeeSalaryCreate(
+            structure_id=structure.id, ctc_annual=Decimal(ctc), effective_from=effective
+        ),
+    )
+    await session.commit()
+    return salary
+
+
+async def _revise(session, hr_user, legal_entity, employee, salary, effective: date):
+    batch = await arrears_service.revise_salary(
+        session,
+        hr_user,
+        legal_entity_id=legal_entity.id,
+        revisions=[{"employee_id": str(employee.id), "new_salary_id": str(salary.id)}],
+        effective_from=effective,
+        revision_type=RevisionType.INCREMENT,
+    )
+    await session.commit()
+    return batch
+
+
+async def _lines_by(session, batch) -> dict[tuple[str, str], Decimal]:
+    rows = (await session.scalars(select(ArrearLine).where(ArrearLine.batch_id == batch.id))).all()
+    return {(row.period, row.component_code): Decimal(str(row.difference)) for row in rows}
+
+
+async def _second_admin(session: AsyncSession, tenant: Tenant) -> User:
+    user = User(
+        tenant_id=tenant.id,
+        email="second.admin@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Second Admin",
+        role=UserRole.ADMIN,
+        is_active=True,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def test_a_month_whose_run_is_already_approved_is_trued_up_too(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """The run for a month that has not ended yet is history once approved.
+
+    A revision entered on the 22nd, after that month's run was approved, owes
+    that month as well as the earlier ones.
+    """
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    await _closed_month(
+        session, tenant, legal_entity, employee, 12,
+        lines=_lines("40000.00", "60000.00", PF_EMPLOYEE="1800.00", PF_EMPLOYER="1800.00"),
+    )
+    structure = await _structure(session, tenant)
+    salary = await _salary_from(session, hr_user, employee, structure, "1500000", MARCH)
+
+    batch = await _revise(session, hr_user, legal_entity, employee, salary, MARCH)
+
+    lines = await _lines_by(session, batch)
+    assert lines[("2026-12", "BASIC")] == Decimal("10000.00")
+
+
+async def test_a_supplementary_payslip_is_not_recomputed_as_a_month(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """An off-cycle top-up has no structure on it: a month of difference, not a salary."""
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    await _closed_month(
+        session, tenant, legal_entity, employee, 3,
+        lines=_lines("40000.00", "60000.00", PF_EMPLOYEE="1800.00", PF_EMPLOYER="1800.00"),
+    )
+    await _closed_month(
+        session, tenant, legal_entity, employee, 3,
+        lines=[], run_type=PayrollRunType.OFF_CYCLE, supplementary=True, lock=False,
+    )
+    structure = await _structure(session, tenant)
+    salary = await _salary_from(session, hr_user, employee, structure, "1500000", MARCH)
+
+    batch = await _revise(session, hr_user, legal_entity, employee, salary, MARCH)
+
+    assert batch.total_earnings_arrear == Decimal("25000.00"), (
+        "one month's 3,00,000 raise, not the month again from the off-cycle payslip"
+    )
+
+
+async def test_pf_on_actual_wages_is_kept_when_a_month_is_recomputed(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """An election the original run honoured is honoured again, not 'refunded'."""
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    session.add(
+        EmployeePfElection(
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            effective_from=date(2026, 1, 1),
+            pf_on_actual_wage=True,
+        )
+    )
+    await session.commit()
+    await _closed_month(
+        session, tenant, legal_entity, employee, 3,
+        lines=_lines("40000.00", "60000.00", PF_EMPLOYEE="4800.00", PF_EMPLOYER="4800.00"),
+    )
+    structure = await _structure(session, tenant)
+    salary = await _salary_from(session, hr_user, employee, structure, "1500000", MARCH)
+
+    batch = await _revise(session, hr_user, legal_entity, employee, salary, MARCH)
+
+    lines = await _lines_by(session, batch)
+    assert lines[("2026-03", "PF_EMPLOYEE")] == Decimal("1200.00"), (
+        "12% of the 10,000 raise in basic, on actual wages"
+    )
+    assert batch.total_employee_deduction_arrear > 0
+
+
+async def test_a_raise_past_the_esi_ceiling_keeps_esi_to_the_end_of_the_period(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """Covered when April opened, so contributing until September: ESI is due, not refunded."""
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    esi = PayrollRuleSet(
+        tenant_id=tenant.id,
+        rule_type="esi",
+        jurisdiction="IN",
+        effective_from=date(2026, 1, 1),
+        rules={
+            "wage_threshold": 21000,
+            "employee_rate": "0.75",
+            "employer_rate": "3.25",
+            "contribution_periods": [
+                {"start_month": 4, "end_month": 9, "label": "APR-SEP"},
+                {"start_month": 10, "end_month": 3, "label": "OCT-MAR"},
+            ],
+        },
+        approved_at=datetime.now(UTC),
+    )
+    session.add(esi)
+    await session.commit()
+    await statutory_service.open_esi_coverage_period(
+        session,
+        hr_user,
+        employee_id=employee.id,
+        on_date=date(2026, 4, 1),
+        esi_wage_base=Decimal("19000"),
+        esi_rules=esi,
+    )
+    await session.commit()
+    await _closed_month(
+        session, tenant, legal_entity, employee, 5,
+        lines=_lines(
+            "7600.00", "11400.00", PF_EMPLOYEE="912.00", PF_EMPLOYER="912.00",
+            ESI_EMPLOYEE="143.00", ESI_EMPLOYER="618.00",
+        ),
+    )
+    structure = await _structure(session, tenant)
+    salary = await _salary_from(session, hr_user, employee, structure, "264000", date(2026, 5, 1))
+
+    batch = await _revise(session, hr_user, legal_entity, employee, salary, date(2026, 5, 1))
+
+    lines = await _lines_by(session, batch)
+    # 22,000 of ESI wages: 165 and 715, against 143 and 618 deducted.
+    assert lines[("2026-05", "ESI_EMPLOYEE")] == Decimal("22.00")
+    assert lines[("2026-05", "ESI_EMPLOYER")] == Decimal("97.00")
+
+
+async def test_a_second_revision_pays_only_the_difference_on_top_of_the_first(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    for month in (3, 4):
+        await _closed_month(
+            session, tenant, legal_entity, employee, month,
+            lines=_lines("40000.00", "60000.00", PF_EMPLOYEE="1800.00", PF_EMPLOYER="1800.00"),
+            lock=month == 3,
+        )
+    structure = await _structure(session, tenant)
+    approver = await _second_admin(session, tenant)
+    first = await _salary_from(session, hr_user, employee, structure, "1500000", MARCH)
+    batch = await _revise(session, hr_user, legal_entity, employee, first, MARCH)
+
+    second = await _salary_from(session, hr_user, employee, structure, "1800000", date(2026, 4, 1))
+    with pytest.raises(HTTPException) as exc:
+        await _revise(session, hr_user, legal_entity, employee, second, date(2026, 4, 1))
+    assert exc.value.status_code == 409, "an earlier batch waiting for approval comes first"
+
+    await arrears_service.approve_batch(session, approver, batch_id=batch.id)
+    await session.commit()
+    later = await _revise(session, hr_user, legal_entity, employee, second, date(2026, 4, 1))
+
+    lines = await _lines_by(session, later)
+    # April was paid on 12 L and trued up to 15 L: 18 L owes the 3 L on top.
+    assert lines[("2026-04", "BASIC")] == Decimal("10000.00")
+
+
+async def test_an_arrear_batch_can_be_cancelled_before_it_is_paid(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    await _pf_rules(session, tenant, ceiling=15_000, effective=date(2026, 1, 1))
+    await _closed_month(
+        session, tenant, legal_entity, employee, 3,
+        lines=_lines("40000.00", "60000.00", PF_EMPLOYEE="1800.00", PF_EMPLOYER="1800.00"),
+    )
+    structure = await _structure(session, tenant)
+    salary = await _salary_from(session, hr_user, employee, structure, "1500000", MARCH)
+    batch = await _revise(session, hr_user, legal_entity, employee, salary, MARCH)
+
+    with pytest.raises(HTTPException) as exc:
+        await arrears_service.cancel_batch(session, hr_user, batch_id=batch.id, reason=" ")
+    assert exc.value.status_code == 422
+    cancelled = await arrears_service.cancel_batch(
+        session, hr_user, batch_id=batch.id, reason="Worked out on the wrong salary record"
+    )
+    await session.commit()
+    assert cancelled.status is ArrearStatus.CANCELLED
+
+    # Nothing is pending now, so the revision can be raised again.
+    again = await _revise(session, hr_user, legal_entity, employee, salary, MARCH)
+    assert again.status is ArrearStatus.PENDING_APPROVAL
+    with pytest.raises(HTTPException) as exc:
+        await arrears_service.cancel_batch(session, hr_user, batch_id=batch.id, reason="twice")
+    assert exc.value.status_code == 409

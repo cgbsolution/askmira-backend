@@ -31,6 +31,7 @@ from app.models.exit_benefits import (
     GratuityConfig,
     GratuityPayout,
 )
+from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.user import User
 from app.services import audit
 from app.services.attendance.service import local_today
@@ -356,6 +357,35 @@ async def compute_exit_gratuity(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="This employee has no date of joining, so service cannot be computed",
         )
+    # A payout is recorded, and its taxable part reaches the employee's TDS, so
+    # it is for somebody who is actually leaving. What an employee has accrued
+    # so far is the accrual report's question, not a payout's.
+    leaving = employee.date_of_exit is not None or employee.status in (
+        EmploymentStatus.ON_NOTICE,
+        EmploymentStatus.EXITED,
+    )
+    if not leaving:
+        leaving = (
+            await session.scalar(
+                tenant_scoped(
+                    select(ExitRecord.id).where(
+                        ExitRecord.employee_id == employee_id,
+                        ExitRecord.status != ExitStatus.CANCELLED,
+                    ),
+                    ExitRecord,
+                    user,
+                )
+            )
+            is not None
+        )
+    if not leaving:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{employee.full_name} has no exit in progress. Gratuity is paid at exit: "
+                "record the exit first. For what has accrued so far, see the accruals."
+            ),
+        )
 
     wages = await wage_basis_for(session, user, employee_id, exit_date, config.formula_basis)
     if wages <= ZERO:
@@ -501,19 +531,35 @@ async def request_encashment(
     year = leave_ledger.leave_year_today()
     balance = await available_leave_balance(session, user, employee_id, leave_type_code, year)
 
-    already = await session.scalar(
-        tenant_scoped(
-            select(EncashmentRequest).where(
-                EncashmentRequest.employee_id == employee_id,
-                EncashmentRequest.leave_type_code == leave_type_code,
-                EncashmentRequest.financial_year == financial_year,
-                EncashmentRequest.status.in_([EncashmentStatus.APPROVED, EncashmentStatus.PAID]),
-            ),
-            EncashmentRequest,
-            user,
+    # Every request this year counts against the annual limit, and one still
+    # awaiting a decision counts against the balance too: its days leave the
+    # ledger when it is approved, so two pending requests must not both fit.
+    earlier = (
+        await session.scalars(
+            tenant_scoped(
+                select(EncashmentRequest).where(
+                    EncashmentRequest.employee_id == employee_id,
+                    EncashmentRequest.leave_type_code == leave_type_code,
+                    EncashmentRequest.financial_year == financial_year,
+                    EncashmentRequest.status.in_(
+                        [
+                            EncashmentStatus.REQUESTED,
+                            EncashmentStatus.APPROVED,
+                            EncashmentStatus.PAID,
+                        ]
+                    ),
+                ),
+                EncashmentRequest,
+                user,
+            )
         )
+    ).all()
+    already_days = sum((Decimal(str(r.days_approved)) for r in earlier), start=ZERO)
+    pending_days = sum(
+        (Decimal(str(r.days_approved)) for r in earlier if r.status is EncashmentStatus.REQUESTED),
+        start=ZERO,
     )
-    already_days = Decimal(str(already.days_approved)) if already else ZERO
+    balance = max(ZERO, balance - pending_days)
 
     wages = await wage_basis_for(
         session, user, employee_id, await local_today(session, user), policy.formula_basis
@@ -533,6 +579,17 @@ async def request_encashment(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    if not is_exit and result.days_approved <= ZERO:
+        # A request the policy reduces to nothing is not a request for a
+        # manager to approve; the employee needs to know why, now.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"No {leave_type_code} can be encashed right now: "
+                + " ".join(result.notes)
+                + f" Your balance is {balance} day(s)."
+            ),
+        )
 
     record = EncashmentRequest(
         tenant_id=user.tenant_id,
@@ -651,8 +708,6 @@ async def compute_exit_encashments(
     leave ledger — so the settlement takes the figure instead of HR working it
     out by hand.
     """
-    from app.models.exit_workflow import ExitRecord, ExitStatus
-
     record = await session.scalar(
         tenant_scoped(select(ExitRecord).where(ExitRecord.id == exit_id), ExitRecord, user)
     )
@@ -666,6 +721,19 @@ async def compute_exit_encashments(
     if user.employee_id is not None and record.employee_id == user.employee_id:
         raise permissions.forbidden(
             "This is your own exit. Somebody else computes your leave encashment."
+        )
+    # The balance is final only on the last working day: leave taken or accrued
+    # until then would change it, and the days encashed leave the ledger now.
+    last_day = record.approved_last_working_day or record.requested_last_working_day
+    today = await local_today(session, user)
+    if last_day is not None and today < last_day:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Leave is encashed at exit on or after the last working day "
+                f"({last_day:%d %b %Y}), when the final balance is known. Until then the "
+                "employee can still take leave, and more accrues."
+            ),
         )
     available = await exit_encashable(session, user, record.employee_id)
     if not available:
@@ -698,6 +766,76 @@ async def compute_exit_encashments(
         )
         for item in available
     ]
+
+
+async def _still_within_policy(
+    session: AsyncSession, user: User, record: EncashmentRequest
+) -> None:
+    """Refuse an approval the policy no longer allows.
+
+    The request was sized when it was raised. Since then leave may have been
+    taken or another encashment approved, and the balance floor and the annual
+    limit hold at the moment the days actually leave the ledger.
+    """
+    days = Decimal(str(record.days_approved or 0))
+    if days <= ZERO:
+        return  # nothing leaves the ledger, as `post_encashment` treats it
+    policy = await session.scalar(
+        tenant_scoped(
+            select(EncashmentPolicy).where(
+                EncashmentPolicy.leave_type_code == record.leave_type_code,
+                EncashmentPolicy.active.is_(True),
+            ),
+            EncashmentPolicy,
+            user,
+        )
+    )
+    if policy is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"No active encashment policy covers {record.leave_type_code} any more, so "
+                "this request cannot be approved."
+            ),
+        )
+    approved_before = (
+        await session.scalars(
+            tenant_scoped(
+                select(EncashmentRequest.days_approved).where(
+                    EncashmentRequest.employee_id == record.employee_id,
+                    EncashmentRequest.leave_type_code == record.leave_type_code,
+                    EncashmentRequest.financial_year == record.financial_year,
+                    EncashmentRequest.id != record.id,
+                    EncashmentRequest.status.in_(
+                        [EncashmentStatus.APPROVED, EncashmentStatus.PAID]
+                    ),
+                ),
+                EncashmentRequest,
+                user,
+            )
+        )
+    ).all()
+    balance = await available_leave_balance(
+        session, user, record.employee_id, record.leave_type_code, leave_ledger.leave_year_today()
+    )
+    check = compute_encashment(
+        policy=policy,
+        days_requested=days,
+        available_balance=balance,
+        monthly_wages=Decimal(str(record.daily_rate)) * Decimal(policy.days_per_month_divisor),
+        is_exit=False,
+        days_already_encashed_this_year=sum((Decimal(str(d)) for d in approved_before), start=ZERO),
+    )
+    if check.days_approved < days:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Approving {days} day(s) now would go beyond the policy. "
+                + " ".join(check.notes)
+                + f" At most {check.days_approved} day(s) can be encashed today, against a "
+                f"balance of {balance}. Reject this request; a new one is sized afresh."
+            ),
+        )
 
 
 async def decide_encashment(
@@ -733,6 +871,8 @@ async def decide_encashment(
         detail="You can only decide encashment for somebody in your reporting line.",
     )
 
+    if approve and not record.is_exit_encashment:
+        await _still_within_policy(session, user, record)
     if approve:
         # Debited now, against the live balance: a leave approved since the
         # request was raised may have spent the same days, which refuses it.

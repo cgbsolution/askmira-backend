@@ -220,6 +220,34 @@ async def generate_pf_ecr(
 
 
 @router.post(
+    "/filings/pf-ecr-arrear",
+    response_model=GenerationResult,
+    dependencies=[Depends(require_roles(*FILING_ROLES))],
+)
+async def generate_pf_arrear_ecr(
+    payload: MonthlyReturnRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> GenerationResult:
+    """The PF arrear ECR for the arrears paid with this month's payroll."""
+    try:
+        generated = await filing_service.generate_arrear_ecr(
+            session,
+            user,
+            legal_entity_id=payload.legal_entity_id,
+            year=payload.year,
+            month=payload.month,
+            request=request,
+        )
+    except filing_service.FilingBlockedError as exc:
+        await session.commit()
+        raise _blocked(exc) from exc
+    await session.commit()
+    return _result(generated)
+
+
+@router.post(
     "/filings/esic",
     response_model=GenerationResult,
     dependencies=[Depends(require_roles(*FILING_ROLES))],
@@ -371,26 +399,8 @@ async def reject(
     Kept rather than deleted: the next attempt needs to know what was wrong,
     and "we filed on the 14th and it bounced" is part of the trail.
     """
-    record = await session.scalar(
-        tenant_scoped(select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user)
-    )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")
-
-    record.status = FilingStatus.REJECTED
-    record.rejection_reason = payload.reason
-    await session.flush()
-
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.UPDATE,
-        entity_type="filing_record",
-        entity_id=record.id,
-        summary=f"Portal rejected {record.return_type.value} {record.period}",
-        changes={"rejection_reason": payload.reason},
-        request=request,
+    record = await filing_service.record_rejection(
+        session, user, record_id=record_id, reason=payload.reason, request=request
     )
     await session.commit()
     await session.refresh(record)

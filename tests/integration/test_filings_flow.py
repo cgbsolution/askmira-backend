@@ -126,6 +126,26 @@ async def test_a_return_cannot_be_built_from_an_unapproved_run(
     assert "approved run" in exc.value.detail
 
 
+async def test_a_run_cancelled_in_error_does_not_stand_in_for_the_months_approved_one(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """A month can hold a cancelled regular run beside the real one."""
+    await _pf_rules(session, tenant)
+    await _identify(session, employee, uan="100123456789", first_name="Anita", last_name="Sharma")
+    await _run(session, tenant, legal_entity.id, status=PayrollRunStatus.CANCELLED)
+    run = await _run(session, tenant, legal_entity.id)
+    await _payslip(session, tenant, run, employee)
+
+    generated = await filing_service.generate_ecr(
+        session, hr_user, legal_entity_id=legal_entity.id, year=2026, month=6
+    )
+    assert generated.record.status is FilingStatus.GENERATED
+
+
 async def test_a_missing_pf_rule_set_refuses_rather_than_assuming_ceilings(
     session: AsyncSession,
     tenant: Tenant,
@@ -168,7 +188,7 @@ async def test_a_clean_ecr_generates_and_records(
     assert generated.record.status is FilingStatus.GENERATED
     assert generated.record.record_count == 1
     assert generated.record.content_hash
-    assert generated.content.startswith("100123456789|Anita Sharma|")
+    assert generated.content.startswith("100123456789#~#Anita Sharma#~#")
     assert generated.content.endswith("\r\n")
 
 
@@ -249,7 +269,7 @@ async def test_ncp_days_reach_the_ecr_from_attendance(
         session, hr_user, legal_entity_id=legal_entity.id, year=2026, month=6
     )
     await session.commit()
-    assert generated.content.strip().split("|")[9] == "3"
+    assert generated.content.strip().split("#~#")[9] == "3"
 
 
 async def test_ecr_generation_is_deterministic(
@@ -814,3 +834,107 @@ async def test_a_regeneration_leaves_the_earlier_record_intact(
         )
     ).all()
     assert len(records) == 3, "history accumulates; it does not rewrite itself"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Portal rejections, and VPF on the ECR
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _generated_ecr(session, tenant, hr_user, legal_entity, employee, **payslip):
+    await _pf_rules(session, tenant)
+    await _identify(session, employee, uan="100123456789", first_name="Anita", last_name="Sharma")
+    run = await _run(session, tenant, legal_entity.id)
+    await _payslip(session, tenant, run, employee, **payslip)
+    generated = await filing_service.generate_ecr(
+        session, hr_user, legal_entity_id=legal_entity.id, year=2026, month=6
+    )
+    await session.commit()
+    return generated
+
+
+async def test_a_rejected_file_is_regenerated_rather_than_acknowledged(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    generated = await _generated_ecr(session, tenant, hr_user, legal_entity, employee)
+    rejected = await filing_service.record_rejection(
+        session, hr_user, record_id=generated.record.id, reason="UAN not seeded with Aadhaar"
+    )
+    assert rejected.status is FilingStatus.REJECTED
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await filing_service.record_rejection(
+            session, hr_user, record_id=generated.record.id, reason="again"
+        )
+    assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as exc:
+        await filing_service.record_acknowledgement(
+            session, hr_user, record_id=generated.record.id, acknowledgement_number="TRRN1"
+        )
+    assert exc.value.status_code == 409
+    assert "Generate the return again" in exc.value.detail
+
+
+async def test_an_acknowledged_return_cannot_be_marked_rejected(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    generated = await _generated_ecr(session, tenant, hr_user, legal_entity, employee)
+    await filing_service.record_acknowledgement(
+        session, hr_user, record_id=generated.record.id, acknowledgement_number="TRRN1"
+    )
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await filing_service.record_rejection(
+            session, hr_user, record_id=generated.record.id, reason="bounced"
+        )
+    assert exc.value.status_code == 409
+    record = await session.get(FilingRecord, generated.record.id)
+    assert record.status is FilingStatus.FILED
+    assert record.acknowledgement_number == "TRRN1"
+
+
+async def test_a_blocked_return_cannot_be_marked_rejected(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    await _pf_rules(session, tenant)
+    await _identify(session, employee, uan=None)
+    run = await _run(session, tenant, legal_entity.id)
+    await _payslip(session, tenant, run, employee)
+    with pytest.raises(filing_service.FilingBlockedError) as blocked:
+        await filing_service.generate_ecr(
+            session, hr_user, legal_entity_id=legal_entity.id, year=2026, month=6
+        )
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await filing_service.record_rejection(
+            session, hr_user, record_id=blocked.value.record.id, reason="bounced"
+        )
+    assert exc.value.status_code == 409
+    assert "never generated" in exc.value.detail
+
+
+async def test_vpf_is_remitted_on_the_ecr_with_the_employee_share(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    generated = await _generated_ecr(
+        session, tenant, hr_user, legal_entity, employee, vpf=Decimal("1000.00")
+    )
+    line = generated.content.split("\r\n")[0].split("#~#")
+    assert line[6] == "2800", "the employee share is 1,800 of PF plus 1,000 of VPF"

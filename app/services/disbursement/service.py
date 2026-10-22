@@ -24,9 +24,13 @@ that re-checks everything.
 
 from __future__ import annotations
 
+import calendar
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
@@ -67,6 +71,29 @@ __all__ = [
 # link that works next month.
 DOWNLOAD_WINDOW = 24  # hours
 
+#: A run's salary file that still stands: awaiting approval, approved, or sent.
+#: While one does, a second file for the same run would pay everyone again.
+_STANDING = frozenset(
+    {
+        DisbursementStatus.DRAFT,
+        DisbursementStatus.PENDING_APPROVAL,
+        DisbursementStatus.APPROVED,
+        DisbursementStatus.RELEASED,
+        DisbursementStatus.ACKNOWLEDGED,
+    }
+)
+#: Sent to the bank. Nothing about the file can change after this.
+_SENT = frozenset({DisbursementStatus.RELEASED, DisbursementStatus.ACKNOWLEDGED})
+
+
+@dataclass(frozen=True, slots=True)
+class HeldCredit:
+    """A salary held out of a file, to be paid from a supplementary batch."""
+
+    employee_id: uuid.UUID
+    payslip_id: uuid.UUID | None
+    amount: Decimal
+
 
 class BatchBlockedError(Exception):
     """Validation stopped a batch being prepared. No file exists."""
@@ -94,6 +121,28 @@ async def _batch(session: AsyncSession, user: User, batch_id: uuid.UUID) -> Disb
     return batch
 
 
+async def _primary_account(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> tuple[EmployeeBankAccount | None, str]:
+    """The employee's salary account as it stands now, and its number in the clear."""
+    account = await session.scalar(
+        tenant_scoped(
+            select(EmployeeBankAccount)
+            .where(
+                EmployeeBankAccount.employee_id == employee_id,
+                EmployeeBankAccount.is_primary.is_(True),
+                EmployeeBankAccount.active.is_(True),
+            )
+            .order_by(EmployeeBankAccount.created_at.desc())
+            .limit(1),
+            EmployeeBankAccount,
+            user,
+        )
+    )
+    number = decrypt_secret(account.account_number, user.tenant_id) or "" if account else ""
+    return account, number
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Prepare
 # ═══════════════════════════════════════════════════════════════════════════
@@ -107,6 +156,8 @@ async def prepare_batch(
     bank_profile_id: uuid.UUID,
     value_date: date,
     name_match_threshold: Decimal | None = None,
+    superseding: uuid.UUID | None = None,
+    hold: Sequence[dict[str, Any]] = (),
     request: Request | None = None,
 ) -> DisbursementBatch:
     """Build the file for an approved run.
@@ -114,6 +165,13 @@ async def prepare_batch(
     Every exception blocks. A rejected statutory return is an annoyance; a
     salary credit to a wrong account is money gone and an employee unpaid, so
     there is no warning tier here.
+
+    One standing file per run: a second would pay everyone again. `superseding`
+    is the batch a regeneration replaces, the one standing file allowed.
+
+    `hold` names salaries HR keeps out of this file, each with a reason
+    (`{"employee_id" or "employee_code", "reason"}`): someone with no bank
+    account yet is held and paid later, and everyone else is paid on time.
     """
     run = await session.scalar(
         tenant_scoped(select(PayrollRun).where(PayrollRun.id == payroll_run_id), PayrollRun, user)
@@ -126,6 +184,29 @@ async def prepare_batch(
             detail=(
                 f"This run is '{run.status.value}'. Money is only ever disbursed against "
                 "an approved run."
+            ),
+        )
+
+    standing = select(DisbursementBatch).where(
+        DisbursementBatch.payroll_run_id == run.id,
+        DisbursementBatch.supplements_batch_id.is_(None),
+        DisbursementBatch.status.in_(_STANDING),
+    )
+    if superseding is not None:
+        standing = standing.where(DisbursementBatch.id != superseding)
+    existing = await session.scalar(tenant_scoped(standing.limit(1), DisbursementBatch, user))
+    if existing is not None:
+        remedy = (
+            "Credits the bank did not make are reissued from it as a supplementary batch."
+            if existing.status in _SENT
+            else "Regenerate that file instead; regenerating voids its approval."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This run already has a salary file that is "
+                f"{existing.status.value.replace('_', ' ')}. A second file would pay "
+                f"everyone again. {remedy}"
             ),
         )
 
@@ -154,24 +235,29 @@ async def prepare_batch(
         str(profile.format_config.get("name_match_threshold", "0.5"))
     )
 
+    held = _held_entries(rows, hold)
+    held_ids = {entry["employee_id"] for entry in held}
+    rows = [(payslip, employee) for payslip, employee in rows if str(employee.id) not in held_ids]
+
+    # A payslip with nothing to pay (a month of unpaid leave, recoveries that
+    # took the whole wage) is left off and named, not sent as a zero credit or
+    # left to block everyone else's salary.
+    nothing_due = [employee for payslip, employee in rows if Decimal(str(payslip.net_pay)) == 0]
+    rows = [(payslip, employee) for payslip, employee in rows if Decimal(str(payslip.net_pay)) != 0]
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "No salary in this run is left to pay in a file: every payslip is held or "
+                "has nothing to pay."
+            ),
+        )
+
     to_validate = []
     resolved: list[tuple[Payslip, Employee, EmployeeBankAccount | None, str]] = []
 
     for payslip, employee in rows:
-        account = await session.scalar(
-            tenant_scoped(
-                select(EmployeeBankAccount)
-                .where(
-                    EmployeeBankAccount.employee_id == employee.id,
-                    EmployeeBankAccount.is_primary.is_(True),
-                    EmployeeBankAccount.active.is_(True),
-                )
-                .order_by(EmployeeBankAccount.created_at.desc()),
-                EmployeeBankAccount,
-                user,
-            )
-        )
-        number = decrypt_secret(account.account_number, user.tenant_id) or "" if account else ""
+        account, number = await _primary_account(session, user, employee.id)
         resolved.append((payslip, employee, account, number))
         to_validate.append(
             {
@@ -194,6 +280,8 @@ async def prepare_batch(
         prepared_by_user_id=user.id,
         prepared_at=datetime.now(UTC),
         validation_exceptions=result.as_list(),
+        held=held,
+        notes=_batch_notes(held, nothing_due),
     )
 
     if result.is_blocked:
@@ -297,6 +385,58 @@ async def prepare_batch(
     return batch
 
 
+def _batch_notes(held: list[dict[str, Any]], nothing_due: list[Employee]) -> str | None:
+    """Who is not in the file, and why, for anyone reading the batch later."""
+    parts = []
+    if held:
+        people = "; ".join(
+            f"{e['employee_code']} {e['employee_name']} ({e['reason']})" for e in held
+        )
+        parts.append(f"Held out of this file: {people}.")
+    if nothing_due:
+        people = ", ".join(f"{e.employee_code} {e.full_name}" for e in nothing_due)
+        parts.append(f"Left off with nothing to pay: {people}.")
+    return " ".join(parts) or None
+
+
+def _held_entries(
+    rows: Sequence[tuple[Payslip, Employee]], hold: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The salaries to hold, each matched to its payslip in the run, with its reason."""
+    by_id = {str(employee.id): (payslip, employee) for payslip, employee in rows}
+    by_code = {employee.employee_code: (payslip, employee) for payslip, employee in rows}
+    held: list[dict[str, Any]] = []
+    for item in hold:
+        key = str(item.get("employee_id") or item.get("employee_code") or "").strip()
+        pair = by_id.get(key) or by_code.get(key)
+        if pair is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{key or 'An employee'} has no payslip in this run, so no salary to hold.",
+            )
+        payslip, employee = pair
+        reason = str(item.get("reason") or "").strip()
+        if len(reason) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Say why {employee.employee_code}'s salary is held.",
+            )
+        if any(entry["employee_id"] == str(employee.id) for entry in held):
+            continue
+        held.append(
+            {
+                "payslip_id": str(payslip.id),
+                "employee_id": str(employee.id),
+                "employee_code": employee.employee_code,
+                "employee_name": employee.full_name,
+                "amount": str(Decimal(str(payslip.net_pay))),
+                "reason": reason,
+                "paid_in_batch_id": None,
+            }
+        )
+    return held
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Approve
 # ═══════════════════════════════════════════════════════════════════════════
@@ -383,21 +523,57 @@ async def regenerate_batch(
     this function exists as its own operation rather than a silent rewrite.
     """
     batch = await _batch(session, user, batch_id)
-    if batch.status is DisbursementStatus.RELEASED:
+    if batch.status in _SENT:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This batch has been released to the bank. It cannot be rebuilt.",
+            detail=(
+                "This batch has been sent to the bank. It cannot be rebuilt; credits the "
+                "bank did not make are reissued from it as a supplementary batch."
+            ),
         )
 
     had_approval = batch.approved_at is not None
-    rebuilt = await prepare_batch(
-        session,
-        user,
-        payroll_run_id=batch.payroll_run_id,
-        bank_profile_id=batch.bank_profile_id,
-        value_date=batch.value_date or await local_today(session, user),
-        request=request,
-    )
+    value_date = batch.value_date or await local_today(session, user)
+    if batch.supplements_batch_id is not None:
+        # A supplementary batch pays particular credits. Rebuilt from the run it
+        # would pay the whole run again, so it is rebuilt from its own lines.
+        if batch.status not in (DisbursementStatus.PENDING_APPROVAL, DisbursementStatus.APPROVED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This supplementary batch has been superseded by a later one.",
+            )
+        own_lines = (
+            await session.scalars(
+                tenant_scoped(
+                    select(DisbursementLine).where(DisbursementLine.batch_id == batch.id),
+                    DisbursementLine,
+                    user,
+                )
+            )
+        ).all()
+        rebuilt = await _reissue(
+            session,
+            user,
+            original=await _batch(session, user, batch.supplements_batch_id),
+            credits=list(own_lines),
+            value_date=value_date,
+            request=request,
+        )
+    else:
+        rebuilt = await prepare_batch(
+            session,
+            user,
+            payroll_run_id=batch.payroll_run_id,
+            bank_profile_id=batch.bank_profile_id,
+            value_date=value_date,
+            superseding=batch.id,
+            # The salaries held out of the file stay held in the rebuilt one.
+            hold=[
+                {"employee_id": entry["employee_id"], "reason": entry["reason"]}
+                for entry in batch.held or []
+            ],
+            request=request,
+        )
 
     # The old batch is superseded rather than edited, so the trail keeps what
     # was approved before.
@@ -629,6 +805,7 @@ async def reconcile(
     credited = 0
     failed: list[dict] = []
     unmatched: list[str] = []
+    already_reissued: list[str] = []
     now = datetime.now(UTC)
 
     for response in responses:
@@ -636,6 +813,11 @@ async def reconcile(
         line = by_account.get(account)
         if line is None:
             unmatched.append(account[-4:] if account else "(blank)")
+            continue
+        if line.status is LineStatus.REISSUED:
+            # Already paid again from a supplementary batch. A response read a
+            # second time must not reopen it, or it would be reissued twice.
+            already_reissued.append(account[-4:])
             continue
 
         outcome = str(response.get("status", "")).strip().lower()
@@ -658,6 +840,7 @@ async def reconcile(
             )
 
     batch.status = DisbursementStatus.ACKNOWLEDGED
+    batch.acknowledged_at = batch.acknowledged_at or now
     await session.flush()
 
     # A failed salary credit nobody notices until the employee calls is a
@@ -685,6 +868,7 @@ async def reconcile(
         "credited": credited,
         "failed": failed,
         "unmatched": unmatched,
+        "already_reissued": already_reissued,
         "notified": notified,
         "parse_errors": [],
     }
@@ -724,22 +908,91 @@ async def supplementary_batch(
             detail="This batch has no failed credits to reissue.",
         )
 
-    batch = DisbursementBatch(
-        tenant_id=user.tenant_id,
-        payroll_run_id=original.payroll_run_id,
-        bank_profile_id=original.bank_profile_id,
-        supplements_batch_id=original.id,
-        status=DisbursementStatus.PENDING_APPROVAL,
+    batch = await _reissue(
+        session,
+        user,
+        original=original,
+        credits=list(failed),
         value_date=value_date,
-        employee_count=len(failed),
-        total_amount=sum((Decimal(str(line.amount)) for line in failed), start=Decimal(0)),
-        prepared_by_user_id=user.id,
-        prepared_at=datetime.now(UTC),
-        notes=f"Reissuing {len(failed)} failed credit(s) from batch {original.id}.",
+        request=request,
     )
-    session.add(batch)
+    # The original line is marked reissued rather than left FAILED, so the
+    # failure list does not keep reporting a credit that has been dealt with.
+    for line in failed:
+        line.status = LineStatus.REISSUED
     await session.flush()
+    return batch
 
+
+async def pay_held(
+    session: AsyncSession,
+    user: User,
+    *,
+    batch_id: uuid.UUID,
+    value_date: date,
+    request: Request | None = None,
+) -> DisbursementBatch:
+    """Pay the salaries held out of a file, from a supplementary batch.
+
+    Only once the file has gone to the bank: before that, the salary simply
+    goes in the file, by regenerating it without the hold.
+    """
+    original = await _batch(session, user, batch_id)
+    waiting = [entry for entry in original.held or [] if not entry.get("paid_in_batch_id")]
+    if not waiting:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No salary is held in this file, or every held salary has been paid.",
+        )
+    if original.status not in _SENT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This file has not gone to the bank yet. Regenerate it without the hold, so "
+                "the salary goes with everyone else's."
+            ),
+        )
+    batch = await _reissue(
+        session,
+        user,
+        original=original,
+        credits=[
+            HeldCredit(
+                employee_id=uuid.UUID(entry["employee_id"]),
+                payslip_id=uuid.UUID(entry["payslip_id"]) if entry.get("payslip_id") else None,
+                amount=Decimal(entry["amount"]),
+            )
+            for entry in waiting
+        ],
+        value_date=value_date,
+        request=request,
+        what="held salary(ies)",
+    )
+    # A new list, so the JSON column registers the change.
+    original.held = [
+        {**entry, "paid_in_batch_id": entry.get("paid_in_batch_id") or str(batch.id)}
+        for entry in original.held
+    ]
+    await session.flush()
+    return batch
+
+
+async def _reissue(
+    session: AsyncSession,
+    user: User,
+    *,
+    original: DisbursementBatch,
+    credits: Sequence[DisbursementLine | HeldCredit],
+    value_date: date,
+    request: Request | None,
+    what: str = "failed credit(s)",
+) -> DisbursementBatch:
+    """A supplementary batch paying `credits` again, to each employee's account today.
+
+    Today's account, not the one the credit failed on: "account closed" is the
+    commonest failure, and its fix is the new account HR has since recorded.
+    Checked as a full file is, and refused rather than built when it fails.
+    """
     profile = await session.scalar(
         tenant_scoped(
             select(BankProfile).where(BankProfile.id == original.bank_profile_id),
@@ -747,48 +1000,106 @@ async def supplementary_batch(
             user,
         )
     )
-    payment_lines: list[formats.PaymentLine] = []
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bank profile not found")
+    threshold = Decimal(str(profile.format_config.get("name_match_threshold", "0.5")))
+    labels = await _employee_labels(session, user, {credit.employee_id for credit in credits})
 
-    for line in failed:
-        number = decrypt_secret(line.account_number, user.tenant_id) or ""
+    rows = []
+    resolved: list[tuple[DisbursementLine, EmployeeBankAccount | None, str, str]] = []
+    for credit in credits:
+        account, number = await _primary_account(session, user, credit.employee_id)
+        code, name = labels.get(credit.employee_id, (str(credit.employee_id), ""))
+        resolved.append((credit, account, number, code))
+        rows.append(
+            {
+                "subject": code,
+                "employee_name": name,
+                "account_holder_name": account.account_holder_name if account else "",
+                "account_number": number,
+                "ifsc": account.ifsc if account else "",
+                "amount": Decimal(str(credit.amount)),
+            }
+        )
+    result = validation.validate_lines(rows, name_match_threshold=threshold)
+    if result.is_blocked:
+        problems = " ".join(f"{e.subject}: {e.message}" for e in result.exceptions)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The {what} cannot be paid yet. {problems} Correct the account on the "
+                "employee's profile, then try again."
+            ),
+        )
+
+    spec = formats.FORMATS[profile.file_format]
+    limit = int(profile.format_config.get("name_length", spec.name_length))
+    run = await session.get(PayrollRun, original.payroll_run_id)
+    source = (
+        f"the {calendar.month_name[run.period_month]} {run.period_year} salary file"
+        if run is not None
+        else f"batch {original.id}"
+    )
+    batch = DisbursementBatch(
+        tenant_id=user.tenant_id,
+        payroll_run_id=original.payroll_run_id,
+        bank_profile_id=original.bank_profile_id,
+        supplements_batch_id=original.id,
+        status=DisbursementStatus.PENDING_APPROVAL,
+        value_date=value_date,
+        employee_count=len(credits),
+        total_amount=sum((Decimal(str(credit.amount)) for credit in credits), start=Decimal(0)),
+        prepared_by_user_id=user.id,
+        prepared_at=datetime.now(UTC),
+        notes=f"Paying {len(credits)} {what} from {source}.",
+    )
+    session.add(batch)
+    await session.flush()
+
+    payment_lines: list[formats.PaymentLine] = []
+    for credit, account, number, code in resolved:
+        if account is None:  # refused above; kept for the type checker
+            continue
         session.add(
             DisbursementLine(
                 tenant_id=user.tenant_id,
                 batch_id=batch.id,
-                employee_id=line.employee_id,
-                payslip_id=line.payslip_id,
-                amount=line.amount,
-                account_number=line.account_number,
-                ifsc=line.ifsc,
-                beneficiary_name=line.beneficiary_name,
+                employee_id=credit.employee_id,
+                payslip_id=credit.payslip_id,
+                amount=credit.amount,
+                # Snapshotted as a full file's lines are.
+                account_number=encrypt_secret(number, user.tenant_id),
+                ifsc=account.ifsc.upper(),
+                beneficiary_name=formats.truncate_name(account.account_holder_name, limit),
             )
         )
         payment_lines.append(
             formats.PaymentLine(
-                beneficiary_name=line.beneficiary_name,
+                beneficiary_name=account.account_holder_name,
                 account_number=number,
-                ifsc=line.ifsc,
-                amount=Decimal(str(line.amount)),
-                employee_code="",
+                ifsc=account.ifsc.upper(),
+                amount=Decimal(str(credit.amount)),
+                employee_code=code,
             )
         )
-        # The original line is marked reissued rather than left FAILED, so the
-        # failure list does not keep reporting a credit that has been dealt with.
-        line.status = LineStatus.REISSUED
 
-    if profile is not None and payment_lines:
-        instruction = formats.PaymentInstruction(
-            debit_account=decrypt_secret(profile.account_number, user.tenant_id) or "",
-            debit_ifsc=profile.ifsc,
-            corporate_id=profile.corporate_id or "",
-            value_date=value_date,
-            batch_reference=f"SUPP{batch.id.hex[:8].upper()}",
-            lines=payment_lines,
-        )
+    instruction = formats.PaymentInstruction(
+        debit_account=decrypt_secret(profile.account_number, user.tenant_id) or "",
+        debit_ifsc=profile.ifsc,
+        corporate_id=profile.corporate_id or "",
+        value_date=value_date,
+        batch_reference=f"SUPP{batch.id.hex[:8].upper()}",
+        lines=payment_lines,
+    )
+    try:
         content = formats.serialise(instruction, profile.file_format, config=profile.format_config)
-        batch.file_hash = formats.file_hash(content)
-        batch.encrypted_file = encrypt_secret(content, user.tenant_id)
-        batch.file_name = f"SUPP_{profile.file_format.value.upper()}_{batch.id.hex[:8]}.txt"
+    except formats.FormatError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    batch.file_hash = formats.file_hash(content)
+    batch.encrypted_file = encrypt_secret(content, user.tenant_id)
+    batch.file_name = f"SUPP_{profile.file_format.value.upper()}_{batch.id.hex[:8]}.txt"
 
     await session.flush()
     await audit.record(
@@ -799,10 +1110,10 @@ async def supplementary_batch(
         entity_type="disbursement_batch",
         entity_id=batch.id,
         summary=(
-            f"Prepared a supplementary disbursement for {len(failed)} failed credit(s) "
+            f"Prepared a supplementary disbursement for {len(credits)} {what} "
             f"from batch {original.id}"
         ),
-        changes={"supplements": str(original.id), "employee_count": len(failed)},
+        changes={"supplements": str(original.id), "employee_count": len(credits)},
         request=request,
     )
     return batch

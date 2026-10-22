@@ -196,3 +196,6 @@ class EmployeeSalaryRead(BaseModel):
     revision_reason: str | None
     approved_by_user_id: uuid.UUID | None
     components: list[EmployeeSalaryComponentRead]
+    #: On a revision: months payroll already paid at the earlier salary, as
+    #: "2026-08". They are trued up by raising arrears, not by this record.
+    paid_months_affected: list[str] = Field(default_factory=list)

@@ -14,7 +14,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.tax import (
     DeclarationStatus,
@@ -255,6 +255,22 @@ class PreviousEmployerUpsert(BaseModel):
     pf_deducted: Decimal = Field(default=Decimal(0), ge=0, max_digits=14, decimal_places=2)
     professional_tax: Decimal = Field(default=Decimal(0), ge=0, max_digits=14, decimal_places=2)
     exempt_allowances: Decimal = Field(default=Decimal(0), ge=0, max_digits=14, decimal_places=2)
+
+    @model_validator(mode="after")
+    def _within_the_salary(self) -> PreviousEmployerUpsert:
+        """What a previous employer deducted or exempted came out of the salary it paid."""
+        for label, amount in (
+            ("Tax deducted", self.tds_deducted),
+            ("PF deducted", self.pf_deducted),
+            ("Professional Tax", self.professional_tax),
+            ("Exempt allowances", self.exempt_allowances),
+        ):
+            if amount > self.gross_salary:
+                raise ValueError(
+                    f"{label} ({amount}) is more than the gross salary ({self.gross_salary}) the "
+                    "previous employer paid. Check the figures on their Form 16."
+                )
+        return self
 
 
 class PreviousEmployerRead(BaseModel):

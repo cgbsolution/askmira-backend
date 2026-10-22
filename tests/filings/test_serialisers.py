@@ -30,6 +30,7 @@ from app.services.filings.records import (
 )
 from app.services.filings.serialisers import (
     ECR_COLUMNS,
+    ECR_DELIMITER,
     SerialiserError,
     content_hash,
     serialise_ecr,
@@ -72,7 +73,11 @@ def test_the_ecr_matches_the_golden_file_byte_for_byte() -> None:
         wage_month="062026",
         lines=[ecr_line()],
     )
-    expected = "100123456789|ANITA SHARMA|50000|15000|15000|15000|1800|550|1250|0|0\r\n"
+    # EE share, then the EPS contribution, then the EPF-EPS difference.
+    expected = (
+        "100123456789#~#ANITA SHARMA#~#50000#~#15000#~#15000#~#15000#~#1800#~#1250#~#550"
+        "#~#0#~#0\r\n"
+    )
     assert serialise_ecr(ecr) == expected
 
 
@@ -97,8 +102,10 @@ def test_a_two_member_ecr_matches_the_golden_file() -> None:
         ],
     )
     expected = (
-        "100123456789|ANITA SHARMA|50000|15000|15000|15000|1800|550|1250|0|0\r\n"
-        "100987654321|RAHUL IYER|28000|14000|14000|14000|1680|513|1167|2|0\r\n"
+        "100123456789#~#ANITA SHARMA#~#50000#~#15000#~#15000#~#15000#~#1800#~#1250#~#550"
+        "#~#0#~#0\r\n"
+        "100987654321#~#RAHUL IYER#~#28000#~#14000#~#14000#~#14000#~#1680#~#1167#~#513"
+        "#~#2#~#0\r\n"
     )
     assert serialise_ecr(ecr) == expected
 
@@ -119,7 +126,7 @@ def test_the_ecr_has_no_header_row() -> None:
 def test_every_ecr_line_has_the_prescribed_field_count() -> None:
     output = serialise_ecr(EcrReturn("EST", "062026", [ecr_line(), ecr_line()]))
     for line in output.strip().split("\r\n"):
-        assert len(line.split("|")) == len(ECR_COLUMNS)
+        assert len(line.split(ECR_DELIMITER)) == len(ECR_COLUMNS)
 
 
 def test_ecr_wages_are_whole_rupees() -> None:
@@ -127,7 +134,7 @@ def test_ecr_wages_are_whole_rupees() -> None:
     output = serialise_ecr(
         EcrReturn("EST", "062026", [ecr_line(gross_wages=D("50000.49"))])
     )
-    assert "|50000|" in output
+    assert "#~#50000#~#" in output
 
 
 def test_ecr_wages_round_rather_than_truncate() -> None:
@@ -135,7 +142,7 @@ def test_ecr_wages_round_rather_than_truncate() -> None:
     output = serialise_ecr(
         EcrReturn("EST", "062026", [ecr_line(gross_wages=D("50000.50"))])
     )
-    assert "|50001|" in output
+    assert "#~#50001#~#" in output
 
 
 def test_ncp_days_round_up_rather_than_down() -> None:
@@ -145,14 +152,21 @@ def test_ncp_days_round_up_rather_than_down() -> None:
     the error that favours the employer.
     """
     output = serialise_ecr(EcrReturn("EST", "062026", [ecr_line(ncp_days=D("0.5"))]))
-    assert output.split("|")[9] == "1"
+    assert output.split(ECR_DELIMITER)[9] == "1"
 
 
-def test_a_pipe_in_a_member_name_is_refused() -> None:
+def test_the_field_separator_in_a_member_name_is_refused() -> None:
     """It is the delimiter; the file would be unparseable and the portal would
     say only that row 4 is malformed."""
-    with pytest.raises(SerialiserError, match="contains a pipe"):
-        serialise_ecr(EcrReturn("EST", "062026", [ecr_line(member_name="A|B")]))
+    with pytest.raises(SerialiserError, match="the field separator"):
+        serialise_ecr(EcrReturn("EST", "062026", [ecr_line(member_name="A#~#B")]))
+
+
+def test_the_employers_shares_are_in_the_portals_order() -> None:
+    """Field 8 is the EPS (pension) contribution, field 9 the EPF-EPS difference."""
+    fields = serialise_ecr(EcrReturn("EST", "062026", [ecr_line()])).strip().split(ECR_DELIMITER)
+    assert ECR_COLUMNS[7:9] == ("eps_contribution", "employer_epf_share")
+    assert (fields[7], fields[8]) == ("1250", "550")
 
 
 def test_an_empty_ecr_produces_an_empty_file_not_a_stray_newline() -> None:

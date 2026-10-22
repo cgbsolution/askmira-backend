@@ -173,7 +173,7 @@ async def test_no_pan_rate_maker_checker_and_26q(
     content = await contractors.form_26q_csv(session, hr_user, financial_year="2026-27", quarter=2)
     rows = list(csv.DictReader(io.StringIO(content)))
     assert len(rows) == 1
-    assert rows[0]["Deductee PAN"] == "PANNOTAVBL" and rows[0]["Section code"] == "94J"
+    assert rows[0]["Deductee PAN"] == "PANNOTAVBL" and rows[0]["Section code"] == "4JB"
     assert rows[0]["TDS deducted"] == "12000.00"
 
 

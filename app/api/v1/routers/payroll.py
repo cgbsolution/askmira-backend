@@ -29,6 +29,7 @@ from app.schemas.payroll_run import (
     RuleSetApprove,
     RuleSetCreate,
     RuleSetRead,
+    RunCancel,
     RunMarkPaid,
     VarianceAcknowledge,
 )
@@ -236,6 +237,21 @@ async def approve_run(
         run_id,
         confirm=confirmation(session, user, "payroll.run_approve"),
         request=request,
+    )
+    return await payslip_service.run_read(session, user, run)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=PayrollRunRead)
+async def cancel_run(
+    run_id: uuid.UUID,
+    payload: RunCancel,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> PayrollRunRead:
+    """Discard a run opened in error, before it is approved. Its payslips go; the row stays."""
+    run = await run_service.cancel_run(
+        session, user, run_id, reason=payload.reason, request=request
     )
     return await payslip_service.run_read(session, user, run)
 

@@ -46,9 +46,11 @@ from app.models.payroll import (
 from app.models.user import User
 from app.services import audit
 from app.services.arrears import engine
+from app.services.payroll import statutory_service
 
 __all__ = [
     "approve_batch",
+    "cancel_batch",
     "preview_arrears",
     "revise_salary",
 ]
@@ -121,9 +123,14 @@ async def _closed_runs(
     *,
     legal_entity_id: uuid.UUID,
     from_date: date,
-    to_date: date,
 ) -> list[PayrollRun]:
-    """Approved or paid runs whose period the revision reaches back into."""
+    """Approved or paid runs whose period the revision reaches back into.
+
+    Every one from the revision's date on, this month's included: a run is
+    history the moment it is approved, whatever today's date. Bounding this by
+    today would skip a month whose run was approved before it ended — a
+    revision entered on 22 October would lose October's difference.
+    """
     return list(
         (
             await session.scalars(
@@ -133,7 +140,6 @@ async def _closed_runs(
                         PayrollRun.legal_entity_id == legal_entity_id,
                         PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
                         PayrollRun.effective_date >= from_date,
-                        PayrollRun.effective_date <= to_date,
                     )
                     .order_by(PayrollRun.period_year, PayrollRun.period_month),
                     PayrollRun,
@@ -196,6 +202,75 @@ async def _guard_revision(
         cursor = date(cursor.year + (cursor.month // 12), (cursor.month % 12) + 1, 1)
 
 
+async def _earlier_arrears(
+    session: AsyncSession, user: User, employee: Employee
+) -> dict[str, dict[str, tuple[Decimal, str, str]]]:
+    """Arrears already approved for this employee, per period and component.
+
+    A month an earlier revision already trued up is paid at that level now: a
+    second revision reaching back into it owes only the difference on top. A
+    batch still waiting for approval cannot be counted either way, so a new
+    revision waits for it.
+    """
+    pending = await session.scalar(
+        tenant_scoped(
+            select(ArrearBatch.id)
+            .join(ArrearLine, ArrearLine.batch_id == ArrearBatch.id)
+            .where(
+                ArrearLine.employee_id == employee.id,
+                ArrearBatch.status == ArrearStatus.PENDING_APPROVAL,
+            )
+            .limit(1),
+            ArrearBatch,
+            user,
+        )
+    )
+    if pending is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"An earlier arrear batch for {employee.employee_code} is waiting for "
+                "approval. Approve or cancel it first, so these arrears are worked out on "
+                "top of it rather than paying the same months twice."
+            ),
+        )
+    lines = (
+        await session.scalars(
+            tenant_scoped(
+                select(ArrearLine)
+                .join(ArrearBatch, ArrearLine.batch_id == ArrearBatch.id)
+                .where(
+                    ArrearLine.employee_id == employee.id,
+                    ArrearBatch.status.in_([ArrearStatus.APPROVED, ArrearStatus.PAID]),
+                ),
+                ArrearLine,
+                user,
+            )
+        )
+    ).all()
+    earlier: dict[str, dict[str, tuple[Decimal, str, str]]] = {}
+    for line in lines:
+        by_code = earlier.setdefault(line.period, {})
+        amount, name, kind = by_code.get(
+            line.component_code, (ZERO, line.component_name, line.component_type)
+        )
+        by_code[line.component_code] = (amount + Decimal(str(line.difference)), name, kind)
+    return earlier
+
+
+def _paid_so_far(
+    line_items: list[dict], earlier: dict[str, tuple[Decimal, str, str]] | None
+) -> list[dict]:
+    """A closed payslip's lines plus whatever earlier arrears added to them."""
+    if not earlier:
+        return line_items
+    paid = {str(item.get("code")): dict(item) for item in line_items}
+    for code, (difference, name, kind) in earlier.items():
+        item = paid.setdefault(code, {"code": code, "name": name, "type": kind, "amount": "0"})
+        item["amount"] = str(Decimal(str(item.get("amount", "0"))) + difference)
+    return list(paid.values())
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Preview
 # ═══════════════════════════════════════════════════════════════════════════
@@ -220,7 +295,6 @@ async def preview_arrears(
         user,
         legal_entity_id=legal_entity_id,
         from_date=effective_from,
-        to_date=date.today(),
     )
 
     for employee_id, salary in employee_salaries.items():
@@ -230,7 +304,7 @@ async def preview_arrears(
         if employee is None:
             continue
 
-        state = await _state_of(session, user, employee.location_id)
+        earlier = await _earlier_arrears(session, user, employee)
 
         arrears: list[engine.PeriodArrear] = []
         for run in runs:
@@ -243,33 +317,68 @@ async def preview_arrears(
                     user,
                 )
             )
-            if payslip is None:
+            # A supplementary payslip (an off-cycle top-up, a bonus, an arrear)
+            # carries no structure: recomputing it as a month would pay the
+            # whole month again. The month's structure is on the regular one.
+            if payslip is None or payslip.is_supplementary:
                 continue
 
+            start = date(run.period_year, run.period_month, 1)
+            last = calendar.monthrange(run.period_year, run.period_month)[1]
+            end = date(run.period_year, run.period_month, last)
+
             # The rules that were in force then, resolved by the run's own
-            # effective date and the employee's own state — not a fixed list of
-            # states, which would apply Karnataka's Professional Tax to someone
-            # in Maharashtra.
+            # effective date and the state the employee worked in that month —
+            # not a fixed list of states, and not today's location.
+            work_state = await statutory_service.work_state_for_period(
+                session, user, employee, start, end
+            )
+            state = work_state.state_code or await _state_of(session, user, employee.location_id)
             rule_sets = await _historical_rule_sets(
                 session, user, run.effective_date, {state} if state else set()
             )
             if not rule_sets:
                 continue
 
-            start = date(run.period_year, run.period_month, 1)
-            last = calendar.monthrange(run.period_year, run.period_month)[1]
+            # The employee's own PF election and the month's ESI coverage, as the
+            # original run applied them.
+            election = await statutory_service.active_pf_election(
+                session, user, employee.id, run.effective_date
+            )
+            covered, _ = await statutory_service.esi_coverage_for(
+                session,
+                user,
+                employee_id=employee.id,
+                on_date=start,
+                esi_rules=rule_sets.get("esi"),
+            )
+            period = _period(run.period_year, run.period_month)
+            # The wages the month was reported on: the payslip's, plus what an
+            # earlier arrear already added to them.
+            prior = earlier.get(period) or {}
+            paid_pf_wage = (
+                Decimal(str(payslip.pf_wage_base)) + prior.get(engine.PF_WAGES, (ZERO, "", ""))[0]
+            )
+            paid_esi_wage = (
+                Decimal(str(payslip.esi_wage_base)) + prior.get(engine.ESI_WAGES, (ZERO, "", ""))[0]
+            )
             try:
                 period_arrear = engine.recompute_period(
-                    period=_period(run.period_year, run.period_month),
-                    paid_line_items=payslip.line_items or [],
+                    period=period,
+                    paid_line_items=_paid_so_far(payslip.line_items or [], earlier.get(period)),
                     new_salary=salary,
                     working_days=Decimal(str(payslip.working_days)),
                     lop_days=Decimal(str(payslip.lop_days)),
                     not_employed_days=Decimal(str(payslip.not_employed_days or 0)),
                     period_start=start,
-                    period_end=date(run.period_year, run.period_month, last),
+                    period_end=end,
                     historical_rule_sets=rule_sets,
                     designation=employee.designation,
+                    pf_election=election,
+                    esi_contributing_at_period_start=covered,
+                    gender=employee.gender.value if employee.gender else None,
+                    paid_pf_wage=paid_pf_wage,
+                    paid_esi_wage=paid_esi_wage,
                 )
                 arrears.append(dataclasses.replace(period_arrear, source_run_id=str(run.id)))
             except (engine.ArrearError, ValueError) as exc:
@@ -450,6 +559,61 @@ async def revise_salary(
             "employer_contributions": str(batch.total_employer_contribution_arrear),
             "affected_filings": batch.affected_filings,
         },
+        request=request,
+    )
+    return batch
+
+
+async def cancel_batch(
+    session: AsyncSession,
+    user: User,
+    *,
+    batch_id: uuid.UUID,
+    reason: str,
+    request: Request | None = None,
+) -> ArrearBatch:
+    """Discard an arrear batch that is wrong, before any run has paid it.
+
+    The approver's other answer: a batch worked out on the wrong salary record
+    would otherwise wait forever, and block the next revision for the same
+    people. A paid batch is history; its correction is a new revision.
+    """
+    batch = await session.scalar(
+        tenant_scoped(select(ArrearBatch).where(ArrearBatch.id == batch_id), ArrearBatch, user)
+    )
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Arrear batch not found")
+    if batch.status not in (ArrearStatus.PENDING_APPROVAL, ArrearStatus.APPROVED) or (
+        batch.paid_in_run_id is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A batch in status '{batch.status.value}' cannot be cancelled. A paid batch "
+                "is corrected by a new revision."
+            ),
+        )
+    clean = reason.strip()
+    if not clean:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say why these arrears are being cancelled.",
+        )
+    previous = batch.status.value
+    batch.status = ArrearStatus.CANCELLED
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="arrear_batch",
+        entity_id=batch.id,
+        summary=(
+            f"Cancelled arrears of {batch.total_net_payable} for {batch.employee_count} "
+            f"employee(s): {clean}"
+        ),
+        changes={"from_status": previous, "reason": clean},
         request=request,
     )
     return batch
@@ -699,6 +863,8 @@ async def payable_arrears(
         for line in lines:
             if employee_ids is not None and line.employee_id not in employee_ids:
                 continue
+            if line.component_type == engine.STATUTORY_WAGE:
+                continue  # a wage for the returns, not money to pay
             key = (line.component_code, line.component_name, line.component_type)
             bucket = per_employee.setdefault(line.employee_id, {})
             bucket[key] = bucket.get(key, ZERO) + Decimal(str(line.difference))

@@ -502,3 +502,18 @@ async def test_a_week_past_48_hours_is_weekly_overtime(session: AsyncSession, or
     decided = await overtime_service.decide(session, org["checker"], entry.id, approve_it=True)
     assert decided.status is OvertimeStatus.APPROVED
     assert "weekly limit of 48 h" in decided.basis
+
+
+async def test_an_import_explains_each_bad_row_in_plain_words(session: AsyncSession, org) -> None:
+    """All or nothing, and every refusal names the row and the column."""
+    code = org["meera_emp"].employee_code
+    data = (
+        "employee_code,category,name,amount,period,reason\n"
+        f"{code},incentive,Q2 incentive,5000,2026-11,\n"
+        f"{code},holiday,X,100,2026-11,Bad category\n"
+    ).encode()
+    result = await adjustment_service.import_csv(session, org["checker"], data)
+    assert result.created == 0
+    assert result.errors[0] == "Row 2: the reason is empty."
+    assert result.errors[1].startswith("Row 3: unknown category 'holiday'")
+    assert not any("validation error" in error for error in result.errors)

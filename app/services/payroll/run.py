@@ -51,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
-from app.models.employee import Employee, EmployeeWorkLocation, EmploymentStatus
+from app.models.employee import Employee, EmploymentStatus
 from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.org import LegalEntity
 from app.models.payroll import (
@@ -82,7 +82,6 @@ from app.services.payroll.inputs import (
     consume_inputs,
 )
 from app.services.payroll.service import active_salary_on
-from app.services.payroll.statutory import PtStateResolution, resolve_professional_tax_state
 from app.services.payroll.tds import (
     PriorPay,
     TdsContext,
@@ -292,6 +291,7 @@ async def create_run(
                     PayrollRun.period_year == period_year,
                     PayrollRun.period_month == period_month,
                     PayrollRun.run_type == PayrollRunType.REGULAR,
+                    PayrollRun.status != PayrollRunStatus.CANCELLED,
                 ),
                 PayrollRun,
                 user,
@@ -339,6 +339,7 @@ async def create_run(
                     PayrollRun.period_year == period_year,
                     PayrollRun.period_month == period_month,
                     PayrollRun.run_type == run_type,
+                    PayrollRun.status != PayrollRunStatus.CANCELLED,
                 ),
                 PayrollRun,
                 user,
@@ -510,7 +511,10 @@ async def compute_run(
     # State codes in scope, so Professional Tax resolves per location.
     states = {
         loc_state
-        for loc_state in [(await _location_state(session, user, e.location_id)) for e in employees]
+        for loc_state in [
+            (await statutory_service.location_state(session, user, e.location_id))
+            for e in employees
+        ]
         if loc_state
     }
     rule_sets = await _resolve_rule_sets(session, user, run.effective_date, states)
@@ -597,6 +601,8 @@ async def compute_run(
     review_flags: list[str] = []
     errors: list[str] = []
     employment_notices: list[str] = []
+    # People named on a supplementary run who turned out to have nothing due.
+    unpaid_notices: list[str] = []
     leaving_on = await _agreed_last_days(session, user, employee_ids)
 
     for employee in employees:
@@ -640,7 +646,7 @@ async def compute_run(
             paid = month_paid.get(employee.id)
             if paid is not None and paid["has_full"]:
                 if not collected.lines.get(employee.id):
-                    employment_notices.append(
+                    unpaid_notices.append(
                         f"{employee.employee_code}: nothing is due from this run's sources, "
                         "so no payslip."
                     )
@@ -674,7 +680,9 @@ async def compute_run(
         # cannot be established for the whole period — no location, or a
         # location change mid-period — payroll flags it rather than picking
         # one, because filing in the wrong state is a silent failure.
-        work_state = await _professional_tax_state(session, user, employee, start, end)
+        work_state = await statutory_service.work_state_for_period(
+            session, user, employee, start, end
+        )
         state_review: str | None = None
         if work_state.needs_review:
             # Both state levies are affected, not just Professional Tax — LWF
@@ -716,6 +724,8 @@ async def compute_run(
                     employee.id,
                     fy_label,
                     use_declared_when_unproven=use_declared,
+                    # The run supplies the salary figures from this computation.
+                    salary_from_payroll=False,
                 )
                 tds_context = TdsContext(
                     rules=tds_rules.rules,
@@ -743,6 +753,7 @@ async def compute_run(
                     pf_election=pf_election,
                     esi_contributing_at_period_start=contributing_at_start,
                     designation=employee.designation,
+                    gender=employee.gender.value if employee.gender else None,
                     state_review=state_review,
                     inputs=tuple(collected.lines.get(employee.id, [])),
                     loan_recoveries=(
@@ -923,6 +934,15 @@ async def compute_run(
                 "message": message,
             }
             for message in employment_notices
+        ]
+        + [
+            {
+                "kind": "notice",
+                "key": "nothing_due",
+                "label": "Nothing due",
+                "message": message,
+            }
+            for message in unpaid_notices
         ]
     )
     run.rule_set_snapshot = {key: str(value.id) for key, value in rule_sets.items()}
@@ -1151,6 +1171,90 @@ async def approve_run(
             "input_items_consumed": consumed,
         },
         summary=f"Approved payroll run for {period}",
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+# ── Cancel ──────────────────────────────────────────────────────────────────
+
+#: Statuses a run can be discarded from: nothing has been signed off yet.
+CANCELLABLE_STATUSES = (
+    PayrollRunStatus.DRAFT,
+    PayrollRunStatus.FAILED,
+    PayrollRunStatus.PENDING_REVIEW,
+)
+
+
+async def cancel_run(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    reason: str,
+    request: Request | None = None,
+) -> PayrollRun:
+    """Discard a run opened in error — the wrong month, the wrong entity.
+
+    Only before approval: nothing has been consumed, paid or filed from it yet.
+    Its payslips are removed and the row stays, cancelled, with who and why; a
+    regular month it held can then be opened again.
+    """
+    run = await get_run(session, user, run_id)
+    if run.status not in CANCELLABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A {run.status.value} run cannot be cancelled. An approved run is history; "
+                "a correction is an arrears or off-cycle run."
+                if run.status in CLOSED_STATUSES
+                else f"A run in status '{run.status.value}' cannot be cancelled."
+            ),
+        )
+    clean = reason.strip()
+    if not clean:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say why this run is being cancelled. It goes on the run and the audit.",
+        )
+
+    payslips = (
+        await session.scalars(
+            tenant_scoped(select(Payslip).where(Payslip.run_id == run.id), Payslip, user)
+        )
+    ).all()
+    for payslip in payslips:
+        await session.delete(payslip)
+
+    previous_status = run.status.value
+    run.status = PayrollRunStatus.CANCELLED
+    run.cancelled_at = datetime.now(UTC)
+    run.cancelled_by_user_id = user.id
+    run.cancel_reason = clean
+    run.employee_count = 0
+    run.total_gross = run.total_deductions = run.total_net = run.total_employer_cost = _ZERO
+    run.variance_flags = []
+    run.review_flags = []
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="payroll_run",
+        entity_id=run.id,
+        actor=user,
+        changes={
+            "step": "cancel",
+            "from_status": previous_status,
+            "payslips_removed": len(payslips),
+            "reason": clean,
+        },
+        summary=(
+            f"Cancelled the {run.run_type.value} payroll run for "
+            f"{run.period_month}/{run.period_year}: {clean}"
+        ),
         request=request,
     )
     await session.commit()
@@ -1422,71 +1526,6 @@ async def _agreed_last_days(
     return {employee_id: last_day for employee_id, last_day in rows}
 
 
-async def _professional_tax_state(
-    session: AsyncSession,
-    user: User,
-    employee: Employee,
-    period_start: date,
-    period_end: date,
-) -> PtStateResolution:
-    """Which state's levies apply to this employee for this period.
-
-    An employee with no recorded transfers resolves from their current
-    location. One with a transfer history is resolved from the series, which is
-    what makes a mid-period move visible instead of silently applying the new
-    state to the whole month.
-    """
-    postings = (
-        await session.scalars(
-            tenant_scoped(
-                select(EmployeeWorkLocation)
-                .where(
-                    EmployeeWorkLocation.employee_id == employee.id,
-                    EmployeeWorkLocation.effective_from <= period_end,
-                )
-                .order_by(EmployeeWorkLocation.effective_from),
-                EmployeeWorkLocation,
-                user,
-            )
-        )
-    ).all()
-
-    if not postings:
-        state = await _location_state(session, user, employee.location_id)
-        if state is None:
-            return PtStateResolution(
-                state_code=None,
-                needs_review=True,
-                reason=(
-                    "This employee has no work location, so no Professional Tax state "
-                    "can be determined."
-                ),
-            )
-        return PtStateResolution(state_code=state, needs_review=False, reason=f"Works in {state}.")
-
-    history: list[tuple[date, str]] = []
-    for posting in postings:
-        state = await _location_state(session, user, posting.location_id)
-        if state:
-            history.append((posting.effective_from, state))
-
-    return resolve_professional_tax_state(
-        location_history=history, period_start=period_start, period_end=period_end
-    )
-
-
-async def _location_state(
-    session: AsyncSession, user: User, location_id: uuid.UUID | None
-) -> str | None:
-    if location_id is None:
-        return None
-    from app.models.org import Location
-
-    return await session.scalar(
-        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
-    )
-
-
 async def _month_paid_so_far(
     session: AsyncSession,
     user: User,
@@ -1559,6 +1598,7 @@ async def _previous_net_by_employee(
                 PayrollRun.period_year == year,
                 PayrollRun.period_month == month,
                 PayrollRun.run_type == PayrollRunType.REGULAR,
+                PayrollRun.status != PayrollRunStatus.CANCELLED,
             ),
             PayrollRun,
             user,
@@ -1584,4 +1624,4 @@ def other_earnings_of(payslip: Payslip) -> Decimal:
             if line.get("kind") in _INPUT_CASH_KINDS and not line.get("skipped")
         ),
         start=_ZERO,
-    )
+    ).quantize(Decimal("0.01"))

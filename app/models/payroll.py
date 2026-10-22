@@ -386,7 +386,8 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "payroll_runs"
     __table_args__ = (
         # One regular run per entity and month. Off-cycle, bonus and arrear runs
-        # are supplementary and may be as many as the month needs.
+        # are supplementary and may be as many as the month needs. A cancelled
+        # run (opened in error, never approved) does not hold the month.
         Index(
             "uq_payroll_run_regular_period",
             "tenant_id",
@@ -394,7 +395,7 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
             "period_year",
             "period_month",
             unique=True,
-            postgresql_where=text("run_type = 'REGULAR'"),
+            postgresql_where=text("run_type = 'REGULAR' AND status <> 'CANCELLED'"),
         ),
     )
 
@@ -461,6 +462,13 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     paid_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # A run opened in error and discarded before approval. Its payslips are
+    # removed; the row stays, with who discarded it and why.
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # What the input providers (loans, reimbursements, arrears, …) said about
     # this run that is not a line on anybody's payslip: a source that is not
     # available yet, or an item left unprocessed and why. Informational — a

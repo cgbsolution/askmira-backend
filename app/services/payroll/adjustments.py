@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException, Request, status
+from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -503,6 +504,16 @@ async def cancel(
 # ── Bulk import ─────────────────────────────────────────────────────────────
 
 _IMPORT_COLUMNS = ("employee_code", "category", "name", "amount", "period", "reason")
+
+
+def _plain(error: dict) -> str:
+    """One validation problem as a sentence about the spreadsheet's column."""
+    column = ".".join(str(part) for part in error.get("loc", ())) or "the row"
+    if error.get("type") == "string_too_short" and error.get("input") in ("", None):
+        return f"the {column} is empty"
+    return f"the {column}: {str(error.get('msg', 'is not valid')).lower()}"
+
+
 _TRUE = {"1", "true", "yes", "y"}
 
 
@@ -587,6 +598,8 @@ async def import_csv(
                     reason=row.get("reason") or "",
                 )
             )
+        except ValidationError as exc:
+            errors.append(f"Row {number}: " + "; ".join(_plain(err) for err in exc.errors()) + ".")
         except ValueError as exc:
             errors.append(f"Row {number}: {exc}")
     if errors:

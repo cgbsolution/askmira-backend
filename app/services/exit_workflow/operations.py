@@ -1074,6 +1074,22 @@ async def approve_settlement(
                 "before approving it."
             ),
         )
+    # Full and final is settled at exit. Before the last working day the leave
+    # balance and the final month are still moving, so it can be prepared and
+    # reviewed, but not signed off.
+    from app.services.attendance.service import local_today
+
+    record = await _record(session, user, settlement.exit_record_id)
+    last_day = record.approved_last_working_day or record.requested_last_working_day
+    if last_day is not None and await local_today(session, user) < last_day:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The last working day is {last_day:%d %b %Y}. A full and final settlement is "
+                "approved once the employee has left: until then leave can still be taken "
+                "and accrued, and the final month's salary is not known."
+            ),
+        )
     # Every claim still owed is settled here or nowhere: a leaver is not in the
     # runs that would otherwise pay it. What the settlement pays for claims has
     # to be exactly what is open, and approving it marks those claims paid.
@@ -1372,8 +1388,8 @@ async def issue_statement(
         net_amount=net,
         separation=(
             f"{record.exit_type.value.replace('_', ' ').capitalize()}; resigned "
-            f"{record.resignation_date.isoformat()}"
-            + (f"; last working day {last_day.isoformat()}" if last_day else "")
+            f"{record.resignation_date:%d %B %Y}"
+            + (f"; last working day {last_day:%d %B %Y}" if last_day else "")
         ),
         notes=notes,
     )
@@ -1465,6 +1481,16 @@ async def set_exit_policy(
     return {"letters_require_settlement": letters_require_settlement}
 
 
+async def _has_left(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether the employee's exit date is recorded (access revoked on the last day)."""
+    left_on = await session.scalar(
+        tenant_scoped(
+            select(Employee.date_of_exit).where(Employee.id == employee_id), Employee, user
+        )
+    )
+    return left_on is not None
+
+
 async def letter_gate(session: AsyncSession, user: User, employee_id: uuid.UUID) -> dict[str, Any]:
     """Whether a relieving or experience letter may be issued to this person now.
 
@@ -1499,6 +1525,18 @@ async def letter_gate(session: AsyncSession, user: User, employee_id: uuid.UUID)
         result.update(
             allowed=False,
             reason=f"The settlement is on hold ({settlement.hold_reason}). Letters wait for it.",
+        )
+    elif not await _has_left(session, user, employee_id):
+        # A relieving letter states the date the employee was relieved, which is
+        # recorded when their access is revoked on the last working day.
+        last_day = record.approved_last_working_day or record.requested_last_working_day
+        result.update(
+            allowed=False,
+            reason=(
+                "Relieving and experience letters are issued once the employee has left"
+                + (f" (last working day {last_day:%d %b %Y})" if last_day else "")
+                + ": their exit date is recorded when access is revoked."
+            ),
         )
     elif policy["letters_require_settlement"] and (
         settlement is None or settlement.status not in SETTLED_STATUSES

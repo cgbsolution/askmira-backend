@@ -335,32 +335,95 @@ def _tax_from_slabs(taxable: Decimal, slabs: list[dict[str, Any]]) -> tuple[Deci
     return _money(tax), breakdown
 
 
-def _rebate(taxable: Decimal, tax: Decimal, regime_rules: dict[str, Any]) -> Decimal:
-    """Section 87A-style rebate, if the regime configures one."""
+def _rebate(
+    taxable: Decimal,
+    tax: Decimal,
+    regime_rules: dict[str, Any],
+    notes: list[str] | None = None,
+) -> Decimal:
+    """Section 87A-style rebate, if the regime configures one.
+
+    With `marginal_relief` set (the new regime's 87A), an income just past the
+    limit never pays more tax than the income above the limit: without it, the
+    first rupee past 12 L would cost the whole 60,000 rebate.
+    """
     config = regime_rules.get("rebate")
     if not config:
         return ZERO
 
     income_limit = _decimal(_require(config, "income_limit"))
-    if taxable > income_limit:
-        return ZERO
+    if taxable <= income_limit:
+        return min(tax, _decimal(_require(config, "max_rebate")))
 
-    return min(tax, _decimal(_require(config, "max_rebate")))
+    if config.get("marginal_relief"):
+        excess = taxable - income_limit
+        if tax > excess:
+            relief = _money(tax - excess)
+            if notes is not None:
+                notes.append(
+                    f"Marginal relief under section 87A: taxable income is {_money(excess)} "
+                    f"above {_money(income_limit)}, so the tax is limited to that excess "
+                    f"(relief of {relief})."
+                )
+            return relief
+    return ZERO
 
 
-def _surcharge(taxable: Decimal, tax: Decimal, rules: dict[str, Any]) -> Decimal:
-    """Surcharge on high incomes, from a configured band table."""
-    bands = rules.get("surcharge_bands")
-    if not bands:
-        return ZERO
-
+def _surcharge_rate(amount: Decimal, bands: list[dict[str, Any]]) -> Decimal:
+    """The configured surcharge rate for an income, zero below every band."""
     for band in bands:
         above = _decimal(_require(band, "above"))
         upper_raw = band.get("up_to")
         upper = _decimal(upper_raw) if upper_raw is not None else None
-        if taxable > above and (upper is None or taxable <= upper):
-            return _money(tax * _decimal(_require(band, "rate")) / PERCENT)
+        if amount > above and (upper is None or amount <= upper):
+            return _decimal(_require(band, "rate"))
     return ZERO
+
+
+def _surcharge(
+    taxable: Decimal,
+    tax: Decimal,
+    rules: dict[str, Any],
+    tax_at: Any = None,
+    notes: list[str] | None = None,
+) -> Decimal:
+    """Surcharge on high incomes, from a configured band table.
+
+    With marginal relief, as every surcharge provision carries: crossing a band's
+    threshold never costs more in tax and surcharge than the income above that
+    threshold. `tax_at(amount)` is the tax (after rebate) on another income, used
+    to price the threshold itself.
+    """
+    bands = rules.get("surcharge_bands")
+    if not bands:
+        return ZERO
+
+    rate = _surcharge_rate(taxable, bands)
+    if rate == ZERO:
+        return ZERO
+    surcharge = _money(tax * rate / PERCENT)
+    if tax_at is None:
+        return surcharge
+
+    threshold = max(
+        _decimal(_require(band, "above"))
+        for band in bands
+        if taxable > _decimal(_require(band, "above"))
+    )
+    at_threshold = tax_at(threshold)
+    at_threshold += at_threshold * _surcharge_rate(threshold, bands) / PERCENT
+    ceiling = at_threshold + (taxable - threshold)
+    if tax + surcharge > ceiling:
+        relieved = _money(max(ZERO, ceiling - tax))
+        if notes is not None:
+            notes.append(
+                f"Marginal relief on surcharge: income is {_money(taxable - threshold)} above "
+                f"{_money(threshold)}, so tax and surcharge are limited to the tax at "
+                f"{_money(threshold)} plus that excess (surcharge {relieved} instead of "
+                f"{surcharge})."
+            )
+        return relieved
+    return surcharge
 
 
 def compute_annual_tax(
@@ -368,19 +431,25 @@ def compute_annual_tax(
     taxable_income: Decimal,
     regime: str,
     rules: dict[str, Any],
+    notes: list[str] | None = None,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal, list[dict]]:
     """Tax on a taxable income under a regime.
 
     Returns `(tax_before_rebate, rebate, surcharge, cess, slab_breakdown)`.
+    Marginal relief, where it applies, is explained in `notes`.
     """
     regime_rules = _require(rules, f"regimes.{regime}")
     slabs = _require(regime_rules, "slabs")
 
     tax, breakdown = _tax_from_slabs(taxable_income, slabs)
-    rebate = _rebate(taxable_income, tax, regime_rules)
+    rebate = _rebate(taxable_income, tax, regime_rules, notes)
     after_rebate = max(ZERO, tax - rebate)
 
-    surcharge = _surcharge(taxable_income, after_rebate, rules)
+    def tax_at(amount: Decimal) -> Decimal:
+        other, _ = _tax_from_slabs(amount, slabs)
+        return max(ZERO, other - _rebate(amount, other, regime_rules))
+
+    surcharge = _surcharge(taxable_income, after_rebate, rules, tax_at, notes)
     cess_percent = _decimal(_require(rules, "cess_percent"))
     cess = _money((after_rebate + surcharge) * cess_percent / PERCENT)
 
@@ -607,7 +676,10 @@ def project(inputs: ProjectionInput, rules: dict[str, Any]) -> TaxComputation:
     computation.taxable_income = _money(taxable)
 
     tax, rebate, surcharge, cess, breakdown = compute_annual_tax(
-        taxable_income=computation.taxable_income, regime=inputs.regime, rules=rules
+        taxable_income=computation.taxable_income,
+        regime=inputs.regime,
+        rules=rules,
+        notes=computation.notes,
     )
     computation.tax_before_rebate = tax
     computation.rebate = rebate
@@ -628,12 +700,17 @@ def monthly_tds(
     already_deducted: Decimal,
     months_remaining: int,
     previous_employer_tds: Decimal = ZERO,
+    rounding: str = "nearest_rupee",
 ) -> Decimal:
     """Spread the residual liability across the months that remain.
 
     Not a flat twelfth. Each month reprojects from what is currently known and
     divides what is left by the months left — which is why a proof verified in
     January reduces February and March rather than being carried to next year.
+
+    Deducted in whole rupees, as tax is deposited by challan: a payslip that
+    deducted paise would never match the challan or the 24Q. The rounding is
+    taken up by the months that follow. A rule set may say `"paise"`.
 
     A negative residual (over-deducted, usually after a late proof) returns
     zero rather than a refund: refunds are settled at filing, and a negative
@@ -646,7 +723,16 @@ def monthly_tds(
     if residual <= ZERO:
         return ZERO
 
-    return _money(residual / Decimal(months_remaining))
+    return round_tds(residual / Decimal(months_remaining), rounding)
+
+
+def round_tds(amount: Decimal, rounding: str = "nearest_rupee") -> Decimal:
+    """A TDS deduction in whole rupees, or paise where the rule set says so."""
+    if rounding == "paise":
+        return _money(amount)
+    if rounding != "nearest_rupee":
+        raise TaxRuleError(f"tds_rounding '{rounding}' is not one of nearest_rupee or paise.")
+    return amount.quantize(Decimal(1), rounding=ROUND_HALF_UP).quantize(RUPEE)
 
 
 def months_remaining_in_year(current_month: int, fy_start_month: int) -> int:

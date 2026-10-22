@@ -5,8 +5,8 @@ THIS MODULE NEVER WRITES A RATE, AND NEVER EDITS ONE
 ═══════════════════════════════════════════════════════════════════════════════
 
 A rule set is supplied by the Compliance SME. This code checks that a new
-version has the *keys* the engines read — never what the values are — and it
-never changes `rules` on an existing row. A rate change is a new
+version has the *keys* the engines read, in the shape they read them — never
+what the values are — and it never changes `rules` on an existing row. A rate change is a new
 effective-dated version; approving it closes the previous version's
 `effective_to`, which is the only thing about an older row that ever moves.
 
@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import func, or_, select
@@ -27,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
+from app.models.employee import Gender
 from app.models.payroll import PayrollRuleSet
 from app.models.user import User
 from app.schemas.payroll_run import RuleSetCreate, RuleSetRead
@@ -60,6 +63,224 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "wage_deductions": ("max_deduction_percent",),
     "bonus": ("eligibility_wage_ceiling", "calculation_wage_ceiling"),
 }
+
+#: Keys read as a number, and those of them read as a percentage. A value the
+#: engine cannot read as one is refused here rather than failing mid-run.
+_NUMBER_KEYS: dict[str, tuple[str, ...]] = {
+    "pf": REQUIRED_KEYS["pf"],
+    "esi": REQUIRED_KEYS["esi"],
+    "tds": ("cess_percent",),
+    "tds_non_salary": ("no_pan_rate",),
+    "wage_deductions": ("max_deduction_percent",),
+    "bonus": (
+        "eligibility_wage_ceiling",
+        "calculation_wage_ceiling",
+        "minimum_percentage",
+        "maximum_percentage",
+        "minimum_service_days",
+    ),
+}
+_PERCENT_KEYS = frozenset(
+    {
+        "employee_rate",
+        "employer_rate",
+        "eps_rate",
+        "cess_percent",
+        "no_pan_rate",
+        "max_deduction_percent",
+        "minimum_percentage",
+        "maximum_percentage",
+    }
+)
+#: Rounding the engines know, by the key that chooses it.
+_ROUNDING_CHOICES: dict[str, tuple[str, frozenset[str]]] = {
+    "pf": ("contribution_rounding", frozenset({"nearest_rupee", "next_rupee", "paise"})),
+    "esi": ("contribution_rounding", frozenset({"nearest_rupee", "next_rupee", "paise"})),
+    "tds": ("tds_rounding", frozenset({"nearest_rupee", "paise"})),
+}
+_SLAB_KEYS = frozenset({"up_to", "amount", "month_amounts", "label"})
+_MONTHS = frozenset(str(month) for month in range(1, 13))
+_GENDERS = frozenset(gender.value for gender in Gender)
+
+
+def _number(value: object) -> Decimal | None:
+    """A JSON value read as the engines read it (`Decimal(str(v))`), or None."""
+    if value is None or isinstance(value, bool | dict | list):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
+
+
+def _amount(value: object) -> bool:
+    number = _number(value)
+    return number is not None and number >= 0
+
+
+def _bound_problems(items: list[Any], where: str, item: str) -> list[str]:
+    """`up_to` ascending, and open (null) on the last one only."""
+    problems: list[str] = []
+    previous: Decimal | None = None
+    for number, entry in enumerate(items, start=1):
+        label = f"{where}, {item} {number}"
+        last = number == len(items)
+        if "up_to" not in entry:
+            problems.append(
+                f"{label} has no up_to (the highest monthly wage it covers; null on the last)."
+            )
+            continue
+        upper = entry["up_to"]
+        if upper is None:
+            if not last:
+                problems.append(
+                    f"{label} has no upper bound, so the ones after it could never apply."
+                )
+            continue
+        bound = _number(upper)
+        if bound is None:
+            problems.append(f"{label}: up_to must be a number, or null on the last.")
+            continue
+        if previous is not None and bound <= previous:
+            problems.append(f"{label}: up_to {upper} must be above the one before it.")
+        previous = bound
+        if last:
+            problems.append(
+                f"{label} is the last and needs up_to null: a wage above {upper} would match none."
+            )
+    return problems
+
+
+def _slab_problems(slabs: object, where: str) -> list[str]:
+    """Professional Tax slabs as `engine._lookup_slab` reads them."""
+    if not isinstance(slabs, list) or not slabs:
+        return [f"{where} must be a list of slabs, lowest first."]
+    if not all(isinstance(slab, dict) for slab in slabs):
+        return [f'{where}: each slab is an object like {{"up_to": 15000, "amount": 150}}.']
+    problems = _bound_problems(slabs, where, "slab")
+    for number, slab in enumerate(slabs, start=1):
+        label = f"{where}, slab {number}"
+        unknown = sorted(set(slab) - _SLAB_KEYS)
+        if unknown:
+            problems.append(
+                f"{label} has {', '.join(unknown)}, which payroll does not read. A slab "
+                "carries up_to and amount, and optionally month_amounts and label."
+            )
+        if not _amount(slab.get("amount")):
+            problems.append(f"{label} needs an amount: a number, 0 or more.")
+        month_amounts = slab.get("month_amounts")
+        if month_amounts is not None and (
+            not isinstance(month_amounts, dict)
+            or any(month not in _MONTHS or not _amount(v) for month, v in month_amounts.items())
+        ):
+            problems.append(
+                f'{label}: month_amounts maps a month ("1" to "12") to what that month '
+                'charges, like {"2": 300}.'
+            )
+    return problems
+
+
+def _lwf_problems(rules: dict[str, Any]) -> list[str]:
+    """Labour Welfare Fund as `statutory.compute_lwf` reads it."""
+    if not isinstance(rules.get("applicable"), bool):
+        return ["applicable must be true or false: whether this state levies LWF."]
+    if not rules["applicable"]:
+        return []
+    problems: list[str] = []
+    months = rules.get("deduction_months")
+    if (
+        not isinstance(months, list)
+        or not months
+        or any(isinstance(m, bool) or not isinstance(m, int) or not 1 <= m <= 12 for m in months)
+    ):
+        problems.append(
+            "deduction_months lists the months LWF is deducted in, as numbers 1 to 12, "
+            "like [6, 12]."
+        )
+    shapes = ("employee_amount", "employer_amount", "employee_percent", "employer_percent")
+    bands = rules.get("wage_bands")
+    if bands is None:
+        sources: list[tuple[str, dict[str, Any]]] = [("The rule set", rules)]
+    elif not isinstance(bands, list) or not bands or not all(isinstance(b, dict) for b in bands):
+        return [*problems, "wage_bands must be a list of bands, lowest first."]
+    else:
+        problems += _bound_problems(bands, "wage_bands", "band")
+        sources = [(f"wage_bands, band {n}", band) for n, band in enumerate(bands, start=1)]
+    for label, source in sources:
+        given = [key for key in shapes if key in source]
+        if not given:
+            problems.append(
+                f"{label} needs employee_amount and employer_amount (or the _percent pair)."
+            )
+        problems += [
+            f"{label}: {key} must be a number, 0 or more."
+            for key in given
+            if not _amount(source[key])
+        ]
+    return problems
+
+
+def rule_problems(rule_type: str, rules: dict[str, Any]) -> list[str]:
+    """What stops the engines reading these rules as meant. Empty when nothing does.
+
+    Shape only: that a rate is a number from 0 to 100, that slabs climb and end
+    open, that a month is 1 to 12. Never whether a value is the right one —
+    that is the Compliance SME's attestation.
+    """
+    problems: list[str] = []
+    for key in _NUMBER_KEYS.get(rule_type, ()):
+        if key not in rules:
+            continue
+        number = _number(rules[key])
+        if number is None or number < 0:
+            problems.append(f"{key} must be a number, 0 or more.")
+        elif key in _PERCENT_KEYS and number > 100:
+            problems.append(f"{key} is a percentage and cannot be above 100.")
+    if rule_type in _ROUNDING_CHOICES:
+        key, choices = _ROUNDING_CHOICES[rule_type]
+        if key in rules and rules[key] not in choices:
+            problems.append(f"{key} must be one of {', '.join(sorted(choices))}.")
+    if rule_type == "professional_tax":
+        problems += _slab_problems(rules.get("slabs"), "slabs")
+        by_gender = rules.get("slabs_by_gender")
+        if by_gender is not None:
+            if not isinstance(by_gender, dict):
+                problems.append(
+                    'slabs_by_gender maps a gender to its own slabs, like {"female": [...]}.'
+                )
+            else:
+                for gender, slabs in by_gender.items():
+                    if gender not in _GENDERS:
+                        problems.append(
+                            f"slabs_by_gender: '{gender}' is not one of "
+                            f"{', '.join(sorted(_GENDERS))}."
+                        )
+                    problems += _slab_problems(slabs, f"slabs_by_gender.{gender}")
+    if rule_type == "labour_welfare_fund":
+        problems += _lwf_problems(rules)
+    return problems
+
+
+def refuse_unreadable(rule_type: str, rules: dict[str, Any]) -> None:
+    """422 unless the engines can read `rules`: the required keys, then their shape."""
+    missing = [key for key in REQUIRED_KEYS.get(rule_type, ()) if key not in rules]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"A {rule_type} rule set needs {', '.join(missing)}. The payroll "
+                "engine refuses to compute without them."
+            ),
+        )
+    problems = rule_problems(rule_type, rules)
+    if problems:
+        shown = " ".join(problems[:6])
+        more = f" (and {len(problems) - 6} more)" if len(problems) > 6 else ""
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Payroll cannot read this {rule_type} rule set as entered: {shown}{more}",
+        )
 
 
 async def _names(
@@ -156,15 +377,7 @@ async def create_rule_set(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{payload.rule_type} is national; its jurisdiction is IN.",
         )
-    missing = [key for key in REQUIRED_KEYS.get(payload.rule_type, ()) if key not in payload.rules]
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"A {payload.rule_type} rule set needs {', '.join(missing)}. The payroll "
-                "engine refuses to compute without them."
-            ),
-        )
+    refuse_unreadable(payload.rule_type, payload.rules)
 
     clash = await session.scalar(
         tenant_scoped(

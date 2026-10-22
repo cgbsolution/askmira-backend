@@ -315,9 +315,12 @@ def notice_shortfall_recovery(
     if shortfall_days == 0:
         return ZERO, "Notice was served in full."
 
-    daily = monthly_wage / Decimal(days_in_month)
+    # The day rate is rounded first, as the basis line states it and as leave
+    # encashment beside it on the statement is: anyone checking "17 days at
+    # 1,222.23" gets the amount charged.
+    daily = _money(monthly_wage / Decimal(days_in_month))
     amount = _money(daily * Decimal(shortfall_days))
     return amount, (
-        f"{shortfall_days} day(s) of notice not served, at {_money(daily)} per day "
+        f"{shortfall_days} day(s) of notice not served, at {daily} per day "
         f"({wage_basis_label} of {_money(monthly_wage)} over {days_in_month} days)."
     )

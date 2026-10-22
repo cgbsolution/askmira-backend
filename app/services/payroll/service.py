@@ -21,6 +21,9 @@ from app.models.employee import Employee
 from app.models.payroll import (
     EmployeeSalary,
     EmployeeSalaryComponent,
+    PayrollRun,
+    PayrollRunStatus,
+    Payslip,
     SalaryComponent,
     SalaryStructure,
     SalaryStructureComponent,
@@ -494,6 +497,35 @@ async def structure_detail(
             for item in sorted(structure.components, key=lambda c: c.display_order)
         ],
     )
+
+
+async def paid_months_since(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, since: date
+) -> list[str]:
+    """Months from `since` that an approved run already paid this employee, as "2026-08".
+
+    A revision dated into them changes nothing about what those runs paid: the
+    difference is an arrear, raised separately.
+    """
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(PayrollRun.period_year, PayrollRun.period_month)
+                .join(Payslip, Payslip.run_id == PayrollRun.id)
+                .where(
+                    Payslip.employee_id == employee_id,
+                    Payslip.is_supplementary.is_(False),
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                    PayrollRun.effective_date >= since,
+                )
+                .distinct()
+                .order_by(PayrollRun.period_year, PayrollRun.period_month),
+                PayrollRun,
+                user,
+            )
+        )
+    ).all()
+    return [f"{year}-{month:02d}" for year, month in rows]
 
 
 async def active_salary_on(

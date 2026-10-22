@@ -131,6 +131,10 @@ class ApproveRequest(BaseModel):
     acknowledge_filings: bool = False
 
 
+class CancelRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class PriorYearIncome(BaseModel):
     financial_year: str = Field(pattern=r"^\d{4}-\d{2,4}$")
     regime: str | None = Field(default=None, pattern="^(old|new)$")
@@ -339,6 +343,27 @@ async def approve(
         batch_id=batch_id,
         acknowledge_filings=payload.acknowledge_filings,
         request=request,
+    )
+    await session.commit()
+    await session.refresh(batch)
+    return ArrearBatchRead.from_model(batch)
+
+
+@router.post(
+    "/arrears/batches/{batch_id}/cancel",
+    response_model=ArrearBatchRead,
+    dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
+)
+async def cancel(
+    batch_id: uuid.UUID,
+    payload: CancelRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> ArrearBatchRead:
+    """Discard a batch that is wrong, before a run pays it."""
+    batch = await arrears_service.cancel_batch(
+        session, user, batch_id=batch_id, reason=payload.reason, request=request
     )
     await session.commit()
     await session.refresh(batch)

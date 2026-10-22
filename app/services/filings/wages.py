@@ -54,6 +54,11 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(RUPEE, rounding=ROUND_HALF_UP)
 
 
+def _whole_rupee(value: Decimal) -> Decimal:
+    """To the rupee, as the return carries it, kept as a money figure."""
+    return value.quantize(Decimal(1), rounding=ROUND_HALF_UP).quantize(RUPEE)
+
+
 def _rule(rules: dict[str, Any], key: str) -> Decimal:
     if key not in rules:
         raise WageError(
@@ -108,6 +113,7 @@ def compute_ecr_wages(
     lop_days: Decimal,
     eps_member: bool = True,
     pf_on_actual_wage: bool = False,
+    vpf: Decimal = ZERO,
 ) -> EcrWages:
     """The four wage figures and the contribution split for one ECR line.
 
@@ -122,6 +128,9 @@ def compute_ecr_wages(
             function can infer, so it is passed in.
         pf_on_actual_wage: the slice 09 election. It raises the EPF wage. It
             does **not** raise the EPS or EDLI wage.
+        vpf: voluntary PF deducted on the payslip. It is the employee's money
+            for their PF account, so it is remitted with the employee's share;
+            left off, it is deducted and never reaches the fund.
     """
     for name, value in (
         ("gross_earnings", gross_earnings),
@@ -129,6 +138,7 @@ def compute_ecr_wages(
         ("pf_employee", pf_employee),
         ("pf_employer", pf_employer),
         ("lop_days", lop_days),
+        ("vpf", vpf),
     ):
         if not isinstance(value, Decimal):
             raise WageError(f"{name} must be a Decimal, not a float")
@@ -171,8 +181,12 @@ def compute_ecr_wages(
     edli_wages = min(pf_wage_base, edli_ceiling)
 
     # ── The contribution split ──────────────────────────────────────────────
-    eps_contribution = _money(eps_wages * eps_rate / Decimal(100))
-    employer_epf_share = _money(pf_employer - eps_contribution)
+    # The return carries whole rupees, so the pension share is rounded first and
+    # the EPF share is what is left of the employer's. Rounded separately, 8.33%
+    # of 15,000 (1,249.50) and its remainder (550.50) become 1,250 and 551: a
+    # rupee more than the employer contributed, on every line at the ceiling.
+    eps_contribution = _whole_rupee(eps_wages * eps_rate / Decimal(100))
+    employer_epf_share = _whole_rupee(pf_employer) - eps_contribution
 
     if employer_epf_share < ZERO:
         raise WageError(
@@ -186,7 +200,7 @@ def compute_ecr_wages(
         epf_wages=_money(epf_wages),
         eps_wages=_money(eps_wages),
         edli_wages=_money(edli_wages),
-        employee_share=_money(pf_employee),
+        employee_share=_money(pf_employee + vpf),
         employer_share=_money(pf_employer),
         eps_contribution=eps_contribution,
         employer_epf_share=employer_epf_share,

@@ -197,6 +197,11 @@ class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     validation_exceptions: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    # Salaries HR held out of this file, with why: an employee with no bank
+    # account yet must not stop everyone else's pay. Each is
+    # {payslip_id, employee_id, employee_code, employee_name, amount, reason,
+    # paid_in_batch_id}; the last is set when a supplementary batch pays it.
+    held: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     lines: Mapped[list[DisbursementLine]] = relationship(

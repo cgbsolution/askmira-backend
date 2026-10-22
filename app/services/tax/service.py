@@ -54,7 +54,7 @@ from app.services.documents import service as documents_service
 from app.services.documents.indian_numbers import group_indian
 from app.services.filings import support
 from app.services.notifications.dispatch import notify, register_event
-from app.services.payroll.service import active_salary_on
+from app.services.payroll.year_pay import year_pay
 from app.services.tax import form_12bb, sources
 from app.services.tax.computation import (
     ProjectionInput,
@@ -416,6 +416,40 @@ async def _declaration(
     return declaration
 
 
+#: Worked out from other records, never declared: HRA from the rent recorded,
+#: Professional Tax and employer NPS from payroll. A declaration under one of
+#: them would be counted on top of the figure already derived.
+_DERIVED_SECTIONS = {
+    "HRA": "HRA is worked out from the rent you record under House rent, not declared.",
+    "PT": "Professional Tax is taken from what payroll deducts, not declared.",
+    "80CCD2": "The employer's NPS contribution is taken from your salary, not declared.",
+}
+
+
+async def _assert_declarable(
+    session: AsyncSession, user: User, financial_year: str, section: str
+) -> None:
+    """A section this year's income tax rules know, and one that is declared at all.
+
+    A typo ("8OC") would otherwise be saved and then quietly give no deduction.
+    """
+    if section in _DERIVED_SECTIONS:
+        raise TaxWorkflowError(_DERIVED_SECTIONS[section])
+    try:
+        rules, _ = await income_tax_rules(session, user, financial_year)
+    except (TaxWorkflowError, HTTPException):
+        return
+    known = set((rules.get("section_limits") or {}).keys())
+    for regime in (rules.get("regimes") or {}).values():
+        known |= set(regime.get("deductions_allowed") or [])
+    known -= set(_DERIVED_SECTIONS)
+    if known and section not in known:
+        raise TaxWorkflowError(
+            f"{section} is not a section this year's income tax rules recognise. Declare "
+            f"under one of: {', '.join(sorted(known))}."
+        )
+
+
 async def upsert_declaration(
     session: AsyncSession,
     user: User,
@@ -430,6 +464,7 @@ async def upsert_declaration(
 ) -> TaxDeclaration:
     await assert_window_open(session, user, financial_year, WindowType.DECLARATION)
     section = section.upper()
+    await _assert_declarable(session, user, financial_year, section)
 
     existing = await session.scalar(
         tenant_scoped(
@@ -1126,6 +1161,7 @@ async def build_projection_input(
     *,
     regime: TaxRegime | None = None,
     use_declared_when_unproven: bool = False,
+    salary_from_payroll: bool = True,
 ) -> ProjectionInput:
     """Gather everything the projection needs.
 
@@ -1133,29 +1169,32 @@ async def build_projection_input(
     editing: before the proof window closes, showing them the impact of what
     they have declared is the useful answer. After it closes, only what was
     proved counts.
+
+    The year's salary is worked out as payroll pays it (`payroll.year_pay`):
+    approved months as paid, the rest at the salary in force then, with
+    Professional Tax — so the projection agrees with the TDS on the payslip.
+    A caller that supplies the salary figures itself (a payroll run, Form 16)
+    passes `salary_from_payroll=False` and gets zeros in their place.
     """
     start, end = financial_year_bounds(financial_year)
 
     election = await get_election(session, user, employee_id, financial_year)
     chosen = regime or (election.regime if election else TaxRegime.NEW)
 
-    salary = await active_salary_on(session, user, employee_id, start)
     gross = ZERO
     basic_plus_da = ZERO
     hra_received = ZERO
     employer_nps = ZERO
-
-    if salary is not None:
-        for component in salary.components:
-            annual = Decimal(str(component.annual_amount))
-            if component.component_type.value == "earning":
-                gross += annual
-            if component.counts_toward_pf:
-                basic_plus_da += annual
-            if component.component_code == "HRA":
-                hra_received += annual
-            if component.component_code in {"NPS_ER", "EMPLOYER_NPS"}:
-                employer_nps += annual
+    professional_tax = ZERO
+    salary_notes: list[str] = []
+    if salary_from_payroll:
+        pay = await year_pay(session, user, employee_id, start, end)
+        gross = pay.taxable_salary + pay.one_off_taxable
+        basic_plus_da = pay.basic_plus_da
+        hra_received = pay.hra
+        employer_nps = pay.employer_nps
+        professional_tax = pay.professional_tax
+        salary_notes = list(pay.notes)
 
     rent = await get_house_rent(session, user, employee_id, financial_year)
     previous = await get_previous_employer(session, user, employee_id, financial_year)
@@ -1214,9 +1253,10 @@ async def build_projection_input(
         previous_tds=Decimal(str(previous.tds_deducted)) if previous else ZERO,
         previous_exempt=Decimal(str(previous.exempt_allowances)) if previous else ZERO,
         employer_nps=employer_nps,
+        professional_tax=professional_tax,
         other_income=tuple(line.as_tuple() for line in other.taxable),
         pending_if_unclaimed=tuple(line.as_tuple() for line in other.pending),
-        income_notes=tuple(other.notes),
+        income_notes=tuple(other.notes) + tuple(salary_notes),
     )
 
 
@@ -1254,6 +1294,7 @@ async def compute_and_store(
         already_deducted=tds_already_deducted,
         months_remaining=remaining,
         previous_employer_tds=inputs.previous_tds,
+        rounding=str(rules.get("tds_rounding", "nearest_rupee")),
     )
 
     snapshot = TaxComputationSnapshot(

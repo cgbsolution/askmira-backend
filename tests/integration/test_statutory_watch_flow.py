@@ -56,6 +56,24 @@ async def test_a_notice_reaches_the_affected_workspace_and_is_drafted(
             ),
             request=None,
         )
+    # Slabs payroll cannot read are refused once, here, not in every workspace.
+    with pytest.raises(HTTPException) as unreadable:
+        await statutory_watch.publish(
+            session,
+            platform,
+            NoticeIn(
+                rule_type="professional_tax",
+                jurisdiction="KA",
+                effective_from=soon,
+                title="Karnataka PT slab change",
+                summary="New slabs from the notification.",
+                source_reference="Notification 1/2026",
+                suggested_rules={"slabs": [{"min": "0", "max": "24999", "amount": "0"}]},
+            ),
+            request=None,
+        )
+    assert unreadable.value.status_code == 422
+    assert "slab 1 has max, min" in unreadable.value.detail
     reviewed = await statutory_watch.publish(
         session,
         platform,
@@ -66,7 +84,12 @@ async def test_a_notice_reaches_the_affected_workspace_and_is_drafted(
             title="Karnataka PT slab change",
             summary="New slabs from the notification.",
             source_reference="Notification 1/2026",
-            suggested_rules={"slabs": [{"min": "0", "max": "24999", "amount": "0"}]},
+            suggested_rules={
+                "slabs": [
+                    {"up_to": 24999, "amount": 0},
+                    {"up_to": None, "amount": 200, "month_amounts": {"2": 300}},
+                ]
+            },
         ),
         request=None,
     )

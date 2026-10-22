@@ -118,7 +118,8 @@ def test_overtime_raises_esi_contribution_but_not_pf(pf_rules, esi_rules) -> Non
 def test_overtime_never_decides_esi_coverage(pf_rules, esi_rules) -> None:
     """Structure wages of 18,000 are covered even when overtime takes them past 21,000."""
     result = compute({"pf": pf_rules, "esi": esi_rules}, inputs=[wage_line("5000")])
-    assert result.esi_employee == Decimal("172.50")  # 0.75% of 23,000
+    # 0.75% of 23,000 is 172.50; ESIC collects it up to the next rupee.
+    assert result.esi_employee == Decimal("173.00")
     assert result.esi_eligibility_base == Decimal("18000.00")
 
 

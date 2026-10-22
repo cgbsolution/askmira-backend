@@ -579,3 +579,122 @@ def test_the_working_is_serialisable_and_carries_the_explanation(rules) -> None:
     assert "limited by" in working["hra"]["explanation"]
     assert working["slabs"]
     assert any(d["section"] == "80C" for d in working["deductions"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Marginal relief: section 87A and surcharge thresholds
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def budget_2025_rules(rules) -> dict:
+    """The new regime as Finance Act 2025 shaped it: 12 L rebate with marginal relief."""
+    rules = {**rules, "regimes": {**rules["regimes"]}}
+    rules["regimes"]["new"] = {
+        "slabs": [
+            {"up_to": 400000, "rate": 0},
+            {"up_to": 800000, "rate": 5},
+            {"up_to": 1200000, "rate": 10},
+            {"up_to": 1600000, "rate": 15},
+            {"up_to": 2000000, "rate": 20},
+            {"up_to": 2400000, "rate": 25},
+            {"up_to": None, "rate": 30},
+        ],
+        "standard_deduction": 75000,
+        "rebate": {"income_limit": 1200000, "max_rebate": 60000, "marginal_relief": True},
+        "deductions_allowed": ["80CCD2"],
+    }
+    rules["surcharge_bands"] = [
+        {"above": 5000000, "up_to": 10000000, "rate": 10},
+        {"above": 10000000, "up_to": 20000000, "rate": 15},
+        {"above": 20000000, "up_to": None, "rate": 25},
+    ]
+    return rules
+
+
+def _liability(taxable: int, regime: str, rules: dict) -> Decimal:
+    tax, rebate, surcharge, cess, _ = compute_annual_tax(
+        taxable_income=D(taxable), regime=regime, rules=rules
+    )
+    return max(D(0), tax - rebate) + surcharge + cess
+
+
+def test_income_at_the_rebate_limit_pays_no_tax(budget_2025_rules) -> None:
+    assert _liability(1_200_000, "new", budget_2025_rules) == D(0)
+
+
+def test_just_past_the_rebate_limit_the_tax_is_capped_at_the_excess(budget_2025_rules) -> None:
+    """12.1 L: slab tax 61,500, but no more than the 10,000 above 12 L, plus cess.
+
+    Without marginal relief the first rupee past the limit cost the whole rebate:
+    63,960 instead of 10,400.
+    """
+    notes: list[str] = []
+    tax, rebate, surcharge, cess, _ = compute_annual_tax(
+        taxable_income=D(1_210_000), regime="new", rules=budget_2025_rules, notes=notes
+    )
+    assert tax == D(61_500)
+    assert tax - rebate == D(10_000)
+    assert cess == D(400)
+    assert any("87A" in note for note in notes)
+
+
+def test_marginal_relief_stops_once_the_slab_tax_is_below_the_excess(budget_2025_rules) -> None:
+    # 12.8 L: slab tax 72,000 is already less than the 80,000 above the limit.
+    assert _liability(1_280_000, "new", budget_2025_rules) == D(74_880)
+
+
+def test_a_rebate_without_marginal_relief_ends_at_the_limit(budget_2025_rules) -> None:
+    """The old regime's 87A has no marginal relief: 5.1 L pays its full slab tax."""
+    tax, rebate, _, _, _ = compute_annual_tax(
+        taxable_income=D(510_000), regime="old", rules=budget_2025_rules
+    )
+    assert rebate == D(0)
+    assert tax == D(14_500)
+
+
+def test_surcharge_marginal_relief_at_fifty_lakh(budget_2025_rules) -> None:
+    """50.1 L: 10% surcharge would be 108,300; the excess over 50 L is only 10,000."""
+    notes: list[str] = []
+    tax, rebate, surcharge, cess, _ = compute_annual_tax(
+        taxable_income=D(5_010_000), regime="new", rules=budget_2025_rules, notes=notes
+    )
+    assert tax == D(1_083_000)
+    assert surcharge == D(7_000)
+    assert tax + surcharge == D(1_090_000)  # tax at 50 L (10,80,000) + the 10,000 above it
+    assert cess == D(43_600)
+    assert any("surcharge" in note for note in notes)
+
+
+def test_surcharge_marginal_relief_at_one_crore_counts_the_lower_band(budget_2025_rules) -> None:
+    """At 1 Cr the tax already carries 10%; crossing into 15% costs at most the excess."""
+    tax, _, surcharge, _, _ = compute_annual_tax(
+        taxable_income=D(10_005_000), regime="new", rules=budget_2025_rules
+    )
+    # Tax at 1 Cr is 25,80,000 plus 10% = 28,38,000; plus the 5,000 above it.
+    assert tax + surcharge == D(2_843_000)
+    assert surcharge == D(261_500)
+
+
+def test_well_past_a_threshold_the_full_surcharge_applies(budget_2025_rules) -> None:
+    tax, _, surcharge, _, _ = compute_annual_tax(
+        taxable_income=D(6_000_000), regime="new", rules=budget_2025_rules
+    )
+    assert surcharge == (tax * D(10) / D(100)).quantize(Decimal("0.01"))
+
+
+def test_monthly_tds_is_deducted_in_whole_rupees() -> None:
+    """Tax is deposited by challan in rupees; the payslip deducts what is deposited."""
+    from app.services.tax.computation import monthly_tds
+
+    assert monthly_tds(
+        annual_liability=D(100_000), already_deducted=D(0), months_remaining=7
+    ) == Decimal("14286.00")
+    assert monthly_tds(
+        annual_liability=D(100_000), already_deducted=D(0), months_remaining=7, rounding="paise"
+    ) == Decimal("14285.71")
+    with pytest.raises(TaxRuleError):
+        monthly_tds(
+            annual_liability=D(100_000), already_deducted=D(0), months_remaining=7,
+            rounding="tens",
+        )

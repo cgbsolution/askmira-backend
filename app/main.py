@@ -141,6 +141,16 @@ app.add_middleware(
 )
 
 
+def _problem(err: dict) -> str:
+    """One validation error as "field: message", or a sentence when it has no field."""
+    path = ".".join(str(part) for part in err["loc"][1:])
+    if path:
+        return f"{path}: {err['msg']}"
+    if err.get("type") == "missing" and tuple(err["loc"][:1]) == ("body",):
+        return "This request needs a body, and none was sent."
+    return str(err["msg"])
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Flatten Pydantic errors into one readable line.
@@ -148,9 +158,7 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
     The frontend shows `detail` directly in a toast, so it has to be a sentence
     rather than a nested error tree.
     """
-    problems = [
-        f"{'.'.join(str(part) for part in err['loc'][1:])}: {err['msg']}" for err in exc.errors()
-    ]
+    problems = [_problem(err) for err in exc.errors()]
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": "; ".join(problems) or "Invalid request"},

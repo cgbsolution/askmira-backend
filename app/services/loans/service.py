@@ -17,6 +17,7 @@ module. The two stay separate here as well.
 
 from __future__ import annotations
 
+import calendar
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -39,6 +40,7 @@ from app.models.loans import (
     ReimbursementClaim,
     ReimbursementComponent,
 )
+from app.models.payroll import PayrollRun
 from app.models.user import User
 from app.services import audit
 from app.services.attendance.service import local_today
@@ -728,8 +730,12 @@ async def list_claims(
     employee_id: uuid.UUID | None,
     financial_year: str | None = None,
     claim_status: ClaimStatus | None = None,
-) -> list[tuple[ReimbursementClaim, tuple[str, str] | None, str | None]]:
-    """Claims: everybody's for payroll, otherwise only the caller's own."""
+) -> list[tuple[ReimbursementClaim, tuple[str, str] | None, str | None, str | None]]:
+    """Claims: everybody's for payroll, otherwise only the caller's own.
+
+    Each comes with the pay month that paid it ("October 2026"), once an approved
+    run has: a verified claim and a paid one otherwise look the same.
+    """
     stmt = select(ReimbursementClaim).order_by(ReimbursementClaim.created_at.desc())
     if employee_id is not None or not permissions.is_hr(user):
         target = permissions.resolve_employee(
@@ -743,9 +749,37 @@ async def list_claims(
     claims = (await session.scalars(tenant_scoped(stmt, ReimbursementClaim, user))).all()
     labels = await _employee_labels(session, user, {claim.employee_id for claim in claims})
     names = {c.code: c.name for c in await list_components(session, user)}
+    paid_in = await paid_periods(session, user, {c.paid_in_run_id for c in claims})
     return [
-        (claim, labels.get(claim.employee_id), names.get(claim.component_code)) for claim in claims
+        (
+            claim,
+            labels.get(claim.employee_id),
+            names.get(claim.component_code),
+            paid_in.get(claim.paid_in_run_id) if claim.paid_in_run_id else None,
+        )
+        for claim in claims
     ]
+
+
+async def paid_periods(
+    session: AsyncSession, user: User, run_ids: set[uuid.UUID | None]
+) -> dict[uuid.UUID, str]:
+    """The pay month of each payroll run, as "October 2026"."""
+    wanted = {run_id for run_id in run_ids if run_id is not None}
+    if not wanted:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(PayrollRun.id, PayrollRun.period_year, PayrollRun.period_month).where(
+                    PayrollRun.id.in_(wanted)
+                ),
+                PayrollRun,
+                user,
+            )
+        )
+    ).all()
+    return {run_id: f"{calendar.month_name[month]} {year}" for run_id, year, month in rows}
 
 
 async def _claim(session: AsyncSession, user: User, claim_id: uuid.UUID) -> ReimbursementClaim:

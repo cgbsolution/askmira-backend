@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.models.employee import Employee, EmployeeWorkLocation
 from app.models.org import Location
 from app.models.payroll import (
     BonusComputation,
@@ -33,6 +33,7 @@ from app.models.payroll import (
     EsiCoveragePeriod,
     PayrollRuleSet,
     PayrollRun,
+    PayrollRunStatus,
     Payslip,
 )
 from app.models.user import User
@@ -40,9 +41,11 @@ from app.services import audit
 from app.services.payroll import registers as register_formats
 from app.services.payroll.statutory import (
     PfElection,
+    PtStateResolution,
     StatutoryError,
     compute_bonus,
     esi_contribution_period,
+    resolve_professional_tax_state,
 )
 
 __all__ = [
@@ -52,7 +55,9 @@ __all__ = [
     "compute_bonus_for_year",
     "disburse_bonus",
     "esi_coverage_for",
+    "location_state",
     "open_esi_coverage_period",
+    "work_state_for_period",
 ]
 
 
@@ -63,6 +68,70 @@ def _unprocessable(exc: Exception) -> HTTPException:
     generic 422 leaves an admin with no way to find out what to fix.
     """
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+async def location_state(
+    session: AsyncSession, user: User, location_id: uuid.UUID | None
+) -> str | None:
+    """The state code of a work location."""
+    if location_id is None:
+        return None
+    return await session.scalar(
+        tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
+    )
+
+
+async def work_state_for_period(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    period_start: date,
+    period_end: date,
+) -> PtStateResolution:
+    """Which state's levies (Professional Tax, LWF) apply to an employee for a period.
+
+    An employee with no recorded transfers resolves from their current location.
+    One with a transfer history is resolved from the series, which is what makes
+    a mid-period move visible instead of silently applying the new state to the
+    whole month — and what prices a past month by the state they worked in then.
+    """
+    postings = (
+        await session.scalars(
+            tenant_scoped(
+                select(EmployeeWorkLocation)
+                .where(
+                    EmployeeWorkLocation.employee_id == employee.id,
+                    EmployeeWorkLocation.effective_from <= period_end,
+                )
+                .order_by(EmployeeWorkLocation.effective_from),
+                EmployeeWorkLocation,
+                user,
+            )
+        )
+    ).all()
+
+    if not postings:
+        state = await location_state(session, user, employee.location_id)
+        if state is None:
+            return PtStateResolution(
+                state_code=None,
+                needs_review=True,
+                reason=(
+                    "This employee has no work location, so no Professional Tax state "
+                    "can be determined."
+                ),
+            )
+        return PtStateResolution(state_code=state, needs_review=False, reason=f"Works in {state}.")
+
+    history: list[tuple[date, str]] = []
+    for posting in postings:
+        state = await location_state(session, user, posting.location_id)
+        if state:
+            history.append((posting.effective_from, state))
+
+    return resolve_professional_tax_state(
+        location_history=history, period_start=period_start, period_end=period_end
+    )
 
 
 async def _rule_set_on(
@@ -406,11 +475,21 @@ async def _bonus_inputs(
     *,
     wage_components: list[str] | None = None,
 ) -> tuple[Decimal, Decimal, Decimal]:
-    """Monthly wage, paid days and working days for a bonus year.
+    """Monthly wage, days paid and the year's days, for a bonus year.
 
-    The wage is the average monthly figure across the year's payslips rather
+    The wage is the average monthly rate across the year's payslips rather
     than the current salary: someone whose pay rose in January should not have
-    the whole year computed at the higher figure.
+    the whole year computed at the higher figure. It is the rate, not what a
+    short month paid — a joining month of ten days does not make somebody's
+    salary a third of what it is, nor make them eligible.
+
+    Only approved months count, from regular payslips: a supplementary payslip
+    (an off-cycle top-up, an arrear) pays no structure and no days, and adding
+    it would count its month twice.
+
+    The bonus is prorated over the financial year's days, not over the days the
+    payslips happen to cover: a mid-year joiner earns part of a year's bonus,
+    and a year computed before it ends earns the part accrued so far.
 
     Which components make up that wage is configuration. The Act speaks of
     "salary or wage", which is not the same thing as gross — a tenant whose SME
@@ -429,6 +508,8 @@ async def _bonus_inputs(
                 .join(PayrollRun, Payslip.run_id == PayrollRun.id)
                 .where(
                     Payslip.employee_id == employee_id,
+                    Payslip.is_supplementary.is_(False),
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
                     PayrollRun.effective_date >= year_start,
                     PayrollRun.effective_date <= year_end,
                 ),
@@ -441,11 +522,17 @@ async def _bonus_inputs(
     if not rows:
         return Decimal(0), Decimal(0), Decimal(0)
 
-    wages = sum((_bonus_wage(row[0], row[3], wage_components) for row in rows), start=Decimal(0))
+    rates: list[Decimal] = []
+    for gross, paid, working, line_items in rows:
+        wage = _bonus_wage(gross, line_items, wage_components)
+        paid_days, working_days = Decimal(str(paid)), Decimal(str(working))
+        if paid_days > 0 and working_days > 0:
+            rates.append(wage * working_days / paid_days)
     paid_days = sum((Decimal(str(row[1])) for row in rows), start=Decimal(0))
-    working_days = sum((Decimal(str(row[2])) for row in rows), start=Decimal(0))
+    year_days = Decimal((year_end - year_start).days + 1)
+    monthly = sum(rates, start=Decimal(0)) / Decimal(len(rates)) if rates else Decimal(0)
 
-    return wages / Decimal(len(rows)), paid_days, working_days
+    return monthly, paid_days, year_days
 
 
 def _bonus_wage(

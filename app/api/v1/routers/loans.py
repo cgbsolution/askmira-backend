@@ -199,6 +199,10 @@ class ClaimRead(BaseModel):
     verification_note: str | None
     verified_at: datetime | None
     created_at: datetime
+    #: Set once an approved payroll run has paid the claim.
+    paid_in_run_id: uuid.UUID | None = None
+    #: That run's pay month, "October 2026".
+    paid_period: str | None = None
 
 
 def _loan_read(
@@ -215,12 +219,14 @@ def _claim_read(
     claim: ReimbursementClaim,
     label: tuple[str, str] | None = None,
     component_name: str | None = None,
+    paid_period: str | None = None,
 ) -> ClaimRead:
     read = ClaimRead.model_validate(claim)
     read.has_bill = bool(claim.bill_storage_key)
     if label:
         read.employee_code, read.employee_name = label
     read.component_name = component_name
+    read.paid_period = paid_period
     return read
 
 
@@ -624,7 +630,7 @@ async def list_claims(
         financial_year=financial_year,
         claim_status=claim_status,
     )
-    return [_claim_read(claim, label, name) for claim, label, name in rows]
+    return [_claim_read(claim, label, name, paid) for claim, label, name, paid in rows]
 
 
 @router.patch(

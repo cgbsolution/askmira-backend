@@ -30,7 +30,7 @@ from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
 from app.models.employee import Employee, EmploymentStatus
 from app.models.filings import FilingRecord, ReturnType
 from app.models.leave import LeaveRequest, LeaveRequestStatus
-from app.models.payroll import PayrollRun
+from app.models.payroll import PayrollRun, PayrollRunStatus
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services import quick_links as quick_links_service
@@ -174,7 +174,9 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
     if permissions.is_hr(user) and payroll_on:
         run = await session.scalar(
             tenant_scoped(
-                select(PayrollRun).order_by(
+                select(PayrollRun)
+                .where(PayrollRun.status != PayrollRunStatus.CANCELLED)
+                .order_by(
                     PayrollRun.period_year.desc(),
                     PayrollRun.period_month.desc(),
                     PayrollRun.created_at.desc(),

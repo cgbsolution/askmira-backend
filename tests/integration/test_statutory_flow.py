@@ -30,6 +30,7 @@ from app.models.payroll import (
     PayrollRuleSet,
     PayrollRun,
     PayrollRunStatus,
+    PayrollRunType,
     Payslip,
     SalaryComponent,
     SalaryStructure,
@@ -102,6 +103,8 @@ async def _run_with_payslip(
     month: int,
     gross: str = "7000.00",
     paid_days: str = "30",
+    working_days: str = "30",
+    run_type: PayrollRunType = PayrollRunType.REGULAR,
     **payslip_kwargs,
 ) -> Payslip:
     import calendar
@@ -112,7 +115,8 @@ async def _run_with_payslip(
         period_year=year,
         period_month=month,
         effective_date=date(year, month, calendar.monthrange(year, month)[1]),
-        status=PayrollRunStatus.PENDING_REVIEW,
+        run_type=run_type,
+        status=PayrollRunStatus.APPROVED,
     )
     session.add(run)
     await session.flush()
@@ -121,9 +125,9 @@ async def _run_with_payslip(
         tenant_id=tenant.id,
         run_id=run.id,
         employee_id=employee.id,
-        working_days=Decimal(30),
+        working_days=Decimal(working_days),
         paid_days=Decimal(paid_days),
-        lop_days=Decimal(30) - Decimal(paid_days),
+        lop_days=Decimal(working_days) - Decimal(paid_days),
         gross_earnings=Decimal(gross),
         net_pay=Decimal(gross),
         **payslip_kwargs,
@@ -397,9 +401,11 @@ async def test_unpaid_absence_reduces_the_bonus(
     )
     await session.commit()
 
-    # Half the working days, so half the bonus.
+    # 45 days paid in a 365-day year, at the 7,000 calculation ceiling: the bonus
+    # is a share of the year's, not three months standing in for twelve.
     full_year = Decimal("7000.00") * 12 * Decimal("8.33") / 100
-    assert Decimal(str(rows[0].amount)) == (full_year / 2).quantize(Decimal("0.01"))
+    assert Decimal(str(rows[0].amount)) == (full_year * 45 / 365).quantize(Decimal("0.01"))
+    assert Decimal(str(rows[0].total_working_days)) == 365
 
 
 async def test_a_high_earner_is_recorded_as_ineligible_with_the_reason(
@@ -525,7 +531,7 @@ async def test_a_recorded_transfer_makes_a_mid_period_state_change_visible(
     Without the posting series, payroll reads the current location and applies
     Maharashtra to the whole of June. With it, the change is visible.
     """
-    from app.services.payroll.run import _professional_tax_state
+    from app.services.payroll.statutory_service import work_state_for_period
 
     pune = Location(
         tenant_id=tenant.id,
@@ -557,7 +563,7 @@ async def test_a_recorded_transfer_makes_a_mid_period_state_change_visible(
     )
     await session.commit()
 
-    resolution = await _professional_tax_state(
+    resolution = await work_state_for_period(
         session, hr_user, employee, date(2025, 6, 1), date(2025, 6, 30)
     )
     assert resolution.needs_review is True
@@ -568,9 +574,9 @@ async def test_a_recorded_transfer_makes_a_mid_period_state_change_visible(
 async def test_an_employee_with_no_transfers_resolves_from_their_location(
     session: AsyncSession, hr_user: User, employee: Employee
 ) -> None:
-    from app.services.payroll.run import _professional_tax_state
+    from app.services.payroll.statutory_service import work_state_for_period
 
-    resolution = await _professional_tax_state(
+    resolution = await work_state_for_period(
         session, hr_user, employee, date(2025, 6, 1), date(2025, 6, 30)
     )
     assert resolution.state_code == "KA"
@@ -580,12 +586,12 @@ async def test_an_employee_with_no_transfers_resolves_from_their_location(
 async def test_an_employee_with_no_location_at_all_is_flagged(
     session: AsyncSession, hr_user: User, employee: Employee
 ) -> None:
-    from app.services.payroll.run import _professional_tax_state
+    from app.services.payroll.statutory_service import work_state_for_period
 
     employee.location_id = None
     await session.commit()
 
-    resolution = await _professional_tax_state(
+    resolution = await work_state_for_period(
         session, hr_user, employee, date(2025, 6, 1), date(2025, 6, 30)
     )
     assert resolution.needs_review is True
@@ -1206,3 +1212,42 @@ async def test_a_clean_run_approves(
     approved = await run_service.approve_run(session, checker, run.id)
     await session.commit()
     assert approved.status is PayrollRunStatus.APPROVED
+
+
+async def test_bonus_counts_approved_regular_months_once_over_the_whole_year(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee, legal_entity
+) -> None:
+    """A full year earns a full year's bonus; a top-up payslip adds no month, and a
+    run nobody approved adds nothing."""
+    await _rules(session, tenant, "bonus", BONUS_RULES)
+    for year, month in [(2025, m) for m in range(4, 13)] + [(2026, m) for m in (1, 2, 3)]:
+        import calendar
+
+        days = calendar.monthrange(year, month)[1]
+        await _run_with_payslip(
+            session, tenant, employee, legal_entity.id, year=year, month=month,
+            paid_days=str(days), working_days=str(days),
+        )
+    top_up = await _run_with_payslip(
+        session, tenant, employee, legal_entity.id, year=2025, month=10, gross="0.00",
+        is_supplementary=True, run_type=PayrollRunType.OFF_CYCLE,
+    )
+    draft = await _run_with_payslip(
+        session, tenant, employee, legal_entity.id, year=2025, month=11, gross="3000.00",
+        run_type=PayrollRunType.OFF_CYCLE,
+    )
+    draft_run = await session.get(PayrollRun, draft.run_id)
+    draft_run.status = PayrollRunStatus.PENDING_REVIEW
+    await session.commit()
+    del top_up
+
+    rows = await statutory_service.compute_bonus_for_year(
+        session, hr_user, financial_year="2025-2026", legal_entity_id=legal_entity.id
+    )
+    await session.commit()
+
+    bonus = rows[0]
+    assert Decimal(str(bonus.days_worked)) == 365
+    assert Decimal(str(bonus.total_working_days)) == 365
+    assert Decimal(str(bonus.eligible_wage)) == Decimal("7000.00")
+    assert Decimal(str(bonus.amount)) == Decimal("6997.20")  # 7,000 x 12 x 8.33%

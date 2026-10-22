@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from .api import Demo
 
 FLOW = "assets"
@@ -146,10 +148,13 @@ async def _hold(demo: Demo, asset_id: str, key: str) -> None:
 async def current(demo: Demo) -> None:
     """Requests in each state: fulfilled, approved, pending and rejected."""
     cat = demo.ids["asset_category"]
+    # Relative to today: a needed-by date in the past is refused.
+    soon = (date.today() + timedelta(days=7)).isoformat()
+    later = (date.today() + timedelta(days=10)).isoformat()
     request = await demo["meera"].post(
         "/assets/requests",
         {"category_id": cat["MON"], "reason": "A second monitor for code reviews",
-         "needed_by": "2026-10-21"},
+         "needed_by": later},
     )
     await demo["vikram"].post(f"/assets/requests/{request['id']}/approve",
                               {"note": "Approved - use one of the spares."})
@@ -170,7 +175,7 @@ async def current(demo: Demo) -> None:
     await demo["pooja"].post(
         "/assets/requests",
         {"category_id": cat["LAP"], "reason": "Laptop keyboard keys are failing",
-         "needed_by": "2026-10-20"},
+         "needed_by": soon},
     )
     request = await demo["imran"].post(
         "/assets/requests",

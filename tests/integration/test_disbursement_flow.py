@@ -729,6 +729,481 @@ async def test_a_batch_with_no_failures_has_nothing_to_reissue(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# One standing file per run, and reissues that cannot pay twice
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _colleague(session: AsyncSession, tenant: Tenant, employee: Employee) -> Employee:
+    person = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM002",
+        first_name="Ravi",
+        last_name="Menon",
+        work_email="ravi@acme.test",
+        legal_entity_id=employee.legal_entity_id,
+        location_id=employee.location_id,
+        status=employee.status,
+        date_of_joining=employee.date_of_joining,
+    )
+    session.add(person)
+    await session.commit()
+    await session.refresh(person)
+    return person
+
+
+async def _fail_the_credit(session: AsyncSession, hr_user: User, batch, number: str) -> None:
+    await disbursement_service.reconcile(
+        session,
+        hr_user,
+        batch_id=batch.id,
+        responses=[{"account_number": number, "status": "failed", "reason": "Account closed"}],
+    )
+    await session.commit()
+
+
+async def test_a_second_file_for_a_run_that_has_one_is_refused(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile, run, _ = await _ready(session, tenant, legal_entity, employee, hr_user)
+    with pytest.raises(HTTPException) as exc:
+        await disbursement_service.prepare_batch(
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
+            value_date=date(2026, 6, 30),
+        )
+    assert exc.value.status_code == 409
+    assert "would pay everyone again" in exc.value.detail
+    assert "Regenerate that file" in exc.value.detail
+
+
+async def test_a_paid_run_cannot_be_paid_again_nor_its_file_rebuilt(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
+    await disbursement_service.reconcile(
+        session,
+        hr_user,
+        batch_id=batch.id,
+        responses=[{"account_number": "50100123456789", "status": "SUCCESS"}],
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as again:
+        await disbursement_service.prepare_batch(
+            session,
+            hr_user,
+            payroll_run_id=batch.payroll_run_id,
+            bank_profile_id=batch.bank_profile_id,
+            value_date=date(2026, 6, 30),
+        )
+    assert again.value.status_code == 409
+    assert "supplementary batch" in again.value.detail
+
+    with pytest.raises(HTTPException) as rebuilt:
+        await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
+    assert rebuilt.value.status_code == 409
+    await session.refresh(batch)
+    assert batch.status is DisbursementStatus.ACKNOWLEDGED, "a paid batch is never superseded"
+    assert batch.acknowledged_at is not None
+
+
+async def test_a_blocked_file_is_prepared_again_once_the_account_exists(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile = await _profile(session, tenant, legal_entity)
+    run = await _run_with_pay(session, tenant, legal_entity, employee)
+    with pytest.raises(disbursement_service.BatchBlockedError):
+        await disbursement_service.prepare_batch(
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
+            value_date=date(2026, 6, 30),
+        )
+    await session.commit()
+
+    await _account(session, tenant, employee)
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+    )
+    assert batch.status is DisbursementStatus.PENDING_APPROVAL
+
+
+async def test_a_payslip_with_nothing_to_pay_is_left_off_and_named(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile = await _profile(session, tenant, legal_entity)
+    await _account(session, tenant, employee)
+    run = await _run_with_pay(session, tenant, legal_entity, employee)
+    unpaid = await _colleague(session, tenant, employee)
+    session.add(
+        Payslip(
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=unpaid.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(0),
+            gross_earnings=Decimal("0.00"),
+            net_pay=Decimal("0.00"),
+        )
+    )
+    await session.commit()
+
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+    )
+    assert batch.status is DisbursementStatus.PENDING_APPROVAL
+    assert batch.employee_count == 1
+    assert batch.notes == "Left off with nothing to pay: ACM002 Ravi Menon."
+
+
+async def test_a_failed_credit_is_reissued_to_the_account_hr_has_since_recorded(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    from app.core.crypto import decrypt_secret
+
+    batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
+    await _fail_the_credit(session, hr_user, batch, "50100123456789")
+
+    closed = await session.scalar(
+        select(EmployeeBankAccount).where(EmployeeBankAccount.employee_id == employee.id)
+    )
+    closed.is_primary = False
+    closed.active = False
+    await _account(session, tenant, employee, number="60200987654321", ifsc="ICIC0004321")
+
+    supplementary = await disbursement_service.supplementary_batch(
+        session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+    )
+    await session.commit()
+    line = await session.scalar(
+        select(DisbursementLine).where(DisbursementLine.batch_id == supplementary.id)
+    )
+    assert decrypt_secret(line.account_number, tenant.id) == "60200987654321"
+    assert line.ifsc == "ICIC0004321"
+
+
+async def test_a_failed_credit_with_no_account_now_is_not_reissued(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
+    await _fail_the_credit(session, hr_user, batch, "50100123456789")
+    closed = await session.scalar(
+        select(EmployeeBankAccount).where(EmployeeBankAccount.employee_id == employee.id)
+    )
+    closed.active = False
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await disbursement_service.supplementary_batch(
+            session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+        )
+    assert exc.value.status_code == 409
+    assert "ACM001: No bank account on record" in exc.value.detail
+    line = await session.scalar(
+        select(DisbursementLine).where(DisbursementLine.batch_id == batch.id)
+    )
+    assert line.status is LineStatus.FAILED, "still waiting to be reissued"
+
+
+async def test_reading_the_bank_response_twice_does_not_reissue_a_credit_twice(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    batch, _ = await _released(session, tenant, legal_entity, employee, hr_user)
+    await _fail_the_credit(session, hr_user, batch, "50100123456789")
+    await disbursement_service.supplementary_batch(
+        session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+    )
+    await session.commit()
+
+    again = await disbursement_service.reconcile(
+        session,
+        hr_user,
+        batch_id=batch.id,
+        responses=[{"account_number": "50100123456789", "status": "failed"}],
+    )
+    await session.commit()
+    assert again["failed"] == []
+    assert again["already_reissued"] == ["6789"]
+    with pytest.raises(HTTPException) as exc:
+        await disbursement_service.supplementary_batch(
+            session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 3)
+        )
+    assert "no failed credits to reissue" in exc.value.detail
+
+
+async def test_regenerating_a_supplementary_batch_rebuilds_only_its_own_credits(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile = await _profile(session, tenant, legal_entity)
+    await _account(session, tenant, employee)
+    run = await _run_with_pay(session, tenant, legal_entity, employee)
+    colleague = await _colleague(session, tenant, employee)
+    await _account(session, tenant, colleague, number="50100999988887")
+    session.add(
+        Payslip(
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=colleague.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(30),
+            gross_earnings=Decimal("60000.00"),
+            net_pay=Decimal("55100.00"),
+        )
+    )
+    await session.commit()
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+    )
+    await session.commit()
+    checker = await _second_user(session, tenant)
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await disbursement_service.release_batch(session, checker, batch_id=batch.id)
+    await session.commit()
+    await _fail_the_credit(session, hr_user, batch, "50100123456789")
+
+    supplementary = await disbursement_service.supplementary_batch(
+        session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+    )
+    await session.commit()
+    rebuilt = await disbursement_service.regenerate_batch(
+        session, hr_user, batch_id=supplementary.id
+    )
+    await session.commit()
+
+    assert rebuilt.supplements_batch_id == batch.id
+    assert rebuilt.employee_count == 1, "only the failed credit, not the whole run"
+    assert rebuilt.total_amount == Decimal("48200.00")
+    await session.refresh(supplementary)
+    assert supplementary.status is DisbursementStatus.FAILED
+    assert supplementary.notes == f"Superseded by batch {rebuilt.id}."
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A salary held out of the file, so one missing account does not stop the rest
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _run_with_a_joiner_without_an_account(session, tenant, legal_entity, employee):
+    profile = await _profile(session, tenant, legal_entity)
+    await _account(session, tenant, employee)
+    run = await _run_with_pay(session, tenant, legal_entity, employee)
+    joiner = await _colleague(session, tenant, employee)
+    session.add(
+        Payslip(
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=joiner.id,
+            working_days=Decimal(30),
+            paid_days=Decimal(12),
+            gross_earnings=Decimal("24000.00"),
+            net_pay=Decimal("22500.00"),
+        )
+    )
+    await session.commit()
+    return profile, run, joiner
+
+
+HOLD = [{"employee_code": "ACM002", "reason": "Bank details not given yet"}]
+
+
+async def test_a_salary_held_out_of_the_file_lets_everyone_else_be_paid(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile, run, _ = await _run_with_a_joiner_without_an_account(
+        session, tenant, legal_entity, employee
+    )
+    with pytest.raises(disbursement_service.BatchBlockedError):
+        await disbursement_service.prepare_batch(
+            session,
+            hr_user,
+            payroll_run_id=run.id,
+            bank_profile_id=profile.id,
+            value_date=date(2026, 6, 30),
+        )
+    await session.commit()
+
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+        hold=HOLD,
+    )
+    await session.commit()
+    assert batch.status is DisbursementStatus.PENDING_APPROVAL
+    assert (batch.employee_count, batch.total_amount) == (1, Decimal("48200.00"))
+    assert [(h["employee_code"], h["amount"], h["paid_in_batch_id"]) for h in batch.held] == [
+        ("ACM002", "22500.00", None)
+    ]
+    assert batch.notes == (
+        "Held out of this file: ACM002 Ravi Menon (Bank details not given yet)."
+    )
+
+
+async def test_held_salaries_are_paid_once_the_file_has_gone_and_the_account_exists(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile, run, joiner = await _run_with_a_joiner_without_an_account(
+        session, tenant, legal_entity, employee
+    )
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+        hold=HOLD,
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as early:
+        await disbursement_service.pay_held(
+            session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+        )
+    assert "Regenerate it without the hold" in early.value.detail
+
+    checker = await _second_user(session, tenant)
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await disbursement_service.release_batch(session, checker, batch_id=batch.id)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as no_account:
+        await disbursement_service.pay_held(
+            session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+        )
+    assert "ACM002: No bank account on record" in no_account.value.detail
+
+    await _account(session, tenant, joiner, number="50100999988887")
+    paid = await disbursement_service.pay_held(
+        session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 2)
+    )
+    await session.commit()
+    assert paid.supplements_batch_id == batch.id
+    assert (paid.employee_count, paid.total_amount) == (1, Decimal("22500.00"))
+    assert paid.status is DisbursementStatus.PENDING_APPROVAL, "it needs its own approval"
+    await session.refresh(batch)
+    assert batch.held[0]["paid_in_batch_id"] == str(paid.id)
+
+    with pytest.raises(HTTPException) as again:
+        await disbursement_service.pay_held(
+            session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 3)
+        )
+    assert "every held salary has been paid" in again.value.detail
+
+
+async def test_regenerating_a_file_keeps_its_holds(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile, run, _ = await _run_with_a_joiner_without_an_account(
+        session, tenant, legal_entity, employee
+    )
+    batch = await disbursement_service.prepare_batch(
+        session,
+        hr_user,
+        payroll_run_id=run.id,
+        bank_profile_id=profile.id,
+        value_date=date(2026, 6, 30),
+        hold=HOLD,
+    )
+    await session.commit()
+    rebuilt = await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
+    await session.commit()
+    assert [h["employee_code"] for h in rebuilt.held] == ["ACM002"]
+    assert rebuilt.employee_count == 1
+
+
+async def test_a_hold_names_a_payslip_in_the_run_and_says_why(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    profile, run, _ = await _run_with_a_joiner_without_an_account(
+        session, tenant, legal_entity, employee
+    )
+    for hold, expected in (
+        ([{"employee_code": "ACM002", "reason": " "}], "Say why ACM002"),
+        ([{"employee_code": "NOPE9", "reason": "Not ours"}], "NOPE9 has no payslip"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await disbursement_service.prepare_batch(
+                session,
+                hr_user,
+                payroll_run_id=run.id,
+                bank_profile_id=profile.id,
+                value_date=date(2026, 6, 30),
+                hold=hold,
+            )
+        assert exc.value.status_code == 422
+        assert expected in exc.value.detail
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Tenant isolation
 # ═══════════════════════════════════════════════════════════════════════════
 

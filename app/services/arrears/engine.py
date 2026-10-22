@@ -30,8 +30,12 @@ from typing import Any
 
 from app.models.payroll import ComponentType, EmployeeSalary, PayrollRuleSet
 from app.services.payroll.engine import PayrollInput, compute_payroll
+from app.services.payroll.statutory import PfElection
 
 __all__ = [
+    "ESI_WAGES",
+    "PF_WAGES",
+    "STATUTORY_WAGE",
     "ArrearError",
     "ComponentDiff",
     "PeriodArrear",
@@ -40,6 +44,15 @@ __all__ = [
 ]
 
 ZERO = Decimal(0)
+RUPEE = Decimal("0.01")
+
+#: A line that is a wage, not money: a revised month's PF and ESI wages, paid
+#: against should-have-been. The arrear returns need them (the EPFO's arrear
+#: ECR carries arrear EPF, EPS and EDLI wages; ESIC takes arrear wages with the
+#: month they are paid in). No total, input line or net pay ever adds one.
+STATUTORY_WAGE = "statutory_wage"
+PF_WAGES = "PF_WAGES"
+ESI_WAGES = "ESI_WAGES"
 
 
 class ArrearError(ValueError):
@@ -134,6 +147,11 @@ def recompute_period(
     historical_rule_sets: dict[str, PayrollRuleSet],
     designation: str | None = None,
     not_employed_days: Decimal = ZERO,
+    pf_election: PfElection | None = None,
+    esi_contributing_at_period_start: bool | None = None,
+    gender: str | None = None,
+    paid_pf_wage: Decimal | None = None,
+    paid_esi_wage: Decimal | None = None,
 ) -> PeriodArrear:
     """One closed period, recomputed on the new salary.
 
@@ -144,6 +162,15 @@ def recompute_period(
             the current ones. Resolved by the caller against the closed run's
             own `effective_date`; there is no way to reach a current rule from
             inside this function.
+        pf_election: the employee's PF election in force then. Without it, PF
+            on actual wages and VPF the original run deducted would come back
+            as a "refund".
+        esi_contributing_at_period_start: ESI coverage when that contribution
+            period opened. A raise past the ceiling does not end coverage
+            mid-period, so it must not refund the ESI that is still due.
+        paid_pf_wage, paid_esi_wage: the PF and ESI wage bases the month was
+            paid on (the payslip's, plus earlier arrears). With them the period
+            also carries `PF_WAGES` / `ESI_WAGES` wage lines for the returns.
 
     Returns a per-component diff. Every component that moved appears, including
     statutory deductions and employer contributions.
@@ -171,6 +198,9 @@ def recompute_period(
             not_employed_days=not_employed_days,
             rule_sets=historical_rule_sets,
             designation=designation,
+            pf_election=pf_election,
+            esi_contributing_at_period_start=esi_contributing_at_period_start,
+            gender=gender,
         )
     )
 
@@ -181,6 +211,8 @@ def recompute_period(
             str(item.get("type", "earning")),
         )
         for item in paid_line_items
+        # Wage lines an earlier arrear added are not payslip components.
+        if str(item.get("type")) != STATUTORY_WAGE
     }
     should = {
         line.code: (line.amount, line.name, _type_of(line.component_type))
@@ -212,6 +244,30 @@ def recompute_period(
                 component_type=should_type or paid_type,
                 paid=paid_amount,
                 should_have_been=should_amount,
+            )
+        )
+
+    if paid_pf_wage is not None and "pf" in historical_rule_sets:
+        diffs.append(
+            ComponentDiff(
+                code=PF_WAGES,
+                name="PF wages (reported to EPFO)",
+                component_type=STATUTORY_WAGE,
+                paid=paid_pf_wage.quantize(RUPEE),
+                should_have_been=recomputed.pf_wage_base.quantize(RUPEE),
+            )
+        )
+    contributes_esi = any(
+        d.code == "ESI_EMPLOYEE" and (d.paid or d.should_have_been) for d in diffs
+    )
+    if paid_esi_wage is not None and contributes_esi:
+        diffs.append(
+            ComponentDiff(
+                code=ESI_WAGES,
+                name="ESI wages (reported to ESIC)",
+                component_type=STATUTORY_WAGE,
+                paid=paid_esi_wage.quantize(RUPEE),
+                should_have_been=recomputed.esi_wage_base.quantize(RUPEE),
             )
         )
 

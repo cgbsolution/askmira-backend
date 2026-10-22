@@ -127,10 +127,20 @@ def test_the_employer_share_splits_into_eps_and_epf() -> None:
     double-counts, which is the other common ECR error."""
     result = wages(pf_wage_base=D(15_000), pf_employee=D(1_800), pf_employer=D(1_800))
 
-    # 8.33% of 15,000 = 1,249.50
-    assert result.eps_contribution == D("1249.50")
-    assert result.employer_epf_share == D("550.50")
+    # 8.33% of 15,000 = 1,249.50, which the return carries as 1,250; the EPF
+    # share is the 550 left, not 550.50 rounded up to 551.
+    assert result.eps_contribution == D("1250.00")
+    assert result.employer_epf_share == D("550.00")
     assert result.eps_contribution + result.employer_epf_share == result.employer_share
+
+
+def test_the_split_adds_up_to_the_employer_share_in_whole_rupees() -> None:
+    """Every line the return carries: 8.33% of a wage below the ceiling too."""
+    for base in (D(7_600), D(8_000), D(12_345), D(15_000)):
+        employer = (base * 12 / 100).quantize(D(1))
+        result = wages(pf_wage_base=base, pf_employee=employer, pf_employer=employer)
+        assert result.eps_contribution == result.eps_contribution.quantize(D(1))
+        assert result.eps_contribution + result.employer_epf_share == employer
 
 
 def test_a_non_eps_member_has_no_pension_wage_or_contribution() -> None:
@@ -226,3 +236,27 @@ def test_the_working_is_json_serialisable() -> None:
 
 def test_the_computation_is_deterministic() -> None:
     assert wages().as_dict() == wages().as_dict()
+
+
+def test_vpf_is_remitted_with_the_employee_share() -> None:
+    """Voluntary PF is the employee's money for their PF account: the ECR carries it."""
+    from app.services.filings.wages import compute_ecr_wages
+
+    rules = {
+        "wage_ceiling": 15000,
+        "eps_wage_ceiling": 15000,
+        "edli_wage_ceiling": 15000,
+        "eps_rate": "8.33",
+    }
+    wages = compute_ecr_wages(
+        rules=rules,
+        gross_earnings=Decimal("216667"),
+        pf_wage_base=Decimal("86667"),
+        pf_employee=Decimal("10400"),
+        pf_employer=Decimal("10400"),
+        lop_days=Decimal(0),
+        pf_on_actual_wage=True,
+        vpf=Decimal("4333"),
+    )
+    assert wages.employee_share == Decimal("14733.00")
+    assert wages.employer_share == Decimal("10400.00")

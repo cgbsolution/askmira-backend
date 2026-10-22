@@ -15,10 +15,12 @@ makes a format change a one-file patch during a filing window.
 
 from __future__ import annotations
 
+import calendar
+import dataclasses
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -26,6 +28,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
+from app.models.arrears import ArrearBatch, ArrearLine, ArrearStatus
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.filings import (
@@ -46,8 +49,11 @@ from app.models.payroll import (
 from app.models.tax import TaxComputationSnapshot
 from app.models.user import User
 from app.services import audit
+from app.services.arrears.engine import ESI_WAGES, PF_WAGES
 from app.services.filings import serialisers, support, validation
 from app.services.filings.records import (
+    ArrearEcrLine,
+    ArrearEcrReturn,
     EcrLine,
     EcrReturn,
     EsicLine,
@@ -65,6 +71,7 @@ from app.services.payroll import statutory_service
 __all__ = [
     "FilingBlockedError",
     "GeneratedFile",
+    "generate_arrear_ecr",
     "generate_ecr",
     "generate_esic",
     "generate_pt_challans",
@@ -127,6 +134,8 @@ async def _approved_run(
                 PayrollRun.period_year == year,
                 PayrollRun.period_month == month,
                 PayrollRun.run_type == PayrollRunType.REGULAR,
+                # A month can hold a run cancelled in error beside the real one.
+                PayrollRun.status != PayrollRunStatus.CANCELLED,
             ),
             PayrollRun,
             user,
@@ -172,6 +181,8 @@ class _MonthPay:
     tds: Decimal
     lop_days: Decimal
     paid_days: Decimal
+    #: Voluntary PF: remitted with the employee's share on the ECR.
+    vpf: Decimal = Decimal(0)
 
 
 def _as_decimal(value: object) -> Decimal:
@@ -230,6 +241,7 @@ async def _payslips(
                     tds=_as_decimal(payslip.tds),
                     lop_days=_as_decimal(payslip.lop_days),
                     paid_days=_as_decimal(payslip.paid_days),
+                    vpf=_as_decimal(payslip.vpf or 0),
                 ),
                 employee,
             )
@@ -245,6 +257,7 @@ async def _payslips(
         pay.esi_employer += _as_decimal(payslip.esi_employer)
         pay.professional_tax += _as_decimal(payslip.professional_tax)
         pay.tds += _as_decimal(payslip.tds)
+        pay.vpf += _as_decimal(payslip.vpf or 0)
         if not payslip.is_supplementary:
             pay.lop_days = _as_decimal(payslip.lop_days)
             pay.paid_days = _as_decimal(payslip.paid_days)
@@ -393,6 +406,7 @@ async def generate_ecr(
                 lop_days=Decimal(str(payslip.lop_days)),
                 eps_member=_eps_member(employee),
                 pf_on_actual_wage=bool(election and election.on_actual_wage),
+                vpf=payslip.vpf,
             )
         except WageError as exc:
             raise HTTPException(
@@ -486,6 +500,232 @@ def _eps_member(employee: Employee) -> bool:
     return True if value is None else bool(value)
 
 
+def _rupee(value: Decimal) -> Decimal:
+    return value.quantize(Decimal(1), rounding=ROUND_HALF_UP)
+
+
+async def generate_arrear_ecr(
+    session: AsyncSession,
+    user: User,
+    *,
+    legal_entity_id: uuid.UUID,
+    year: int,
+    month: int,
+    request: Request | None = None,
+) -> GeneratedFile:
+    """The PF arrear ECR for the arrears paid with a month's payroll.
+
+    The EPFO takes PF arrears on a separate arrear ECR: per member the arrear
+    EPF, EPS and EDLI wages and the three shares. Each recomputed month is
+    worked on its own rule set and the member's PF election then, and the
+    months add up per member. The figures are the arrear batch's, which is what
+    the arrear payslip deducted.
+    """
+    entity = await _entity(session, user, legal_entity_id)
+    await _approved_run(session, user, legal_entity_id, year, month)
+    period = f"{year}-{month:02d}"
+    arrears = await _arrears_paid_in(
+        session, user, legal_entity_id, year, month, ("PF_EMPLOYEE", "PF_EMPLOYER", "VPF", PF_WAGES)
+    )
+    if not arrears:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"No PF arrears were paid with the payroll for {calendar.month_name[month]} "
+                f"{year}, so there is no arrear ECR to file."
+            ),
+        )
+
+    rule_sets: dict[uuid.UUID, PayrollRuleSet | None] = {}
+    elections: dict[tuple[uuid.UUID, str], bool] = {}
+    by_employee: dict[uuid.UUID, list[ArrearLine]] = {}
+    for arrear in arrears:
+        by_employee.setdefault(arrear.employee_id, []).append(arrear)
+
+    exceptions: list[validation.FilingException] = []
+    to_validate: list[dict[str, Any]] = []
+    computed: list[ArrearEcrLine] = []
+    for employee_id, mine in by_employee.items():
+        employee = await session.scalar(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+        if employee is None:
+            continue
+        eps_member = _eps_member(employee)
+        totals = dict.fromkeys(("epf", "eps", "edli", "ee", "er", "eps_share"), Decimal(0))
+        wage_periods = {a.period for a in mine if a.component_code == PF_WAGES}
+        unrecorded = sorted(
+            {a.period for a in mine if a.component_code != PF_WAGES and a.difference} - wage_periods
+        )
+        for arrear in mine:
+            difference = Decimal(str(arrear.difference))
+            if arrear.component_code in ("PF_EMPLOYEE", "VPF"):
+                totals["ee"] += difference
+                continue
+            if arrear.component_code == "PF_EMPLOYER":
+                totals["er"] += difference
+                continue
+            year_, month_ = (int(part) for part in arrear.period.split("-"))
+            period_end = date(year_, month_, calendar.monthrange(year_, month_)[1])
+            if arrear.rule_set_id not in rule_sets:
+                rule_sets[arrear.rule_set_id] = (
+                    await session.get(PayrollRuleSet, arrear.rule_set_id)
+                    if arrear.rule_set_id
+                    else await _rule_set(session, user, "pf", "IN", period_end)
+                )
+            rules = rule_sets[arrear.rule_set_id]
+            if rules is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"No PF rule set covers {arrear.period}, the month this arrear revises.",
+                )
+            key = (employee_id, arrear.period)
+            if key not in elections:
+                election = await statutory_service.active_pf_election(
+                    session, user, employee_id, period_end
+                )
+                elections[key] = bool(election and election.on_actual_wage)
+            missing = [
+                name
+                for name in ("wage_ceiling", "eps_wage_ceiling", "edli_wage_ceiling", "eps_rate")
+                if name not in rules.rules
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"The PF rule set for {arrear.period} has no {', '.join(missing)}. EPF, "
+                        "EPS and EDLI arrear wages each take their own ceiling; none is assumed."
+                    ),
+                )
+            ceiling = Decimal(str(rules.rules["wage_ceiling"]))
+            eps_ceiling = Decimal(str(rules.rules["eps_wage_ceiling"]))
+            edli_ceiling = Decimal(str(rules.rules["edli_wage_ceiling"]))
+            eps_rate = Decimal(str(rules.rules["eps_rate"]))
+            for sign, wage in (
+                (Decimal(-1), Decimal(str(arrear.paid_amount))),
+                (Decimal(1), Decimal(str(arrear.should_have_been_amount))),
+            ):
+                eps_wage = min(wage, eps_ceiling) if eps_member else Decimal(0)
+                totals["epf"] += sign * (wage if elections[key] else min(wage, ceiling))
+                totals["eps"] += sign * eps_wage
+                totals["edli"] += sign * min(wage, edli_ceiling)
+                # Whole rupees per month, as each month's own return carried it.
+                totals["eps_share"] += sign * _rupee(eps_wage * eps_rate / Decimal(100))
+        if unrecorded:
+            exceptions.append(
+                validation.FilingException(
+                    validation.Severity.BLOCKING,
+                    "ARREAR_WAGES_UNRECORDED",
+                    employee.employee_code,
+                    "epf_wages",
+                    "These arrears were computed before AskMira recorded the PF wages they "
+                    f"revise ({', '.join(unrecorded)}), so their arrear wages are not known "
+                    "here. Prepare this member's arrear ECR line from the arrear batch.",
+                )
+            )
+            continue
+        line = ArrearEcrLine(
+            uan=employee.uan or "",
+            member_name=employee.full_name,
+            epf_wages=totals["epf"],
+            eps_wages=totals["eps"],
+            edli_wages=totals["edli"],
+            employee_share=totals["ee"],
+            employer_epf_share=totals["er"] - totals["eps_share"],
+            eps_contribution=totals["eps_share"],
+        )
+        figures = (
+            line.epf_wages,
+            line.eps_wages,
+            line.edli_wages,
+            line.employee_share,
+            line.employer_epf_share,
+            line.eps_contribution,
+        )
+        if not any(figures):
+            continue
+        if any(figure < 0 for figure in figures):
+            exceptions.append(
+                validation.FilingException(
+                    validation.Severity.WARNING,
+                    "ARREAR_REDUCTION",
+                    employee.employee_code,
+                    "employee_share",
+                    "These arrears reduce PF. The arrear ECR carries no negative figures, so "
+                    "this member is left off it; the excess is settled with the EPFO.",
+                )
+            )
+            continue
+        computed.append(line)
+        to_validate.append(
+            {
+                "subject": employee.employee_code,
+                "uan": line.uan,
+                "member_name": line.member_name,
+                "epf_wages": line.epf_wages,
+                "eps_wages": line.eps_wages,
+                "edli_wages": line.edli_wages,
+                "employee_share": line.employee_share,
+                "employer_epf_share": line.employer_epf_share,
+                "eps_contribution": line.eps_contribution,
+            }
+        )
+
+    checked = validation.validate_ecr_lines(to_validate)
+    found = [*checked.exceptions, *exceptions]
+    if not computed:
+        found.append(
+            validation.FilingException(
+                validation.Severity.BLOCKING,
+                "NOTHING_TO_FILE",
+                entity.code,
+                "lines",
+                "The arrears paid this month change no PF wage or contribution the arrear "
+                "ECR carries.",
+            )
+        )
+    result = validation.ValidationResult(found)
+    if result.is_blocked:
+        record = await _record(
+            session,
+            user,
+            return_type=ReturnType.PF_ECR_ARREAR,
+            entity_id=legal_entity_id,
+            period=period,
+            jurisdiction=None,
+            result=result,
+            content=None,
+            file_name=None,
+            record_count=0,
+            total_amount=Decimal(0),
+            request=request,
+        )
+        raise FilingBlockedError(record, result)
+
+    ecr = ArrearEcrReturn(
+        establishment_code=entity.pf_registration_no or "",
+        wage_month=f"{month:02d}{year}",
+        lines=computed,
+    )
+    content = serialisers.serialise_arrear_ecr(ecr)
+    record = await _record(
+        session,
+        user,
+        return_type=ReturnType.PF_ECR_ARREAR,
+        entity_id=legal_entity_id,
+        period=period,
+        jurisdiction=None,
+        result=result,
+        content=content,
+        file_name=f"ARREAR_ECR_{entity.code}_{month:02d}{year}.txt",
+        record_count=len(ecr.lines),
+        total_amount=ecr.total_contributions,
+        request=request,
+    )
+    return GeneratedFile(content, record, result)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ESIC
 # ═══════════════════════════════════════════════════════════════════════════
@@ -508,6 +748,7 @@ async def generate_esic(
     period = f"{year}-{month:02d}"
     to_validate: list[dict[str, Any]] = []
     lines: list[EsicLine] = []
+    line_of: dict[uuid.UUID, int] = {}
 
     for payslip, employee in rows:
         employee_share = Decimal(str(payslip.esi_employee))
@@ -546,6 +787,7 @@ async def generate_esic(
             employer_contribution=employer_share,
             continuing_reason=continuing,
         )
+        line_of[employee.id] = len(lines)
         lines.append(line)
         to_validate.append(
             {
@@ -558,7 +800,11 @@ async def generate_esic(
             }
         )
 
-    result = validation.validate_esic_lines(to_validate)
+    noted = await _esi_arrears_into(
+        session, user, legal_entity_id, year, month, lines, line_of, to_validate
+    )
+    checked = validation.validate_esic_lines(to_validate)
+    result = validation.ValidationResult([*checked.exceptions, *noted])
     if result.is_blocked:
         record = await _record(
             session,
@@ -598,6 +844,132 @@ async def generate_esic(
         request=request,
     )
     return GeneratedFile(content, record, result)
+
+
+async def _arrears_paid_in(
+    session: AsyncSession,
+    user: User,
+    legal_entity_id: uuid.UUID,
+    year: int,
+    month: int,
+    codes: tuple[str, ...],
+) -> list[ArrearLine]:
+    """Arrear lines with these codes, from batches paid with the month's payroll."""
+    runs = tenant_scoped(
+        select(PayrollRun.id).where(
+            PayrollRun.legal_entity_id == legal_entity_id,
+            PayrollRun.period_year == year,
+            PayrollRun.period_month == month,
+            PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+        ),
+        PayrollRun,
+        user,
+    )
+    rows = await session.scalars(
+        tenant_scoped(
+            select(ArrearLine)
+            .join(ArrearBatch, ArrearLine.batch_id == ArrearBatch.id)
+            .where(
+                ArrearBatch.status == ArrearStatus.PAID,
+                ArrearBatch.legal_entity_id == legal_entity_id,
+                ArrearBatch.paid_in_run_id.in_(runs),
+                ArrearLine.component_code.in_(codes),
+            )
+            .order_by(ArrearLine.employee_id, ArrearLine.period),
+            ArrearLine,
+            user,
+        )
+    )
+    return list(rows.all())
+
+
+async def _esi_arrears_into(
+    session: AsyncSession,
+    user: User,
+    legal_entity_id: uuid.UUID,
+    year: int,
+    month: int,
+    lines: list[EsicLine],
+    line_of: dict[uuid.UUID, int],
+    to_validate: list[dict[str, Any]],
+) -> list[validation.FilingException]:
+    """Add the ESI arrears paid with this month to its return, in place.
+
+    ESIC takes arrears of wages with the month they are paid in, so an IP's
+    arrear ESI wages and contributions join that month's line. What cannot go
+    on the file is said rather than dropped.
+    """
+    arrears = await _arrears_paid_in(
+        session, user, legal_entity_id, year, month, (ESI_WAGES, "ESI_EMPLOYEE", "ESI_EMPLOYER")
+    )
+    per_employee: dict[uuid.UUID, dict[str, Decimal]] = {}
+    for arrear in arrears:
+        bucket = per_employee.setdefault(arrear.employee_id, {})
+        code = arrear.component_code
+        bucket[code] = bucket.get(code, Decimal(0)) + Decimal(str(arrear.difference))
+
+    noted: list[validation.FilingException] = []
+    for employee_id, bucket in per_employee.items():
+        wages = bucket.get(ESI_WAGES, Decimal(0))
+        employee_share = bucket.get("ESI_EMPLOYEE", Decimal(0))
+        employer_share = bucket.get("ESI_EMPLOYER", Decimal(0))
+        if not (wages or employee_share or employer_share):
+            continue
+        employee = await session.scalar(
+            tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+        )
+        subject = employee.employee_code if employee else str(employee_id)
+        owed = employee_share + employer_share
+        if wages < 0 or owed < 0:
+            noted.append(
+                validation.FilingException(
+                    validation.Severity.WARNING,
+                    "ARREAR_REDUCTION",
+                    subject,
+                    "wages_paid",
+                    f"Arrears paid this month reduce ESI wages by {-wages} and contributions "
+                    f"by {-owed}. ESIC takes no negative wages: the month is filed on its own "
+                    "wages and the excess is settled with ESIC.",
+                )
+            )
+            continue
+        position = line_of.get(employee_id)
+        if position is None:
+            noted.append(
+                validation.FilingException(
+                    validation.Severity.WARNING,
+                    "ARREAR_NOT_ON_FILE",
+                    subject,
+                    "wages_paid",
+                    f"ESI arrears of {owed} (on arrear wages of {wages}) were paid this month, "
+                    "but this IP has no ESI wages this month and the monthly file cannot "
+                    "carry wages without days. Deposit them on the ESIC portal separately.",
+                )
+            )
+            continue
+        line = lines[position]
+        lines[position] = dataclasses.replace(
+            line,
+            wages_paid=line.wages_paid + wages,
+            employee_contribution=line.employee_contribution + employee_share,
+            employer_contribution=line.employer_contribution + employer_share,
+        )
+        row = to_validate[position]
+        row["wages_paid"] = lines[position].wages_paid
+        row["employee_contribution"] = lines[position].employee_contribution
+        row["employer_contribution"] = lines[position].employer_contribution
+        noted.append(
+            validation.FilingException(
+                validation.Severity.WARNING,
+                "ARREARS_INCLUDED",
+                subject,
+                "wages_paid",
+                f"Includes arrear wages of {wages} paid this month (ESI {employee_share} "
+                f"employee, {employer_share} employer): ESIC takes arrears with the month "
+                "they are paid in.",
+            )
+        )
+    return noted
 
 
 def _esi_period_label(month: int, esi_rules: PayrollRuleSet | None) -> str:
@@ -1068,6 +1440,15 @@ async def record_acknowledgement(
                 "A correction is a fresh filing, not an edit of this record."
             ),
         )
+    if record.status is FilingStatus.REJECTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The portal rejected this file"
+                + (f" ({record.rejection_reason})" if record.rejection_reason else "")
+                + ". Generate the return again and record the acknowledgement on the new file."
+            ),
+        )
 
     record.acknowledgement_number = acknowledgement_number
     record.filed_at = filed_at or datetime.now(UTC)
@@ -1090,6 +1471,58 @@ async def record_acknowledgement(
             "acknowledgement_number": acknowledgement_number,
             "filed_at": record.filed_at.isoformat(),
         },
+        request=request,
+    )
+    return record
+
+
+async def record_rejection(
+    session: AsyncSession,
+    user: User,
+    *,
+    record_id: uuid.UUID,
+    reason: str,
+    request: Request | None = None,
+) -> FilingRecord:
+    """Record that the portal rejected a generated file, and why.
+
+    Kept rather than deleted: the next attempt needs to know what was wrong. Only
+    a generated file can be rejected: one the validation blocked was never
+    produced, and one already acknowledged was accepted by the portal.
+    """
+    record = await session.scalar(
+        tenant_scoped(select(FilingRecord).where(FilingRecord.id == record_id), FilingRecord, user)
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Filing record not found")
+    if record.status is not FilingStatus.GENERATED:
+        detail = {
+            FilingStatus.BLOCKED: (
+                "This return was never generated — validation blocked it — so the portal "
+                "cannot have rejected it."
+            ),
+            FilingStatus.FILED: (
+                f"This return is acknowledged as {record.acknowledgement_number}: the portal "
+                "accepted it. A correction is a fresh filing."
+            ),
+            FilingStatus.REJECTED: (
+                f"This file's rejection is already recorded: {record.rejection_reason}"
+            ),
+        }.get(record.status, f"A {record.status.value} return cannot be marked rejected.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+    record.status = FilingStatus.REJECTED
+    record.rejection_reason = reason.strip()
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        actor=user,
+        action=AuditAction.UPDATE,
+        entity_type="filing_record",
+        entity_id=record.id,
+        summary=f"Portal rejected {record.return_type.value} {record.period}",
+        changes={"rejection_reason": record.rejection_reason},
         request=request,
     )
     return record

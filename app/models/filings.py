@@ -43,6 +43,9 @@ from app.models.base import Base, TenantMixin, TimestampMixin, UUIDMixin
 
 class ReturnType(str, enum.Enum):
     PF_ECR = "pf_ecr"
+    # PF arrears paid with a month's salary: the EPFO takes them on a separate
+    # arrear ECR, never on the month's regular one.
+    PF_ECR_ARREAR = "pf_ecr_arrear"
     ESIC = "esic"
     PROFESSIONAL_TAX = "professional_tax"
     TDS_24Q = "tds_24q"

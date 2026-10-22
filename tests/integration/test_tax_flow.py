@@ -1004,3 +1004,38 @@ async def test_snapshots_accumulate_so_a_change_can_be_compared(
 
     count = await session.scalar(select(func.count(TaxComputationSnapshot.id)))
     assert count == 2
+
+
+async def test_a_section_the_rules_do_not_know_is_refused(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    """A typo would otherwise be saved and quietly give no deduction."""
+    await _tds_rules(session, tenant)
+    await _windows(session, tenant)
+
+    for section, message in (("8OC", "not a section"), ("HRA", "House rent"), ("PT", "payroll")):
+        with pytest.raises(TaxWorkflowError) as exc:
+            await tax_service.upsert_declaration(
+                session,
+                hr_user,
+                employee_id=employee.id,
+                financial_year=FY,
+                section=section,
+                sub_category="",
+                declared_amount=Decimal("1000"),
+            )
+        assert message in str(exc.value)
+
+
+def test_previous_employer_deductions_cannot_exceed_the_salary() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.tax import PreviousEmployerUpsert
+
+    with pytest.raises(ValidationError, match="more than the gross salary"):
+        PreviousEmployerUpsert(
+            financial_year=FY, gross_salary=Decimal(100), tds_deducted=Decimal(500)
+        )
+    assert PreviousEmployerUpsert(
+        financial_year=FY, gross_salary=Decimal(780000), tds_deducted=Decimal(41000)
+    ).tds_deducted == Decimal(41000)

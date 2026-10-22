@@ -28,6 +28,7 @@ import hashlib
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from app.services.filings.records import (
+    ArrearEcrReturn,
     EcrReturn,
     EsicReturn,
     PtChallan,
@@ -37,6 +38,7 @@ from app.services.filings.records import (
 __all__ = [
     "SerialiserError",
     "content_hash",
+    "serialise_arrear_ecr",
     "serialise_ecr",
     "serialise_esic",
     "serialise_pt_challan",
@@ -79,11 +81,18 @@ def content_hash(content: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PF ECR — pipe-delimited text
+# PF ECR — #~#-delimited text (ECR 2.0)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# The EPFO ECR line, in order. Twelve fields; a line with eleven or thirteen is
-# rejected without a useful message.
+#: The field separator the EPFO's ECR 2.0 file prescribes: three characters,
+#: hash tilde hash. A file in any other delimiter is rejected at upload.
+ECR_DELIMITER = "#~#"
+
+# The EPFO ECR line, in order. Eleven fields; a line with ten or twelve is
+# rejected without a useful message. The employer's two shares are in the
+# portal's order: the EPS (pension) contribution, then the EPF-EPS difference.
+# Swapped, the pension fund and the provident fund are credited each other's
+# money.
 ECR_COLUMNS = (
     "uan",
     "member_name",
@@ -92,8 +101,8 @@ ECR_COLUMNS = (
     "eps_wages",
     "edli_wages",
     "employee_share",
-    "employer_epf_share",
     "eps_contribution",
+    "employer_epf_share",
     "ncp_days",
     "refund_of_advances",
 )
@@ -102,17 +111,17 @@ ECR_COLUMNS = (
 def serialise_ecr(ecr: EcrReturn) -> str:
     """The ECR text file.
 
-    Pipe-delimited, CRLF-terminated, one line per member, no header. The
+    `#~#`-delimited, CRLF-terminated, one line per member, no header. The
     absence of a header is not an oversight — the EPFO uploader treats a header
     row as a member record and fails on it.
     """
     lines: list[str] = []
 
     for line in ecr.lines:
-        if "|" in line.member_name:
+        if ECR_DELIMITER in line.member_name:
             raise SerialiserError(
-                f"The member name '{line.member_name}' contains a pipe, which is the "
-                "field delimiter. The file would be unparseable."
+                f"The member name '{line.member_name}' contains {ECR_DELIMITER}, the field "
+                "separator. The file would be unparseable."
             )
         fields = [
             line.uan,
@@ -122,8 +131,8 @@ def serialise_ecr(ecr: EcrReturn) -> str:
             _whole(line.eps_wages),
             _whole(line.edli_wages),
             _whole(line.employee_share),
-            _whole(line.employer_epf_share),
             _whole(line.eps_contribution),
+            _whole(line.employer_epf_share),
             _ncp(line.ncp_days),
             _whole(line.refund_of_advances),
         ]
@@ -131,10 +140,52 @@ def serialise_ecr(ecr: EcrReturn) -> str:
             raise SerialiserError(
                 f"An ECR line has {len(fields)} fields; the format takes {len(ECR_COLUMNS)}."
             )
-        lines.append("|".join(fields))
+        lines.append(ECR_DELIMITER.join(fields))
 
     # CRLF, because the uploader is a Windows tool and a bare LF file is read
     # as one very long line.
+    return "\r\n".join(lines) + ("\r\n" if lines else "")
+
+
+# The EPFO's arrear ECR line, in order: the arrear wages and shares only, in
+# the same delimiter. Eight fields.
+ARREAR_ECR_COLUMNS = (
+    "uan",
+    "member_name",
+    "arrear_epf_wages",
+    "arrear_eps_wages",
+    "arrear_edli_wages",
+    "arrear_employee_share",
+    "arrear_employer_epf_share",
+    "arrear_eps_contribution",
+)
+
+
+def serialise_arrear_ecr(ecr: ArrearEcrReturn) -> str:
+    """The arrear ECR text file: `#~#`-delimited, CRLF, one line per member, no header."""
+    lines: list[str] = []
+    for line in ecr.lines:
+        if ECR_DELIMITER in line.member_name:
+            raise SerialiserError(
+                f"The member name '{line.member_name}' contains {ECR_DELIMITER}, the field "
+                "separator. The file would be unparseable."
+            )
+        fields = [
+            line.uan,
+            line.member_name,
+            _whole(line.epf_wages),
+            _whole(line.eps_wages),
+            _whole(line.edli_wages),
+            _whole(line.employee_share),
+            _whole(line.employer_epf_share),
+            _whole(line.eps_contribution),
+        ]
+        if len(fields) != len(ARREAR_ECR_COLUMNS):
+            raise SerialiserError(
+                f"An arrear ECR line has {len(fields)} fields; the format takes "
+                f"{len(ARREAR_ECR_COLUMNS)}."
+            )
+        lines.append(ECR_DELIMITER.join(fields))
     return "\r\n".join(lines) + ("\r\n" if lines else "")
 
 

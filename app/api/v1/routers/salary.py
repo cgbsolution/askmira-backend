@@ -176,7 +176,11 @@ async def assign_salary(
     what this employee was actually paid.
     """
     salary = await salary_service.assign_salary(session, user, employee_id, payload, request)
-    return EmployeeSalaryRead.model_validate(salary)
+    read = EmployeeSalaryRead.model_validate(salary)
+    read.paid_months_affected = await salary_service.paid_months_since(
+        session, user, employee_id, payload.effective_from
+    )
+    return read
 
 
 @router.get("/employees/{employee_id}/salary/history", response_model=list[EmployeeSalaryRead])

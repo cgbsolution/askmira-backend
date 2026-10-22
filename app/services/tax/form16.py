@@ -485,7 +485,12 @@ async def form16_statement(
     window = await tax_service.window_for(session, user, financial_year, WindowType.PROOF)
     use_declared = window is None or fy_end <= window.closes_at
     base = await tax_service.build_projection_input(
-        session, user, employee_id, financial_year, use_declared_when_unproven=use_declared
+        session,
+        user,
+        employee_id,
+        financial_year,
+        use_declared_when_unproven=use_declared,
+        salary_from_payroll=False,
     )
     inputs = year_projection_input(base, pay)
     try:

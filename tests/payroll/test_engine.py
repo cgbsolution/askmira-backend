@@ -225,6 +225,21 @@ def test_a_professional_tax_slab_table_with_no_open_bound_is_rejected(pf_rules) 
         )
 
 
+def test_an_open_slab_before_the_last_is_rejected_not_charged_to_everyone(pf_rules) -> None:
+    # Stored before entry checked shapes: everyone would stop at the open slab.
+    misordered = rule_set(
+        "professional_tax",
+        {"slabs": [{"up_to": None, "amount": 0}, {"up_to": None, "amount": 200}]},
+        jurisdiction="KA",
+    )
+    with pytest.raises(PayrollRuleError, match="not the last slab"):
+        compute_payroll(
+            make_input(
+                salary_with_da(), rules={"pf": pf_rules, "professional_tax": misordered}
+            )
+        )
+
+
 # ── Totals ──────────────────────────────────────────────────────────────────
 
 

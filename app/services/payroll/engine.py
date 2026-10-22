@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from app.models.payroll import ComponentType, EmployeeSalary, PayrollRuleSet
@@ -51,6 +51,7 @@ __all__ = [
     "PayrollRuleError",
     "SupplementaryContext",
     "compute_payroll",
+    "professional_tax_slab",
 ]
 
 _RUPEE = Decimal("0.01")
@@ -189,6 +190,48 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(_RUPEE, rounding=ROUND_HALF_UP)
 
 
+_WHOLE_RUPEE = Decimal(1)
+#: How each fund rounds a contribution, unless its rule set says otherwise.
+#: EPFO's ECR and ESIC's return both carry whole rupees: EPF rounds to the
+#: nearest rupee, ESIC up to the next one. A payslip that deducted paise would
+#: never agree with what is remitted, and the payroll ledger would not reconcile
+#: to the challan.
+_CONTRIBUTION_ROUNDING = {
+    "nearest_rupee": ROUND_HALF_UP,
+    "next_rupee": ROUND_CEILING,
+}
+
+
+def _reported_wage(rule_set: PayrollRuleSet, base: Decimal, default_rounding: str) -> str:
+    """The wage a contribution was charged on, as the payslip's basis line shows it."""
+    if str(rule_set.rules.get("contribution_rounding", default_rounding)) == "paise":
+        return str(base)
+    whole = base.quantize(_WHOLE_RUPEE, rounding=ROUND_HALF_UP)
+    return str(whole) if whole == base else f"{whole} ({base} to the rupee)"
+
+
+def _contribution(
+    rule_set: PayrollRuleSet, base: Decimal, rate: Decimal, default_rounding: str
+) -> Decimal:
+    """A statutory contribution on a wage, rounded the way the fund collects it.
+
+    `contribution_rounding` on the rule set is "nearest_rupee", "next_rupee" or
+    "paise" (no rounding beyond paise). The wage is taken in whole rupees first,
+    as the return reports it, so the contribution is the one the portal computes.
+    """
+    rounding = str(rule_set.rules.get("contribution_rounding", default_rounding))
+    if rounding == "paise":
+        return _money(base * rate / Decimal(100))
+    mode = _CONTRIBUTION_ROUNDING.get(rounding)
+    if mode is None:
+        raise PayrollRuleError(
+            f"The {rule_set.rule_type} rule set's contribution_rounding '{rounding}' is not "
+            "one of nearest_rupee, next_rupee or paise."
+        )
+    wage = base.quantize(_WHOLE_RUPEE, rounding=ROUND_HALF_UP)
+    return (wage * rate / Decimal(100)).quantize(_WHOLE_RUPEE, rounding=mode).quantize(_RUPEE)
+
+
 @dataclass(frozen=True, slots=True)
 class PayrollInput:
     """Everything one employee's computation needs.
@@ -222,6 +265,9 @@ class PayrollInput:
     esi_contributing_at_period_start: bool | None = None
     # Designation, for LWF exemptions that are expressed by designation.
     designation: str | None = None
+    # Gender, for a state whose Professional Tax slabs differ for women
+    # (`slabs_by_gender` on the rule set). Unknown reads the general slabs.
+    gender: str | None = None
     # Where the employee's work state could not be resolved for the whole
     # period, the reason. Both state levies — Professional Tax and the Labour
     # Welfare Fund — are then left undeducted and flagged rather than guessed.
@@ -506,14 +552,22 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
         pf_base = resolved_base.base
 
-        pf_employee = _money(pf_base * pf_employee_rate / Decimal(100))
-        pf_employer = _money(pf_base * pf_employer_rate / Decimal(100))
+        pf_employee = _contribution(pf_rules, pf_base, pf_employee_rate, "nearest_rupee")
+        pf_employer = _contribution(pf_rules, pf_base, pf_employer_rate, "nearest_rupee")
 
         # Voluntary PF is an *additional employee* contribution on the full wage
         # base. It never moves the employer's — treating it as a matched
-        # contribution would silently inflate employer cost.
+        # contribution would silently inflate employer cost. It is remitted with
+        # the employee's share on the ECR, so it is rounded as that share is.
         with _statutory_errors():
             vpf = compute_vpf(pf_wage_base=pf_wage_base, election=payroll_input.pf_election)
+        if (
+            vpf
+            and payroll_input.pf_election is not None
+            and payroll_input.pf_election.vpf_percent is not None
+            and pf_rules.rules.get("contribution_rounding", "nearest_rupee") != "paise"
+        ):
+            vpf = vpf.quantize(_WHOLE_RUPEE, rounding=ROUND_HALF_UP).quantize(_RUPEE)
 
     # ── 4. ESI, only below the eligibility threshold ────────────────────────
     esi_employee = Decimal(0)
@@ -544,11 +598,11 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             candidate_base = esi_wage_base + wage_inputs
         if applies and candidate_base > 0:
             contribution_base = candidate_base
-            esi_employee = _money(
-                contribution_base * _rule(esi_rules, "employee_rate") / Decimal(100)
+            esi_employee = _contribution(
+                esi_rules, contribution_base, _rule(esi_rules, "employee_rate"), "next_rupee"
             )
-            esi_employer = _money(
-                contribution_base * _rule(esi_rules, "employer_rate") / Decimal(100)
+            esi_employer = _contribution(
+                esi_rules, contribution_base, _rule(esi_rules, "employer_rate"), "next_rupee"
             )
 
     # ── 5. Professional Tax — a state slab, looked up by gross ──────────────
@@ -560,6 +614,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     # and nobody notices until an inspection.
     professional_tax = Decimal(0)
     month_gross = gross_earnings + wage_inputs
+    pt_month = payroll_input.period_start.month
     review_flags: list[str] = []
     pt_rules = payroll_input.rule_sets.get("professional_tax")
 
@@ -575,10 +630,14 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         if supplementary is not None:
             month_gross = supplementary.regular_gross + wage_inputs
             professional_tax = max(
-                _ZERO, _lookup_slab(pt_rules, month_gross) - supplementary.pt_already_deducted
+                _ZERO,
+                _lookup_slab(pt_rules, month_gross, month=pt_month, gender=payroll_input.gender)
+                - supplementary.pt_already_deducted,
             )
         else:
-            professional_tax = _lookup_slab(pt_rules, month_gross)
+            professional_tax = _lookup_slab(
+                pt_rules, month_gross, month=pt_month, gender=payroll_input.gender
+            )
 
     # ── 6. Labour Welfare Fund ──────────────────────────────────────────────
     #
@@ -810,6 +869,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         )
 
     if pf_rules is not None:
+        pf_wages_shown = _reported_wage(pf_rules, pf_base, "nearest_rupee")
         lines.extend(
             [
                 ComputedLine(
@@ -817,7 +877,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "Provident Fund (employee)",
                     ComponentType.DEDUCTION,
                     pf_employee,
-                    f"{pf_employee_rate}% of PF wage base {pf_base}",
+                    f"{pf_employee_rate}% of PF wages {pf_wages_shown}",
                     str(pf_rules.id),
                 ),
                 ComputedLine(
@@ -825,12 +885,13 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "Provident Fund (employer)",
                     ComponentType.EMPLOYER_CONTRIBUTION,
                     pf_employer,
-                    f"{pf_employer_rate}% of PF wage base {pf_base}",
+                    f"{pf_employer_rate}% of PF wages {pf_wages_shown}",
                     str(pf_rules.id),
                 ),
             ]
         )
     if esi_rules is not None and (esi_employee or esi_employer):
+        esi_wages_shown = _reported_wage(esi_rules, contribution_base, "next_rupee")
         lines.extend(
             [
                 ComputedLine(
@@ -838,7 +899,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "ESI (employee)",
                     ComponentType.DEDUCTION,
                     esi_employee,
-                    f"ESI wages {contribution_base}",
+                    f"ESI wages {esi_wages_shown}",
                     str(esi_rules.id),
                 ),
                 ComputedLine(
@@ -846,7 +907,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "ESI (employer)",
                     ComponentType.EMPLOYER_CONTRIBUTION,
                     esi_employer,
-                    f"ESI wages {contribution_base}",
+                    f"ESI wages {esi_wages_shown}",
                     str(esi_rules.id),
                 ),
             ]
@@ -1022,24 +1083,61 @@ def _month_figures(
     )
 
 
-def _lookup_slab(rule_set: PayrollRuleSet, monthly_gross: Decimal) -> Decimal:
-    """Find the slab a monthly gross falls into.
+def professional_tax_slab(
+    rule_set: PayrollRuleSet,
+    monthly_gross: Decimal,
+    *,
+    month: int | None = None,
+    gender: str | None = None,
+) -> Decimal:
+    """The Professional Tax a state's approved slabs charge on a month's gross."""
+    return _lookup_slab(rule_set, monthly_gross, month=month, gender=gender)
+
+
+def _lookup_slab(
+    rule_set: PayrollRuleSet,
+    monthly_gross: Decimal,
+    *,
+    month: int | None = None,
+    gender: str | None = None,
+) -> Decimal:
+    """Find the slab a monthly gross falls into, and what it charges this month.
 
     Slabs are supplied by the Compliance SME as
     `[{"up_to": 15000, "amount": 150}, {"up_to": null, "amount": 200}]` —
     ordered, with a null upper bound on the last. Nothing about the values is
-    known to this code.
+    known to this code. Two shapes some states need, both optional:
+
+    - a slab may charge a different amount in particular months, as
+      `"month_amounts": {"2": 300}` (the February instalment that makes up a
+      state's annual maximum);
+    - `slabs_by_gender: {"female": [...]}` replaces the slabs for that gender
+      (a state that exempts women below a higher wage).
     """
     slabs = rule_set.rules.get("slabs")
+    by_gender = rule_set.rules.get("slabs_by_gender") or {}
+    if gender and isinstance(by_gender, dict) and by_gender.get(str(gender).lower()):
+        slabs = by_gender[str(gender).lower()]
     if not isinstance(slabs, list) or not slabs:
         raise PayrollRuleError(
             f"The Professional Tax rule set for {rule_set.jurisdiction} has no slabs"
         )
 
-    for slab in slabs:
+    for number, slab in enumerate(slabs, start=1):
         upper = slab.get("up_to")
+        if upper is None and number < len(slabs):
+            # Everyone would stop at this slab and those above it would never
+            # charge: a malformed table, not a lower tax.
+            raise PayrollRuleError(
+                f"Professional Tax slab {number} for {rule_set.jurisdiction} has no upper "
+                "bound but is not the last slab. Only the last slab is open-ended."
+            )
         if upper is None or monthly_gross <= Decimal(str(upper)):
-            return _money(Decimal(str(slab.get("amount", 0))))
+            amount = slab.get("amount", 0)
+            month_amounts = slab.get("month_amounts") or {}
+            if month is not None and str(month) in month_amounts:
+                amount = month_amounts[str(month)]
+            return _money(Decimal(str(amount)))
 
     # Reachable only if the last slab has a bound and gross exceeds it, which
     # is a malformed rule set rather than an untaxed employee.

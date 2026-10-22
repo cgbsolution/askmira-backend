@@ -54,7 +54,7 @@ BODY_HTML = f"""
   <tr><td><strong>Separation</strong></td><td>{{{{manual.separation}}}}</td></tr>
 </table>
 
-<h3>Earnings</h3>
+<h3 style="-pdf-keep-with-next: true">Earnings</h3>
 <table class="ctc-table" cellspacing="0" cellpadding="6">
   <thead><tr><th>Head</th><th>Amount (Rs.)</th><th>How it was computed</th></tr></thead>
   <tbody>
@@ -65,7 +65,7 @@ BODY_HTML = f"""
       <td></td></tr></tfoot>
 </table>
 
-<h3>Recoveries</h3>
+<h3 style="-pdf-keep-with-next: true">Recoveries</h3>
 <table class="ctc-table" cellspacing="0" cellpadding="6">
   <thead><tr><th>Head</th><th>Amount (Rs.)</th><th>How it was computed</th></tr></thead>
   <tbody>
@@ -76,14 +76,14 @@ BODY_HTML = f"""
       <td></td></tr></tfoot>
 </table>
 
-<h3>Tax</h3>
+<h3 style="-pdf-keep-with-next: true">Tax</h3>
 <table class="ctc-table" cellspacing="0" cellpadding="6">
   <tbody>
 {_rows("tax")}
   </tbody>
 </table>
 
-<h3>Net settlement</h3>
+<h3 style="-pdf-keep-with-next: true">Net settlement</h3>
 <p><strong>{{{{manual.net_label}}}}: Rs. {{{{manual.net_amount}}}}</strong></p>
 <p>{{{{manual.notes}}}}</p>
 

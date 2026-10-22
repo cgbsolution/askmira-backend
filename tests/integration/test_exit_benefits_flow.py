@@ -371,6 +371,7 @@ async def test_the_taxable_excess_is_recorded_on_the_payout_for_tds(
     """
     await _config(session, tenant, max_exempt_amount=Decimal(500_000))
     employee.date_of_joining = date(2005, 4, 1)  # ~21 years
+    employee.status = EmploymentStatus.ON_NOTICE  # a payout is for a leaver
     await session.commit()
     await _salary_for(session, tenant, hr_user, employee, ctc="6000000")
 
@@ -398,6 +399,7 @@ async def test_a_payout_below_the_ceiling_carries_no_taxable_amount(
 ) -> None:
     await _config(session, tenant, max_exempt_amount=Decimal(2_000_000))
     employee.date_of_joining = date(2018, 4, 1)
+    employee.status = EmploymentStatus.ON_NOTICE  # a payout is for a leaver
     await session.commit()
     await _salary_for(session, tenant, hr_user, employee)
 
@@ -417,6 +419,7 @@ async def test_a_payout_records_which_configuration_produced_it(
     """The exemption ceiling changes; a past payout must stay explainable."""
     config = await _config(session, tenant)
     employee.date_of_joining = date(2015, 4, 1)
+    employee.status = EmploymentStatus.ON_NOTICE  # a payout is for a leaver
     await session.commit()
     await _salary_for(session, tenant, hr_user, employee)
 
@@ -435,6 +438,7 @@ async def test_gratuity_cannot_be_paid_twice(
 ) -> None:
     await _config(session, tenant)
     employee.date_of_joining = date(2015, 4, 1)
+    employee.status = EmploymentStatus.ON_NOTICE  # a payout is for a leaver
     await session.commit()
     await _salary_for(session, tenant, hr_user, employee)
 
@@ -479,6 +483,7 @@ async def test_a_payout_with_no_matching_wage_components_names_the_basis(
     """The error tells the admin which components to map."""
     await _config(session, tenant, formula_basis=["BASIC_PLUS_DA_NONEXISTENT"])
     employee.date_of_joining = date(2015, 4, 1)
+    employee.status = EmploymentStatus.ON_NOTICE  # a payout is for a leaver
     await session.commit()
     await _salary_for(session, tenant, hr_user, employee)
 
@@ -618,6 +623,101 @@ async def test_an_earlier_approved_encashment_counts_against_the_annual_cap(
     assert second.working["limiting_factor"] == "max_days_per_year"
 
 
+async def test_every_earlier_encashment_counts_against_the_annual_cap_not_just_one(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    await _config(session, tenant)
+    await _salary_for(session, tenant, hr_user, employee)
+    await _leave_balance(session, tenant, employee, available="60")
+    await _encashment_policy(session, tenant, max_days_per_year=Decimal(15))
+
+    for days in (Decimal(6), Decimal(6)):
+        earlier = await exit_service.request_encashment(
+            session,
+            hr_user,
+            employee_id=employee.id,
+            leave_type_code="EL",
+            days=days,
+            financial_year="2026-27",
+        )
+        await exit_service.decide_encashment(session, hr_user, earlier.id, approve=True)
+
+    third = await exit_service.request_encashment(
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(10),
+        financial_year="2026-27",
+    )
+    assert Decimal(str(third.days_approved)) == Decimal(3), "15 a year, 12 already encashed"
+
+
+async def test_two_pending_requests_cannot_both_take_the_same_days(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    """Balance 18 with 10 to keep: 8 days can go, once, however they are asked for."""
+    await _config(session, tenant)
+    await _salary_for(session, tenant, hr_user, employee)
+    await _leave_balance(session, tenant, employee, available="18")
+    await _encashment_policy(
+        session, tenant, max_days_per_year=Decimal(10), min_balance_after_encashment=Decimal(10)
+    )
+
+    first = await exit_service.request_encashment(
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(500),
+        financial_year="2026-27",
+    )
+    assert Decimal(str(first.days_approved)) == Decimal(8)
+    with pytest.raises(HTTPException) as second:
+        await exit_service.request_encashment(
+            session,
+            hr_user,
+            employee_id=employee.id,
+            leave_type_code="EL",
+            days=Decimal(8),
+            financial_year="2026-27",
+        )
+    assert second.value.status_code == 422
+    assert "can be encashed right now" in second.value.detail
+
+
+async def test_approval_rechecks_the_policy_against_the_balance_then(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    await _config(session, tenant)
+    await _salary_for(session, tenant, hr_user, employee)
+    leave_type = await _leave_balance(session, tenant, employee, available="18")
+    await _encashment_policy(
+        session, tenant, max_days_per_year=Decimal(10), min_balance_after_encashment=Decimal(10)
+    )
+    record = await exit_service.request_encashment(
+        session,
+        hr_user,
+        employee_id=employee.id,
+        leave_type_code="EL",
+        days=Decimal(8),
+        financial_year="2026-27",
+    )
+    # Leave taken while the request waited: 18 - 5 = 13, so only 3 can go now.
+    balance = await session.scalar(
+        select(LeaveBalance).where(LeaveBalance.leave_type_id == leave_type.id)
+    )
+    balance.used = Decimal(5)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await exit_service.decide_encashment(session, hr_user, record.id, approve=True)
+    assert exc.value.status_code == 409
+    assert "At most 3.00 day(s) can be encashed today" in exc.value.detail
+    await session.refresh(record)
+    assert record.status is EncashmentStatus.REQUESTED
+
+
 async def test_an_exit_encashment_is_approved_without_a_separate_step(
     session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
 ) -> None:
@@ -751,3 +851,23 @@ async def test_one_tenant_cannot_read_anothers_accruals(
     report = await exit_service.liability_report(session, other_hr_user, AS_OF)
     assert report["employee_count"] == 0
     assert Decimal(report["total_accrued_liability"]) == Decimal(0)
+
+
+async def test_a_payout_is_refused_for_someone_who_is_not_leaving(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+) -> None:
+    """A payout's taxable part reaches TDS, so it is not a what-if calculator."""
+    await _config(session, tenant)
+    employee.date_of_joining = date(2015, 4, 1)
+    await _salary_for(session, tenant, hr_user, employee)
+
+    with pytest.raises(HTTPException) as exc:
+        await exit_service.compute_exit_gratuity(
+            session,
+            hr_user,
+            employee_id=employee.id,
+            exit_date=date(2026, 12, 31),
+            exit_reason=ExitReason.RESIGNATION,
+        )
+    assert exc.value.status_code == 409
+    assert "no exit in progress" in exc.value.detail

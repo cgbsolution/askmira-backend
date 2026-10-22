@@ -7,10 +7,18 @@ upload her documents and work through the pre-joining tasks herself.
 
 from __future__ import annotations
 
+import random
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from seed_demo import generate_password
 
 from .api import Api, Demo, Person, SeedError
+from .attendance import HOLIDAYS, _times
+from .cast import aadhaar_for, account_for, bank_for, pan_for, uan_for
 from .payroll import pdf
+from .people import _address
+from .time_off import HOLIDAYS_2026, daterange, ist
 
 FLOW = "onboarding"
 
@@ -144,3 +152,47 @@ async def run(demo: Demo) -> None:
                             "notes": "Kept ready for day one"})
     demo.note(FLOW, f"Sana: login created, standard checklist with Meera as buddy, "
                     f"{done} of {len(pre)} pre-joining tasks done, laptop set aside")
+    await _joining_day(demo, sana)
+
+
+async def _joining_day(demo: Demo, sana: Person) -> None:
+    """What joining day brings: HR records the joining documents, the device her punches.
+
+    Without them October's payroll would show her days as loss of pay, the bank
+    file would have no account to credit and the PF return no UAN to file under.
+    """
+    karthik = demo["karthik"]
+    employee_id = str(sana.employee_id)
+    bank_name, ifsc = bank_for(sana)
+    for change in (
+        {"section": "statutory",
+         "data": {"pan": pan_for(sana), "aadhaar": aadhaar_for(sana), "uan": uan_for(sana)}},
+        {"section": "bank_account",
+         "data": {"account_number": account_for(sana), "ifsc": ifsc,
+                  "account_holder_name": sana.name, "bank_name": bank_name}},
+        {"section": "addresses",
+         "data": {"current": _address(sana), "permanent_same_as_current": True}},
+    ):
+        await karthik.put(f"/employees/{employee_id}/profile", {"change": change})
+
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    joined = date.fromisoformat(sana.date_of_joining or "2026-10-19")
+    # Office holidays for everyone; optional ones are a choice, not a closure.
+    closed = set(HOLIDAYS) | {date.fromisoformat(day) for day, _name, state, optional
+                              in HOLIDAYS_2026 if not optional and state in (None, "KA")}
+    rows = []
+    for day in daterange(joined, today - timedelta(days=1)):
+        if day in closed:
+            continue
+        times = _times(random.Random(f"{sana.code}{day}"), "sana", day, sana.location)
+        if times is None:
+            continue
+        for direction, at in (("in", times[0]), ("out", times[1])):
+            rows.append({"employee_code": sana.code, "punched_at": ist(day, at),
+                         "direction": direction, "device_id": "BLR-ESSL-01"})
+    if rows:
+        await demo["priya"].post("/attendance/import", {"rows": rows})
+        await demo["priya"].post("/attendance/recompute",
+                                 {"start": str(joined), "end": str(today - timedelta(days=1))})
+    demo.note(FLOW, f"Sana's joining day: PAN, UAN, salary account and address recorded; "
+                    f"{len(rows)} punches since {joined:%d %b}")

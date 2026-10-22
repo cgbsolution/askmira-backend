@@ -42,6 +42,7 @@ from app.services.tax.computation import (
     monthly_tds,
     months_remaining_in_year,
     project,
+    round_tds,
 )
 
 __all__ = [
@@ -201,11 +202,13 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
     )
     projection = project(without_one_off, context.rules)
 
+    rounding = str(context.rules.get("tds_rounding", "nearest_rupee"))
     recurring_amount = monthly_tds(
         annual_liability=projection.annual_tax_liability,
         already_deducted=prior.tds_deducted,
         months_remaining=context.months_remaining,
         previous_employer_tds=context.base.previous_tds,
+        rounding=rounding,
     )
 
     with_projection = projection
@@ -216,11 +219,12 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
             gross_salary=without_one_off.gross_salary + figures.one_off_taxable,
         )
         with_projection = project(with_one_off, context.rules)
-        one_off_amount = _money(
+        one_off_amount = round_tds(
             max(
                 ZERO,
                 with_projection.annual_tax_liability - projection.annual_tax_liability,
-            )
+            ),
+            rounding,
         )
 
     amount = _money(recurring_amount + one_off_amount)

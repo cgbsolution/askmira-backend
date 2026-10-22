@@ -108,6 +108,7 @@ async def run_reads(
             run.approved_by_user_id,
             run.published_by_user_id,
             run.paid_by_user_id,
+            run.cancelled_by_user_id,
         }
         for flag in run.variance_flags or []:
             if flag.get("acknowledged_by_user_id"):
@@ -185,6 +186,9 @@ async def run_reads(
                 published_by_name=names.get(run.published_by_user_id),  # type: ignore[arg-type]
                 paid_at=run.paid_at,
                 paid_by_name=names.get(run.paid_by_user_id),  # type: ignore[arg-type]
+                cancelled_at=run.cancelled_at,
+                cancelled_by_name=names.get(run.cancelled_by_user_id),  # type: ignore[arg-type]
+                cancel_reason=run.cancel_reason,
                 created_at=run.created_at,
                 employee_scope=[uuid.UUID(e) for e in (run.employee_scope or [])],
                 included_sources=run.included_sources,

@@ -52,7 +52,7 @@ TDS_RULES = {
                 {"up_to": None, "rate": 30},
             ],
             "standard_deduction": 75000,
-            "rebate": {"income_limit": 1200000, "max_rebate": 60000},
+            "rebate": {"income_limit": 1200000, "max_rebate": 60000, "marginal_relief": True},
             "deductions_allowed": ["80CCD2"],
         },
         "old": {
@@ -91,11 +91,19 @@ RULE_SETS = (
                        {"start_month": 4, "end_month": 9, "label": "April to September"},
                        {"start_month": 10, "end_month": 3, "label": "October to March"}]}),
     ("tds", "IN", TDS_RULES),
+    # Karnataka (Act 33 of 2025, from 1 April 2025): 300 in February, 2,500 a year.
     ("professional_tax", "KA", {"slabs": [{"up_to": 24999, "amount": 0},
-                                          {"up_to": None, "amount": 200}]}),
+                                          {"up_to": None, "amount": 200,
+                                           "month_amounts": {"2": 300}}]}),
+    # Maharashtra: 300 in February makes up the annual 2,500; women are exempt up to 25,000.
     ("professional_tax", "MH", {"slabs": [{"up_to": 7500, "amount": 0},
                                           {"up_to": 10000, "amount": 175},
-                                          {"up_to": None, "amount": 200}]}),
+                                          {"up_to": None, "amount": 200,
+                                           "month_amounts": {"2": 300}}],
+                                "slabs_by_gender": {"female": [
+                                    {"up_to": 25000, "amount": 0},
+                                    {"up_to": None, "amount": 200,
+                                     "month_amounts": {"2": 300}}]}}),
     ("labour_welfare_fund", "KA", {"applicable": True, "deduction_months": [12],
                                    "employee_amount": 50, "employer_amount": 100}),
     ("labour_welfare_fund", "MH", {"applicable": True, "deduction_months": [6, 12],
