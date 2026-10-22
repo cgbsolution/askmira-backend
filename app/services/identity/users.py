@@ -157,8 +157,12 @@ async def create_user(
     payload: ManagedUserCreate,
     *,
     request: Request | None = None,
+    commit: bool = True,
 ) -> ManagedUserCreated:
-    """Create a login, optionally linked to an employee, with a one-time password."""
+    """Create a login, optionally linked to an employee, with a one-time password.
+
+    `commit=False` for a caller that creates the employee in the same transaction.
+    """
     tenant = await _tenant(session, user)
     _check_grant(payload.role)
 
@@ -224,7 +228,8 @@ async def create_user(
         summary=f"Created a {payload.role.value} login for {email}",
         request=request,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     await session.refresh(target)
     return ManagedUserCreated(
         user=_read(target, user, tenant, emp),

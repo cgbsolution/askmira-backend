@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.employee import EmploymentStatus, ProfileChangeStatus
@@ -18,6 +18,7 @@ from app.schemas.employee import (
     EmployeeSummary,
     EmployeeUpdate,
 )
+from app.schemas.employee_import import ImportPreview, ImportResult
 from app.schemas.employee_profile import (
     CelebrationsRead,
     ChangeRequestCreate,
@@ -30,6 +31,8 @@ from app.schemas.employee_profile import (
 from app.services import custom_tables, employee_timeline
 from app.services import employee as employee_service
 from app.services import employee_profile as profile_service
+from app.services.employee_import import service as import_service
+from app.services.employee_import.sheet import MAX_BYTES as IMPORT_MAX_BYTES
 from app.services.employee_profile import PHOTO_MAX_BYTES
 
 router = APIRouter(prefix="/employees", tags=["core-hr"])
@@ -119,6 +122,61 @@ async def create_employee(
 ) -> EmployeeRead:
     employee = await employee_service.create_employee(session, user, payload, request)
     return EmployeeRead.model_validate(employee)
+
+
+# ── Import from a spreadsheet ───────────────────────────────────────────────
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/import/template", dependencies=HR_ONLY)
+async def import_template(user: CurrentUser, session: DbSession) -> Response:
+    """The import template: factoHR's column names, plus this workspace's custom fields."""
+    content = await import_service.template(session, user)
+    return Response(
+        content=content,
+        media_type=XLSX,
+        headers={
+            "Content-Disposition": 'attachment; filename="askmira-employee-import.xlsx"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/import/preview", response_model=ImportPreview, dependencies=HR_ONLY)
+async def import_preview(
+    user: CurrentUser, session: DbSession, file: UploadFile = File(...)
+) -> ImportPreview:
+    """What importing the file would do, row by row. Nothing is saved."""
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    return await import_service.preview(session, user, data, file.filename or "employees.xlsx")
+
+
+@router.post(
+    "/import",
+    response_model=ImportResult,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=HR_ONLY,
+)
+async def import_employees(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+    include_leavers: bool = Form(default=True),
+) -> ImportResult:
+    """Import the file's ready rows in one transaction; codes already here are skipped."""
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    result = await import_service.run(
+        session,
+        user,
+        data,
+        file.filename or "employees.xlsx",
+        include_leavers=include_leavers,
+        request=request,
+    )
+    await session.commit()
+    return result
 
 
 # Literal paths (`/me`, `/celebrations`, `/change-requests`) are declared before

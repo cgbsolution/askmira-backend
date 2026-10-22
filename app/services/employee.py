@@ -405,8 +405,19 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
 
 
 async def create_employee(
-    session: AsyncSession, user: User, payload: EmployeeCreate, request: Request | None = None
+    session: AsyncSession,
+    user: User,
+    payload: EmployeeCreate,
+    request: Request | None = None,
+    *,
+    commit: bool = True,
 ) -> Employee:
+    """Create one employee record, audited in the same transaction.
+
+    `commit=False` leaves the transaction open for a caller that does more in
+    it — adding a new joiner creates the record, their checklist and their
+    login together, so none of them exists without the others.
+    """
     duplicate = await session.scalar(
         tenant_scoped(
             select(Employee.id).where(Employee.employee_code == payload.employee_code),
@@ -442,7 +453,8 @@ async def create_employee(
         summary=f"Created employee {employee.employee_code}",
         request=request,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     await session.refresh(employee)
     return employee
 

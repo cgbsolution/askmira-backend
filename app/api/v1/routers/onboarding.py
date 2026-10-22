@@ -20,6 +20,8 @@ from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.onboarding import OnboardingPlanStatus
 from app.schemas.onboarding import (
+    JoinerCreate,
+    JoinerCreated,
     MyTaskRead,
     OnboardingMe,
     OnboardingSummary,
@@ -36,6 +38,7 @@ from app.schemas.onboarding import (
     TemplateRead,
     TemplateUpdate,
 )
+from app.services.onboarding import joiners
 from app.services.onboarding import service as onboarding
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -177,6 +180,21 @@ async def start_plan(
     plan = await onboarding.start_plan(session, user, payload, request=request)
     await session.commit()
     return PlanDetail(**await onboarding.plan_detail(session, user, plan.id))
+
+
+@router.post(
+    "/joiners",
+    response_model=JoinerCreated,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=HR_ONLY,
+)
+async def add_joiner(
+    payload: JoinerCreate, user: CurrentUser, session: DbSession, request: Request
+) -> JoinerCreated:
+    """Add a new joiner: their record, checklist and login, in one transaction."""
+    created = await joiners.add_joiner(session, user, payload, request=request)
+    await session.commit()
+    return created
 
 
 @router.get("/plans/{plan_id}", response_model=PlanDetail)

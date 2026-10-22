@@ -76,6 +76,7 @@ from app.services.storage import (
 
 __all__ = [
     "HIRING_KEYS",
+    "apply_section",
     "create_change_request",
     "decide_change_request",
     "inbox_items",
@@ -442,6 +443,25 @@ async def _validate_extra(session: AsyncSession, user: User, change: Any) -> Non
 
         if change.data.date_of_birth >= await local_today(session, user):
             raise _unprocessable("A date of birth has to be in the past.")
+
+
+async def apply_section(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    change: SectionWrite,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Write one validated section onto a record HR is setting up, without
+    committing or writing the audit row — the caller does both, once, for
+    everything it changed (the employee import). Returns what to audit."""
+    permissions.require_hr(user, detail="Only HR can change somebody else's profile.")
+    await _validate_extra(session, user, change)
+    stored = _stored_form(change, user.tenant_id)
+    return await _apply(
+        session, user, employee, ProfileSection(change.section), stored, request=request
+    )
 
 
 async def _apply(

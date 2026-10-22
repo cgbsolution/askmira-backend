@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.employee import EmploymentStatus
 from app.models.onboarding import (
     OnboardingOwnerType,
     OnboardingPlanStatus,
@@ -20,6 +21,8 @@ from app.models.onboarding import (
     OnboardingTaskType,
 )
 from app.schemas.documents import DocumentCategory
+from app.schemas.employee import EmployeeCreate
+from app.schemas.platform_admin import ManagedUserCreated
 
 #: Where a task sits relative to the joining date.
 Phase = Literal["pre_joining", "week_1", "later"]
@@ -140,6 +143,40 @@ class PlanCreate(BaseModel):
     buddy_employee_id: uuid.UUID | None = None
     #: Defaults to the employee's date of joining.
     joining_date: date | None = None
+
+
+class JoinerCreate(BaseModel):
+    """A new joiner in one go: their record, their checklist and their login.
+
+    The record's `status` is not taken from here: it is pre-joining until the
+    joining date arrives, as for a converted offer.
+    """
+
+    employee: EmployeeCreate
+    #: Null adds the person without starting a checklist.
+    template_id: uuid.UUID | None = None
+    buddy_employee_id: uuid.UUID | None = None
+    #: Admins only: a login linked to the record, at the work email.
+    create_login: bool = False
+    send_welcome_email: bool = True
+
+    @model_validator(mode="after")
+    def _buddy_needs_checklist(self) -> JoinerCreate:
+        if self.buddy_employee_id is not None and self.template_id is None:
+            raise ValueError("A buddy is named on a checklist. Choose a checklist too.")
+        return self
+
+
+class JoinerCreated(BaseModel):
+    employee_id: uuid.UUID
+    employee_code: str
+    employee_name: str
+    status: EmploymentStatus
+    #: Null when no checklist was started.
+    plan_id: uuid.UUID | None
+    checklist_name: str | None
+    #: Null when no login was asked for. Carries the one-time password.
+    login: ManagedUserCreated | None
 
 
 class PlanCancel(BaseModel):

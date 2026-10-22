@@ -30,8 +30,11 @@ from app.services import audit
 
 __all__ = [
     "MAX_TEXT",
+    "check_against",
+    "check_value",
     "check_values",
     "create_definition",
+    "employee_definitions",
     "list_definitions",
     "update_definition",
 ]
@@ -222,7 +225,14 @@ async def check_values(
     may be sent back unchanged — the profile shows it, and saving the record
     must not fail because of it — but a new one may not be written.
     """
-    definitions = {
+    return check_against(await employee_definitions(session, user), values, existing=existing)
+
+
+async def employee_definitions(
+    session: AsyncSession, user: User
+) -> dict[str, CustomFieldDefinition]:
+    """The workspace's employee field definitions, active or not, by key."""
+    return {
         d.key: d
         for d in (
             await session.scalars(
@@ -234,6 +244,21 @@ async def check_values(
             )
         ).all()
     }
+
+
+def check_value(definition: CustomFieldDefinition, value: Any) -> Any:
+    """One value in its stored shape, or a 422 naming the field."""
+    return _check_one(definition, value)
+
+
+def check_against(
+    definitions: dict[str, CustomFieldDefinition],
+    values: dict[str, Any],
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`check_values` against definitions already loaded — for a caller checking
+    many records at once, such as an import."""
     existing = existing or {}
     cleaned: dict[str, Any] = {}
     unknown: list[str] = []
