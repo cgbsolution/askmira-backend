@@ -1,0 +1,16 @@
+# Kept out of the image: none of it runs in production, and secrets come from
+# Dokploy's environment, never from a file baked in.
+.git/
+.github/
+.venv/
+venv/
+tests/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+.env.local
+*.log
+uploads/
