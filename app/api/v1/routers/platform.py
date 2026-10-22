@@ -95,6 +95,21 @@ async def add_admin(
     return await platform.add_admin(session, user, tenant_id, payload, request=request)
 
 
+@router.patch("/workspaces/{tenant_id}/admins/{admin_id}", dependencies=SUPER_ONLY)
+async def change_admin_email(
+    tenant_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    payload: platform.AdminEmailIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Correct an admin's login email; the login is issued afresh to the new one."""
+    return await platform.change_admin_email(
+        session, user, tenant_id, admin_id, payload, request=request
+    )
+
+
 @router.post("/workspaces/{tenant_id}/admins/{admin_id}/reset-password", dependencies=SUPER_ONLY)
 async def reset_admin_password(
     tenant_id: uuid.UUID,

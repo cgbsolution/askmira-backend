@@ -57,7 +57,7 @@ from app.models.operators import OperatorGrant
 from app.models.opsec import UserSession
 from app.models.org import LegalEntity, Location
 from app.models.tenant import Tenant
-from app.models.user import User, UserRole
+from app.models.user import PasswordResetToken, User, UserRole
 from app.schemas.org import INDIAN_STATE_CODES
 from app.services import audit
 from app.services.auth import (
@@ -71,11 +71,13 @@ from app.services.identity.directory import logo_url, normalise_mobile
 from app.services.identity.welcome import send_welcome
 
 __all__ = [
+    "AdminEmailIn",
     "AdminIn",
     "CompanyDetails",
     "WorkspaceIn",
     "WorkspaceUpdate",
     "add_admin",
+    "change_admin_email",
     "create",
     "delete",
     "list_workspaces",
@@ -352,6 +354,13 @@ class AdminIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     phone: str | None = Field(default=None, max_length=32)
+    send_welcome_email: bool = True
+
+
+class AdminEmailIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
     send_welcome_email: bool = True
 
 
@@ -853,6 +862,87 @@ async def reset_admin_password(
     return {
         "admin": {"email": admin.email, "temporary_password": temporary},
         "note": "Shown once. Their sessions were ended; they choose a new password at sign-in.",
+    }
+
+
+async def change_admin_email(
+    session: Any,
+    user: User,
+    tenant_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    payload: AdminEmailIn,
+    *,
+    request: Request | None,
+) -> dict[str, Any]:
+    """Correct a workspace admin's login email, when it was given wrongly.
+
+    The login is issued afresh, to the new address. Whoever has the old one
+    may hold its welcome link or know the password it was given, so every
+    link sent there is retired, every session ends, and a new temporary
+    password is shown once. Their employee record's work email follows when it
+    was the same address.
+    """
+    _require_super(user)
+    tenant = await _workspace(session, tenant_id)
+    admin = await session.scalar(
+        select(User).where(
+            tenant_filter(User, tenant.id), User.id == admin_id, User.role == UserRole.ADMIN
+        )
+    )
+    if admin is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such admin.")
+    old = admin.email
+    new = str(payload.email).strip().lower()
+    if new == old.lower():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="That is already their email.",
+        )
+    if await email_in_use(session, new):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That email already signs in to AskMira. Each person has one login.",
+        )
+
+    now = datetime.now(UTC)
+    await session.execute(
+        sql_update(PasswordResetToken)
+        .where(
+            tenant_filter(PasswordResetToken, tenant.id),
+            PasswordResetToken.user_id == admin.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+        )
+        .values(expires_at=now)
+    )
+    temporary = _temporary_password()
+    admin.email = new
+    admin.is_email_verified = False
+    admin.password_hash = hash_password(temporary)
+    admin.must_change_password = True
+    admin.tokens_valid_from = now
+    if admin.employee_id is not None:
+        employee = await session.get(Employee, admin.employee_id)
+        if employee is not None and employee.work_email.lower() == old.lower():
+            employee.work_email = new
+    await audit.record(
+        session,
+        tenant_id=tenant.id,
+        action=AuditAction.UPDATE,
+        entity_type="user",
+        entity_id=admin.id,
+        actor_user_id=user.id,
+        actor_type="platform",
+        changes={"before": {"email": old}, "after": {"email": new}},
+        summary=f"Admin's email changed from {old} to {new} by the platform",
+        request=request,
+    )
+    welcome = await _welcome(session, admin, payload.send_welcome_email, request)
+    await session.commit()
+    return {
+        "admin": {"email": admin.email, "temporary_password": temporary},
+        "welcome_email": welcome,
+        "note": "Shown once. Anything sent to the old address no longer works.",
     }
 
 

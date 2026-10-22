@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -299,6 +300,62 @@ async def test_deleting_a_workspace_closes_it_for_good_and_keeps_its_records(
     assert admin.email.endswith("@deleted.askmira.invalid")
     reused = await platform.create(session, super_admin, _new(workspace="newco"), request=None)
     assert reused["workspace"]["workspace"] == "newco"
+
+
+async def test_a_mistyped_admin_email_is_corrected_and_the_old_address_loses_access(
+    session: AsyncSession, hr_user: User, super_admin: User, client: httpx.AsyncClient
+) -> None:
+    created = await platform.create(
+        session, super_admin, _new(email="deepak@cgbindai-demo.com"), request=None
+    )
+    tenant_id = uuid.UUID(created["workspace"]["id"])
+    admin = await session.scalar(select(User).where(User.tenant_id == tenant_id))
+    employee_id = admin.employee_id
+    # The welcome link that went to the mistyped address.
+    stale_link = await auth_service.issue_password_link(session, admin, lifetime=timedelta(days=7))
+    await session.commit()
+
+    url = f"/api/v1/platform/workspaces/{tenant_id}/admins/{admin.id}"
+    fix = {"email": "Deepak@cgbindia-demo.com", "send_welcome_email": False}
+    refused = await client.patch(url, json=fix, headers=_bearer(hr_user))
+    assert refused.status_code == 403
+    other = await platform.create(
+        session, super_admin, _new(email="asha@othercorp-demo.com"), request=None
+    )
+    taken = await client.patch(
+        url, json={**fix, "email": other["admin"]["email"]}, headers=_bearer(super_admin)
+    )
+    assert taken.status_code == 409
+
+    changed = await client.patch(url, json=fix, headers=_bearer(super_admin))
+    assert changed.status_code == 200
+    issued = changed.json()["admin"]
+    assert issued["email"] == "deepak@cgbindia-demo.com"
+
+    # Nothing sent to the old address works: not its link, not its password.
+    with pytest.raises(HTTPException):
+        await auth_service.reset_password(session, stale_link, "Taken-over-pass-9")
+    with pytest.raises(HTTPException):
+        await auth_service.login(
+            session,
+            LoginRequest(
+                email="deepak@cgbindai-demo.com", password=created["admin"]["temporary_password"]
+            ),
+        )
+    signed_in = await auth_service.login(
+        session, LoginRequest(email=issued["email"], password=issued["temporary_password"])
+    )
+    assert signed_in.user.must_change_password is True
+    employee = await session.get(Employee, employee_id)
+    assert employee.work_email == "deepak@cgbindia-demo.com"
+    change = await session.scalar(
+        select(AuditLog).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.entity_type == "user",
+            AuditLog.action == AuditAction.UPDATE,
+        )
+    )
+    assert change.changes["before"]["email"] == "deepak@cgbindai-demo.com"
 
 
 async def test_a_locked_out_admin_gets_a_temporary_password(
