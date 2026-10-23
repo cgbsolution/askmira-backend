@@ -22,9 +22,12 @@ from pydantic import (
 )
 
 from app.models.payroll import (
+    WAGE_GROUP_TYPE,
     CalculationType,
     ComponentType,
     RoundingMode,
+    WageGroup,
+    wage_group_of,
 )
 
 # Serialise Decimal as a string, never as a JSON float.
@@ -49,6 +52,8 @@ class SalaryComponentBase(BaseModel):
     counts_toward_pf: bool = False
     counts_toward_esi: bool = False
     display_order: int = 0
+    #: Where it is listed on the Salary master. Empty: the kind's usual group.
+    wage_group: WageGroup | None = None
 
     @field_validator("code", "base_component_code")
     @classmethod
@@ -57,7 +62,17 @@ class SalaryComponentBase(BaseModel):
 
 
 class SalaryComponentCreate(SalaryComponentBase):
-    pass
+    @model_validator(mode="after")
+    def _group_fits_kind(self) -> SalaryComponentCreate:
+        if (
+            self.wage_group is not None
+            and WAGE_GROUP_TYPE[self.wage_group] is not self.component_type
+        ):
+            raise ValueError(
+                f"A {self.wage_group.value.replace('_', ' ')} wage type has to be a "
+                f"{WAGE_GROUP_TYPE[self.wage_group].value.replace('_', ' ')}"
+            )
+        return self
 
 
 class SalaryComponentRead(SalaryComponentBase):
@@ -66,6 +81,11 @@ class SalaryComponentRead(SalaryComponentBase):
     id: uuid.UUID
     is_system: bool
     active: bool
+
+    @model_validator(mode="after")
+    def _effective_group(self) -> SalaryComponentRead:
+        self.wage_group = wage_group_of(self.component_type, self.wage_group)
+        return self
 
 
 # ── Structures ──────────────────────────────────────────────────────────────
@@ -148,12 +168,21 @@ class ResolvedComponentRead(BaseModel):
     counts_toward_esi: bool
     display_order: int
     is_manual: bool = False
+    wage_group: WageGroup | None = None
 
 
 class SalaryTypeTotalRead(BaseModel):
     """What one kind of component (earnings, deductions…) adds up to."""
 
     component_type: ComponentType
+    monthly: Money
+    annual: Money
+
+
+class SalaryGroupTotalRead(BaseModel):
+    """What one wage group (regular earnings, provisions…) adds up to."""
+
+    wage_group: WageGroup
     monthly: Money
     annual: Money
 
@@ -173,6 +202,7 @@ class SalaryBreakdownRead(BaseModel):
     monthly_total_in_ctc: Money
     components: list[ResolvedComponentRead]
     totals: list[SalaryTypeTotalRead] = Field(default_factory=list)
+    group_totals: list[SalaryGroupTotalRead] = Field(default_factory=list)
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
@@ -258,6 +288,7 @@ class EmployeeSalaryComponentRead(BaseModel):
     is_manual: bool = False
     remarks: str | None = None
     pay_basis: PayBasis = "monthly"
+    wage_group: WageGroup | None = None
 
 
 class EmployeeSalaryRead(BaseModel):
@@ -301,6 +332,7 @@ class SalaryRevisionRead(BaseModel):
     attachment_name: str | None
     components: list[EmployeeSalaryComponentRead]
     totals: list[SalaryTypeTotalRead]
+    group_totals: list[SalaryGroupTotalRead] = Field(default_factory=list)
     #: Payroll has used this revision, so it is history and cannot change.
     locked: bool
     locked_reason: str | None
@@ -309,3 +341,57 @@ class SalaryRevisionRead(BaseModel):
 
 class SalaryDeleteRead(BaseModel):
     runs_to_recompute: list[str] = Field(default_factory=list)
+
+
+class SalaryTrailEntryRead(BaseModel):
+    """One change to a person's salary, from the audit log."""
+
+    id: uuid.UUID
+    at: datetime
+    action: str
+    actor_name: str | None
+    summary: str | None
+    #: The audit entry's own record of what changed: `before`/`after` on an
+    #: edit, the new figures on an assignment, `deleted` on a delete.
+    changes: dict
+
+
+class StandardSetupRead(BaseModel):
+    """What setting up the standard wage types added."""
+
+    components_added: list[str]
+    structure_name: str | None
+    #: Why the structure was not created, when the workspace's own wage types
+    #: under the standard codes are worked out differently.
+    structure_skipped: str | None = None
+
+
+class SalaryImportRowRead(BaseModel):
+    """One row of an uploaded salary sheet, as it would be (or was) applied."""
+
+    row: int
+    employee_code: str | None
+    employee_name: str | None
+    effective_from: date | None
+    structure_name: str | None
+    ctc_annual: Money | None
+    gross_monthly: Money | None
+    typed: int = 0
+    #: "ready", "error" or "skipped" (a row with no CTC, such as an untouched one).
+    status: Literal["ready", "error", "skipped"]
+    message: str | None = None
+    #: On a ready row, what HR should know before saving: statutory columns not
+    #: used, a CTC or gross that differs from the sheet, revisions it replaces.
+    notes: list[str] = Field(default_factory=list)
+
+
+class SalaryImportRead(BaseModel):
+    filename: str
+    rows: list[SalaryImportRowRead]
+    ready: int
+    errors: int
+    skipped: int
+    #: Ready rows that carry notes.
+    noted: int = 0
+    #: True once the ready rows were saved. Nothing is saved while any row has an error.
+    applied: bool = False

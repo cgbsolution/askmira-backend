@@ -20,6 +20,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.payroll import (
+    DEFAULT_WAGE_GROUP,
     ComponentType,
     EmployeeSalary,
     EmployeeSalaryComponent,
@@ -29,6 +30,8 @@ from app.models.payroll import (
     SalaryComponent,
     SalaryStructure,
     SalaryStructureComponent,
+    WageGroup,
+    wage_group_of,
 )
 from app.models.user import User
 from app.schemas.payroll import (
@@ -36,6 +39,7 @@ from app.schemas.payroll import (
     EmployeeSalaryCreate,
     SalaryAmountsInput,
     SalaryComponentCreate,
+    SalaryGroupTotalRead,
     SalaryStructureCreate,
     SalaryTypeTotalRead,
 )
@@ -94,7 +98,11 @@ async def create_component(
             detail=f"A salary component with code {payload.code} already exists",
         )
 
-    component = SalaryComponent(tenant_id=user.tenant_id, **payload.model_dump())
+    component = SalaryComponent(
+        tenant_id=user.tenant_id,
+        **payload.model_dump(exclude={"wage_group"}),
+        wage_group=payload.wage_group.value if payload.wage_group else None,
+    )
     session.add(component)
     await session.flush()
 
@@ -391,6 +399,42 @@ def type_totals(
         )
         for kind in TYPE_ORDER
         if kind in sums
+    ]
+
+
+async def wage_group_map(session: AsyncSession, user: User) -> dict[str, WageGroup]:
+    """Every tenant wage type's group, by code."""
+    rows = await session.execute(
+        tenant_scoped(
+            select(
+                SalaryComponent.code, SalaryComponent.component_type, SalaryComponent.wage_group
+            ),
+            SalaryComponent,
+            user,
+        )
+    )
+    return {code: wage_group_of(kind, group) for code, kind, group in rows.all()}
+
+
+def group_of(
+    groups: dict[str, WageGroup], code: str, component_type: ComponentType | str
+) -> WageGroup:
+    """A line's group: its wage type's, or its kind's usual one if the type is gone."""
+    return groups.get(code) or DEFAULT_WAGE_GROUP[ComponentType(component_type)]
+
+
+def group_totals(rows: list[tuple[WageGroup, Decimal, Decimal]]) -> list[SalaryGroupTotalRead]:
+    """Monthly and annual totals per wage group, from (group, monthly, annual)."""
+    sums: dict[WageGroup, tuple[Decimal, Decimal]] = {}
+    for group, monthly, annual in rows:
+        current = sums.get(group, (Decimal(0), Decimal(0)))
+        sums[group] = (current[0] + Decimal(str(monthly)), current[1] + Decimal(str(annual)))
+    return [
+        SalaryGroupTotalRead(
+            wage_group=group, monthly=_money(sums[group][0]), annual=_money(sums[group][1])
+        )
+        for group in WageGroup
+        if group in sums
     ]
 
 

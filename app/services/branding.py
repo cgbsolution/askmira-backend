@@ -46,9 +46,11 @@ async def save_logo(
     try:
         await storage.put(key, data)
     except StorageError as exc:
+        # The storage service's own reason ("Bucket not found", "not
+        # configured"): a misconfiguration is not fixed by trying again.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The logo could not be stored just now. Nothing was changed; try again.",
+            detail=f"The logo could not be stored. Nothing was changed. {exc}",
         ) from exc
     previous = tenant.logo_key
     tenant.logo_key = key

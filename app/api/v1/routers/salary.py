@@ -15,6 +15,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Query,
     Request,
@@ -38,14 +39,17 @@ from app.schemas.payroll import (
     SalaryComponentCreate,
     SalaryComponentRead,
     SalaryDeleteRead,
+    SalaryImportRead,
     SalaryPreviewInput,
     SalaryRevisionRead,
     SalaryStructureCreate,
     SalaryStructureRead,
+    SalaryTrailEntryRead,
+    StandardSetupRead,
 )
 from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
 from app.services.payroll import grades as grade_service
-from app.services.payroll import salary_master
+from app.services.payroll import salary_import, salary_master, standard_setup
 from app.services.payroll import service as salary_service
 from app.services.payroll.salary_structure import SalaryBreakdown
 
@@ -134,7 +138,8 @@ async def preview_structure(
     structure, breakdown = await salary_service.preview_structure(
         session, user, structure_id, amount
     )
-    return _breakdown_read(structure, breakdown)
+    groups = await salary_service.wage_group_map(session, user)
+    return _breakdown_read(structure, breakdown, groups)
 
 
 @router.post("/salary-structures/{structure_id}/preview", response_model=SalaryBreakdownRead)
@@ -147,10 +152,13 @@ async def preview_salary(
     screen (annual amounts, sub-totals) comes from here, never from the browser.
     """
     structure, resolved = await salary_service.preview_salary(session, user, structure_id, payload)
-    return _breakdown_read(structure, resolved.breakdown)
+    groups = await salary_service.wage_group_map(session, user)
+    return _breakdown_read(structure, resolved.breakdown, groups)
 
 
-def _breakdown_read(structure: SalaryStructure, breakdown: SalaryBreakdown) -> SalaryBreakdownRead:
+def _breakdown_read(
+    structure: SalaryStructure, breakdown: SalaryBreakdown, groups: dict
+) -> SalaryBreakdownRead:
     return SalaryBreakdownRead(
         structure_id=structure.id,
         structure_name=structure.name,
@@ -171,12 +179,66 @@ def _breakdown_read(structure: SalaryStructure, breakdown: SalaryBreakdown) -> S
                 counts_toward_esi=c.counts_toward_esi,
                 display_order=c.display_order,
                 is_manual=c.is_manual,
+                wage_group=salary_service.group_of(groups, c.code, c.component_type),
             )
             for c in breakdown.components
         ],
         totals=salary_service.type_totals(
             [(c.component_type, c.monthly_amount, c.annual_amount) for c in breakdown.components]
         ),
+        group_totals=salary_service.group_totals(
+            [
+                (
+                    salary_service.group_of(groups, c.code, c.component_type),
+                    c.monthly_amount,
+                    c.annual_amount,
+                )
+                for c in breakdown.components
+            ]
+        ),
+    )
+
+
+@router.post("/salary-components/standard", response_model=StandardSetupRead)
+async def install_standard_setup(
+    user: CurrentUser, session: DbSession, request: Request
+) -> StandardSetupRead:
+    """Add India's usual wage types the workspace lacks, and a standard structure if it has none.
+
+    Nothing already set up is changed. See `standard_setup` for the rules.
+    """
+    return await standard_setup.install_standard(session, user, request)
+
+
+# ── Bulk upload ─────────────────────────────────────────────────────────────
+
+
+@router.get("/salaries/import/template")
+async def salary_import_template(user: CurrentUser, session: DbSession) -> Response:
+    """An Excel sheet to fill: current people, their structure, a column per wage type."""
+    data = await salary_import.template(session, user)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="salary-upload-template.xlsx"'},
+    )
+
+
+@router.post("/salaries/import", response_model=SalaryImportRead)
+async def salary_import_upload(
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    apply: Annotated[bool, Form()] = False,
+) -> SalaryImportRead:
+    """Check a filled sheet row by row; with `apply`, save every row in one go.
+
+    Nothing is saved while any row has an error.
+    """
+    data = await file.read(salary_import.MAX_BYTES + 1)
+    return await salary_import.upload(
+        session, user, data, file.filename or "salaries.xlsx", apply=apply, request=request
     )
 
 
@@ -242,6 +304,14 @@ async def salary_revisions(
     return await salary_master.list_revisions(session, user, employee_id)
 
 
+@router.get("/employees/{employee_id}/salary/trail", response_model=list[SalaryTrailEntryRead])
+async def salary_trail(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[SalaryTrailEntryRead]:
+    """Every recorded change to this person's salary, newest first, with who made it."""
+    return await salary_master.salary_trail(session, user, employee_id)
+
+
 @router.put("/employees/{employee_id}/salary/{salary_id}", response_model=EmployeeSalaryRead)
 async def update_salary(
     employee_id: uuid.UUID,
@@ -292,7 +362,8 @@ async def attach_salary_file(
         session, user, employee_id, salary_id, filename=file.filename, data=data, request=request
     )
     locks = await salary_master.revision_locks(session, user, [salary.id])
-    return salary_master.revision_read(salary, locks.get(salary.id))
+    groups = await salary_service.wage_group_map(session, user)
+    return salary_master.revision_read(salary, locks.get(salary.id), groups)
 
 
 @router.get("/employees/{employee_id}/salary/{salary_id}/attachment")

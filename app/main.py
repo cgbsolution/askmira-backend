@@ -48,7 +48,21 @@ async def lifespan(app: FastAPI):
     # the next deploy throws away is visible in the first lines of the log.
     from app.services.storage import get_storage
 
-    logger.info("File storage: %s", get_storage().describe())
+    storage = get_storage()
+    logger.info("File storage: %s", storage.describe())
+    if settings.STORAGE_BACKEND == "supabase":
+        # A bucket nobody created refuses every upload ("Bucket not found"),
+        # so it is made here, private, the first time this API starts against
+        # a project. A public one is refused loudly: these are ID proofs and
+        # payslips. Startup goes on either way; uploads report the reason.
+        from app.services.storage import StorageError, SupabaseStorage
+
+        if isinstance(storage, SupabaseStorage):
+            try:
+                outcome = await storage.ensure_private_bucket()
+                logger.info("Storage bucket '%s': %s", storage.bucket, outcome)
+            except StorageError as exc:
+                logger.error("Storage bucket '%s' is not usable: %s", storage.bucket, exc)
     if settings.is_production and settings.STORAGE_BACKEND == "local":
         logger.warning(
             "File storage is the container's local disk in production. Files are lost "

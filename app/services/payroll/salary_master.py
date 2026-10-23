@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.arrears import SalaryRevision
-from app.models.audit import AuditAction
+from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee
 from app.models.payroll import (
     ComponentType,
@@ -32,23 +32,28 @@ from app.models.payroll import (
     PayrollRun,
     PayrollRunStatus,
     Payslip,
+    WageGroup,
 )
 from app.models.user import User
 from app.schemas.payroll import (
     EmployeeSalaryComponentRead,
     EmployeeSalaryUpdate,
     SalaryRevisionRead,
+    SalaryTrailEntryRead,
 )
 from app.services import audit
 from app.services.documents.vault import _checked, _download_name
 from app.services.payroll.service import (
     ResolvedSalary,
     get_structure,
+    group_of,
+    group_totals,
     manual_summary,
     materialise,
     resolve_amounts,
     resolve_manual,
     type_totals,
+    wage_group_map,
 )
 from app.services.storage import StorageError, get_storage
 
@@ -173,7 +178,9 @@ def _component_type(value: object) -> ComponentType:
     return value if isinstance(value, ComponentType) else ComponentType(str(value))
 
 
-def revision_read(salary: EmployeeSalary, lock_reason: str | None) -> SalaryRevisionRead:
+def revision_read(
+    salary: EmployeeSalary, lock_reason: str | None, groups: dict[str, WageGroup]
+) -> SalaryRevisionRead:
     components = sorted(salary.components, key=lambda c: (c.display_order, c.component_code))
     earnings = [c for c in components if _component_type(c.component_type) is ComponentType.EARNING]
     basic = next(
@@ -198,10 +205,25 @@ def revision_read(salary: EmployeeSalary, lock_reason: str | None) -> SalaryRevi
         effective_to=salary.effective_to,
         revision_reason=salary.revision_reason,
         attachment_name=salary.attachment_name if salary.attachment_key else None,
-        components=[EmployeeSalaryComponentRead.model_validate(c) for c in components],
+        components=[
+            EmployeeSalaryComponentRead.model_validate(c).model_copy(
+                update={"wage_group": group_of(groups, c.component_code, c.component_type)}
+            )
+            for c in components
+        ],
         totals=type_totals(
             [
                 (_component_type(c.component_type), c.monthly_amount, c.annual_amount)
+                for c in components
+            ]
+        ),
+        group_totals=group_totals(
+            [
+                (
+                    group_of(groups, c.component_code, c.component_type),
+                    c.monthly_amount,
+                    c.annual_amount,
+                )
                 for c in components
             ]
         ),
@@ -218,7 +240,44 @@ async def list_revisions(
     await _employee(session, user, employee_id)
     series = await _series(session, user, employee_id)
     locks = await revision_locks(session, user, [s.id for s in series])
-    return [revision_read(s, locks.get(s.id)) for s in reversed(series)]
+    groups = await wage_group_map(session, user)
+    return [revision_read(s, locks.get(s.id), groups) for s in reversed(series)]
+
+
+async def salary_trail(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> list[SalaryTrailEntryRead]:
+    """Every recorded change to this person's salary, newest first.
+
+    Read from the audit log, so it covers revisions since deleted too, and the
+    assignments other flows make (an offer, a promotion, an increment cycle).
+    """
+    await _employee(session, user, employee_id)
+    rows = await session.execute(
+        tenant_scoped(
+            select(AuditLog, User.full_name)
+            .outerjoin(User, User.id == AuditLog.actor_user_id)
+            .where(
+                AuditLog.entity_type == "employee_salary",
+                AuditLog.changes["employee_id"].astext == str(employee_id),
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(500),
+            AuditLog,
+            user,
+        )
+    )
+    return [
+        SalaryTrailEntryRead(
+            id=entry.id,
+            at=entry.created_at,
+            action=entry.action.value,
+            actor_name=name,
+            summary=entry.summary,
+            changes=entry.changes or {},
+        )
+        for entry, name in rows.all()
+    ]
 
 
 async def _open_runs_from(
@@ -272,7 +331,7 @@ async def _paid_months_between(
 # ── Correcting a revision ───────────────────────────────────────────────────
 
 
-def _snapshot(salary: EmployeeSalary, structure_name: str | None) -> dict:
+def revision_snapshot(salary: EmployeeSalary, structure_name: str | None) -> dict:
     """A revision as an audit entry records it."""
     return {
         "ctc_annual": str(_money(salary.ctc_annual)),
@@ -432,7 +491,7 @@ async def update_salary(
 
     # ── Write ───────────────────────────────────────────────────────────────
     old_from = salary.effective_from
-    before_audit = _snapshot(salary, salary.structure.name if salary.structure else None)
+    before_audit = revision_snapshot(salary, salary.structure.name if salary.structure else None)
     await _replace_components(session, salary, resolved, user.tenant_id)
     salary.structure_id = structure.id
     salary.structure = structure
@@ -455,7 +514,7 @@ async def update_salary(
             "employee_id": str(employee_id),
             "before": before_audit,
             "after": {
-                **_snapshot(salary, structure.name),
+                **revision_snapshot(salary, structure.name),
                 "typed_amounts": manual_summary(resolved),
             },
             "carried_to_later_revisions": bool(carried),
@@ -468,7 +527,7 @@ async def update_salary(
     )
 
     for revision, revision_resolved in carried:
-        revision_before = _snapshot(
+        revision_before = revision_snapshot(
             revision, revision.structure.name if revision.structure else None
         )
         await _replace_components(session, revision, revision_resolved, user.tenant_id)
@@ -484,7 +543,7 @@ async def update_salary(
             changes={
                 "employee_id": str(employee_id),
                 "before": revision_before,
-                "after": _snapshot(
+                "after": revision_snapshot(
                     revision, revision.structure.name if revision.structure else None
                 ),
                 "carried_from": str(salary.id),
@@ -537,7 +596,7 @@ async def delete_salary(
         )
 
     runs = await _open_runs_from(session, user, employee_id, salary.effective_from)
-    snapshot = _snapshot(salary, salary.structure.name if salary.structure else None)
+    snapshot = revision_snapshot(salary, salary.structure.name if salary.structure else None)
     attachment_key = salary.attachment_key
     if previous is not None:
         previous.effective_to = salary.effective_to
@@ -630,7 +689,11 @@ async def attach_file(
         entity_type="employee_salary",
         entity_id=salary.id,
         actor=user,
-        changes={"attachment": salary.attachment_name, "replaced": old_key is not None},
+        changes={
+            "employee_id": str(employee_id),
+            "attachment": salary.attachment_name,
+            "replaced": old_key is not None,
+        },
         summary=f"File attached to the salary revision from {_day(salary.effective_from)}",
         request=request,
     )
@@ -666,6 +729,7 @@ async def read_attachment(
         entity_type="employee_salary",
         entity_id=salary.id,
         actor=user,
+        changes={"employee_id": str(employee_id), "attachment": salary.attachment_name},
         summary=f"Downloaded the file on the salary revision from {_day(salary.effective_from)}",
         request=request,
     )
@@ -697,7 +761,7 @@ async def remove_attachment(
         entity_type="employee_salary",
         entity_id=salary.id,
         actor=user,
-        changes={"attachment_removed": name},
+        changes={"employee_id": str(employee_id), "attachment_removed": name},
         summary=f"File removed from the salary revision from {_day(salary.effective_from)}",
         request=request,
     )
@@ -715,5 +779,7 @@ __all__ = [
     "remove_attachment",
     "revision_locks",
     "revision_read",
+    "revision_snapshot",
+    "salary_trail",
     "update_salary",
 ]

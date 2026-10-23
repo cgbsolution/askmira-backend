@@ -56,6 +56,54 @@ class ComponentType(str, enum.Enum):
     REIMBURSEMENT = "reimbursement"
 
 
+class WageGroup(str, enum.Enum):
+    """Where a wage type sits on the Salary master, finer than its `ComponentType`.
+
+    Display and totals only: the payroll engine works from `ComponentType`.
+    Statutory deductions (PF, ESI, PT, LWF, TDS) are not a group here because
+    no tenant component holds them; the statutory engine works them out.
+    """
+
+    REGULAR_EARNING = "regular_earning"
+    VARIABLE_EARNING = "variable_earning"
+    REIMBURSEMENT = "reimbursement"
+    NON_STATUTORY_DEDUCTION = "non_statutory_deduction"
+    COMPANY_CONTRIBUTION = "company_contribution"
+    PROVISION = "provision"
+
+
+#: The kind of component each group holds.
+WAGE_GROUP_TYPE: dict[WageGroup, ComponentType] = {
+    WageGroup.REGULAR_EARNING: ComponentType.EARNING,
+    WageGroup.VARIABLE_EARNING: ComponentType.EARNING,
+    WageGroup.REIMBURSEMENT: ComponentType.REIMBURSEMENT,
+    WageGroup.NON_STATUTORY_DEDUCTION: ComponentType.DEDUCTION,
+    WageGroup.COMPANY_CONTRIBUTION: ComponentType.EMPLOYER_CONTRIBUTION,
+    WageGroup.PROVISION: ComponentType.EMPLOYER_CONTRIBUTION,
+}
+
+#: A component with no group set sits in its kind's usual group.
+DEFAULT_WAGE_GROUP: dict[ComponentType, WageGroup] = {
+    ComponentType.EARNING: WageGroup.REGULAR_EARNING,
+    ComponentType.REIMBURSEMENT: WageGroup.REIMBURSEMENT,
+    ComponentType.DEDUCTION: WageGroup.NON_STATUTORY_DEDUCTION,
+    ComponentType.EMPLOYER_CONTRIBUTION: WageGroup.COMPANY_CONTRIBUTION,
+}
+
+
+def wage_group_of(component_type: ComponentType | str, stored: str | None) -> WageGroup:
+    """A component's group: the one set on it if it fits its kind, else the kind's default."""
+    kind = ComponentType(component_type)
+    if stored:
+        try:
+            group = WageGroup(stored)
+        except ValueError:
+            group = None
+        if group is not None and WAGE_GROUP_TYPE[group] is kind:
+            return group
+    return DEFAULT_WAGE_GROUP[kind]
+
+
 class CalculationType(str, enum.Enum):
     """How a component's amount is arrived at.
 
@@ -149,6 +197,8 @@ class SalaryComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     counts_toward_esi: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: A `WageGroup` value, or null for the kind's usual group. Display only.
+    wage_group: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # System components (PF, ESI, PT, TDS) belong to the statutory engine and
     # cannot be edited or removed by a tenant admin.
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
