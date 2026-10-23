@@ -8,11 +8,18 @@ to serialise as a string. A payroll figure must survive the round trip exactly.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
 
 from app.models.payroll import (
     CalculationType,
@@ -140,6 +147,15 @@ class ResolvedComponentRead(BaseModel):
     counts_toward_pf: bool
     counts_toward_esi: bool
     display_order: int
+    is_manual: bool = False
+
+
+class SalaryTypeTotalRead(BaseModel):
+    """What one kind of component (earnings, deductions…) adds up to."""
+
+    component_type: ComponentType
+    monthly: Money
+    annual: Money
 
 
 class SalaryBreakdownRead(BaseModel):
@@ -156,16 +172,74 @@ class SalaryBreakdownRead(BaseModel):
     annual_total_in_ctc: Money
     monthly_total_in_ctc: Money
     components: list[ResolvedComponentRead]
+    totals: list[SalaryTypeTotalRead] = Field(default_factory=list)
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
 
 
-class EmployeeSalaryCreate(BaseModel):
+PayBasis = Literal["monthly", "annual"]
+
+
+class SalaryComponentAmountInput(BaseModel):
+    """One wage type on a salary: an amount typed for this employee, a remark, or both.
+
+    Leaving `amount` empty lets the structure work the component out. A wage
+    type the structure does not have is paid only when it has an amount.
+    """
+
+    component_code: str = Field(min_length=1, max_length=32)
+    amount: Decimal | None = Field(default=None, ge=0)
+    #: Whether `amount` is a month's or a year's figure. A monthly figure is
+    #: multiplied by twelve on the server, never in the browser.
+    basis: PayBasis = "monthly"
+    remarks: str | None = Field(default=None, max_length=255)
+
+    @field_validator("remarks")
+    @classmethod
+    def _strip(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
+
+
+class SalaryAmountsInput(BaseModel):
+    """A CTC and the wage types typed against it — what a preview resolves."""
+
+    #: Give the CTC as a year or as a month. A monthly CTC is multiplied by
+    #: twelve and rounded to the structure's precision.
+    ctc_annual: Decimal | None = Field(default=None, gt=0)
+    ctc_monthly: Decimal | None = Field(default=None, gt=0)
+    components: list[SalaryComponentAmountInput] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def _one_ctc_and_unique_codes(self) -> SalaryAmountsInput:
+        if (self.ctc_annual is None) == (self.ctc_monthly is None):
+            raise ValueError("Give the CTC as either a yearly or a monthly amount")
+        codes = [item.component_code for item in self.components]
+        repeated = sorted({code for code in codes if codes.count(code) > 1})
+        if repeated:
+            raise ValueError(f"{', '.join(repeated)} appear more than once")
+        return self
+
+
+class SalaryPreviewInput(SalaryAmountsInput):
+    pass
+
+
+class EmployeeSalaryCreate(SalaryAmountsInput):
     structure_id: uuid.UUID
-    ctc_annual: Decimal = Field(gt=0)
     effective_from: date
     revision_reason: str | None = Field(default=None, max_length=255)
+
+
+class EmployeeSalaryUpdate(SalaryAmountsInput):
+    """Correct a revision payroll has not used yet."""
+
+    structure_id: uuid.UUID
+    effective_from: date
+    revision_reason: str | None = Field(default=None, max_length=255)
+    #: Carry the typed amounts and remarks changed here into every later
+    #: revision too ("Save & update later revisions").
+    apply_to_later_revisions: bool = False
 
 
 class EmployeeSalaryComponentRead(BaseModel):
@@ -181,6 +255,9 @@ class EmployeeSalaryComponentRead(BaseModel):
     counts_toward_pf: bool
     counts_toward_esi: bool
     display_order: int
+    is_manual: bool = False
+    remarks: str | None = None
+    pay_basis: PayBasis = "monthly"
 
 
 class EmployeeSalaryRead(BaseModel):
@@ -199,3 +276,36 @@ class EmployeeSalaryRead(BaseModel):
     #: On a revision: months payroll already paid at the earlier salary, as
     #: "2026-08". They are trued up by raising arrears, not by this record.
     paid_months_affected: list[str] = Field(default_factory=list)
+    #: Payroll runs still open (draft or in review) that were worked out on the
+    #: old amounts, as "2026-08". Recompute them to pick up the change.
+    runs_to_recompute: list[str] = Field(default_factory=list)
+    #: On an edit saved with "update later revisions": the revisions it reached.
+    carried_forward_to: list[date] = Field(default_factory=list)
+
+
+class SalaryRevisionRead(BaseModel):
+    """One card on the Salary master timeline."""
+
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    structure_id: uuid.UUID
+    structure_name: str | None
+    ctc_annual: Money
+    ctc_monthly: Money
+    gross_monthly: Money
+    basic_monthly: Money | None
+    currency: str
+    effective_from: date
+    effective_to: date | None
+    revision_reason: str | None
+    attachment_name: str | None
+    components: list[EmployeeSalaryComponentRead]
+    totals: list[SalaryTypeTotalRead]
+    #: Payroll has used this revision, so it is history and cannot change.
+    locked: bool
+    locked_reason: str | None
+    updated_at: datetime
+
+
+class SalaryDeleteRead(BaseModel):
+    runs_to_recompute: list[str] = Field(default_factory=list)

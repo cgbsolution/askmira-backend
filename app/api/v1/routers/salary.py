@@ -9,26 +9,45 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal, InvalidOperation
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
+from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.payroll import SalaryStructure
 from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.pay_grades import PayGradeCreate, PayGradeRead, PayGradeUpdate
 from app.schemas.payroll import (
     EmployeeSalaryCreate,
     EmployeeSalaryRead,
+    EmployeeSalaryUpdate,
     ResolvedComponentRead,
     SalaryBreakdownRead,
     SalaryComponentCreate,
     SalaryComponentRead,
+    SalaryDeleteRead,
+    SalaryPreviewInput,
+    SalaryRevisionRead,
     SalaryStructureCreate,
     SalaryStructureRead,
 )
 from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
 from app.services.payroll import grades as grade_service
+from app.services.payroll import salary_master
 from app.services.payroll import service as salary_service
+from app.services.payroll.salary_structure import SalaryBreakdown
 
 router = APIRouter(
     tags=["payroll"],
@@ -115,6 +134,23 @@ async def preview_structure(
     structure, breakdown = await salary_service.preview_structure(
         session, user, structure_id, amount
     )
+    return _breakdown_read(structure, breakdown)
+
+
+@router.post("/salary-structures/{structure_id}/preview", response_model=SalaryBreakdownRead)
+async def preview_salary(
+    structure_id: uuid.UUID, payload: SalaryPreviewInput, user: CurrentUser, session: DbSession
+) -> SalaryBreakdownRead:
+    """Resolve a CTC with amounts typed for some wage types. Writes nothing.
+
+    The Salary master editor calls this as HR types, so every figure on that
+    screen (annual amounts, sub-totals) comes from here, never from the browser.
+    """
+    structure, resolved = await salary_service.preview_salary(session, user, structure_id, payload)
+    return _breakdown_read(structure, resolved.breakdown)
+
+
+def _breakdown_read(structure: SalaryStructure, breakdown: SalaryBreakdown) -> SalaryBreakdownRead:
     return SalaryBreakdownRead(
         structure_id=structure.id,
         structure_name=structure.name,
@@ -134,9 +170,13 @@ async def preview_structure(
                 counts_toward_pf=c.counts_toward_pf,
                 counts_toward_esi=c.counts_toward_esi,
                 display_order=c.display_order,
+                is_manual=c.is_manual,
             )
             for c in breakdown.components
         ],
+        totals=salary_service.type_totals(
+            [(c.component_type, c.monthly_amount, c.annual_amount) for c in breakdown.components]
+        ),
     )
 
 
@@ -189,6 +229,103 @@ async def salary_history(
 ) -> list[EmployeeSalaryRead]:
     rows = await salary_service.salary_history(session, user, employee_id)
     return [EmployeeSalaryRead.model_validate(row) for row in rows]
+
+
+# ── Salary master ───────────────────────────────────────────────────────────
+
+
+@router.get("/employees/{employee_id}/salary/revisions", response_model=list[SalaryRevisionRead])
+async def salary_revisions(
+    employee_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> list[SalaryRevisionRead]:
+    """One person's revisions, newest first, each saying whether payroll has used it."""
+    return await salary_master.list_revisions(session, user, employee_id)
+
+
+@router.put("/employees/{employee_id}/salary/{salary_id}", response_model=EmployeeSalaryRead)
+async def update_salary(
+    employee_id: uuid.UUID,
+    salary_id: uuid.UUID,
+    payload: EmployeeSalaryUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> EmployeeSalaryRead:
+    """Correct a revision payroll has not used yet (409 once it has)."""
+    change = await salary_master.update_salary(
+        session, user, employee_id, salary_id, payload, request
+    )
+    read = EmployeeSalaryRead.model_validate(change.salary)
+    read.paid_months_affected = change.paid_months_affected
+    read.runs_to_recompute = change.runs_to_recompute
+    read.carried_forward_to = change.carried_forward_to
+    return read
+
+
+@router.delete("/employees/{employee_id}/salary/{salary_id}", response_model=SalaryDeleteRead)
+async def delete_salary(
+    employee_id: uuid.UUID,
+    salary_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SalaryDeleteRead:
+    """Delete a revision payroll has not used yet (409 once it has)."""
+    runs = await salary_master.delete_salary(session, user, employee_id, salary_id, request)
+    return SalaryDeleteRead(runs_to_recompute=runs)
+
+
+@router.post(
+    "/employees/{employee_id}/salary/{salary_id}/attachment", response_model=SalaryRevisionRead
+)
+async def attach_salary_file(
+    employee_id: uuid.UUID,
+    salary_id: uuid.UUID,
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SalaryRevisionRead:
+    """Attach the letter or approval behind a revision: a PDF, PNG or JPEG."""
+    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    salary = await salary_master.attach_file(
+        session, user, employee_id, salary_id, filename=file.filename, data=data, request=request
+    )
+    locks = await salary_master.revision_locks(session, user, [salary.id])
+    return salary_master.revision_read(salary, locks.get(salary.id))
+
+
+@router.get("/employees/{employee_id}/salary/{salary_id}/attachment")
+async def download_salary_file(
+    employee_id: uuid.UUID,
+    salary_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> Response:
+    filename, mime, data = await salary_master.read_attachment(
+        session, user, employee_id, salary_id, request
+    )
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.delete(
+    "/employees/{employee_id}/salary/{salary_id}/attachment",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def remove_salary_file(
+    employee_id: uuid.UUID,
+    salary_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> None:
+    await salary_master.remove_attachment(session, user, employee_id, salary_id, request)
 
 
 # ── Grades and pay bands ────────────────────────────────────────────────────

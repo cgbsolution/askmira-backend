@@ -38,18 +38,25 @@ than left to emerge from the arithmetic:
 
 Components with `part_of_ctc = False` (typically reimbursements) resolve
 normally but are excluded from the CTC sum and from the BALANCE residual.
+
+Amounts typed in for one employee (the Salary master's manual amounts) are
+pinned as fixed components before pass 1, and wage types outside the structure
+join the same way. Everything else above still holds: dependents follow the
+pinned amount, BALANCE absorbs the residual, and the sum is asserted exact.
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 
 from app.models.payroll import (
     CalculationType,
     ComponentType,
     RoundingMode,
+    SalaryComponent,
     SalaryStructure,
     SalaryStructureComponent,
 )
@@ -59,7 +66,9 @@ __all__ = [
     "ResolvedComponent",
     "SalaryBreakdown",
     "SalaryStructureError",
+    "fits_structure",
     "resolve_ctc",
+    "round_to_structure",
     "validate_structure",
 ]
 
@@ -120,6 +129,8 @@ class ResolvedComponent:
     counts_toward_pf: bool
     counts_toward_esi: bool
     display_order: int
+    #: Typed in for this employee rather than worked out by the structure.
+    is_manual: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +190,85 @@ def _flatten(link: SalaryStructureComponent) -> ComponentSpec:
 
 def _specs(structure: SalaryStructure) -> list[ComponentSpec]:
     return [_flatten(link) for link in structure.components]
+
+
+def _extra_spec(component: SalaryComponent) -> ComponentSpec:
+    """A wage type outside the structure, paid to one employee at a typed amount."""
+    return ComponentSpec(
+        code=component.code,
+        name=component.name,
+        component_type=component.component_type,
+        calculation_type=CalculationType.FIXED,
+        base_component_code=None,
+        value=None,
+        formula=None,
+        taxable=component.taxable,
+        part_of_ctc=component.part_of_ctc,
+        pro_rate_on_lop=component.pro_rate_on_lop,
+        counts_toward_pf=component.counts_toward_pf,
+        counts_toward_esi=component.counts_toward_esi,
+        display_order=component.display_order,
+    )
+
+
+def _with_manual_amounts(
+    specs: list[ComponentSpec],
+    manual: Mapping[str, Decimal],
+    extras: Sequence[SalaryComponent],
+    quantum: Decimal,
+    precision: int,
+) -> list[ComponentSpec]:
+    """Pin the typed amounts, and add the wage types the structure does not have.
+
+    A typed amount turns its component into a fixed one for this employee, so
+    anything calculated from it (HRA from Basic, say) follows it, and the
+    BALANCE component still takes whatever the CTC has left.
+    """
+    by_code = {spec.code: spec for spec in specs}
+    for component in extras:
+        if component.code in by_code:
+            raise SalaryStructureError(f"'{component.name}' is already part of this structure")
+        if component.code not in manual:
+            raise SalaryStructureError(
+                f"'{component.name}' is not in this structure, so it needs an amount"
+            )
+        by_code[component.code] = _extra_spec(component)
+
+    unknown = sorted(set(manual) - set(by_code))
+    if unknown:
+        raise SalaryStructureError(
+            f"{', '.join(unknown)} {'is' if len(unknown) == 1 else 'are'} not a wage type "
+            "of this salary"
+        )
+
+    unit = "whole rupees" if precision == 0 else f"{precision} decimal place(s)"
+    pinned: list[ComponentSpec] = []
+    for code, spec in by_code.items():
+        if code not in manual:
+            pinned.append(spec)
+            continue
+        if spec.calculation_type is CalculationType.BALANCE:
+            raise SalaryStructureError(
+                f"'{spec.name}' is the balance of the CTC: it takes whatever the other "
+                "components leave. Change the CTC or another component instead."
+            )
+        amount = manual[code]
+        if amount < 0:
+            raise SalaryStructureError(f"'{spec.name}' cannot be negative")
+        if amount != amount.quantize(quantum):
+            raise SalaryStructureError(
+                f"'{spec.name}' amount {amount} is finer than this structure's rounding ({unit})"
+            )
+        pinned.append(
+            replace(
+                spec,
+                calculation_type=CalculationType.FIXED,
+                value=amount,
+                base_component_code=None,
+                formula=None,
+            )
+        )
+    return pinned
 
 
 # ── Dependency graph ────────────────────────────────────────────────────────
@@ -334,12 +424,35 @@ def _quantum(precision: int) -> Decimal:
     return Decimal(1).scaleb(-precision)
 
 
-def resolve_ctc(structure: SalaryStructure, ctc_annual: Decimal) -> SalaryBreakdown:
+def round_to_structure(structure: SalaryStructure, amount: Decimal) -> Decimal:
+    """An amount rounded the way this structure rounds every component."""
+    return amount.quantize(
+        _quantum(structure.rounding_precision), rounding=_ROUNDING[structure.rounding_mode]
+    )
+
+
+def fits_structure(structure: SalaryStructure, amount: Decimal) -> bool:
+    """Whether an amount is no finer than this structure's rounding."""
+    return amount == amount.quantize(_quantum(structure.rounding_precision))
+
+
+def resolve_ctc(
+    structure: SalaryStructure,
+    ctc_annual: Decimal,
+    *,
+    manual: Mapping[str, Decimal] | None = None,
+    extras: Sequence[SalaryComponent] = (),
+) -> SalaryBreakdown:
     """Resolve an annual CTC against a structure into exact component amounts.
 
     Args:
         structure: the template, with its components loaded.
         ctc_annual: the annual cost to company.
+        manual: annual amounts typed in for this employee, by component code.
+            They replace the structure's rule for that component; the BALANCE
+            component cannot be typed, since it is what keeps the sum exact.
+        extras: the tenant's wage types that are not in the structure but are
+            paid to this employee. Each needs an amount in `manual`.
 
     Returns:
         A breakdown whose in-CTC annual amounts sum to `ctc_annual` exactly.
@@ -357,10 +470,13 @@ def resolve_ctc(structure: SalaryStructure, ctc_annual: Decimal) -> SalaryBreakd
 
     validate_structure(structure)
 
-    specs = _specs(structure)
-    ordered = _topological_order(specs)
     rounding = _ROUNDING[structure.rounding_mode]
     quantum = _quantum(structure.rounding_precision)
+    manual = dict(manual or {})
+    specs = _specs(structure)
+    if manual or extras:
+        specs = _with_manual_amounts(specs, manual, extras, quantum, structure.rounding_precision)
+    ordered = _topological_order(specs)
 
     # A CTC finer than the structure's rounding cannot be represented exactly.
     # 750000.50 in a whole-rupee structure has nowhere to put the 50 paise:
@@ -466,6 +582,7 @@ def resolve_ctc(structure: SalaryStructure, ctc_annual: Decimal) -> SalaryBreakd
             counts_toward_pf=spec.counts_toward_pf,
             counts_toward_esi=spec.counts_toward_esi,
             display_order=spec.display_order,
+            is_manual=spec.code in manual,
         )
         for spec in sorted(by_code.values(), key=lambda s: (s.display_order, s.code))
     ]

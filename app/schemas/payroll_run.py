@@ -385,6 +385,8 @@ class SalaryOverviewRead(BaseModel):
     employee_name: str
     designation: str | None
     status: str
+    work_email: str | None = None
+    photo_url: str | None = None
     current_salary: SalaryRecordRead | None
 
 

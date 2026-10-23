@@ -8,6 +8,7 @@ an employee, and keeping the effective-dated series honest.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.payroll import (
+    ComponentType,
     EmployeeSalary,
     EmployeeSalaryComponent,
     PayrollRun,
@@ -32,8 +34,10 @@ from app.models.user import User
 from app.schemas.payroll import (
     EmployeeSalaryComponentRead,
     EmployeeSalaryCreate,
+    SalaryAmountsInput,
     SalaryComponentCreate,
     SalaryStructureCreate,
+    SalaryTypeTotalRead,
 )
 from app.schemas.payroll_run import (
     SalaryOverviewRead,
@@ -45,7 +49,9 @@ from app.services import audit
 from app.services.payroll.salary_structure import (
     SalaryBreakdown,
     SalaryStructureError,
+    fits_structure,
     resolve_ctc,
+    round_to_structure,
     validate_structure,
 )
 
@@ -218,6 +224,14 @@ async def preview_structure(
         raise _bad_request(exc) from exc
 
 
+async def preview_salary(
+    session: AsyncSession, user: User, structure_id: uuid.UUID, payload: SalaryAmountsInput
+) -> tuple[SalaryStructure, ResolvedSalary]:
+    """What the Salary master's editor shows as HR types. Writes nothing."""
+    structure = await get_structure(session, user, structure_id)
+    return structure, await resolve_amounts(session, user, structure, payload)
+
+
 async def list_structures(session: AsyncSession, user: User) -> list[SalaryStructure]:
     stmt = tenant_scoped(
         select(SalaryStructure).order_by(SalaryStructure.effective_from.desc()),
@@ -225,6 +239,168 @@ async def list_structures(session: AsyncSession, user: User) -> list[SalaryStruc
         user,
     )
     return list((await session.scalars(stmt)).all())
+
+
+# ── Resolving one employee's amounts ────────────────────────────────────────
+
+#: The order kinds of component are listed and totalled in.
+TYPE_ORDER = (
+    ComponentType.EARNING,
+    ComponentType.REIMBURSEMENT,
+    ComponentType.DEDUCTION,
+    ComponentType.EMPLOYER_CONTRIBUTION,
+)
+
+
+@dataclass
+class ResolvedSalary:
+    """A CTC resolved for one employee, with their typed amounts and remarks."""
+
+    ctc_annual: Decimal
+    breakdown: SalaryBreakdown
+    remarks: dict[str, str] = field(default_factory=dict)
+    #: How each typed amount was entered, "monthly" or "annual", by code.
+    bases: dict[str, str] = field(default_factory=dict)
+
+
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
+async def resolve_manual(
+    session: AsyncSession,
+    user: User,
+    structure: SalaryStructure,
+    ctc_annual: Decimal,
+    manual: dict[str, Decimal],
+    remarks: dict[str, str],
+    bases: dict[str, str] | None = None,
+) -> ResolvedSalary:
+    """Resolve a CTC with annual amounts pinned for some wage types.
+
+    A wage type outside the structure is looked up among the tenant's own
+    components; one that does not exist or is switched off is refused.
+    """
+    in_structure = {link.component.code for link in structure.components}
+    extra_codes = set(manual) - in_structure
+    extras: list[SalaryComponent] = []
+    if extra_codes:
+        found = {
+            component.code: component
+            for component in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(SalaryComponent).where(SalaryComponent.code.in_(extra_codes)),
+                        SalaryComponent,
+                        user,
+                    )
+                )
+            ).all()
+        }
+        missing = sorted(extra_codes - set(found))
+        if missing:
+            raise _unprocessable(f"Unknown wage type(s): {', '.join(missing)}")
+        inactive = sorted(c.name for c in found.values() if not c.active)
+        if inactive:
+            raise _unprocessable(f"{', '.join(inactive)} is switched off in payroll setup")
+        extras = [found[code] for code in sorted(extra_codes)]
+    try:
+        breakdown = resolve_ctc(structure, ctc_annual, manual=manual, extras=extras)
+    except SalaryStructureError as exc:
+        raise _bad_request(exc) from exc
+    present = {component.code for component in breakdown.components}
+    return ResolvedSalary(
+        ctc_annual=ctc_annual,
+        breakdown=breakdown,
+        remarks={code: note for code, note in remarks.items() if code in present},
+        bases={code: basis for code, basis in (bases or {}).items() if code in manual},
+    )
+
+
+async def resolve_amounts(
+    session: AsyncSession, user: User, structure: SalaryStructure, payload: SalaryAmountsInput
+) -> ResolvedSalary:
+    """Resolve what the Salary master sent: a CTC, typed amounts and remarks.
+
+    Monthly figures become annual ones here, on the server, so a browser never
+    multiplies money.
+    """
+    if payload.ctc_annual is not None:
+        ctc = payload.ctc_annual
+    else:
+        assert payload.ctc_monthly is not None  # the schema requires one of the two
+        ctc = round_to_structure(structure, payload.ctc_monthly * 12)
+
+    in_structure = {link.component.code for link in structure.components}
+    manual: dict[str, Decimal] = {}
+    remarks: dict[str, str] = {}
+    bases: dict[str, str] = {}
+    for item in payload.components:
+        if item.remarks:
+            remarks[item.component_code] = item.remarks
+        if item.amount is None:
+            continue
+        # A wage type the structure does not have, left at nothing, is not paid.
+        if item.amount == 0 and item.component_code not in in_structure:
+            continue
+        if not fits_structure(structure, item.amount):
+            raise _unprocessable(
+                f"{item.component_code}: {item.amount} is finer than this structure's "
+                "rounding. Round the amount."
+            )
+        manual[item.component_code] = item.amount * 12 if item.basis == "monthly" else item.amount
+        bases[item.component_code] = item.basis
+    return await resolve_manual(session, user, structure, ctc, manual, remarks, bases)
+
+
+def materialise(salary: EmployeeSalary, resolved: ResolvedSalary, tenant_id: uuid.UUID) -> None:
+    """Write the resolved amounts onto a salary: the payroll engine's input."""
+    for component in resolved.breakdown.components:
+        salary.components.append(
+            EmployeeSalaryComponent(
+                tenant_id=tenant_id,
+                component_code=component.code,
+                component_name=component.name,
+                component_type=component.component_type,
+                annual_amount=component.annual_amount,
+                monthly_amount=component.monthly_amount,
+                taxable=component.taxable,
+                part_of_ctc=component.part_of_ctc,
+                pro_rate_on_lop=component.pro_rate_on_lop,
+                counts_toward_pf=component.counts_toward_pf,
+                counts_toward_esi=component.counts_toward_esi,
+                display_order=component.display_order,
+                is_manual=component.is_manual,
+                remarks=resolved.remarks.get(component.code),
+                pay_basis=resolved.bases.get(component.code, "monthly"),
+            )
+        )
+
+
+def type_totals(
+    rows: list[tuple[ComponentType, Decimal, Decimal]],
+) -> list[SalaryTypeTotalRead]:
+    """Monthly and annual totals per kind of component, from (type, monthly, annual)."""
+    sums: dict[ComponentType, tuple[Decimal, Decimal]] = {}
+    for kind, monthly, annual in rows:
+        current = sums.get(kind, (Decimal(0), Decimal(0)))
+        sums[kind] = (current[0] + Decimal(str(monthly)), current[1] + Decimal(str(annual)))
+    return [
+        SalaryTypeTotalRead(
+            component_type=kind, monthly=_money(sums[kind][0]), annual=_money(sums[kind][1])
+        )
+        for kind in TYPE_ORDER
+        if kind in sums
+    ]
+
+
+def manual_summary(resolved: ResolvedSalary) -> dict[str, str]:
+    """Typed amounts, for an audit entry: code to annual amount."""
+    return {
+        component.code: str(_money(component.annual_amount))
+        for component in resolved.breakdown.components
+        if component.is_manual
+    }
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
@@ -261,10 +437,8 @@ async def assign_salary(
             ),
         )
 
-    try:
-        breakdown = resolve_ctc(structure, payload.ctc_annual)
-    except SalaryStructureError as exc:
-        raise _bad_request(exc) from exc
+    resolved = await resolve_amounts(session, user, structure, payload)
+    ctc = resolved.ctc_annual
 
     # ── Close the previous revision ─────────────────────────────────────────
     current = await session.scalar(
@@ -297,28 +471,12 @@ async def assign_salary(
         tenant_id=user.tenant_id,
         employee_id=employee_id,
         structure_id=structure.id,
-        ctc_annual=payload.ctc_annual,
+        ctc_annual=ctc,
         effective_from=payload.effective_from,
         revision_reason=payload.revision_reason,
         approved_by_user_id=user.id,
     )
-    for resolved in breakdown.components:
-        salary.components.append(
-            EmployeeSalaryComponent(
-                tenant_id=user.tenant_id,
-                component_code=resolved.code,
-                component_name=resolved.name,
-                component_type=resolved.component_type,
-                annual_amount=resolved.annual_amount,
-                monthly_amount=resolved.monthly_amount,
-                taxable=resolved.taxable,
-                part_of_ctc=resolved.part_of_ctc,
-                pro_rate_on_lop=resolved.pro_rate_on_lop,
-                counts_toward_pf=resolved.counts_toward_pf,
-                counts_toward_esi=resolved.counts_toward_esi,
-                display_order=resolved.display_order,
-            )
-        )
+    materialise(salary, resolved, user.tenant_id)
 
     session.add(salary)
     await session.flush()
@@ -337,16 +495,16 @@ async def assign_salary(
             # alone they serialise as "1200000.00" and "1500000", which reads
             # like two different kinds of number in an audit export.
             "old_ctc": str(_money(previous_ctc)) if previous_ctc is not None else None,
-            "new_ctc": str(_money(payload.ctc_annual)),
+            "new_ctc": str(_money(ctc)),
             "structure": structure.name,
             "effective_from": payload.effective_from.isoformat(),
             "reason": payload.revision_reason,
+            "typed_amounts": manual_summary(resolved),
         },
         summary=(
-            f"Salary revised for {employee.employee_code}: "
-            f"{_money(previous_ctc)} to {_money(payload.ctc_annual)}"
+            f"Salary revised for {employee.employee_code}: {_money(previous_ctc)} to {_money(ctc)}"
             if previous_ctc is not None
-            else f"Salary assigned to {employee.employee_code}: {_money(payload.ctc_annual)}"
+            else f"Salary assigned to {employee.employee_code}: {_money(ctc)}"
         ),
         request=request,
     )
@@ -450,6 +608,8 @@ async def salary_overview(
             employee_name=employee.full_name,
             designation=employee.designation,
             status=employee.status.value,
+            work_email=employee.work_email,
+            photo_url=employee.photo_url,
             current_salary=(
                 salary_record(current[employee.id]) if employee.id in current else None
             ),

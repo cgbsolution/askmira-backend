@@ -239,7 +239,12 @@ class EmployeeSalary(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One employee's CTC on one structure, effective-dated.
 
     A revision inserts a new row and closes the previous one's `effective_to`.
-    An employee's salary history is the series; no row is ever updated in place.
+    An employee's salary history is the series.
+
+    A revision is history once payroll has used it: once an approved or paid
+    run has a payslip on it, or an arrears revision points at it, it is never
+    changed or removed. Until then HR may correct or delete it from the Salary
+    master, audited, since nothing has been paid on it yet.
     """
 
     __tablename__ = "employee_salaries"
@@ -264,6 +269,12 @@ class EmployeeSalary(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # One supporting file per revision (an increment letter, an approval mail).
+    # The key is server-generated; the name is only what is shown.
+    attachment_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    attachment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attachment_mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     components: Mapped[list[EmployeeSalaryComponent]] = relationship(
         back_populates="employee_salary", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -276,9 +287,10 @@ class EmployeeSalary(Base, UUIDMixin, TenantMixin, TimestampMixin):
 class EmployeeSalaryComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A resolved component amount, materialised at assignment time.
 
-    These rows are the payroll engine's input. They are written once and never
-    updated: editing the structure later leaves them byte-identical, which is
-    what makes a historical run reproducible.
+    These rows are the payroll engine's input. Editing the structure later
+    leaves them byte-identical, which is what makes a historical run
+    reproducible. They are only ever replaced while their revision is still
+    unpaid (see `EmployeeSalary`).
 
     The statutory flags are snapshotted here too, so a later change to a
     component definition cannot retroactively move a past run's PF wage base.
@@ -315,6 +327,18 @@ class EmployeeSalaryComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     counts_toward_esi: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    #: Typed in for this employee on the Salary master, not worked out by the
+    #: structure. A later edit keeps it typed unless HR resets it.
+    is_manual: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Whether a typed amount was entered as a month's or a year's figure, so
+    #: the editor shows it back exactly as typed ("monthly" or "annual").
+    pay_basis: Mapped[str] = mapped_column(
+        String(8), default="monthly", server_default=text("'monthly'"), nullable=False
+    )
 
     employee_salary: Mapped[EmployeeSalary] = relationship(back_populates="components")
 
