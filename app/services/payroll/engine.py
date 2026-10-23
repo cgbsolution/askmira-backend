@@ -28,7 +28,12 @@ from datetime import date
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any
 
-from app.models.payroll import ComponentType, EmployeeSalary, PayrollRuleSet
+from app.models.payroll import (
+    STATUTORY_OVERRIDE_CODES,
+    ComponentType,
+    EmployeeSalary,
+    PayrollRuleSet,
+)
 from app.services.loans.recovery import RecoveryError, plan_recovery
 from app.services.payroll.statutory import (
     PfElection,
@@ -422,6 +427,9 @@ def _esi_applies(
         )
 
 
+_MANUAL_BASIS = "manual amount from the salary master"
+
+
 def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     """Compute one employee's pay for one period.
 
@@ -478,8 +486,17 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     # ── 1. Prorate ──────────────────────────────────────────────────────────
     lines: list[ComputedLine] = []
     prorated: dict[str, Decimal] = {}
+    # A statutory MANUAL wage type on the salary master replaces what payroll
+    # would work out for that deduction. It is never paid as a line of its own.
+    overrides: dict[str, Decimal] = {}
 
     for component in sorted(salary.components, key=lambda c: c.display_order):
+        if component.component_code in STATUTORY_OVERRIDE_CODES:
+            overrides[STATUTORY_OVERRIDE_CODES[component.component_code]] = _money(
+                Decimal(str(component.monthly_amount))
+            )
+            prorated[component.component_code] = _ZERO
+            continue
         full = Decimal(str(component.monthly_amount))
         if component.pro_rate_on_lop and unpaid_days > 0:
             amount = _money(full * lop_factor)
@@ -503,6 +520,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     # month's figures - but a supplementary payslip does not pay it again.
     if supplementary is not None:
         lines = []
+        # The regular run took the month's statutory deductions, manual or not.
+        overrides = {}
 
     gross_earnings = sum(
         (line.amount for line in lines if line.component_type is ComponentType.EARNING),
@@ -554,6 +573,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
 
         pf_employee = _contribution(pf_rules, pf_base, pf_employee_rate, "nearest_rupee")
         pf_employer = _contribution(pf_rules, pf_base, pf_employer_rate, "nearest_rupee")
+        if "pf" in overrides:
+            pf_employee = overrides["pf"]
 
         # Voluntary PF is an *additional employee* contribution on the full wage
         # base. It never moves the employer's — treating it as a matched
@@ -605,6 +626,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 esi_rules, contribution_base, _rule(esi_rules, "employer_rate"), "next_rupee"
             )
 
+    if "esi" in overrides:
+        esi_employee = overrides["esi"]
+
     # ── 5. Professional Tax — a state slab, looked up by gross ──────────────
     #
     # PT is a state levy: different slabs, different returns, different filing
@@ -639,6 +663,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 pt_rules, month_gross, month=pt_month, gender=payroll_input.gender
             )
 
+    if "pt" in overrides:
+        professional_tax = overrides["pt"]
+
     # ── 6. Labour Welfare Fund ──────────────────────────────────────────────
     #
     # A periodic state levy, not a monthly one. In a month the state does not
@@ -664,6 +691,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
         lwf_employee = lwf.employee_contribution
         lwf_employer = lwf.employer_contribution
+    if "lwf" in overrides:
+        lwf_employee = overrides["lwf"]
 
     # ── 7. Inputs from other modules ────────────────────────────────────────
     other_earnings = _ZERO
@@ -732,6 +761,15 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         else:
             tds = result.amount
             tds_working = result.working
+    if "tds" in overrides:
+        tds = overrides["tds"]
+        tds_working = {
+            **(tds_working or {}),
+            "manual_override": str(tds),
+            "note": (
+                "TDS MANUAL on the salary master is deducted instead of the projected monthly tax."
+            ),
+        }
 
     total_deductions = pf_employee + vpf + esi_employee + professional_tax + lwf_employee + tds
     total_deductions += sum(
@@ -877,7 +915,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "Provident Fund (employee)",
                     ComponentType.DEDUCTION,
                     pf_employee,
-                    f"{pf_employee_rate}% of PF wages {pf_wages_shown}",
+                    _MANUAL_BASIS
+                    if "pf" in overrides
+                    else f"{pf_employee_rate}% of PF wages {pf_wages_shown}",
                     str(pf_rules.id),
                 ),
                 ComputedLine(
@@ -899,7 +939,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "ESI (employee)",
                     ComponentType.DEDUCTION,
                     esi_employee,
-                    f"ESI wages {esi_wages_shown}",
+                    _MANUAL_BASIS if "esi" in overrides else f"ESI wages {esi_wages_shown}",
                     str(esi_rules.id),
                 ),
                 ComputedLine(
@@ -912,6 +952,17 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 ),
             ]
         )
+    elif esi_employee:
+        # Typed on the salary master where no ESI rules apply.
+        lines.append(
+            ComputedLine(
+                "ESI_EMPLOYEE",
+                "ESI (employee)",
+                ComponentType.DEDUCTION,
+                esi_employee,
+                _MANUAL_BASIS,
+            )
+        )
     if vpf and pf_rules is not None:
         lines.append(
             ComputedLine(
@@ -923,7 +974,18 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 str(pf_rules.id),
             )
         )
-    if lwf_employee or lwf_employer:
+    if lwf_rules is None and lwf_employee:
+        # Typed on the salary master where no LWF rules apply this month.
+        lines.append(
+            ComputedLine(
+                "LWF_EMPLOYEE",
+                "Labour Welfare Fund (employee)",
+                ComponentType.DEDUCTION,
+                lwf_employee,
+                _MANUAL_BASIS,
+            )
+        )
+    elif lwf_employee or lwf_employer:
         lines.extend(
             [
                 ComputedLine(
@@ -931,10 +993,12 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "Labour Welfare Fund (employee)",
                     ComponentType.DEDUCTION,
                     lwf_employee,
-                    f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
+                    _MANUAL_BASIS
+                    if "lwf" in overrides
+                    else f"{lwf_rules.jurisdiction} levy, month "  # type: ignore[union-attr]
                     f"{payroll_input.period_start.month}",
-                    str(lwf_rules.id),
-                ),  # type: ignore[union-attr]
+                    str(lwf_rules.id),  # type: ignore[union-attr]
+                ),
                 ComputedLine(
                     "LWF_EMPLOYER",
                     "Labour Welfare Fund (employer)",
@@ -953,9 +1017,11 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                 "Professional Tax",
                 ComponentType.DEDUCTION,
                 professional_tax,
-                f"{pt_rules.jurisdiction} slab on gross {month_gross}",  # type: ignore[union-attr]
-                str(pt_rules.id),
-            )  # type: ignore[union-attr]
+                _MANUAL_BASIS
+                if "pt" in overrides
+                else f"{pt_rules.jurisdiction} slab on gross {month_gross}",  # type: ignore[union-attr]
+                str(pt_rules.id) if pt_rules is not None else None,
+            )
         )
 
     over_ceiling: dict[str, str] | None = None

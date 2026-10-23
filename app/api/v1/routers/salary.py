@@ -46,6 +46,7 @@ from app.schemas.payroll import (
     SalaryStructureRead,
     SalaryTrailEntryRead,
     StandardSetupRead,
+    StandardStatusRead,
 )
 from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
 from app.services.payroll import grades as grade_service
@@ -197,6 +198,12 @@ def _breakdown_read(
             ]
         ),
     )
+
+
+@router.get("/salary-components/standard", response_model=StandardStatusRead)
+async def standard_setup_status(user: CurrentUser, session: DbSession) -> StandardStatusRead:
+    """Whether the workspace has the Salary Master template's wage types and names."""
+    return await standard_setup.standard_status(session, user)
 
 
 @router.post("/salary-components/standard", response_model=StandardSetupRead)

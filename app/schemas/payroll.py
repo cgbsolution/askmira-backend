@@ -208,20 +208,24 @@ class SalaryBreakdownRead(BaseModel):
 # ── Employee salary ─────────────────────────────────────────────────────────
 
 
-PayBasis = Literal["monthly", "annual"]
+#: The Salary master's Pay Basis: what period a typed amount is for. Weekly,
+#: daily and hourly figures become monthly ones on the server (see
+#: `service.to_period_amounts`), never in the browser.
+PayBasis = Literal["annual", "monthly", "weekly", "daily", "hourly"]
+_TWO_PLACES = Decimal("0.01")
 
 
 class SalaryComponentAmountInput(BaseModel):
     """One wage type on a salary: an amount typed for this employee, a remark, or both.
 
-    Leaving `amount` empty lets the structure work the component out. A wage
-    type the structure does not have is paid only when it has an amount.
+    Leaving `amount` empty lets the structure work the component out (or, in a
+    manual entry, leaves the wage type off). A wage type the structure does not
+    have is paid only when it has an amount.
     """
 
     component_code: str = Field(min_length=1, max_length=32)
     amount: Decimal | None = Field(default=None, ge=0)
-    #: Whether `amount` is a month's or a year's figure. A monthly figure is
-    #: multiplied by twelve on the server, never in the browser.
+    #: What period `amount` is for.
     basis: PayBasis = "monthly"
     remarks: str | None = Field(default=None, max_length=255)
 
@@ -230,20 +234,35 @@ class SalaryComponentAmountInput(BaseModel):
     def _strip(cls, value: str | None) -> str | None:
         return (value or "").strip() or None
 
+    @field_validator("amount")
+    @classmethod
+    def _paise(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and value != value.quantize(_TWO_PLACES):
+            raise ValueError(f"{value} has more than two decimals")
+        return value
+
 
 class SalaryAmountsInput(BaseModel):
     """A CTC and the wage types typed against it — what a preview resolves."""
 
-    #: Give the CTC as a year or as a month. A monthly CTC is multiplied by
-    #: twelve and rounded to the structure's precision.
+    #: "manual": every amount is taken exactly as typed, the CTC too, and a
+    #: wage type left empty is not paid (the Salary master's way). "structure":
+    #: the structure splits the CTC, and typed amounts override it.
+    entry: Literal["structure", "manual"] = "structure"
+    #: The CTC as a year, as a month, or as an amount in any Pay Basis.
     ctc_annual: Decimal | None = Field(default=None, gt=0)
     ctc_monthly: Decimal | None = Field(default=None, gt=0)
+    ctc_amount: Decimal | None = Field(default=None, gt=0)
+    ctc_basis: PayBasis = "monthly"
     components: list[SalaryComponentAmountInput] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
     def _one_ctc_and_unique_codes(self) -> SalaryAmountsInput:
-        if (self.ctc_annual is None) == (self.ctc_monthly is None):
-            raise ValueError("Give the CTC as either a yearly or a monthly amount")
+        given = [v for v in (self.ctc_annual, self.ctc_monthly, self.ctc_amount) if v is not None]
+        if len(given) != 1:
+            raise ValueError("Give the CTC once: as a yearly, a monthly or a pay-basis amount")
+        if given[0] != given[0].quantize(_TWO_PLACES):
+            raise ValueError(f"CTC {given[0]} has more than two decimals")
         codes = [item.component_code for item in self.components]
         repeated = sorted({code for code in codes if codes.count(code) > 1})
         if repeated:
@@ -289,6 +308,8 @@ class EmployeeSalaryComponentRead(BaseModel):
     remarks: str | None = None
     pay_basis: PayBasis = "monthly"
     wage_group: WageGroup | None = None
+    #: The amount as typed, in `pay_basis` (a day's figure for a daily one).
+    entered_amount: Money | None = None
 
 
 class EmployeeSalaryRead(BaseModel):
@@ -323,6 +344,12 @@ class SalaryRevisionRead(BaseModel):
     structure_name: str | None
     ctc_annual: Money
     ctc_monthly: Money
+    #: The CTC as the editor shows it back: monthly when the yearly figure is
+    #: exactly twelve months of it, else yearly.
+    ctc_basis: PayBasis = "annual"
+    ctc_amount: Money | None = None
+    #: Every amount on it was typed (the Salary master's manual entry).
+    manual_entry: bool = False
     gross_monthly: Money
     basic_monthly: Money | None
     currency: str
@@ -360,10 +387,21 @@ class StandardSetupRead(BaseModel):
     """What setting up the standard wage types added."""
 
     components_added: list[str]
+    #: Wage types still under AskMira's earlier default names, now the template's.
+    components_renamed: list[str] = Field(default_factory=list)
     structure_name: str | None
     #: Why the structure was not created, when the workspace's own wage types
     #: under the standard codes are worked out differently.
     structure_skipped: str | None = None
+
+
+class StandardStatusRead(BaseModel):
+    """Whether the workspace has the Salary Master template's wage types."""
+
+    complete: bool
+    missing: list[str]
+    outdated: list[str]
+    has_structure: bool
 
 
 class SalaryImportRowRead(BaseModel):

@@ -21,6 +21,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.payroll import (
     DEFAULT_WAGE_GROUP,
+    STATUTORY_OVERRIDE_CODES,
     ComponentType,
     EmployeeSalary,
     EmployeeSalaryComponent,
@@ -51,6 +52,7 @@ from app.schemas.payroll_run import (
 )
 from app.services import audit
 from app.services.payroll.salary_structure import (
+    ResolvedComponent,
     SalaryBreakdown,
     SalaryStructureError,
     fits_structure,
@@ -325,19 +327,127 @@ async def resolve_manual(
     )
 
 
+#: How a figure in another Pay Basis becomes a month's and a year's: 52 weeks a
+#: year, 26 working days a month, 8 working hours a day.
+WEEKS_A_YEAR = Decimal(52)
+DAYS_A_MONTH = Decimal(26)
+HOURS_A_DAY = Decimal(8)
+
+
+def to_period_amounts(amount: Decimal, basis: str) -> tuple[Decimal, Decimal]:
+    """(annual, monthly) for an amount in a Pay Basis, to the paisa."""
+    if basis == "monthly":
+        annual, monthly = amount * 12, amount
+    elif basis == "annual":
+        annual, monthly = amount, amount / 12
+    elif basis == "weekly":
+        annual = amount * WEEKS_A_YEAR
+        monthly = annual / 12
+    elif basis == "daily":
+        monthly = amount * DAYS_A_MONTH
+        annual = monthly * 12
+    elif basis == "hourly":
+        monthly = amount * HOURS_A_DAY * DAYS_A_MONTH
+        annual = monthly * 12
+    else:  # pragma: no cover - the schema allows no other value
+        raise _unprocessable(f"'{basis}' is not a pay basis")
+    return _money(annual), _money(monthly)
+
+
+async def resolve_typed(
+    session: AsyncSession,
+    user: User,
+    ctc_annual: Decimal,
+    payload: SalaryAmountsInput,
+) -> ResolvedSalary:
+    """A manual entry: every amount exactly as typed, nothing worked out.
+
+    A wage type left empty is not paid. Zero is not paid either, except on a
+    statutory MANUAL row, where 0 means "deduct nothing" rather than "work it
+    out". The CTC is kept as typed; the wage types need not add up to it (the
+    CTC also holds employer PF, ESI and admin charges, which payroll adds).
+    """
+    items = [item for item in payload.components if item.amount is not None]
+    codes = {item.component_code for item in items}
+    found: dict[str, SalaryComponent] = {}
+    if codes:
+        found = {
+            component.code: component
+            for component in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(SalaryComponent).where(SalaryComponent.code.in_(codes)),
+                        SalaryComponent,
+                        user,
+                    )
+                )
+            ).all()
+        }
+    missing = sorted(codes - set(found))
+    if missing:
+        raise _unprocessable(f"Unknown wage type(s): {', '.join(missing)}")
+    inactive = sorted(found[code].name for code in codes if not found[code].active)
+    if inactive:
+        raise _unprocessable(f"{', '.join(inactive)} is switched off in payroll setup")
+
+    components: list[ResolvedComponent] = []
+    remarks: dict[str, str] = {}
+    bases: dict[str, str] = {}
+    for item in items:
+        assert item.amount is not None
+        if item.amount == 0 and item.component_code not in STATUTORY_OVERRIDE_CODES:
+            continue
+        component = found[item.component_code]
+        annual, monthly = to_period_amounts(item.amount, item.basis)
+        components.append(
+            ResolvedComponent(
+                code=component.code,
+                name=component.name,
+                component_type=component.component_type,
+                annual_amount=annual,
+                monthly_amount=monthly,
+                taxable=component.taxable,
+                part_of_ctc=component.part_of_ctc,
+                pro_rate_on_lop=component.pro_rate_on_lop,
+                counts_toward_pf=component.counts_toward_pf,
+                counts_toward_esi=component.counts_toward_esi,
+                display_order=component.display_order,
+                is_manual=True,
+            )
+        )
+        bases[component.code] = item.basis
+        if item.remarks:
+            remarks[component.code] = item.remarks
+    components.sort(key=lambda c: (c.display_order, c.code))
+    return ResolvedSalary(
+        ctc_annual=_money(ctc_annual),
+        breakdown=SalaryBreakdown(ctc_annual=_money(ctc_annual), components=components),
+        remarks=remarks,
+        bases=bases,
+    )
+
+
 async def resolve_amounts(
     session: AsyncSession, user: User, structure: SalaryStructure, payload: SalaryAmountsInput
 ) -> ResolvedSalary:
     """Resolve what the Salary master sent: a CTC, typed amounts and remarks.
 
-    Monthly figures become annual ones here, on the server, so a browser never
-    multiplies money.
+    Figures in any Pay Basis become monthly and yearly ones here, on the
+    server, so a browser never multiplies money.
     """
+    manual_entry = payload.entry == "manual"
     if payload.ctc_annual is not None:
         ctc = payload.ctc_annual
     else:
-        assert payload.ctc_monthly is not None  # the schema requires one of the two
-        ctc = round_to_structure(structure, payload.ctc_monthly * 12)
+        monthly_ctc = payload.ctc_monthly
+        basis = "monthly" if monthly_ctc is not None else payload.ctc_basis
+        amount = monthly_ctc if monthly_ctc is not None else payload.ctc_amount
+        assert amount is not None  # the schema requires one way of giving the CTC
+        ctc, _ = to_period_amounts(amount, basis)
+        if not manual_entry:
+            ctc = round_to_structure(structure, ctc)
+    if manual_entry:
+        return await resolve_typed(session, user, ctc, payload)
 
     in_structure = {link.component.code for link in structure.components}
     manual: dict[str, Decimal] = {}
@@ -356,7 +466,7 @@ async def resolve_amounts(
                 f"{item.component_code}: {item.amount} is finer than this structure's "
                 "rounding. Round the amount."
             )
-        manual[item.component_code] = item.amount * 12 if item.basis == "monthly" else item.amount
+        manual[item.component_code], _ = to_period_amounts(item.amount, item.basis)
         bases[item.component_code] = item.basis
     return await resolve_manual(session, user, structure, ctc, manual, remarks, bases)
 

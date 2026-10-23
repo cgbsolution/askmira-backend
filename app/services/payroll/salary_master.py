@@ -29,6 +29,7 @@ from app.models.employee import Employee
 from app.models.payroll import (
     ComponentType,
     EmployeeSalary,
+    EmployeeSalaryComponent,
     PayrollRun,
     PayrollRunStatus,
     Payslip,
@@ -43,7 +44,11 @@ from app.schemas.payroll import (
 )
 from app.services import audit
 from app.services.documents.vault import _checked, _download_name
+from app.services.payroll.salary_structure import ResolvedComponent, SalaryBreakdown
 from app.services.payroll.service import (
+    DAYS_A_MONTH,
+    HOURS_A_DAY,
+    WEEKS_A_YEAR,
     ResolvedSalary,
     get_structure,
     group_of,
@@ -174,6 +179,32 @@ async def revision_locks(
     return locks
 
 
+def _entered(row: EmployeeSalaryComponent) -> Decimal:
+    """A stored amount back in the Pay Basis it was typed in. Exact, because the
+    monthly and yearly figures were made from it by whole multiples."""
+    monthly = Decimal(str(row.monthly_amount))
+    annual = Decimal(str(row.annual_amount))
+    if row.pay_basis == "annual":
+        return _money(annual)
+    if row.pay_basis == "weekly":
+        return _money(annual / WEEKS_A_YEAR)
+    if row.pay_basis == "daily":
+        return _money(monthly / DAYS_A_MONTH)
+    if row.pay_basis == "hourly":
+        return _money(monthly / (DAYS_A_MONTH * HOURS_A_DAY))
+    return _money(monthly)
+
+
+def _ctc_entry(salary: EmployeeSalary) -> dict:
+    """The CTC as the editor shows it back: a month's figure when the year is
+    exactly twelve of them (51,666.67 for 6,20,000.04), else the year's."""
+    annual = _money(salary.ctc_annual)
+    monthly = _money(annual / 12)
+    if monthly * 12 == annual:
+        return {"ctc_basis": "monthly", "ctc_amount": monthly}
+    return {"ctc_basis": "annual", "ctc_amount": annual}
+
+
 def _component_type(value: object) -> ComponentType:
     return value if isinstance(value, ComponentType) else ComponentType(str(value))
 
@@ -198,6 +229,8 @@ def revision_read(
         structure_name=salary.structure.name if salary.structure else None,
         ctc_annual=_money(salary.ctc_annual),
         ctc_monthly=_money(Decimal(str(salary.ctc_annual)) / 12),
+        **_ctc_entry(salary),
+        manual_entry=is_manual_entry(salary),
         gross_monthly=_money(sum((Decimal(str(c.monthly_amount)) for c in earnings), Decimal(0))),
         basic_monthly=_money(basic.monthly_amount) if basic else None,
         currency=salary.currency,
@@ -207,7 +240,10 @@ def revision_read(
         attachment_name=salary.attachment_name if salary.attachment_key else None,
         components=[
             EmployeeSalaryComponentRead.model_validate(c).model_copy(
-                update={"wage_group": group_of(groups, c.component_code, c.component_type)}
+                update={
+                    "wage_group": group_of(groups, c.component_code, c.component_type),
+                    "entered_amount": _entered(c),
+                }
             )
             for c in components
         ],
@@ -350,6 +386,54 @@ Typed = dict[str, tuple[Decimal | None, str | None, str]]
 _UNTYPED: tuple[Decimal | None, str | None, str] = (None, None, "monthly")
 
 
+def is_manual_entry(salary: EmployeeSalary) -> bool:
+    """Every amount on it was typed. A structure-split revision always has its
+    BALANCE component worked out, so it never reads as one."""
+    return bool(salary.components) and all(c.is_manual for c in salary.components)
+
+
+def _as_resolved(row: EmployeeSalaryComponent) -> ResolvedComponent:
+    return ResolvedComponent(
+        code=row.component_code,
+        name=row.component_name,
+        component_type=_component_type(row.component_type),
+        annual_amount=Decimal(str(row.annual_amount)),
+        monthly_amount=Decimal(str(row.monthly_amount)),
+        taxable=row.taxable,
+        part_of_ctc=row.part_of_ctc,
+        pro_rate_on_lop=row.pro_rate_on_lop,
+        counts_toward_pf=row.counts_toward_pf,
+        counts_toward_esi=row.counts_toward_esi,
+        display_order=row.display_order,
+        is_manual=row.is_manual,
+    )
+
+
+def _carry_direct(
+    revision: EmployeeSalary,
+    changed: Typed,
+    new_by_code: dict[str, ResolvedComponent],
+    resolved: ResolvedSalary,
+) -> ResolvedSalary:
+    """A later revision with the changed wage types swapped in, everything else kept."""
+    keep = [c for c in revision.components if c.component_code not in changed]
+    components = [_as_resolved(c) for c in keep] + [
+        new_by_code[code] for code in changed if code in new_by_code
+    ]
+    components.sort(key=lambda c: (c.display_order, c.code))
+    remarks = {c.component_code: c.remarks for c in keep if c.remarks}
+    remarks |= {code: resolved.remarks[code] for code in changed if code in resolved.remarks}
+    bases = {c.component_code: c.pay_basis for c in keep}
+    bases |= {code: resolved.bases[code] for code in changed if code in resolved.bases}
+    ctc = _money(revision.ctc_annual)
+    return ResolvedSalary(
+        ctc_annual=ctc,
+        breakdown=SalaryBreakdown(ctc_annual=ctc, components=components),
+        remarks=remarks,
+        bases=bases,
+    )
+
+
 def _typed(salary: EmployeeSalary) -> Typed:
     return {
         c.component_code: (
@@ -459,7 +543,15 @@ async def update_salary(
             if before.get(code, _UNTYPED) != after.get(code, _UNTYPED)
         }
         if changed:
+            new_by_code = {c.code: c for c in resolved.breakdown.components}
             for revision in later:
+                if payload.entry == "manual" or is_manual_entry(revision):
+                    # Typed by hand: the changed wage types are swapped in as they
+                    # are, and nothing else on the later revision moves.
+                    carried.append(
+                        (revision, _carry_direct(revision, changed, new_by_code, resolved))
+                    )
+                    continue
                 typed = _typed(revision)
                 for code, value in changed.items():
                     typed[code] = value
@@ -774,6 +866,7 @@ __all__ = [
     "SalaryChange",
     "attach_file",
     "delete_salary",
+    "is_manual_entry",
     "list_revisions",
     "read_attachment",
     "remove_attachment",

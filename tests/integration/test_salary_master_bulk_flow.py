@@ -125,14 +125,65 @@ async def test_the_standard_setup_creates_wage_types_and_a_working_structure(
     assert by_code["BASIC"]["annual_amount"] == "310000"  # 50% of CTC
     assert by_code["HRA"]["annual_amount"] == "124000"  # 40% of basic
     assert by_code["GRATUITY"]["annual_amount"] == "14911"  # 4.81% of basic
-    assert by_code["GRATUITY"]["wage_group"] == "provision"
+    assert by_code["GRATUITY"]["wage_group"] == "ctc_input"
     groups = {g["wage_group"]: g for g in preview.json()["group_totals"]}
     assert groups["regular_earning"]["annual"] == "605089.00"
-    assert groups["provision"]["annual"] == "14911.00"
+    assert groups["ctc_input"]["annual"] == "14911.00"
 
-    # Bonus is a variable earning, typed per person.
+    # The Employee Salary Master's names, groups and order.
     components = (await client.get("/api/v1/salary-components", headers=_auth(hr_user))).json()
-    assert {c["code"]: c["wage_group"] for c in components}["BONUS"] == "variable_earning"
+    named = [(c["name"], c["wage_group"]) for c in components]
+    assert named == [
+        ("GRATUITY AMOUNT MANUAL", "ctc_input"),
+        ("BASIC SALARY", "regular_earning"),
+        ("CONVEYANCE ALLOWANCE", "regular_earning"),
+        ("EDUCATION ALLOWANCE", "regular_earning"),
+        ("HOUSE RENT ALLOWANCE", "regular_earning"),
+        ("SPECIAL ALLOWANCE", "regular_earning"),
+        ("Telephone Allowance", "regular_earning"),
+        ("Uniform Allowance", "regular_earning"),
+        ("BONUS", "variable_earning"),
+        ("LEAVE ENCASHMENT", "variable_earning"),
+        ("FUEL REIMBURSEMENT", "reimbursement"),
+        ("MEDICAL REIMBURSEMENT", "reimbursement"),
+        ("ESIC EMPLOYEE CONTRIBUTION MANUAL", "statutory_deduction"),
+        ("LWF MANUAL", "statutory_deduction"),
+        ("MPF CONTRIBUTION MANUAL", "statutory_deduction"),
+        ("PROF. TAX MANUAL", "statutory_deduction"),
+        ("TDS MANUAL", "statutory_deduction"),
+        ("INSURANCE", "non_statutory_deduction"),
+        ("PROF TAX CTC", "company_contribution"),
+        ("BONUS PROVISION", "provision"),
+        ("GRATUITY PROVISION", "provision"),
+    ]
+    status = (await client.get("/api/v1/salary-components/standard", headers=_auth(hr_user))).json()
+    assert status["complete"] is True
+
+
+async def test_the_setup_renames_askmiras_earlier_defaults_only(
+    client: httpx.AsyncClient, session: AsyncSession, tenant: Tenant, hr_user: User
+) -> None:
+    for code, name in (("BASIC", "Basic salary"), ("HRA", "Our HRA")):
+        session.add(
+            SalaryComponent(
+                tenant_id=tenant.id,
+                code=code,
+                name=name,
+                component_type=ComponentType.EARNING,
+                calculation_type=CalculationType.PERCENTAGE_OF,
+                base_component_code="CTC" if code == "BASIC" else "BASIC",
+                value=Decimal("40"),
+            )
+        )
+    await session.commit()
+    status = (await client.get("/api/v1/salary-components/standard", headers=_auth(hr_user))).json()
+    assert status["complete"] is False and status["outdated"] == ["BASIC"]
+
+    result = await _standard(client, hr_user)
+    assert result["components_renamed"] == ["BASIC"]
+    names = {c.code: c.name for c in (await session.scalars(select(SalaryComponent))).all()}
+    assert names["BASIC"] == "BASIC SALARY"
+    assert names["HRA"] == "Our HRA"  # a name the workspace chose is never touched
 
 
 async def test_the_standard_setup_leaves_existing_wage_types_alone(
@@ -381,11 +432,10 @@ async def test_an_old_system_row_keeps_every_amount_and_says_where_the_ctc_diffe
     assert checked.status_code == 200, checked.text
     [row] = checked.json()["rows"]
     assert row["status"] == "ready", row
-    assert row["ctc_annual"] == "596592"
-    assert row["gross_monthly"] == "48474"
+    assert row["ctc_annual"] == "620000.04"  # 51,666.67 a month, kept as typed
+    assert row["gross_monthly"] == "48474.00"
     notes = " | ".join(row["notes"])
-    assert "₹5,96,592" in notes and "₹6,20,000" in notes and "₹23,408" in notes
-    assert "PROF. TAX MANUAL 0.01 not used" in notes
+    assert "₹6,20,000.04" in notes and "₹5,96,592" in notes and "₹23,408.04" in notes
     assert "MONTHLY GROSS" not in notes  # it matches
 
     saved = await _upload(client, hr_user, data, apply=True)
@@ -397,6 +447,8 @@ async def test_an_old_system_row_keeps_every_amount_and_says_where_the_ctc_diffe
     assert monthly["SPECIAL"] == Decimal("12307")
     assert monthly["GRATUITY"] == Decimal("1242")
     assert monthly["INSURANCE"] == Decimal("239")
+    assert monthly["PT_MANUAL"] == Decimal("0.01")  # deducted instead of the PT slab
+    assert Decimal(str(salary.ctc_annual)) == Decimal("620000.04")
 
 
 async def test_a_ctc_alone_is_split_by_the_structure(
@@ -405,18 +457,31 @@ async def test_a_ctc_alone_is_split_by_the_structure(
     await _standard(client, hr_user)
     data = _their_sheet(
         [_row(**{"Employee Code": "acm001", "WEF": date(2026, 4, 1), "Pay Basis": "Yearly",
-                 "CTC TOTAL": 1200000, "Telephone Allowance": 12000})]
+                 "CTC TOTAL": 1200000})]
     )  # fmt: skip
-    body = (await _upload(client, hr_user, data)).json()
-    [row] = body["rows"]
+    [row] = (await _upload(client, hr_user, data)).json()["rows"]
     assert row["status"] == "ready", row
     assert row["ctc_annual"] == "1200000"
     assert row["notes"] == []
     assert (await _upload(client, hr_user, data, apply=True)).status_code == 200
     salary = await session.scalar(select(EmployeeSalary))
-    telephone = next(c for c in salary.components if c.component_code == "TELEPHONE")
-    assert telephone.pay_basis == "annual" and telephone.is_manual
-    assert Decimal(str(telephone.monthly_amount)) == Decimal("1000")
+    basic = next(c for c in salary.components if c.component_code == "BASIC")
+    assert Decimal(str(basic.annual_amount)) == Decimal("600000")
+    assert not basic.is_manual
+
+
+async def test_weekly_daily_and_hourly_amounts_become_monthly_on_the_server(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    data = _their_sheet(
+        [_row(**{"Employee Code": "ACM001", "WEF": "01-04-2026", "Pay Basis": "Daily",
+                 "CTC TOTAL": 1500, "BASIC SALARY": 1000, "HOUSE RENT ALLOWANCE": 400})]
+    )  # fmt: skip
+    [row] = (await _upload(client, hr_user, data)).json()["rows"]
+    assert row["status"] == "ready", row
+    assert row["ctc_annual"] == "468000.00"  # 1,500 a day x 26 days x 12 months
+    assert row["gross_monthly"] == "36400.00"  # (1,000 + 400) x 26
 
 
 async def test_replace_all_future_revisions_puts_the_upload_in_their_place(
@@ -516,7 +581,7 @@ async def test_one_bad_row_blocks_the_whole_sheet(
                     "CTC TOTAL": 620000}),
             _row(**{"Employee Code": "NOPE1", "WEF": "01-04-2026", "Pay Basis": "Yearly",
                     "CTC TOTAL": 500000}),
-            _row(**{"Employee Code": "ACM001", "WEF": "01-05-2026", "Pay Basis": "Weekly",
+            _row(**{"Employee Code": "ACM001", "WEF": "01-05-2026", "Pay Basis": "Fortnightly",
                     "CTC TOTAL": 10000}),
             _row(**{"Employee Code": "ACM001", "WEF": "01-06-2026", "Pay Basis": "Yearly",
                     "CTC TOTAL": 700000, "BASIC SALARY": "abc"}),
@@ -526,7 +591,7 @@ async def test_one_bad_row_blocks_the_whole_sheet(
     rows = (await _upload(client, hr_user, data)).json()["rows"]
     assert [r["status"] for r in rows] == ["ready", "error", "error", "error", "error"]
     assert "No employee with code NOPE1" in rows[1]["message"]
-    assert "Yearly or Monthly" in rows[2]["message"]
+    assert "Yearly, Monthly, Weekly, Daily or Hourly" in rows[2]["message"]
     assert "not an amount" in rows[3]["message"]
     assert "Pay Basis is empty" in rows[4]["message"]
 
@@ -551,3 +616,110 @@ async def test_an_unknown_column_matters_only_where_it_holds_a_value(
     filled = _their_sheet([[*_row(**base), 500]], headers)
     [row] = (await _upload(client, hr_user, filled)).json()["rows"]
     assert row["status"] == "error" and "SHOE ALLOWANCE" in row["message"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The editor's manual entry: every amount as typed
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _manual(structure_id, on: str, ctc: str, amounts: dict[str, tuple[str, str]], **extra) -> dict:
+    return {
+        "entry": "manual",
+        "structure_id": str(structure_id),
+        "effective_from": on,
+        "ctc_amount": ctc,
+        "ctc_basis": "monthly",
+        "components": [
+            {"component_code": code, "amount": amount, "basis": basis}
+            for code, (amount, basis) in amounts.items()
+        ],
+        **extra,
+    }
+
+
+SCREEN = {
+    "GRATUITY": ("1242", "monthly"),
+    "BASIC": ("25833", "monthly"),
+    "HRA": ("10334", "monthly"),
+    "SPECIAL": ("12307", "monthly"),
+    "CONVEYANCE": ("0", "monthly"),
+    "PT_MANUAL": ("0.01", "monthly"),
+    "INSURANCE": ("239", "monthly"),
+}
+
+
+async def test_a_manual_entry_saves_every_amount_exactly_as_typed(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    body = _manual(structure.id, "2026-04-01", "51666.67", {**SCREEN, "BONUS": ("500", "weekly")})
+    preview = await client.post(
+        f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=body
+    )
+    assert preview.status_code == 200, preview.text
+    groups = {g["wage_group"]: g["monthly"] for g in preview.json()["group_totals"]}
+    assert groups["regular_earning"] == "48474.00"
+    assert groups["statutory_deduction"] == "0.01"
+    assert groups["variable_earning"] == "2166.67"  # 500 a week x 52 / 12
+
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary", headers=_auth(hr_user), json=body
+    )
+    assert saved.status_code == 201, saved.text
+    [card] = (
+        await client.get(
+            f"/api/v1/employees/{employee.id}/salary/revisions", headers=_auth(hr_user)
+        )
+    ).json()
+    assert card["ctc_annual"] == "620000.04"
+    assert (card["ctc_basis"], card["ctc_amount"]) == ("monthly", "51666.67")
+    assert card["manual_entry"] is True
+    codes = {c["component_code"]: c for c in card["components"]}
+    assert "CONVEYANCE" not in codes  # 0 is not paid
+    assert codes["PT_MANUAL"]["monthly_amount"] == "0.01"
+    assert codes["SPECIAL"]["monthly_amount"] == "12307.00"
+    assert codes["BONUS"]["pay_basis"] == "weekly"
+    assert codes["BONUS"]["entered_amount"] == "500.00"
+    assert card["gross_monthly"] == "50640.67"
+
+
+async def test_update_future_revisions_carries_typed_changes_as_they_are(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    base = f"/api/v1/employees/{employee.id}/salary"
+    first = (
+        await client.post(
+            base,
+            headers=_auth(hr_user),
+            json=_manual(structure.id, "2026-04-01", "51666.67", SCREEN),
+        )
+    ).json()
+    later_amounts = {**SCREEN, "BASIC": ("30000", "monthly")}
+    await client.post(
+        base,
+        headers=_auth(hr_user),
+        json=_manual(structure.id, "2026-10-01", "60000", later_amounts),
+    )
+
+    edited = await client.put(
+        f"{base}/{first['id']}",
+        headers=_auth(hr_user),
+        json=_manual(
+            structure.id,
+            "2026-04-01",
+            "51666.67",
+            {**SCREEN, "TELEPHONE": ("1000", "monthly")},
+            apply_to_later_revisions=True,
+        ),
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["carried_forward_to"] == ["2026-10-01"]
+    cards = (await client.get(f"{base}/revisions", headers=_auth(hr_user))).json()
+    october = {c["component_code"]: c["monthly_amount"] for c in cards[0]["components"]}
+    assert october["TELEPHONE"] == "1000.00"
+    assert october["BASIC"] == "30000.00"  # its own amount, untouched
+    assert cards[0]["ctc_annual"] == "720000.00"

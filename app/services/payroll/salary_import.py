@@ -7,15 +7,17 @@ per wage type. A file exported from that system uploads without editing.
 
 How a row is read:
 
-* Pay Basis (Yearly or Monthly) applies to every amount on the row.
-* A wage type left empty is worked out by the structure; one given is typed for
-  the person, exactly as on the Salary master.
-* When the balance (Special allowance) is given too, every amount is taken as
-  given and AskMira's CTC becomes their total. The old system's CTC TOTAL also
-  held employer PF, ESI and admin charges, which AskMira's payroll works out
-  on top; the difference is shown on the row, never silently absorbed into pay.
-* TDS, professional tax, PF, ESIC and LWF "manual" columns are not used: payroll
-  works them out from the statutory rules. A value there is noted on the row.
+* Pay Basis (Yearly, Monthly, Weekly, Daily or Hourly) applies to every amount
+  on the row.
+* A row with amounts is taken exactly as typed, the way the Salary master's
+  editor saves: each wage type given is paid at that amount, one left empty is
+  not paid, and CTC TOTAL is kept as given. The CTC also holds employer PF, ESI
+  and admin charges, which payroll adds on top, so the wage types need not add
+  up to it; the difference is shown on the row.
+* A row with only CTC TOTAL is split by the salary structure.
+* The statutory MANUAL columns (TDS, PROF. TAX, MPF, ESIC, LWF) are deducted
+  instead of what payroll would work out, for that person; empty, payroll works
+  them out as usual.
 * MONTHLY GROSS is a check: a different gross is noted on the row.
 * "Replace all future salary revisions" set to Yes removes the person's
   revisions from WEF on (only ones payroll has not used) and puts this one in
@@ -51,7 +53,6 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.payroll import (
-    CalculationType,
     ComponentType,
     EmployeeSalary,
     SalaryComponent,
@@ -69,8 +70,12 @@ from app.schemas.payroll import (
 from app.services import audit
 from app.services.employee_import.fields import read_date, text
 from app.services.payroll.salary_master import revision_locks, revision_snapshot
-from app.services.payroll.salary_structure import round_to_structure
-from app.services.payroll.service import assign_salary, get_structure, resolve_amounts
+from app.services.payroll.service import (
+    assign_salary,
+    get_structure,
+    resolve_amounts,
+    to_period_amounts,
+)
 from app.services.storage import StorageError, get_storage
 
 MAX_BYTES = 5 * 1024 * 1024
@@ -131,25 +136,26 @@ _OLD_NAMES: dict[str, str] = {
     "education allowance": "EDUCATION", "bonus": "BONUS",
     "leave encashment": "LEAVE_ENCASH", "medical reimbursement": "MEDICAL",
     "fuel reimbursement": "FUEL", "bonus provision": "BONUS_PROVISION",
-    "gratuity amount manual": "GRATUITY", "gratuity provision": "GRATUITY",
-    "gratuity": "GRATUITY", "insurance": "INSURANCE",
+    "gratuity amount manual": "GRATUITY", "gratuity": "GRATUITY",
+    "gratuity provision": "GRATUITY_PROVISION", "insurance": "INSURANCE",
     "uniform allowance": "UNIFORM", "telephone allowance": "TELEPHONE",
+    "tds manual": "TDS_MANUAL", "prof tax manual": "PT_MANUAL",
+    "professional tax manual": "PT_MANUAL", "mpf contribution manual": "PF_MANUAL",
+    "pf contribution manual": "PF_MANUAL", "esic employee contribution manual": "ESIC_MANUAL",
+    "lwf manual": "LWF_MANUAL", "prof tax ctc": "PT_CTC",
 }  # fmt: skip
 
-#: Worked out by payroll from the statutory rules, so never read from a sheet.
-_STATUTORY = frozenset(
-    {
-        "tds manual", "prof tax manual", "professional tax manual", "mpf contribution manual",
-        "pf contribution manual", "esic employee contribution manual", "esi employee manual",
-        "lwf manual", "prof tax ctc",
-    }
+#: Template columns a workspace set up before they were added lacks.
+_TEMPLATE_ONLY = frozenset(
+    key for key, code in _OLD_NAMES.items()
+    if code in {"TDS_MANUAL", "PT_MANUAL", "PF_MANUAL", "ESIC_MANUAL", "LWF_MANUAL", "PT_CTC",
+                "GRATUITY_PROVISION"}
 )  # fmt: skip
 
 _HEADER_FILL = PatternFill("solid", fgColor="14595C")  # Deep Teal
 _REQUIRED_FILL = PatternFill("solid", fgColor="EFC259")  # Marigold
 _INFO_FILL = PatternFill("solid", fgColor="E4E0D8")  # Cream, darker: not read
 _GROUP_ORDER = {group: index for index, group in enumerate(WageGroup)}
-_TWELVE = Decimal(12)
 
 
 def _unprocessable(detail: str) -> HTTPException:
@@ -238,7 +244,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
     extras = [c.name.upper() for c in active if c.code not in covered]
     headers = [*LAYOUT, *extras, STRUCTURE, REASON, NAME]
     required = {CODE, WEF, BASIS, CTC}
-    not_read = {_key(h) for h in headers if _key(h) in _STATUTORY} | {_key(NAME)}
+    not_read = {_key(NAME)}
 
     book = Workbook()
     sheet = book.active
@@ -250,11 +256,13 @@ async def template(session: AsyncSession, user: User) -> bytes:
             cell.fill, cell.font = _REQUIRED_FILL, Font(bold=True, color="12161D")
         elif _key(header) in not_read:
             cell.fill, cell.font = _INFO_FILL, Font(bold=True, color="55524B")
-            if _key(header) in _STATUTORY:
-                cell.comment = Comment(
-                    "Not read: AskMira's payroll works this out from the statutory rules.",
-                    "AskMira",
-                )
+        elif _OLD_NAMES.get(_key(header), "").endswith("_MANUAL"):
+            cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
+            cell.comment = Comment(
+                "Deducted instead of what payroll works out, for this person. "
+                "Leave empty to let payroll work it out.",
+                "AskMira",
+            )
         else:
             cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
         cell.alignment = Alignment(vertical="center", wrap_text=True)
@@ -286,7 +294,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
         validation.add(f"{letter}2:{letter}{last}")
         sheet.add_data_validation(validation)
 
-    choices(BASIS, ["Yearly", "Monthly"])
+    choices(BASIS, ["Yearly", "Monthly", "Weekly", "Daily", "Hourly"])
     choices(REPLACE, ["Yes", "No"])
     choices(STRUCTURE, [s.name for s in structures])
 
@@ -312,19 +320,19 @@ async def template(session: AsyncSession, user: User) -> bytes:
         "",
         f"{CODE} (required): as in AskMira.",
         f"{WEF} (required): the date the salary applies from, e.g. 01-Apr-2026.",
-        f"{BASIS} (required): Yearly or Monthly. Every amount on the row is read in it.",
+        f"{BASIS} (required): Yearly, Monthly, Weekly, Daily or Hourly. Every amount on the",
+        "    row is read in it (a week is 1/52 of a year; a month has 26 working days of",
+        "    8 hours).",
         f"{REPLACE}: Yes removes the person's revisions from {WEF} on and puts this one in their",
         f"    place (only ones payroll has not used). No or empty: {WEF} must be after the latest",
         "    revision.",
-        f"{CTC}: the CTC. The structure splits it; leave a wage type empty to let it.",
-        "Wage-type columns: an amount typed for this person, in the row's Pay Basis.",
-        "SPECIAL ALLOWANCE is what is left of the CTC. If you give it too, every amount is taken",
-        "    as given, and AskMira's CTC becomes their total. Your old CTC also held employer PF,",
-        "    ESI and admin charges, which AskMira's payroll adds on top; the row shows the",
-        "    difference.",
+        f"{CTC}: the CTC, kept as given.",
+        "Wage-type columns: the amounts, in the row's Pay Basis. A row with amounts is saved",
+        "    exactly as typed; a wage type left empty is not paid. A row with only CTC TOTAL",
+        "    is split by the salary structure.",
+        "TDS / PROF. TAX / MPF / ESIC / LWF MANUAL: deducted instead of what payroll works out;",
+        "    leave empty to let payroll work it out.",
         f"{GROSS}: a check. A different gross is shown on the row.",
-        "TDS / PROF. TAX / MPF / ESIC / LWF MANUAL and PROF TAX CTC (grey): not read.",
-        "    Payroll works them out from the statutory rules.",
         f"{STRUCTURE}: empty keeps the person's present structure (or the workspace's only one).",
         f"{REASON}: why the salary changes. {NAME} is for reference and is not read.",
         "",
@@ -394,20 +402,23 @@ def _money(raw: Any, what: str) -> Decimal | None:
     return amount
 
 
+_BASES = {
+    "annual": {"yearly", "annual", "annually", "year", "per annum", "pa"},
+    "monthly": {"monthly", "month", "pm", "per month"},
+    "weekly": {"weekly", "week", "per week"},
+    "daily": {"daily", "day", "per day"},
+    "hourly": {"hourly", "hour", "per hour"},
+}
+
+
 def _basis(raw: Any) -> str | None:
     value = _key(raw)
     if not value:
         return None
-    if value in {"yearly", "annual", "annually", "year", "per annum", "pa"}:
-        return "annual"
-    if value in {"monthly", "month", "pm", "per month"}:
-        return "monthly"
-    raise ValueError(f"{BASIS} '{raw}': AskMira salaries are Yearly or Monthly")
-
-
-def _annual(amount: Decimal, basis: str) -> Decimal:
-    """A row amount as a year's figure. Multiplied here, on the server."""
-    return amount * _TWELVE if basis == "monthly" else amount
+    for basis, words in _BASES.items():
+        if value in words:
+            return basis
+    raise ValueError(f"{BASIS} '{raw}': use Yearly, Monthly, Weekly, Daily or Hourly")
 
 
 def _yes(raw: Any) -> bool:
@@ -464,7 +475,6 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
     by_code = {c.code: c for c in components}
     fixed: dict[str, int] = {}
     wage_columns: list[tuple[int, str, str]] = []  # (index, header, code)
-    statutory_columns: list[tuple[int, str]] = []
     unknown_columns: list[tuple[int, str]] = []
     for index, header in enumerate(header_values):
         key = _key(header)
@@ -472,8 +482,6 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
             continue
         if key in _FIXED and _FIXED[key] not in fixed:
             fixed[_FIXED[key]] = index
-        elif key in _STATUTORY:
-            statutory_columns.append((index, str(header)))
         elif (code := _wage_code(header, components)) is not None:
             wage_columns.append((index, str(header), code))
         else:
@@ -574,6 +582,11 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                 given[wage_code] = (header, amount)
             for index, header in unknown_columns:
                 if text(at(values, index)) is not None:
+                    if _key(header) in _TEMPLATE_ONLY:
+                        raise ValueError(
+                            f"'{header}' is not set up in this workspace yet. Press "
+                            "'Update wage types' on the Salary master, then upload again."
+                        )
                     raise ValueError(
                         f"'{header}' is not a wage type of this workspace. Add it under "
                         "Payroll setup → Salary structures, or clear the column."
@@ -587,15 +600,11 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                 raise ValueError(f"No employee with code {code}")
             basis = _basis(cell(values, BASIS))
             if basis is None:
-                raise ValueError(f"{BASIS} is empty: Yearly or Monthly")
+                raise ValueError(f"{BASIS} is empty: Yearly, Monthly, Weekly, Daily or Hourly")
             on = read_date(cell(values, WEF))
             if on is None:
                 raise ValueError(f"{WEF} is empty")
             row.effective_from = on
-            for index, header in statutory_columns:
-                value = _money(at(values, index), header)
-                if value:
-                    notes.append(f"{header} {value} not used: payroll works it out")
 
             # ── Where the revision goes ─────────────────────────────────────
             replace = _yes(cell(values, REPLACE))
@@ -638,67 +647,49 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
             row.structure_name = structure.name
 
             # ── The amounts ─────────────────────────────────────────────────
-            links = {link.component.code: link.component for link in structure.components}
-            balance = next(
-                (
-                    c
-                    for c, comp in links.items()
-                    if comp.calculation_type is CalculationType.BALANCE
-                ),
-                None,
-            )
             for wage_code in given:
                 component = by_code[wage_code]
                 if not component.active:
                     raise ValueError(f"{component.name} is switched off in payroll setup")
-
-            typed = [
-                SalaryComponentAmountInput(component_code=c, amount=amount, basis=basis)
-                for c, (_, amount) in given.items()
-                if c != balance
-            ]
-            if balance is not None and balance in given:
-                # Every amount as given: the CTC is their total.
-                in_ctc = {c for c, comp in links.items() if comp.part_of_ctc and c != balance}
-                missing = sorted(in_ctc - set(given))
-                if missing:
-                    names = ", ".join(links[c].name for c in missing)
-                    raise ValueError(
-                        f"{links[balance].name} is given, so give every other wage type in the "
-                        f"CTC too (missing: {names}), or leave {links[balance].name} empty to "
-                        "take what is left"
-                    )
-                total = sum(
-                    (
-                        _annual(amount, basis)
-                        for c, (_, amount) in given.items()
-                        if by_code[c].part_of_ctc
-                    ),
-                    Decimal(0),
-                )
+            reason = (text(cell(values, REASON)) or "Bulk upload")[:255]
+            if given:
+                # Amounts given: saved exactly as typed, like the Salary master editor.
                 if ctc is not None:
-                    sheet_ctc = round_to_structure(structure, _annual(ctc, basis))
-                    if sheet_ctc != total:
-                        gap = sheet_ctc - total
-                        notes.append(
-                            f"CTC set to {_rupees(total)} a year, the wage types' total. "
-                            f"{CTC} {_rupees(sheet_ctc)} is {_rupees(abs(gap))} "
-                            f"{'more' if gap > 0 else 'less'}: usually employer PF, ESI and "
-                            "admin charges, which payroll works out on top"
-                        )
-                ctc_fields: dict[str, Decimal] = {"ctc_annual": total}
+                    ctc_fields: dict[str, Any] = {"ctc_amount": ctc, "ctc_basis": basis}
+                else:
+                    in_ctc = sum(
+                        (
+                            to_period_amounts(amount, basis)[0]
+                            for c, (_, amount) in given.items()
+                            if by_code[c].part_of_ctc
+                        ),
+                        Decimal(0),
+                    )
+                    if in_ctc <= 0:
+                        raise ValueError(f"{CTC} is empty")
+                    ctc_fields = {"ctc_annual": in_ctc}
+                    notes.append(f"{CTC} empty: set to the wage types' total, {_rupees(in_ctc)}")
+                payload = EmployeeSalaryCreate(
+                    entry="manual",
+                    structure_id=structure.id,
+                    effective_from=on,
+                    revision_reason=reason,
+                    components=[
+                        SalaryComponentAmountInput(component_code=c, amount=amount, basis=basis)
+                        for c, (_, amount) in given.items()
+                    ],
+                    **ctc_fields,
+                )
             else:
-                if ctc is None:
-                    raise ValueError(f"{CTC} is empty")
-                ctc_fields = {"ctc_annual": ctc} if basis == "annual" else {"ctc_monthly": ctc}
-
-            payload = EmployeeSalaryCreate(
-                structure_id=structure.id,
-                effective_from=on,
-                revision_reason=(text(cell(values, REASON)) or "Bulk upload")[:255],
-                components=typed,
-                **ctc_fields,
-            )
+                # Only a CTC: the structure splits it.
+                assert ctc is not None
+                payload = EmployeeSalaryCreate(
+                    structure_id=structure.id,
+                    effective_from=on,
+                    revision_reason=reason,
+                    ctc_amount=ctc,
+                    ctc_basis=basis,
+                )
             resolved = await resolve_amounts(session, user, structure, payload)
         except ValidationError as exc:
             row.message = exc.errors()[0].get("msg", "Invalid row").removeprefix("Value error, ")
@@ -727,6 +718,23 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                 notes.append(
                     f"{GROSS} in the sheet is {_rupees(gross_given)}; it works out to "
                     f"{_rupees(gross_in_basis)}"
+                )
+        if payload.entry == "manual":
+            in_ctc = sum(
+                (c.annual_amount for c in resolved.breakdown.components if c.part_of_ctc),
+                Decimal(0),
+            )
+            gap = resolved.ctc_annual - in_ctc
+            if gap > 0:
+                notes.append(
+                    f"{CTC} {_rupees(resolved.ctc_annual)} a year; the wage types in it add up "
+                    f"to {_rupees(in_ctc)}. {_rupees(gap)} is outside them (employer PF, ESI "
+                    "and admin charges, which payroll adds)"
+                )
+            elif gap < 0:
+                notes.append(
+                    f"The wage types in CTC add up to {_rupees(in_ctc)} a year, "
+                    f"{_rupees(-gap)} more than {CTC} {_rupees(resolved.ctc_annual)}"
                 )
         row.status = "ready"
         row.ctc_annual = resolved.ctc_annual

@@ -1,10 +1,15 @@
-"""From nothing to a working salary setup in one step: the usual Indian wage types and a structure.
+"""From nothing to a working salary setup in one step: the Employee Salary Master's wage types.
 
-Offered on the Salary master when a workspace has no salary structure yet. It only
-adds: a wage type whose code the workspace already has is left exactly as it is,
-and the structure is created only when no active structure exists. The rules are
-stated on the button that runs this, and all of it can be changed afterwards in
-Payroll setup.
+The wage types, their names, groups and order are the Salary Master template HR
+already works with (the HRMS they moved from): CTC wise input, then regular and
+variable earnings, reimbursements, statutory deductions typed by hand,
+non-statutory deductions, company contributions and provisions.
+
+Offered on the Salary master when a workspace has no salary structure yet, or
+lacks some of these wage types. It only adds, with one exception: a wage type
+still carrying the name AskMira's earlier default gave it ("Basic salary") is
+renamed to the template's ("BASIC SALARY"). A name the workspace chose itself is
+never touched, and the structure is created only when no active one exists.
 
 The structure follows the split most Indian CTC letters use: Basic is 50% of
 CTC, HRA 40% of Basic, gratuity 4.81% of Basic (15/26 of a month's basic per
@@ -34,7 +39,7 @@ from app.models.payroll import (
     WageGroup,
 )
 from app.models.user import User
-from app.schemas.payroll import StandardSetupRead
+from app.schemas.payroll import StandardSetupRead, StandardStatusRead
 from app.services import audit
 from app.services.payroll.salary_structure import SalaryStructureError, validate_structure
 
@@ -60,6 +65,8 @@ class _Spec:
     esi: bool = False
     order: int = 0
     in_structure: bool = False
+    #: Names AskMira's earlier default gave this code; renamed to `name`.
+    old_names: tuple[str, ...] = ()
 
 
 E, R, D, C = (
@@ -69,30 +76,61 @@ E, R, D, C = (
     ComponentType.EMPLOYER_CONTRIBUTION,
 )
 
+G = WageGroup
+#: The Employee Salary Master template, in its order.
 STANDARD: tuple[_Spec, ...] = (
-    _Spec("BASIC", "Basic salary", E, WageGroup.REGULAR_EARNING, CalculationType.PERCENTAGE_OF,
-          base="CTC", value="50", pf=True, esi=True, order=10, in_structure=True),
-    _Spec("HRA", "House rent allowance", E, WageGroup.REGULAR_EARNING,
-          CalculationType.PERCENTAGE_OF, base="BASIC", value="40", esi=True, order=20,
-          in_structure=True),
-    _Spec("CONVEYANCE", "Conveyance allowance", E, WageGroup.REGULAR_EARNING, esi=True, order=30),
-    _Spec("EDUCATION", "Education allowance", E, WageGroup.REGULAR_EARNING, esi=True, order=40),
-    _Spec("TELEPHONE", "Telephone allowance", E, WageGroup.REGULAR_EARNING, esi=True, order=50),
-    _Spec("UNIFORM", "Uniform allowance", E, WageGroup.REGULAR_EARNING, esi=True, order=60),
-    _Spec("SPECIAL", "Special allowance", E, WageGroup.REGULAR_EARNING, CalculationType.BALANCE,
-          value=None, esi=True, order=90, in_structure=True),
-    _Spec("BONUS", "Bonus", E, WageGroup.VARIABLE_EARNING, pro_rate=False, order=110),
-    _Spec("LEAVE_ENCASH", "Leave encashment", E, WageGroup.VARIABLE_EARNING, pro_rate=False,
-          order=120),
-    _Spec("FUEL", "Fuel reimbursement", R, WageGroup.REIMBURSEMENT, taxable=False,
-          part_of_ctc=False, pro_rate=False, order=210),
-    _Spec("MEDICAL", "Medical reimbursement", R, WageGroup.REIMBURSEMENT, taxable=False,
-          part_of_ctc=False, pro_rate=False, order=220),
-    _Spec("INSURANCE", "Insurance", D, WageGroup.NON_STATUTORY_DEDUCTION, part_of_ctc=False,
-          pro_rate=False, order=410),
-    _Spec("GRATUITY", "Gratuity", C, WageGroup.PROVISION, CalculationType.FORMULA, value=None,
-          formula="BASIC * 0.0481", taxable=False, pro_rate=False, order=610, in_structure=True),
-    _Spec("BONUS_PROVISION", "Bonus provision", C, WageGroup.PROVISION, taxable=False,
+    # CTC wise input
+    _Spec("GRATUITY", "GRATUITY AMOUNT MANUAL", C, G.CTC_INPUT, CalculationType.FORMULA,
+          value=None, formula="BASIC * 0.0481", taxable=False, pro_rate=False, order=5,
+          in_structure=True, old_names=("Gratuity",)),
+    # 1 Regular earning
+    _Spec("BASIC", "BASIC SALARY", E, G.REGULAR_EARNING, CalculationType.PERCENTAGE_OF,
+          base="CTC", value="50", pf=True, esi=True, order=10, in_structure=True,
+          old_names=("Basic salary",)),
+    _Spec("CONVEYANCE", "CONVEYANCE ALLOWANCE", E, G.REGULAR_EARNING, esi=True, order=20,
+          old_names=("Conveyance allowance",)),
+    _Spec("EDUCATION", "EDUCATION ALLOWANCE", E, G.REGULAR_EARNING, esi=True, order=30,
+          old_names=("Education allowance",)),
+    _Spec("HRA", "HOUSE RENT ALLOWANCE", E, G.REGULAR_EARNING, CalculationType.PERCENTAGE_OF,
+          base="BASIC", value="40", esi=True, order=40, in_structure=True,
+          old_names=("House rent allowance",)),
+    _Spec("SPECIAL", "SPECIAL ALLOWANCE", E, G.REGULAR_EARNING, CalculationType.BALANCE,
+          value=None, esi=True, order=50, in_structure=True, old_names=("Special allowance",)),
+    _Spec("TELEPHONE", "Telephone Allowance", E, G.REGULAR_EARNING, esi=True, order=60,
+          old_names=("Telephone allowance",)),
+    _Spec("UNIFORM", "Uniform Allowance", E, G.REGULAR_EARNING, esi=True, order=70,
+          old_names=("Uniform allowance",)),
+    # 2 Variable earning
+    _Spec("BONUS", "BONUS", E, G.VARIABLE_EARNING, pro_rate=False, order=110,
+          old_names=("Bonus",)),
+    _Spec("LEAVE_ENCASH", "LEAVE ENCASHMENT", E, G.VARIABLE_EARNING, pro_rate=False, order=120,
+          old_names=("Leave encashment",)),
+    # 3 Reimbursement
+    _Spec("FUEL", "FUEL REIMBURSEMENT", R, G.REIMBURSEMENT, taxable=False, part_of_ctc=False,
+          pro_rate=False, order=210, old_names=("Fuel reimbursement",)),
+    _Spec("MEDICAL", "MEDICAL REIMBURSEMENT", R, G.REIMBURSEMENT, taxable=False,
+          part_of_ctc=False, pro_rate=False, order=220, old_names=("Medical reimbursement",)),
+    # 4 Statutory deduction: typed for a person instead of worked out
+    _Spec("ESIC_MANUAL", "ESIC EMPLOYEE CONTRIBUTION MANUAL", D, G.STATUTORY_DEDUCTION,
+          taxable=False, part_of_ctc=False, pro_rate=False, order=310),
+    _Spec("LWF_MANUAL", "LWF MANUAL", D, G.STATUTORY_DEDUCTION, taxable=False,
+          part_of_ctc=False, pro_rate=False, order=320),
+    _Spec("PF_MANUAL", "MPF CONTRIBUTION MANUAL", D, G.STATUTORY_DEDUCTION, taxable=False,
+          part_of_ctc=False, pro_rate=False, order=330),
+    _Spec("PT_MANUAL", "PROF. TAX MANUAL", D, G.STATUTORY_DEDUCTION, taxable=False,
+          part_of_ctc=False, pro_rate=False, order=340),
+    _Spec("TDS_MANUAL", "TDS MANUAL", D, G.STATUTORY_DEDUCTION, taxable=False,
+          part_of_ctc=False, pro_rate=False, order=350),
+    # 5 Non-statutory deduction
+    _Spec("INSURANCE", "INSURANCE", D, G.NON_STATUTORY_DEDUCTION, part_of_ctc=False,
+          pro_rate=False, order=410, old_names=("Insurance",)),
+    # 6 Company contribution
+    _Spec("PT_CTC", "PROF TAX CTC", C, G.COMPANY_CONTRIBUTION, taxable=False, pro_rate=False,
+          order=510),
+    # 7 Provision
+    _Spec("BONUS_PROVISION", "BONUS PROVISION", C, G.PROVISION, taxable=False, pro_rate=False,
+          order=610, old_names=("Bonus provision",)),
+    _Spec("GRATUITY_PROVISION", "GRATUITY PROVISION", C, G.PROVISION, taxable=False,
           pro_rate=False, order=620),
 )  # fmt: skip
 
@@ -108,8 +146,27 @@ async def install_standard(
         ).all()
     }
     added: list[SalaryComponent] = []
+    renamed: list[SalaryComponent] = []
     for spec in STANDARD:
         if spec.code in existing:
+            component = existing[spec.code]
+            if component.name in spec.old_names:
+                old_name = component.name
+                component.name = spec.name
+                component.wage_group = spec.group.value
+                component.display_order = spec.order
+                renamed.append(component)
+                await audit.record(
+                    session,
+                    tenant_id=user.tenant_id,
+                    action=AuditAction.UPDATE,
+                    entity_type="salary_component",
+                    entity_id=component.id,
+                    actor=user,
+                    changes={"code": component.code, "name": [old_name, spec.name]},
+                    summary=f"Renamed salary component {component.code} to the template's name",
+                    request=request,
+                )
             continue
         component = SalaryComponent(
             tenant_id=user.tenant_id,
@@ -223,6 +280,36 @@ async def install_standard(
     await session.commit()
     return StandardSetupRead(
         components_added=[component.code for component in added],
+        components_renamed=[component.code for component in renamed],
         structure_name=structure_name,
         structure_skipped=skipped,
+    )
+
+
+async def standard_status(session: AsyncSession, user: User) -> StandardStatusRead:
+    """Whether the workspace has the template's wage types, under the template's names."""
+    existing = {
+        component.code: component
+        for component in (
+            await session.scalars(tenant_scoped(select(SalaryComponent), SalaryComponent, user))
+        ).all()
+    }
+    missing = [spec.code for spec in STANDARD if spec.code not in existing]
+    outdated = [
+        spec.code
+        for spec in STANDARD
+        if spec.code in existing and existing[spec.code].name in spec.old_names
+    ]
+    has_structure = await session.scalar(
+        tenant_scoped(
+            select(SalaryStructure.id).where(SalaryStructure.active.is_(True)).limit(1),
+            SalaryStructure,
+            user,
+        )
+    )
+    return StandardStatusRead(
+        complete=not missing and not outdated and has_structure is not None,
+        missing=missing,
+        outdated=outdated,
+        has_structure=has_structure is not None,
     )

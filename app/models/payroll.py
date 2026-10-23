@@ -59,14 +59,17 @@ class ComponentType(str, enum.Enum):
 class WageGroup(str, enum.Enum):
     """Where a wage type sits on the Salary master, finer than its `ComponentType`.
 
-    Display and totals only: the payroll engine works from `ComponentType`.
-    Statutory deductions (PF, ESI, PT, LWF, TDS) are not a group here because
-    no tenant component holds them; the statutory engine works them out.
+    Display and totals only: the payroll engine works from `ComponentType`
+    (and from `STATUTORY_OVERRIDE_CODES` for the statutory MANUAL rows).
     """
 
+    #: Inputs beside the CTC, part of it but never paid (gratuity in CTC).
+    CTC_INPUT = "ctc_input"
     REGULAR_EARNING = "regular_earning"
     VARIABLE_EARNING = "variable_earning"
     REIMBURSEMENT = "reimbursement"
+    #: TDS / PT / PF / ESIC / LWF typed for one person instead of worked out.
+    STATUTORY_DEDUCTION = "statutory_deduction"
     NON_STATUTORY_DEDUCTION = "non_statutory_deduction"
     COMPANY_CONTRIBUTION = "company_contribution"
     PROVISION = "provision"
@@ -74,12 +77,25 @@ class WageGroup(str, enum.Enum):
 
 #: The kind of component each group holds.
 WAGE_GROUP_TYPE: dict[WageGroup, ComponentType] = {
+    WageGroup.CTC_INPUT: ComponentType.EMPLOYER_CONTRIBUTION,
     WageGroup.REGULAR_EARNING: ComponentType.EARNING,
     WageGroup.VARIABLE_EARNING: ComponentType.EARNING,
     WageGroup.REIMBURSEMENT: ComponentType.REIMBURSEMENT,
+    WageGroup.STATUTORY_DEDUCTION: ComponentType.DEDUCTION,
     WageGroup.NON_STATUTORY_DEDUCTION: ComponentType.DEDUCTION,
     WageGroup.COMPANY_CONTRIBUTION: ComponentType.EMPLOYER_CONTRIBUTION,
     WageGroup.PROVISION: ComponentType.EMPLOYER_CONTRIBUTION,
+}
+
+#: Salary-master wage types that stand in for a statutory deduction. On a
+#: person's salary, an amount here (even 0) is deducted instead of what payroll
+#: would work out; no such wage type means payroll works it out as usual.
+STATUTORY_OVERRIDE_CODES: dict[str, str] = {
+    "PF_MANUAL": "pf",
+    "ESIC_MANUAL": "esi",
+    "PT_MANUAL": "pt",
+    "LWF_MANUAL": "lwf",
+    "TDS_MANUAL": "tds",
 }
 
 #: A component with no group set sits in its kind's usual group.
