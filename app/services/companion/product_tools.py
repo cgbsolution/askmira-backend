@@ -47,6 +47,8 @@ IST = ZoneInfo("Asia/Kolkata")
 MAX_DAYS = 93
 #: Rows asked for in a list. The caption says when there are more.
 LIMIT = 25
+#: Rows on one page of a portal list that pages (the helpdesk's tickets and assets).
+PAGE = 50
 
 JOB_STATUSES = ("open", "draft", "inactive", "finished")
 CANDIDATE_STATUSES = ("applied", "interview", "offered", "selected", "hired", "rejected")
@@ -601,6 +603,38 @@ def ticket_page(ticket_id: Any) -> str | None:
     return f"/linked/helpdesk/tickets/{text}"
 
 
+def _paging(inputs: dict[str, Any]) -> tuple[int, int, int | None]:
+    """(offset, size, page). A portal page asks for one page of PAGE rows; chat, the first LIMIT."""
+    try:
+        page = int(str(inputs.get("page") or "0"))
+    except ValueError:
+        page = 0
+    if page < 1:
+        return 0, LIMIT, None
+    page = min(page, 2000)
+    return (page - 1) * PAGE, PAGE, page
+
+
+def _paged(
+    card: dict[str, Any],
+    page: int | None,
+    size: int,
+    offset: int,
+    shown: int,
+    total: int,
+    noun: str,
+    *parts: str,
+) -> dict[str, Any]:
+    """A table that is one page of a longer list: says which rows, and how many in all."""
+    if page is None or card.get("type") != "table":
+        return card
+    total = max(total, offset + shown)
+    rows = f"{offset + 1} to {offset + shown} of {total} {noun}s"
+    card["caption"] = " · ".join([*(part for part in parts if part), rows])
+    card["page"] = {"number": page, "size": size, "total": total}
+    return card
+
+
 async def _helpdesk_tickets(
     session: AsyncSession, user: User, inputs: dict[str, Any], today: date
 ) -> Result:
@@ -608,8 +642,15 @@ async def _helpdesk_tickets(
     status = _status(inputs, TICKET_STATUSES)
     days = _days(inputs, None)
     search = _search(inputs)
+    offset, size, page = _paging(inputs)
     used: dict[str, Any] = {"scope": scope, "status": status or "none", "query": search}
-    params: dict[str, Any] = {"scope": scope, "status": status, "query": search, "limit": LIMIT}
+    params: dict[str, Any] = {
+        "scope": scope,
+        "status": status,
+        "query": search,
+        "limit": size,
+        "offset": offset,
+    }
     if days:
         params["from"], params["to"] = _instants(days)
         used |= {"from": days[0].isoformat(), "to": days[1].isoformat()}
@@ -636,24 +677,22 @@ async def _helpdesk_tickets(
     if staff:
         columns.insert(2, "Raised by")
         columns.append("SLA")
-    caption = _caption(
-        len(rows),
-        _int(data.get("total")),
-        "ticket",
+    narrowed = (
         _label(status, _TICKET_STATUS) if status else "",
         _span(days) if days else "",
         f"matching “{search}”" if search else "",
     )
+    total = _int(data.get("total"))
     card = _table(
         "helpdesk",
         _TICKET_TITLE[scope],
         columns,
         rows,
-        caption=caption,
+        caption=_caption(len(rows), total, "ticket", *narrowed),
         empty=f"No tickets match that in {_HELPDESK}.",
         links=[ticket_page(ticket.get("id")) for ticket in tickets],
     )
-    return [card], used
+    return [_paged(card, page, size, offset, len(rows), total, "ticket", *narrowed)], used
 
 
 def _status_rows(counts: dict[str, Any], prefix: str) -> list[list[Any]]:
@@ -691,15 +730,17 @@ async def _helpdesk_assets(
     scope = _scope(inputs, ASSET_SCOPES)
     status = _status(inputs, ASSET_STATUSES)
     search = _search(inputs)
+    mine = scope == "mine"
+    # The assets a person holds are a short list; the register pages.
+    offset, size, page = (0, LIMIT, None) if mine else _paging(inputs)
     used = {"scope": scope, "status": status or "none", "query": search}
     data = await products.ask(
         session,
         user,
         "helpdesk",
         "assets",
-        {"scope": scope, "status": status, "query": search, "limit": LIMIT},
+        {"scope": scope, "status": status, "query": search, "limit": size, "offset": offset},
     )
-    mine = scope == "mine"
     rows = []
     for item in _items(data, "assets"):
         row: list[Any] = [
@@ -712,31 +753,32 @@ async def _helpdesk_assets(
             _day(item.get("warranty_expiry")),
         ]
         if not mine:
-            row.insert(5, _text(item.get("holder")) or "Nobody")
+            # The helpdesk serves several organizations: whose each asset is.
+            row.insert(1, _text(item.get("organization")) or "No organization")
+            row.insert(6, _text(item.get("holder")) or "Nobody")
         rows.append(row)
     columns = ["Asset", "Type", "Model", "Serial no", "Status", "Since", "Warranty until"]
     if not mine:
-        columns.insert(5, "Held by")
-    caption = _caption(
-        len(rows),
-        _int(data.get("total")),
-        "asset",
+        columns.insert(1, "Organization")
+        columns.insert(6, "Held by")
+    narrowed = (
         _label(status, _ASSET_STATUS) if status else "",
         f"matching “{search}”" if search else "",
     )
+    total = _int(data.get("total"))
     card = _table(
         "helpdesk",
         "Assets you hold" if mine else "Asset register",
         columns,
         rows,
-        caption=caption,
+        caption=_caption(len(rows), total, "asset", *narrowed),
         empty=(
             f"{_HELPDESK} shows no assets assigned to you."
             if mine
             else f"No assets match that in {_HELPDESK}."
         ),
     )
-    return [card], used
+    return [_paged(card, page, size, offset, len(rows), total, "asset", *narrowed)], used
 
 
 _RUNNERS = {

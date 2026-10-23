@@ -76,6 +76,20 @@ class DocumentRead(BaseModel):
     verification_note: str | None
 
 
+class BulkDocumentSkipped(BaseModel):
+    """A file a bulk upload did not store, and why."""
+
+    file: str
+    reason: str
+
+
+class BulkDocumentResult(BaseModel):
+    """Many files into one employee's vault: what was stored, what was not."""
+
+    stored: list[DocumentRead]
+    skipped: list[BulkDocumentSkipped]
+
+
 class DocumentUpdate(BaseModel):
     """HR's edit of a vault entry's metadata. The file itself is immutable —
     replacing it is an upload and a delete, both audited."""

@@ -10,7 +10,18 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.core import permissions
 from app.core.config import settings
@@ -19,6 +30,7 @@ from app.models.employee import DocumentVerification
 from app.schemas.documents import (
     CATEGORY_LABELS,
     SELF_UPLOAD_CATEGORIES,
+    BulkDocumentResult,
     CategoryRead,
     DocumentCategory,
     DocumentRead,
@@ -106,6 +118,52 @@ async def upload(
         document_number=document_number,
         remark=remark,
         dependant_name=dependant_name,
+        request=request,
+    )
+
+
+@router.post("/bulk", response_model=BulkDocumentResult, dependencies=HR_ONLY)
+async def upload_many(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    employee_id: Annotated[uuid.UUID, Form()],
+    category: Annotated[DocumentCategory, Form()],
+    files: Annotated[list[UploadFile], File()],
+    is_employee_visible: Annotated[bool, Form()] = True,
+) -> BulkDocumentResult:
+    """Several files, or ZIPs of them, into one employee's vault at once.
+
+    Each document is titled with its file name. Files that cannot be stored come
+    back with the reason; the rest are stored together.
+    """
+    if len(files) > vault.MAX_BULK_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Upload at most {vault.MAX_BULK_FILES} files at a time.",
+        )
+    received: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in files:
+        # One byte past the limit is enough to know it is over the limit.
+        data = await upload.read(settings.MAX_ARCHIVE_BYTES + 1)
+        total += len(data)
+        if total > settings.MAX_ARCHIVE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"More than {settings.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB in one upload. "
+                    "Send the files in smaller batches."
+                ),
+            )
+        received.append((upload.filename or "file", data))
+    return await vault.upload_documents(
+        session,
+        user,
+        employee_id=employee_id,
+        category=category,
+        files=received,
+        is_employee_visible=is_employee_visible,
         request=request,
     )
 

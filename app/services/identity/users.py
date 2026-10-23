@@ -21,6 +21,7 @@ The escalation rules, all enforced here and all audited as PERMISSION_CHANGE:
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -29,17 +30,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.core.security import hash_password
 from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentStatus
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.platform_admin import (
     EDITABLE_TENANT_SETTINGS,
     MODULE_CATALOGUE,
+    BulkLoginCreate,
+    BulkLoginOutcome,
+    BulkLoginResult,
     ManagedUserCreate,
     ManagedUserCreated,
     ManagedUserRead,
@@ -51,6 +56,7 @@ from app.services.auth import RELEASED_EMAIL_DOMAIN, released_email
 from app.services.identity.welcome import WelcomeEmail, send_welcome
 
 __all__ = [
+    "create_logins_for_employees",
     "create_user",
     "delete_login",
     "end_logins_for_employee",
@@ -236,6 +242,161 @@ async def create_user(
         temporary_password=temporary,
         welcome_email=_welcome_read(welcome) if welcome else None,
     )
+
+
+#: Roles a bulk request may give. Admin rights go to one person at a time.
+BULK_ROLES = frozenset({UserRole.EMPLOYEE, UserRole.SUB_ADMIN})
+
+
+async def create_logins_for_employees(
+    session: AsyncSession,
+    user: User,
+    payload: BulkLoginCreate,
+    *,
+    request: Request | None = None,
+) -> BulkLoginResult:
+    """Logins for many employees at once, each at the work email on their record.
+
+    The login `create_user` makes: the chosen role, a one-time password they
+    change at first sign-in, linked to their record. Made for every selected
+    person who can have one; the rest come back with the reason (they have
+    left, already have a login, have no work email, or that email already signs
+    in). Every login and its audit row commit together, or none do.
+
+    Welcome emails are queued for the delivery job rather than sent while the
+    admin waits: a hundred of them through a mail relay would outlast the
+    request.
+    """
+    from app.services.auth import email_in_use
+
+    if payload.role not in BULK_ROLES:
+        raise _bad_request(
+            "Logins made in bulk are employee or HR sub-admin logins. Give admin rights one "
+            "person at a time, under Settings → Users & roles."
+        )
+
+    ids = list(dict.fromkeys(payload.employee_ids))
+    employees = {
+        emp.id: emp
+        for emp in (
+            await session.scalars(
+                tenant_scoped(select(Employee).where(Employee.id.in_(ids)), Employee, user)
+            )
+        ).all()
+    }
+    linked = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.employee_id).where(User.employee_id.in_(ids)), User, user
+                )
+            )
+        ).all()
+    )
+
+    outcomes: list[BulkLoginOutcome] = []
+    claimed: set[str] = set()
+    for employee_id in ids:
+        emp = employees.get(employee_id)
+        if emp is None:
+            outcomes.append(
+                BulkLoginOutcome(
+                    employee_id=employee_id, created=False, reason="Not found in this workspace."
+                )
+            )
+            continue
+        email = (emp.work_email or "").strip().lower()
+        outcome = BulkLoginOutcome(
+            employee_id=emp.id,
+            employee_name=emp.full_name,
+            employee_code=emp.employee_code,
+            email=email or None,
+            created=False,
+        )
+        reason = None
+        if emp.status is EmploymentStatus.EXITED:
+            reason = "Has left the company."
+        elif emp.id in linked:
+            reason = "Already has a login."
+        elif "@" not in email:
+            reason = "No work email on their record. Add one, then try again."
+        elif email in claimed:
+            reason = "Another selected employee has the same work email."
+        elif await email_in_use(session, email):
+            reason = "This email already signs in to AskMira, and each person has one login."
+        if reason:
+            outcomes.append(outcome.model_copy(update={"reason": reason}))
+            continue
+        claimed.add(email)
+
+        temporary = secrets.token_urlsafe(12) + "-Aa1"
+        # Argon2 is slow on purpose. Off the event loop, a hundred hashes do not
+        # stall every other request this server is answering.
+        password_hash = await asyncio.to_thread(hash_password, temporary)
+        target = User(
+            tenant_id=user.tenant_id,
+            email=email,
+            full_name=emp.full_name,
+            role=payload.role,
+            is_active=True,
+            password_hash=password_hash,
+            must_change_password=True,
+            employee_id=emp.id,
+        )
+        session.add(target)
+        await session.flush()
+
+        welcome = None
+        if payload.send_welcome_email:
+            welcome = await send_welcome(
+                session,
+                target=target,
+                inviter_name=user.full_name,
+                request=request,
+                deliver=False,
+            )
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.PERMISSION_CHANGE,
+            entity_type="user",
+            entity_id=target.id,
+            actor=user,
+            changes={
+                "created": True,
+                "bulk": True,
+                "email": email,
+                "role": payload.role.value,
+                "employee_id": str(emp.id),
+                "welcome_email": welcome.status if welcome else "not_sent",
+            },
+            summary=f"Created a {payload.role.value} login for {email}",
+            request=request,
+        )
+        outcomes.append(
+            outcome.model_copy(
+                update={
+                    "created": True,
+                    "user_id": target.id,
+                    "temporary_password": temporary,
+                    "welcome_email": _welcome_read(welcome) if welcome else None,
+                }
+            )
+        )
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A login for one of these people was created at the same moment elsewhere. "
+                "Nothing was created; try again."
+            ),
+        ) from exc
+    created = sum(1 for outcome in outcomes if outcome.created)
+    return BulkLoginResult(created=created, skipped=len(outcomes) - created, results=outcomes)
 
 
 def _welcome_read(welcome: WelcomeEmail) -> WelcomeEmailRead:

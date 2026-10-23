@@ -83,6 +83,41 @@ class ManagedUserCreated(BaseModel):
     welcome_email: WelcomeEmailRead | None = None
 
 
+#: The most logins one bulk request creates.
+BULK_LOGIN_LIMIT = 500
+
+
+class BulkLoginCreate(BaseModel):
+    """Logins for many employees at once, each at the work email on their record."""
+
+    employee_ids: list[uuid.UUID] = Field(min_length=1, max_length=BULK_LOGIN_LIMIT)
+    role: UserRole = UserRole.EMPLOYEE
+    #: Queued and sent by the delivery job within minutes, not while the admin waits.
+    send_welcome_email: bool = True
+
+
+class BulkLoginOutcome(BaseModel):
+    """What happened for one selected employee."""
+
+    employee_id: uuid.UUID
+    employee_name: str | None = None
+    employee_code: str | None = None
+    email: str | None = None
+    created: bool
+    #: Why no login was made, when none was.
+    reason: str | None = None
+    user_id: uuid.UUID | None = None
+    #: Shown once. Only its hash is stored, and the person is asked to change it.
+    temporary_password: str | None = None
+    welcome_email: WelcomeEmailRead | None = None
+
+
+class BulkLoginResult(BaseModel):
+    created: int
+    skipped: int
+    results: list[BulkLoginOutcome]
+
+
 class EmployeeLink(BaseModel):
     #: Null unlinks the login from any employee record.
     employee_id: uuid.UUID | None

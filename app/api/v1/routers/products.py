@@ -37,9 +37,20 @@ async def product_view(
     scope: str | None = None,
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
+    page: int | None = Query(default=None, ge=1, le=2000),
 ) -> dict[str, Any]:
-    """One page of a linked product's records (claims, jobs…), read live as the caller."""
-    params = {"status": status, "query": query, "scope": scope, "from": from_, "to": to}
+    """One page of a linked product's records (claims, jobs…), read live as the caller.
+
+    `page` turns the pages of a long list (the helpdesk's tickets and assets).
+    """
+    params = {
+        "status": status,
+        "query": query,
+        "scope": scope,
+        "from": from_,
+        "to": to,
+        "page": str(page) if page else None,
+    }
     return await views.render(
         session, user, product, view, {k: v for k, v in params.items() if v is not None}
     )

@@ -23,8 +23,10 @@ uploads are `not_required` — HR is the one who would verify them.
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 import uuid
+import zipfile
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException, Request, status
@@ -40,6 +42,8 @@ from app.models.user import User
 from app.schemas.documents import (
     CATEGORY_LABELS,
     SELF_UPLOAD_CATEGORIES,
+    BulkDocumentResult,
+    BulkDocumentSkipped,
     DocumentCategory,
     DocumentRead,
     DocumentUpdate,
@@ -57,6 +61,7 @@ __all__ = [
     "pending_verification_items",
     "update_document",
     "upload_document",
+    "upload_documents",
     "upload_own_document",
     "verify_document",
 ]
@@ -369,6 +374,200 @@ async def upload_document(
 
     await session.refresh(document)
     return _read(document, employee, today=date.today())
+
+
+#: The most files one bulk upload stores, counting every file inside a ZIP.
+MAX_BULK_FILES = 100
+
+_ZIP_MAGIC = b"PK\x03\x04"
+#: Files an operating system puts into a ZIP that nobody meant to upload.
+_ZIP_NOISE = re.compile(r"(^|/)(__MACOSX/|\._|\.DS_Store$|Thumbs\.db$|desktop\.ini$)", re.I)
+
+
+def _title_from(name: str) -> str:
+    """"PAN_card scan.pdf" → "PAN card scan": the file's name, without its extension."""
+    stem = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    title = re.sub(r"[_\s]+", " ", stem).strip()
+    return (title or "Document")[:255]
+
+
+def _unzip(
+    name: str, data: bytes, skipped: list[BulkDocumentSkipped]
+) -> list[tuple[str, bytes]]:
+    """The files inside a ZIP, each read no further than the upload limit.
+
+    The sizes a ZIP declares are not trusted: every entry is read with a cap,
+    and the whole archive with one, so a small ZIP that unpacks to gigabytes
+    stops at the limit instead of filling the server's memory.
+    """
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        skipped.append(BulkDocumentSkipped(file=name, reason="Not a ZIP file that can be opened."))
+        return []
+    entries = [
+        info
+        for info in archive.infolist()
+        if not info.is_dir() and not _ZIP_NOISE.search(info.filename)
+    ]
+    if len(entries) > MAX_BULK_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{name} holds {len(entries)} files. Upload at most {MAX_BULK_FILES} at a time.",
+        )
+    files: list[tuple[str, bytes]] = []
+    budget = settings.MAX_ARCHIVE_BYTES
+    for info in entries:
+        inner = f"{name} / {info.filename}"
+        if info.flag_bits & 0x1:
+            skipped.append(BulkDocumentSkipped(file=inner, reason="Password-protected."))
+            continue
+        if info.file_size > settings.MAX_UPLOAD_BYTES:
+            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large()))
+            continue
+        try:
+            with archive.open(info) as handle:
+                content = handle.read(min(settings.MAX_UPLOAD_BYTES, budget) + 1)
+        except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
+            skipped.append(
+                BulkDocumentSkipped(file=inner, reason="Could not be read from the ZIP.")
+            )
+            continue
+        if len(content) > settings.MAX_UPLOAD_BYTES:
+            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large()))
+            continue
+        if len(content) > budget:
+            skipped.append(
+                BulkDocumentSkipped(file=inner, reason="The ZIP unpacks to more than the limit.")
+            )
+            break
+        budget -= len(content)
+        files.append((inner, content))
+    return files
+
+
+def _too_large() -> str:
+    return f"Larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
+
+
+async def upload_documents(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    category: DocumentCategory,
+    files: list[tuple[str, bytes]],
+    is_employee_visible: bool = True,
+    request: Request | None = None,
+) -> BulkDocumentResult:
+    """Many files into one employee's vault at once; a ZIP is opened and each file in it stored.
+
+    Each file is checked as a single upload is: the type read from its bytes (PDF,
+    PNG, JPEG), the size limit, HR only, never HR's own record. Its title is its
+    file name, and HR can change the title, category and dates afterwards. Files
+    that cannot be stored come back with the reason. The rest are stored
+    together: every row and its audit entry commit at once, or none do and the
+    stored files are removed again.
+    """
+    permissions.require_hr(user, detail="Only HR can upload to an employee's vault.")
+    _refuse_own_record(user, employee_id)
+    employee = await _employee(session, user, employee_id)
+
+    skipped: list[BulkDocumentSkipped] = []
+    candidates: list[tuple[str, bytes]] = []
+    for name, data in files:
+        if len(data) > settings.MAX_ARCHIVE_BYTES:
+            limit = settings.MAX_ARCHIVE_BYTES // (1024 * 1024)
+            skipped.append(
+                BulkDocumentSkipped(file=name, reason=f"Larger than the {limit} MB limit.")
+            )
+        elif data.startswith(_ZIP_MAGIC):
+            candidates.extend(_unzip(name, data, skipped))
+        elif len(data) > settings.MAX_UPLOAD_BYTES:
+            skipped.append(BulkDocumentSkipped(file=name, reason=_too_large()))
+        else:
+            candidates.append((name, data))
+    if len(candidates) > MAX_BULK_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"That is {len(candidates)} files. Upload at most {MAX_BULK_FILES} at a time.",
+        )
+
+    storage = get_storage()
+    keys: list[str] = []
+    documents: list[EmployeeDocument] = []
+    try:
+        for name, data in candidates:
+            if not data:
+                skipped.append(BulkDocumentSkipped(file=name, reason="The file is empty."))
+                continue
+            try:
+                kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
+            except FileRejectedError as exc:
+                skipped.append(BulkDocumentSkipped(file=name, reason=str(exc)))
+                continue
+            key = storage.new_key(user.tenant_id, "documents", kind.extension)
+            try:
+                await storage.put(key, data)
+            except StorageError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+                ) from exc
+            keys.append(key)
+            document = EmployeeDocument(
+                tenant_id=user.tenant_id,
+                employee_id=employee.id,
+                category=category.value,
+                title=_title_from(name),
+                file_url=key,
+                file_size_bytes=len(data),
+                mime_type=kind.mime_type,
+                is_employee_visible=is_employee_visible,
+                uploaded_by_user_id=user.id,
+            )
+            session.add(document)
+            await session.flush()
+            await audit.record(
+                session,
+                tenant_id=user.tenant_id,
+                action=AuditAction.CREATE,
+                entity_type="employee_document",
+                entity_id=document.id,
+                actor=user,
+                changes={
+                    "employee_code": employee.employee_code,
+                    "category": category.value,
+                    "title": document.title,
+                    "mime_type": kind.mime_type,
+                    "size_bytes": len(data),
+                    "employee_visible": is_employee_visible,
+                    "file": name,
+                    "bulk": True,
+                },
+                summary=f"Uploaded '{document.title}' to {employee.employee_code}'s vault",
+                request=request,
+            )
+            documents.append(document)
+        await session.commit()
+    except BaseException:
+        # None of the rows land, so no file may linger unreferenced. Rolled back
+        # here, not left to the caller: the rows already flushed must go too. A
+        # failure while cleaning up must not replace the exception that got us here.
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        for key in keys:
+            with contextlib.suppress(StorageError):
+                await storage.delete(key)
+        raise
+
+    today = date.today()
+    stored = []
+    for document in documents:
+        await session.refresh(document)
+        stored.append(_read(document, employee, today=today))
+    return BulkDocumentResult(stored=stored, skipped=skipped)
 
 
 async def update_document(

@@ -143,11 +143,13 @@ async def send_welcome(
     target: User,
     inviter_name: str,
     request: Request | None = None,
+    deliver: bool = True,
 ) -> WelcomeEmail:
     """Email a new login its sign-in details. Does not commit; the caller does.
 
     Raised in the same transaction as the login it welcomes, so a login that
-    is rolled back leaves no live link behind.
+    is rolled back leaves no live link behind. `deliver=False` queues it for
+    the delivery job, for logins created many at a time.
     """
     tenant = await session.get(Tenant, target.tenant_id)
     company = tenant.name if tenant else "your company"
@@ -186,6 +188,7 @@ async def send_welcome(
             "onboarding": await _onboarding_line(session, target),
         },
         commit=False,
+        deliver=deliver,
     )
 
     # The row says what happened; the outcome's counts do not tell a transient

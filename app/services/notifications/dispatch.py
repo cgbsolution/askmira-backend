@@ -596,6 +596,7 @@ async def notify(
     locale: str = "en-IN",
     commit: bool = True,
     approval: Any = None,
+    deliver: bool = True,
 ) -> DispatchOutcome:
     """Raise a notification event.
 
@@ -604,6 +605,10 @@ async def notify(
 
     `approval` (an `email_actions.ApprovalRef`) marks a request waiting on the
     recipients: their email then carries Approve and Reject buttons.
+
+    `deliver=False` queues the messages for the delivery job instead of sending
+    them now: for a caller raising many at once, whose request must not wait on
+    a mail relay for each one.
     """
     payload = dict(payload or {})
     if approval is not None:
@@ -684,6 +689,10 @@ async def notify(
             session.add(notification)
             await session.flush()
             outcome.queued += 1
+            if not deliver:
+                # Due now: `process_due_notifications` sends it on its next run.
+                notification.next_attempt_at = now
+                continue
 
             # Each channel dispatches on its own. A failure here is recorded on
             # the row and does not touch the next channel or the next

@@ -209,6 +209,7 @@ async def test_hr_reads_the_company_as_the_helpdesk_admin_and_refusals_are_shown
                 "model": "ThinkPad T14",
                 "serial_no": "SN123",
                 "status": "in_use",
+                "organization": "Hindustan Times",
                 "holder": "Anita Sharma",
                 "assigned_at": "2026-09-01T04:00:00Z",
                 "warranty_expiry": "2028-08-31",
@@ -220,15 +221,51 @@ async def test_hr_reads_the_company_as_the_helpdesk_admin_and_refusals_are_shown
     assert body["actor"]["role"] == "admin" and body["params"]["scope"] == "company"
     card = page["cards"][0]
     assert card["title"] == "Asset register"
-    assert card["rows"][0][5] == "Anita Sharma"  # "Held by", only on the register
+    # The helpdesk serves several organizations: the register says whose each asset is.
+    assert card["columns"][1] == "Organization" and card["rows"][0][1] == "Hindustan Times"
+    assert card["columns"][6] == "Held by" and card["rows"][0][6] == "Anita Sharma"
 
     # An employee asking for the register gets the helpdesk's own refusal, not the data.
     desk.answers[("query", "assets")] = httpx.Response(
-        403, json={"error": "Only CGB Helpdesk engineers and admins see the asset register."}
+        403, json={"error": "Only CGB Helpdesk's IT team and your HR see the asset register."}
     )
     refused = await views.render(session, me, "helpdesk", "register", {})
     assert refused["cards"][0]["tone"] == "warning"
-    assert "engineers and admins" in refused["cards"][0]["text"]
+    assert "IT team and your HR" in refused["cards"][0]["text"]
+
+
+async def test_the_register_and_ticket_lists_page_through_the_helpdesk(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr: User,
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    desk.answers[("query", "assets")] = {
+        "scope": "company",
+        "total": 1604,
+        "assets": [{"code": f"HT-{n}", "organization": "HT", "status": "spare"} for n in range(50)],
+    }
+    # A portal page asks for one page of 50 rows at a time, from where that page starts.
+    second = await views.render(session, hr, "helpdesk", "register", {"page": "2"})
+    params = desk.calls[-1]["body"]["params"]
+    assert params["limit"] == 50 and params["offset"] == 50
+    card = second["cards"][0]
+    assert card["page"] == {"number": 2, "size": 50, "total": 1604}
+    assert card["caption"].endswith("51 to 100 of 1604 assets")
+
+    # No page given (Ask Mira, a first visit): the first rows, and no pager.
+    first = await views.render(session, hr, "helpdesk", "register", {})
+    params = desk.calls[-1]["body"]["params"]
+    assert params["offset"] == 0 and "page" not in first["cards"][0]
+    # Rubbish for a page is the first page.
+    await views.render(session, hr, "helpdesk", "register", {"page": "x"})
+    assert desk.calls[-1]["body"]["params"]["offset"] == 0
+
+    desk.answers[("query", "tickets")] = {"scope": "company", "total": 120, "tickets": []}
+    await views.render(session, hr, "helpdesk", "all", {"page": "3"})
+    params = desk.calls[-1]["body"]["params"]
+    assert params["offset"] == 100 and params["limit"] == 50 and params["scope"] == "company"
 
 
 async def test_one_ticket_and_its_conversation(

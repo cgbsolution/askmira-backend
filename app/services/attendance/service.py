@@ -1213,14 +1213,28 @@ async def raise_regularisation_range(
     end: date,
     kind: RegularisationKind,
     reason: str,
+    requested_status: AttendanceStatus = AttendanceStatus.PRESENT,
     request: Request | None = None,
 ) -> list[AttendanceRegularisation]:
-    """On-duty or work-from-home over several days, one request per working day.
+    """Several days at once, one regularisation per working day.
+
+    On-duty or work-from-home, asked by anyone. Or HR marking a stretch of
+    someone's days present, half day or absent: the correction applied at once,
+    day by day, exactly as a single-day correction by HR is. Days already
+    recorded that way, and days on approved leave, are left as they are; leave
+    is changed by cancelling the leave, not by overwriting the day.
 
     Week offs and holidays inside the range are left out: nobody needs
-    permission to work from home on a Sunday.
+    permission to work from home on a Sunday, and nobody is marked present on
+    one.
     """
-    if kind not in ADVANCE_KINDS:
+    marking = kind is RegularisationKind.STATUS_CHANGE
+    if marking and not permissions.is_hr(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only HR marks a range of days. Ask for each day you need corrected.",
+        )
+    if not marking and kind not in ADVANCE_KINDS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Only on-duty and work-from-home can be requested for a range of days.",
@@ -1235,6 +1249,52 @@ async def raise_regularisation_range(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Request at most {MAX_RANGE_DAYS} days at a time.",
         )
+    recorded: dict[date, AttendanceStatus] = {}
+    if marking:
+        if end > await local_today(session, user):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Attendance is marked for days that have happened. Pick dates up to today.",
+            )
+        pending = (
+            await session.scalars(
+                tenant_scoped(
+                    select(AttendanceRegularisation.attendance_date)
+                    .where(
+                        AttendanceRegularisation.employee_id == employee_id,
+                        AttendanceRegularisation.attendance_date.between(start, end),
+                        AttendanceRegularisation.status == RegularisationStatus.PENDING,
+                    )
+                    .order_by(AttendanceRegularisation.attendance_date),
+                    AttendanceRegularisation,
+                    user,
+                )
+            )
+        ).all()
+        if pending:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "There are pending requests for "
+                    + ", ".join(f"{day:%d %b}" for day in pending)
+                    + ". Approve or reject them first."
+                ),
+            )
+        recorded = {
+            row.attendance_date: row.status
+            for row in (
+                await session.scalars(
+                    tenant_scoped(
+                        select(AttendanceDay).where(
+                            AttendanceDay.employee_id == employee_id,
+                            AttendanceDay.attendance_date.between(start, end),
+                        ),
+                        AttendanceDay,
+                        user,
+                    )
+                )
+            ).all()
+        }
     resolver = await ShiftResolver.load(session, user, [employee_id], start, end)
     holidays = (await holidays_for_employees(session, user, [employee_id], start, end)).get(
         employee_id, {}
@@ -1250,13 +1310,15 @@ async def raise_regularisation_range(
         )
         if off or day in holidays:
             continue
+        if marking and recorded.get(day) in (requested_status, AttendanceStatus.ON_LEAVE):
+            continue
         created.append(
             await raise_regularisation(
                 session,
                 user,
                 employee_id=employee_id,
                 attendance_date=day,
-                requested_status=AttendanceStatus.PRESENT,
+                requested_status=requested_status if marking else AttendanceStatus.PRESENT,
                 reason=reason,
                 kind=kind,
                 request=request,
@@ -1266,7 +1328,12 @@ async def raise_regularisation_range(
     if not created:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Every day in that range is a week off or a holiday.",
+            detail=(
+                "Every day in that range is a week off, a holiday, on leave, or already marked "
+                "that way."
+                if marking
+                else "Every day in that range is a week off or a holiday."
+            ),
         )
     await session.commit()
     for row in created:

@@ -395,7 +395,11 @@ async def raise_regularisation(
 async def raise_regularisation_range(
     payload: RegularisationRangeCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> list[RegularisationRead]:
-    """On-duty or work-from-home over several days; week offs and holidays are skipped."""
+    """Several days at once; week offs and holidays are skipped.
+
+    On-duty or work-from-home for anyone, or HR marking someone's days present,
+    half day or absent, applied at once.
+    """
     employee_id = permissions.resolve_employee(
         user, payload.employee_id, detail="You can only request this for yourself"
     )
@@ -407,6 +411,7 @@ async def raise_regularisation_range(
         end=payload.end_date,
         kind=payload.kind,
         reason=payload.reason,
+        requested_status=payload.requested_status,
         request=request,
     )
     return [RegularisationRead.model_validate(row) for row in records]

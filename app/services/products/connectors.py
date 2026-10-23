@@ -78,7 +78,8 @@ DESCRIPTIONS = {
     "helpdesk": (
         "IT tickets and assets. Everyone raises and follows tickets and sees the assets "
         "they hold under Helpdesk and Assets, without a second login; HR sees the "
-        "company's tickets and asset register, and Ask Mira can read them."
+        "company's tickets and assets, the IT team what the helpdesk shows them, and "
+        "Ask Mira can read them."
     ),
 }
 

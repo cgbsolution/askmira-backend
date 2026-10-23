@@ -23,6 +23,8 @@ from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.platform_admin import (
     ActiveChange,
+    BulkLoginCreate,
+    BulkLoginResult,
     EmployeeLink,
     LoginDelete,
     ManagedUserCreate,
@@ -130,6 +132,18 @@ async def create_user(
 ) -> ManagedUserCreated:
     """Create a login. The temporary password is returned once and never again."""
     return await user_admin.create_user(session, user, payload, request=request)
+
+
+@router.post("/users/bulk", response_model=BulkLoginResult)
+async def create_logins(
+    payload: BulkLoginCreate, user: CurrentUser, session: DbSession, request: Request
+) -> BulkLoginResult:
+    """Logins for many employees at once, at their work emails.
+
+    Each one-time password is returned once and never again. Anyone who cannot
+    have a login comes back with the reason.
+    """
+    return await user_admin.create_logins_for_employees(session, user, payload, request=request)
 
 
 @router.patch("/users/{user_id}/role", response_model=ManagedUserRead)

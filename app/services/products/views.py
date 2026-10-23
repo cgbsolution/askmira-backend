@@ -13,7 +13,7 @@ workspace only, only what their role there shows them, the same wording rules
 The answer comes back as cards for the screen, as in Ask Mira.
 
 A view fixes what the page is (whose claims, which list); the person may only
-narrow it with a status, a search and a date range.
+narrow it with a status, a search and a date range, and turn its pages.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ VIEWS: dict[tuple[str, str], tuple[str, dict[str, str]]] = {
 }
 
 #: What a person may set on a page. Anything else in the query string is ignored.
-NARROWING = ("status", "query", "from", "to")
+NARROWING = ("status", "query", "from", "to", "page")
 
 
 async def render(

@@ -321,13 +321,28 @@ class RegularisationCreate(BaseModel):
 
 
 class RegularisationRangeCreate(BaseModel):
-    """On-duty or work-from-home over several days — one request per working day."""
+    """Several days at once, one regularisation per working day.
+
+    On-duty or work-from-home for anyone; `status_change` is HR marking a
+    stretch of days `requested_status` (present, half day, absent).
+    """
 
     employee_id: uuid.UUID | None = None
     kind: RegularisationKind
     start_date: date
     end_date: date
     reason: str = Field(min_length=3, max_length=1000)
+    requested_status: AttendanceStatus = AttendanceStatus.PRESENT
+
+    @field_validator("requested_status")
+    @classmethod
+    def _regularisable(cls, value: AttendanceStatus) -> AttendanceStatus:
+        if value not in REGULARISABLE_STATUSES:
+            raise ValueError(
+                "A regularisation can set present, half day, absent or loss of pay. "
+                "Time off is requested as leave, which has a balance."
+            )
+        return value
 
     @field_validator("reason")
     @classmethod

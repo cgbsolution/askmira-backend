@@ -3,9 +3,10 @@
 A product *replaces* AskMira's own module for a linked workspace: the portal
 hides that module's pages and shows the product's records instead (the
 helpdesk replaces two: Helpdesk and Assets). The role a person gets in the
-product is decided here, from their AskMira role — the product never decides it
-(the helpdesk keeps the engineers and admins its own IT team sets up, and
-treats this role as the least a person gets).
+product is decided here, from their AskMira role — the product never decides it.
+The helpdesk is the exception: its roles are its IT team's to give, and reach
+every organization it serves, so AskMira's "admin" there only lets HR read
+their own company's tickets and assets.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ class Product:
             # Everybody files expenses; HR runs the workspace.
             return "admin" if role in _HR else "employee"
         if self.key == "helpdesk":
-            # Everybody raises tickets and has assets; HR looks after the company there.
+            # Everybody raises tickets and holds assets; HR read their whole company's.
             return "admin" if role in _HR else "user"
         return None
 
