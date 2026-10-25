@@ -341,6 +341,11 @@ class EmployeeSalary(Base, UUIDMixin, TenantMixin, TimestampMixin):
     attachment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attachment_mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # MONTHLY GROSS as HR typed it on the Salary master, in its Pay Basis. What
+    # payroll pays is the wage types; this is the figure HR keeps beside them.
+    gross_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    gross_basis: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
     components: Mapped[list[EmployeeSalaryComponent]] = relationship(
         back_populates="employee_salary", cascade="all, delete-orphan", lazy="selectin"
     )

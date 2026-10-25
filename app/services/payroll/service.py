@@ -69,6 +69,21 @@ def _money(value: Decimal) -> Decimal:
     return Decimal(str(value)).quantize(_PAISE)
 
 
+def rupees(amount: Decimal) -> str:
+    """₹6,20,000.04: grouped the Indian way, paise only when there are any."""
+    whole, _, paise = f"{abs(amount):.2f}".partition(".")
+    head, tail = whole[:-3], whole[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    text = ",".join([*groups, tail]) if groups else tail
+    sign = "-" if amount < 0 else ""
+    return f"{sign}₹{text}" + ("" if paise == "00" else f".{paise}")
+
+
 def _bad_request(exc: SalaryStructureError) -> HTTPException:
     """Structure errors are configuration mistakes, so 422 with the real message.
 
@@ -239,7 +254,7 @@ async def preview_salary(
 ) -> tuple[SalaryStructure, ResolvedSalary]:
     """What the Salary master's editor shows as HR types. Writes nothing."""
     structure = await get_structure(session, user, structure_id)
-    return structure, await resolve_amounts(session, user, structure, payload)
+    return structure, await resolve_amounts(session, user, structure, payload, strict=False)
 
 
 async def list_structures(session: AsyncSession, user: User) -> list[SalaryStructure]:
@@ -271,6 +286,43 @@ class ResolvedSalary:
     remarks: dict[str, str] = field(default_factory=dict)
     #: How each typed amount was entered, "monthly" or "annual", by code.
     bases: dict[str, str] = field(default_factory=dict)
+    #: MONTHLY GROSS as typed: (amount, basis), or None for the earnings' sum.
+    gross: tuple[Decimal, str] | None = None
+    #: Rules a preview found broken; a save refuses them instead.
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def earnings_monthly(self) -> Decimal:
+        return _money(
+            sum(
+                (
+                    c.monthly_amount
+                    for c in self.breakdown.components
+                    if c.component_type is ComponentType.EARNING
+                ),
+                Decimal(0),
+            )
+        )
+
+    @property
+    def earnings_annual(self) -> Decimal:
+        return _money(
+            sum(
+                (
+                    c.annual_amount
+                    for c in self.breakdown.components
+                    if c.component_type is ComponentType.EARNING
+                ),
+                Decimal(0),
+            )
+        )
+
+    def gross_figures(self) -> tuple[Decimal, Decimal]:
+        """(monthly, annual) MONTHLY GROSS: as typed, else the earnings' sum."""
+        if self.gross is not None:
+            annual, monthly = to_period_amounts(*self.gross)
+            return monthly, annual
+        return self.earnings_monthly, self.earnings_annual
 
 
 def _unprocessable(detail: str) -> HTTPException:
@@ -359,8 +411,14 @@ async def resolve_typed(
     user: User,
     ctc_annual: Decimal,
     payload: SalaryAmountsInput,
+    *,
+    strict: bool = True,
 ) -> ResolvedSalary:
     """A manual entry: every amount exactly as typed, nothing worked out.
+
+    `strict=False` (the live preview) reports a rule broken as a warning and
+    still works every figure out, so the screen keeps showing them; saving is
+    always strict.
 
     A wage type left empty is not paid. Zero is not paid either, except on a
     statutory MANUAL row, where 0 means "deduct nothing" rather than "work it
@@ -419,16 +477,37 @@ async def resolve_typed(
         if item.remarks:
             remarks[component.code] = item.remarks
     components.sort(key=lambda c: (c.display_order, c.code))
+    ctc = _money(ctc_annual)
+    in_ctc = _money(sum((c.annual_amount for c in components if c.part_of_ctc), Decimal(0)))
+    warnings: list[str] = []
+    if in_ctc > ctc:
+        message = (
+            f"The amounts that are part of the CTC add up to {rupees(in_ctc)} a year, more "
+            f"than CTC TOTAL ({rupees(ctc)} a year). Lower an amount or raise CTC TOTAL."
+        )
+        if strict:
+            raise _unprocessable(message)
+        warnings.append(message)
+    gross = (
+        (payload.gross_amount, payload.gross_basis) if payload.gross_amount is not None else None
+    )
     return ResolvedSalary(
-        ctc_annual=_money(ctc_annual),
-        breakdown=SalaryBreakdown(ctc_annual=_money(ctc_annual), components=components),
+        ctc_annual=ctc,
+        breakdown=SalaryBreakdown(ctc_annual=ctc, components=components),
         remarks=remarks,
         bases=bases,
+        gross=gross,
+        warnings=warnings,
     )
 
 
 async def resolve_amounts(
-    session: AsyncSession, user: User, structure: SalaryStructure, payload: SalaryAmountsInput
+    session: AsyncSession,
+    user: User,
+    structure: SalaryStructure,
+    payload: SalaryAmountsInput,
+    *,
+    strict: bool = True,
 ) -> ResolvedSalary:
     """Resolve what the Salary master sent: a CTC, typed amounts and remarks.
 
@@ -447,7 +526,7 @@ async def resolve_amounts(
         if not manual_entry:
             ctc = round_to_structure(structure, ctc)
     if manual_entry:
-        return await resolve_typed(session, user, ctc, payload)
+        return await resolve_typed(session, user, ctc, payload, strict=strict)
 
     in_structure = {link.component.code for link in structure.components}
     manual: dict[str, Decimal] = {}
@@ -629,6 +708,8 @@ async def assign_salary(
         effective_from=payload.effective_from,
         revision_reason=payload.revision_reason,
         approved_by_user_id=user.id,
+        gross_amount=resolved.gross[0] if resolved.gross else None,
+        gross_basis=resolved.gross[1] if resolved.gross else None,
     )
     materialise(salary, resolved, user.tenant_id)
 

@@ -57,6 +57,7 @@ from app.services.payroll.service import (
     materialise,
     resolve_amounts,
     resolve_manual,
+    to_period_amounts,
     type_totals,
     wage_group_map,
 )
@@ -231,7 +232,21 @@ def revision_read(
         ctc_monthly=_money(Decimal(str(salary.ctc_annual)) / 12),
         **_ctc_entry(salary),
         manual_entry=is_manual_entry(salary),
-        gross_monthly=_money(sum((Decimal(str(c.monthly_amount)) for c in earnings), Decimal(0))),
+        gross_monthly=(
+            to_period_amounts(Decimal(str(salary.gross_amount)), salary.gross_basis or "monthly")[1]
+            if salary.gross_amount is not None
+            else _money(sum((Decimal(str(c.monthly_amount)) for c in earnings), Decimal(0)))
+        ),
+        gross_amount=_money(salary.gross_amount) if salary.gross_amount is not None else None,
+        gross_basis=salary.gross_basis if salary.gross_amount is not None else None,
+        gross_annual=(
+            to_period_amounts(Decimal(str(salary.gross_amount)), salary.gross_basis or "monthly")[0]
+            if salary.gross_amount is not None
+            else _money(sum((Decimal(str(c.annual_amount)) for c in earnings), Decimal(0)))
+        ),
+        earnings_monthly=_money(
+            sum((Decimal(str(c.monthly_amount)) for c in earnings), Decimal(0))
+        ),
         basic_monthly=_money(basic.monthly_amount) if basic else None,
         currency=salary.currency,
         effective_from=salary.effective_from,
@@ -588,6 +603,8 @@ async def update_salary(
     salary.structure_id = structure.id
     salary.structure = structure
     salary.ctc_annual = resolved.ctc_annual
+    salary.gross_amount = resolved.gross[0] if resolved.gross else None
+    salary.gross_basis = resolved.gross[1] if resolved.gross else None
     salary.effective_from = payload.effective_from
     salary.revision_reason = payload.revision_reason
     salary.approved_by_user_id = user.id

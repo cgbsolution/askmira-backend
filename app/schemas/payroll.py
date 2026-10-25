@@ -203,6 +203,13 @@ class SalaryBreakdownRead(BaseModel):
     components: list[ResolvedComponentRead]
     totals: list[SalaryTypeTotalRead] = Field(default_factory=list)
     group_totals: list[SalaryGroupTotalRead] = Field(default_factory=list)
+    #: MONTHLY GROSS: as typed when it was, else the earnings' sum.
+    gross_monthly: Money | None = None
+    gross_annual: Money | None = None
+    #: The earnings' own sum a month, to compare a typed gross with.
+    earnings_monthly: Money | None = None
+    #: What would stop this from saving, said while HR is still typing.
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
@@ -213,6 +220,10 @@ class SalaryBreakdownRead(BaseModel):
 #: `service.to_period_amounts`), never in the browser.
 PayBasis = Literal["annual", "monthly", "weekly", "daily", "hourly"]
 _TWO_PLACES = Decimal("0.01")
+#: The largest single amount a person may type: ₹10 crore. Big enough for any
+#: real salary in any pay basis, small enough that an hourly figure turned into
+#: a year's still fits the database's money columns.
+MAX_TYPED = Decimal("100000000")
 
 
 class SalaryComponentAmountInput(BaseModel):
@@ -224,7 +235,7 @@ class SalaryComponentAmountInput(BaseModel):
     """
 
     component_code: str = Field(min_length=1, max_length=32)
-    amount: Decimal | None = Field(default=None, ge=0)
+    amount: Decimal | None = Field(default=None, ge=0, le=MAX_TYPED)
     #: What period `amount` is for.
     basis: PayBasis = "monthly"
     remarks: str | None = Field(default=None, max_length=255)
@@ -250,10 +261,13 @@ class SalaryAmountsInput(BaseModel):
     #: the structure splits the CTC, and typed amounts override it.
     entry: Literal["structure", "manual"] = "structure"
     #: The CTC as a year, as a month, or as an amount in any Pay Basis.
-    ctc_annual: Decimal | None = Field(default=None, gt=0)
-    ctc_monthly: Decimal | None = Field(default=None, gt=0)
-    ctc_amount: Decimal | None = Field(default=None, gt=0)
+    ctc_annual: Decimal | None = Field(default=None, gt=0, le=MAX_TYPED * 12)
+    ctc_monthly: Decimal | None = Field(default=None, gt=0, le=MAX_TYPED)
+    ctc_amount: Decimal | None = Field(default=None, gt=0, le=MAX_TYPED)
     ctc_basis: PayBasis = "monthly"
+    #: MONTHLY GROSS as typed (manual entry only). Empty: the earnings' sum.
+    gross_amount: Decimal | None = Field(default=None, ge=0, le=MAX_TYPED)
+    gross_basis: PayBasis = "monthly"
     components: list[SalaryComponentAmountInput] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
@@ -263,6 +277,10 @@ class SalaryAmountsInput(BaseModel):
             raise ValueError("Give the CTC once: as a yearly, a monthly or a pay-basis amount")
         if given[0] != given[0].quantize(_TWO_PLACES):
             raise ValueError(f"CTC {given[0]} has more than two decimals")
+        if self.gross_amount is not None and self.gross_amount != self.gross_amount.quantize(
+            _TWO_PLACES
+        ):
+            raise ValueError(f"Monthly gross {self.gross_amount} has more than two decimals")
         codes = [item.component_code for item in self.components]
         repeated = sorted({code for code in codes if codes.count(code) > 1})
         if repeated:
@@ -348,6 +366,11 @@ class SalaryRevisionRead(BaseModel):
     #: exactly twelve months of it, else yearly.
     ctc_basis: PayBasis = "annual"
     ctc_amount: Money | None = None
+    #: MONTHLY GROSS as typed, in `gross_basis`; null when it was left to the earnings.
+    gross_amount: Money | None = None
+    gross_basis: PayBasis | None = None
+    gross_annual: Money | None = None
+    earnings_monthly: Money | None = None
     #: Every amount on it was typed (the Salary master's manual entry).
     manual_entry: bool = False
     gross_monthly: Money

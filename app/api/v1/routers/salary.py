@@ -154,7 +154,13 @@ async def preview_salary(
     """
     structure, resolved = await salary_service.preview_salary(session, user, structure_id, payload)
     groups = await salary_service.wage_group_map(session, user)
-    return _breakdown_read(structure, resolved.breakdown, groups)
+    read = _breakdown_read(structure, resolved.breakdown, groups)
+    gross_monthly, gross_annual = resolved.gross_figures()
+    read.gross_monthly = gross_monthly
+    read.gross_annual = gross_annual
+    read.earnings_monthly = resolved.earnings_monthly
+    read.warnings = resolved.warnings
+    return read
 
 
 def _breakdown_read(

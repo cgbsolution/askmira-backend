@@ -224,3 +224,38 @@ def claim_custom(table: Table, labels: dict[str, str]) -> dict[str, int]:
                 table.unused.remove(column)
                 break
     return found
+
+
+#: The column the rows-left-out sheet puts first.
+WHY_COLUMN = "Why not added"
+
+
+def write_left_out(table: Table, left_out: list[tuple[list[Any], str]]) -> bytes:
+    """The rows that were not added, each with its own cells and why, laid out
+    as the file was — group headings over the header when it had them — so
+    the sheet can be corrected and imported again."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Not added"
+    if any(column.group for column in table.columns):
+        sheet.append([None] + [column.group for column in table.columns])
+    sheet.append([WHY_COLUMN] + [column.name for column in table.columns])
+    header = sheet.max_row
+    for cell in sheet[header]:
+        cell.font = Font(bold=True)
+    for cells, why in left_out:
+        sheet.append([why] + [cells[column.index] for column in table.columns])
+        for cell in sheet[sheet.max_row][1:]:
+            # Their own text, never a formula to run.
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.data_type = "s"
+        sheet.cell(row=sheet.max_row, column=1).alignment = Alignment(wrap_text=True,
+                                                                     vertical="top")
+    sheet.column_dimensions["A"].width = 60
+    sheet.freeze_panes = sheet.cell(row=header + 1, column=3)
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()

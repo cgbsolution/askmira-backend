@@ -10,6 +10,10 @@ What it will not do:
 
 - Overwrite. An employee code already in AskMira is skipped, so a corrected
   file can be imported again without touching anybody already brought in.
+- Add somebody twice. A work email that already belongs to somebody here
+  under another code — the admin made when the workspace was, say — or that
+  two rows share stops the row, naming who has it. `rejected` hands back
+  every row left out, with its own cells and why.
 - Invent. A value that fails its check is left out and listed against its
   row; only a missing employee code, first name, work email or joining date
   (or a status that cannot be squared with the dates) stops a row.
@@ -63,11 +67,17 @@ from app.schemas.employee_profile import (
 from app.services import audit, custom_fields
 from app.services import employee_profile as profile_service
 from app.services.employee_import import fields as f
-from app.services.employee_import.sheet import SheetError, Table, claim_custom, read_table
+from app.services.employee_import.sheet import (
+    SheetError,
+    Table,
+    claim_custom,
+    read_table,
+    write_left_out,
+)
 from app.services.employee_import.template import build_template
 from app.services.onboarding import rules as onboarding_rules
 
-__all__ = ["preview", "run", "template"]
+__all__ = ["preview", "rejected", "run", "template"]
 
 _EMAIL = TypeAdapter(EmailStr)
 _CODE = re.compile(r"^[A-Za-z0-9_\-/]{1,32}$")
@@ -105,6 +115,8 @@ class _Workspace:
     only_entity: uuid.UUID | None
     #: Upper-cased employee code -> id, for skipping and for managers.
     codes: dict[str, uuid.UUID]
+    #: Lower-cased work email -> (code, name) of who has it here.
+    emails: dict[str, tuple[str, str]]
     department_codes: set[str]
     location_codes: set[str]
     #: Active grade codes; None while the workspace keeps no grade list.
@@ -140,12 +152,15 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
         entities.setdefault(_key(row.name), row.id)
         entities.setdefault(_key(row.code), row.id)
 
-    codes = {
-        code.upper(): employee_id
-        for employee_id, code in (
-            await session.execute(scoped(Employee, Employee.id, Employee.employee_code))
-        ).all()
-    }
+    codes: dict[str, uuid.UUID] = {}
+    emails: dict[str, tuple[str, str]] = {}
+    for row in (await session.execute(scoped(
+        Employee, Employee.id, Employee.employee_code, Employee.work_email, Employee.display_name,
+        Employee.first_name, Employee.last_name,
+    ))).all():
+        codes[row.employee_code.upper()] = row.id
+        name = row.display_name or " ".join(filter(None, [row.first_name, row.last_name]))
+        emails.setdefault(row.work_email.lower(), (row.employee_code, name))
     grade_rows = (await session.execute(scoped(PayGrade, PayGrade.code, PayGrade.active))).all()
     definitions = await custom_fields.employee_definitions(session, user)
     return _Workspace(
@@ -154,6 +169,7 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
         entities=entities,
         only_entity=entity_rows[0].id if len(entity_rows) == 1 else None,
         codes=codes,
+        emails=emails,
         department_codes=department_codes,
         location_codes=location_codes,
         grades={row.code for row in grade_rows if row.active} if grade_rows else None,
@@ -611,6 +627,25 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         if upper in ws.codes and not row.errors:
             row.skip = True
 
+    # Emails: one person per address, here and in the file. Somebody already here
+    # under another code is not added again; who has it is said, so HR can tell
+    # whether it is the same person (the admin made with the workspace, say).
+    emails: dict[str, int] = {}
+    for row in rows:
+        email = row.record.get("work_email")
+        if email is None or row.skip:
+            continue
+        held = ws.emails.get(email)
+        if held is not None and (row.code is None or held[0].upper() != row.code.upper()):
+            row.errors.append(
+                f"Email {email} is already used by {held[0]} ({held[1]}) in AskMira. If that is "
+                "the same person, it was not added again; otherwise give this row its own email."
+            )
+        elif email in emails:
+            row.errors.append(f"Email {email} is also on row {emails[email]}.")
+        else:
+            emails[email] = row.line
+
     ready = [row for row in rows if row.outcome == "ready"]
 
     # Departments and locations by name; what is missing is created (admin) or left blank.
@@ -764,6 +799,26 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
         can_create_org=plan.can_create_org,
         rows=[_row_read(row) for row in plan.rows],
     )
+
+
+#: Why a row whose code is already here was not added.
+_SKIPPED = "Emp Code is already in AskMira; that record is left as it is."
+
+
+async def rejected(session: AsyncSession, user: User, data: bytes, filename: str) -> bytes:
+    """The file's rows that would not be added, with their own cells and why,
+    as a workbook to correct and import again. Writes nothing."""
+    permissions.require_hr(user, detail="Only HR imports employees.")
+    plan = await _plan(session, user, _read(data, filename))
+    cells = dict(plan.table.rows)
+    left_out = [
+        (cells[row.line], "; ".join(row.errors) if row.errors else _SKIPPED)
+        for row in plan.rows
+        if row.outcome != "ready"
+    ]
+    if not left_out:
+        raise _unprocessable("Every row in this file can be added; none is left out.")
+    return write_left_out(plan.table, left_out)
 
 
 async def run(

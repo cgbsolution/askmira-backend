@@ -654,7 +654,7 @@ async def test_a_manual_entry_saves_every_amount_exactly_as_typed(
 ) -> None:
     await _standard(client, hr_user)
     structure = await session.scalar(select(SalaryStructure))
-    body = _manual(structure.id, "2026-04-01", "51666.67", {**SCREEN, "BONUS": ("500", "weekly")})
+    body = _manual(structure.id, "2026-04-01", "51666.67", {**SCREEN, "BONUS": ("100", "weekly")})
     preview = await client.post(
         f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=body
     )
@@ -662,7 +662,7 @@ async def test_a_manual_entry_saves_every_amount_exactly_as_typed(
     groups = {g["wage_group"]: g["monthly"] for g in preview.json()["group_totals"]}
     assert groups["regular_earning"] == "48474.00"
     assert groups["statutory_deduction"] == "0.01"
-    assert groups["variable_earning"] == "2166.67"  # 500 a week x 52 / 12
+    assert groups["variable_earning"] == "433.33"  # 100 a week x 52 / 12
 
     saved = await client.post(
         f"/api/v1/employees/{employee.id}/salary", headers=_auth(hr_user), json=body
@@ -681,8 +681,8 @@ async def test_a_manual_entry_saves_every_amount_exactly_as_typed(
     assert codes["PT_MANUAL"]["monthly_amount"] == "0.01"
     assert codes["SPECIAL"]["monthly_amount"] == "12307.00"
     assert codes["BONUS"]["pay_basis"] == "weekly"
-    assert codes["BONUS"]["entered_amount"] == "500.00"
-    assert card["gross_monthly"] == "50640.67"
+    assert codes["BONUS"]["entered_amount"] == "100.00"
+    assert card["gross_monthly"] == "48907.33"
 
 
 async def test_update_future_revisions_carries_typed_changes_as_they_are(
@@ -723,3 +723,108 @@ async def test_update_future_revisions_carries_typed_changes_as_they_are(
     assert october["TELEPHONE"] == "1000.00"
     assert october["BASIC"] == "30000.00"  # its own amount, untouched
     assert cards[0]["ctc_annual"] == "720000.00"
+
+
+async def test_a_typed_monthly_gross_is_kept_in_its_pay_basis(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    body = _manual(
+        structure.id, "2026-04-01", "51666.67", SCREEN, gross_amount="581688", gross_basis="annual"
+    )
+    preview = (
+        await client.post(
+            f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=body
+        )
+    ).json()
+    assert (preview["gross_monthly"], preview["gross_annual"]) == ("48474.00", "581688.00")
+    assert preview["earnings_monthly"] == "48474.00"
+
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary", headers=_auth(hr_user), json=body
+    )
+    assert saved.status_code == 201, saved.text
+    [card] = (
+        await client.get(
+            f"/api/v1/employees/{employee.id}/salary/revisions", headers=_auth(hr_user)
+        )
+    ).json()
+    assert (card["gross_amount"], card["gross_basis"]) == ("581688.00", "annual")
+    assert card["gross_monthly"] == "48474.00"
+
+    # A gross that differs from the earnings is kept as typed; payroll pays the wage types.
+    other = _manual(structure.id, "2026-04-01", "51666.67", SCREEN, gross_amount="50000")
+    preview = (
+        await client.post(
+            f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=other
+        )
+    ).json()
+    assert preview["gross_monthly"] == "50000.00"
+    assert preview["earnings_monthly"] == "48474.00"
+
+
+async def test_amounts_in_the_ctc_cannot_exceed_ctc_total(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    body = _manual(structure.id, "2026-04-01", "1324", {"GRATUITY": ("1423", "monthly")})
+    preview = await client.post(
+        f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=body
+    )
+    # The live preview still works every figure out, and says what is wrong...
+    assert preview.status_code == 200, preview.text
+    [warning] = preview.json()["warnings"]
+    assert "more than CTC TOTAL" in warning and "₹17,076" in warning
+    assert preview.json()["components"][0]["annual_amount"] == "17076.00"
+    # ...and saving refuses it.
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary", headers=_auth(hr_user), json=body
+    )
+    assert saved.status_code == 422
+    # Outside the CTC (a deduction, a reimbursement) does not count.
+    fine = _manual(structure.id, "2026-04-01", "1324", {"INSURANCE": ("5000", "monthly")})
+    ok = await client.post(
+        f"/api/v1/salary-structures/{structure.id}/preview", headers=_auth(hr_user), json=fine
+    )
+    assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("amount", "abc"),
+        ("amount", "-5"),
+        ("amount", "12.345"),
+        ("amount", "1e5"),
+        ("amount", "100000000.01"),
+        ("ctc", "abc"),
+        ("ctc", "0"),
+        ("ctc", "100000001"),
+        ("gross", "12.999"),
+        ("gross", "-1"),
+    ],
+)
+async def test_bad_amounts_are_refused_by_the_api_too(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    hr_user: User,
+    employee: Employee,
+    field: str,
+    value: str,
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    body = _manual(structure.id, "2026-04-01", "60000", {"BASIC": ("25000", "monthly")})
+    if field == "amount":
+        body["components"][0]["amount"] = value
+    elif field == "ctc":
+        body["ctc_amount"] = value
+    else:
+        body["gross_amount"] = value
+    response = await client.post(
+        f"/api/v1/employees/{employee.id}/salary", headers=_auth(hr_user), json=body
+    )
+    assert response.status_code == 422, (field, value, response.text)
+    assert await session.scalar(select(EmployeeSalary)) is None

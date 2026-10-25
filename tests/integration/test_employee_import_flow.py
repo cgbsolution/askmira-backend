@@ -7,10 +7,14 @@
    imported again changes nothing.
 2. A sub-admin's import leaves unknown departments and locations blank and
    can leave the leavers out.
+3. Somebody already here under another code — the admin made with the
+   workspace — is not added twice, nor are two rows with one email; the rows
+   left out come back as a sheet that imports again as it was read.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import date, datetime
 
@@ -21,6 +25,7 @@ from app.models.disbursement import EmployeeBankAccount
 from app.models.employee import EmployeeProfile
 from app.models.user import UserRole
 from app.services import employee_identifiers as ids
+from app.services.employee_import.sheet import WHY_COLUMN, read_table
 from tests.integration import platform_support
 from tests.integration.conftest import requires_db
 from tests.integration.platform_support import bearer, make_person
@@ -311,3 +316,80 @@ async def test_employees_cannot_import(client, session, tenant):
         f"{API}/preview", headers=bearer(staff), **_upload(factohr_sheet.build(_people()))
     )
     assert refused.status_code == 403
+
+
+async def test_an_email_already_here_is_not_added_twice(client, session, tenant):
+    from openpyxl import load_workbook
+
+    hr, _ = await _setup(session, tenant, role=UserRole.ADMIN)
+    headers = bearer(hr)
+    mine = await session.get(Employee, hr.employee_id)
+    # The admin's own row in the old system's export: another code, the same email.
+    data = factohr_sheet.build(
+        [
+            {
+                "Emp Code": "CGB-007",
+                "First Name": "Priya",
+                "Last Name": "Hr",
+                "Joining Date": datetime(2020, 1, 6),
+                "Status": "Active",
+                "Email": mine.work_email.upper(),
+                "Pan No": "ABCPV1234F",
+            },
+            {
+                "Emp Code": "CGB-008",
+                "First Name": "Ravi",
+                "Joining Date": datetime(2021, 2, 1),
+                "Status": "Active",
+                "Email": "ravi@example.com",
+            },
+            {
+                "Emp Code": "CGB-009",
+                "First Name": "Ravi",
+                "Last Name": "Again",
+                "Joining Date": datetime(2021, 2, 1),
+                "Status": "Active",
+                "Email": "Ravi@example.com",
+            },
+        ]
+    )
+    preview = (await client.post(f"{API}/preview", headers=headers, **_upload(data))).json()
+    rows = {row["employee_code"]: row for row in preview["rows"]}
+    assert rows["CGB-007"]["outcome"] == "error"
+    assert f"already used by {mine.employee_code} (Priya Hr)" in rows["CGB-007"]["errors"][0]
+    assert rows["CGB-008"]["outcome"] == "ready"
+    line = rows["CGB-008"]["line"]
+    assert rows["CGB-009"]["errors"] == [f"Email ravi@example.com is also on row {line}."]
+
+    # The rows left out, with their own cells and why.
+    sheet = await client.post(f"{API}/rejected", headers=headers, **_upload(data))
+    assert sheet.status_code == 200, sheet.text
+    assert sheet.headers["content-type"] == XLSX
+    book = load_workbook(io.BytesIO(sheet.content))
+    grid = [list(r) for r in book.active.iter_rows(values_only=True)]
+    header = next(i for i, r in enumerate(grid) if r[0] == WHY_COLUMN)
+    left_out = {r[grid[header].index("Emp Code")]: r for r in grid[header + 1 :]}
+    assert set(left_out) == {"CGB-007", "CGB-009"}
+    assert "already used by" in left_out["CGB-007"][0]
+    assert left_out["CGB-007"][grid[header].index("Pan No")] == "ABCPV1234F"
+    # Read back the way the original was: every field from the same column.
+    original, again = read_table(data, "a.xlsx"), read_table(sheet.content, "b.xlsx")
+    by_name = {c.index: c.header for c in original.columns}
+    assert {k: by_name[i] for k, i in original.mapping.items()} == {
+        k: {c.index: c.header for c in again.columns}[i] for k, i in again.mapping.items()
+    }
+
+    imported = (await client.post(API, headers=headers, **_upload(data))).json()
+    assert (imported["created"], imported["failed"]) == (1, 2)
+    assert await _employee(session, "CGB-007") is None
+    assert await session.scalar(
+        select(func.count(Employee.id)).where(Employee.work_email == mine.work_email)
+    ) == 1
+
+    # Nothing left out: nothing to download.
+    clean = factohr_sheet.build(
+        [{"Emp Code": "CGB-010", "First Name": "Neha", "Joining Date": datetime(2022, 1, 3),
+          "Status": "Active", "Email": "neha@example.com"}]
+    )
+    nothing = await client.post(f"{API}/rejected", headers=headers, **_upload(clean))
+    assert nothing.status_code == 422

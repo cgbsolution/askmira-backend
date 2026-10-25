@@ -669,8 +669,11 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                         raise ValueError(f"{CTC} is empty")
                     ctc_fields = {"ctc_annual": in_ctc}
                     notes.append(f"{CTC} empty: set to the wage types' total, {_rupees(in_ctc)}")
+                gross_typed = _money(cell(values, GROSS), GROSS)
                 payload = EmployeeSalaryCreate(
                     entry="manual",
+                    gross_amount=gross_typed,
+                    gross_basis=basis,
                     structure_id=structure.id,
                     effective_from=on,
                     revision_reason=reason,
@@ -709,15 +712,12 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
         with contextlib.suppress(ValueError):
             gross_given = _money(cell(values, GROSS), GROSS)
         if gross_given is not None:
-            gross_in_basis = (
-                gross_monthly
-                if basis == "monthly"
-                else sum((c.annual_amount for c in earnings), Decimal(0))
-            )
-            if gross_given != gross_in_basis:
+            typed_monthly = to_period_amounts(gross_given, basis)[1]
+            if typed_monthly != gross_monthly:
+                kept = " (kept as typed)" if payload.entry == "manual" else ""
                 notes.append(
-                    f"{GROSS} in the sheet is {_rupees(gross_given)}; it works out to "
-                    f"{_rupees(gross_in_basis)}"
+                    f"{GROSS} {_rupees(typed_monthly)} a month{kept}; the earnings add up to "
+                    f"{_rupees(gross_monthly)}"
                 )
         if payload.entry == "manual":
             in_ctc = sum(
