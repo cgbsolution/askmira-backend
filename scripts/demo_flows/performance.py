@@ -10,7 +10,7 @@ check-ins and comments.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from .api import Demo, SeedError
 
@@ -371,7 +371,9 @@ async def conversations(demo: Demo) -> None:
         "/feedback/requests",
         {"subject_employee_id": demo.emp("meera"),
          "reviewer_employee_ids": [demo.emp(k) for k in ("arjun", "sneha", "kavya")],
-         "appraisal_cycle_id": demo.ids["cycle_h1"], "due_on": "2026-10-24",
+         "appraisal_cycle_id": demo.ids["cycle_h1"],
+         # Relative: a request due in the past is refused, and the seed runs on any day.
+         "due_on": (date.today() + timedelta(days=14)).isoformat(),
          "message": "Feedback for Meera's mid-year review, please.",
          "employee_visibility": "anonymised"},
     )
