@@ -22,9 +22,9 @@ from app.services.employee_import.fields import FIELDS
 #: Rows the drop-downs cover.
 _ROWS = 2000
 
-_HEADER_FILL = PatternFill("solid", fgColor="14595C")  # Deep Teal
-_REQUIRED_FILL = PatternFill("solid", fgColor="EFC259")  # Marigold
-_SECTION_FILL = PatternFill("solid", fgColor="F2ECE0")  # Cream
+_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMira Red
+_REQUIRED_FILL = PatternFill("solid", fgColor="F8A01A")  # Marigold
+_SECTION_FILL = PatternFill("solid", fgColor="F9EFE8")  # Cream
 
 
 def build_template(custom: list[CustomFieldDefinition]) -> bytes:
@@ -37,7 +37,7 @@ def build_template(custom: list[CustomFieldDefinition]) -> bytes:
     sheet.append(headers)
     for index, field in enumerate(columns, start=1):
         cell = sheet.cell(row=1, column=index)
-        cell.font = Font(bold=True, color="12161D" if field.required else "FFFFFF")
+        cell.font = Font(bold=True, color="100404" if field.required else "FFFFFF")
         cell.fill = _REQUIRED_FILL if field.required else _HEADER_FILL
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         sheet.column_dimensions[get_column_letter(index)].width = max(14, len(field.label) + 4)
@@ -53,7 +53,7 @@ def build_template(custom: list[CustomFieldDefinition]) -> bytes:
             validation.add(f"{letter}2:{letter}{_ROWS}")
     for offset, definition in enumerate(custom, start=len(columns) + 1):
         cell = sheet.cell(row=1, column=offset)
-        cell.font = Font(bold=True, color="12161D" if definition.is_required else "FFFFFF")
+        cell.font = Font(bold=True, color="100404" if definition.is_required else "FFFFFF")
         cell.fill = _REQUIRED_FILL if definition.is_required else _HEADER_FILL
         width = max(14, len(definition.label) + 4)
         sheet.column_dimensions[get_column_letter(offset)].width = width

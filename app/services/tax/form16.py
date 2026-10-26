@@ -578,11 +578,11 @@ def form16_html(statement: dict[str, Any]) -> str:
     notes = "".join(f"<li>{_e(note)}</li>" for note in statement["notes"])
     return f"""<style>
 table.f16 {{ width: 100%; margin: 0 0 10pt 0; }}
-table.f16 td, table.f16 th {{ padding: 3pt 5pt; font-size: 9pt; border: 1px solid #e8e0cf; }}
-table.f16 th {{ background-color: #dcefe6; text-align: left; }}
+table.f16 td, table.f16 th {{ padding: 3pt 5pt; font-size: 9pt; border: 1px solid #f0e2d8; }}
+table.f16 th {{ background-color: #fde8dd; text-align: left; }}
 td.amount, th.amount {{ text-align: right; }}
-td.key {{ width: 6%; color: #6b788d; }}
-.small {{ font-size: 8.5pt; color: #6b788d; }}
+td.key {{ width: 6%; color: #7a6e68; }}
+.small {{ font-size: 8.5pt; color: #7a6e68; }}
 </style>
 <h2>Form No. 16 — Part B (Annexure)</h2>
 <p>Details of salary paid and tax deducted for the financial year

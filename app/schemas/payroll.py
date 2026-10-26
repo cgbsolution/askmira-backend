@@ -418,6 +418,12 @@ class StandardSetupRead(BaseModel):
     structure_skipped: str | None = None
 
 
+class SalaryExportInput(BaseModel):
+    """Whose present salary to export; empty exports everyone."""
+
+    employee_ids: list[uuid.UUID] | None = Field(default=None, max_length=20000)
+
+
 class StandardStatusRead(BaseModel):
     """Whether the workspace has the Salary Master template's wage types."""
 

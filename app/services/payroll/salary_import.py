@@ -152,9 +152,9 @@ _TEMPLATE_ONLY = frozenset(
                 "GRATUITY_PROVISION"}
 )  # fmt: skip
 
-_HEADER_FILL = PatternFill("solid", fgColor="14595C")  # Deep Teal
-_REQUIRED_FILL = PatternFill("solid", fgColor="EFC259")  # Marigold
-_INFO_FILL = PatternFill("solid", fgColor="E4E0D8")  # Cream, darker: not read
+_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMira Red
+_REQUIRED_FILL = PatternFill("solid", fgColor="F8A01A")  # Marigold
+_INFO_FILL = PatternFill("solid", fgColor="E9E1DC")  # Cream, darker: not read
 _GROUP_ORDER = {group: index for index, group in enumerate(WageGroup)}
 
 
@@ -249,26 +249,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
     book = Workbook()
     sheet = book.active
     sheet.title = "Sheet1"
-    sheet.append(headers)
-    for index, header in enumerate(headers, start=1):
-        cell = sheet.cell(row=1, column=index)
-        if header in required:
-            cell.fill, cell.font = _REQUIRED_FILL, Font(bold=True, color="12161D")
-        elif _key(header) in not_read:
-            cell.fill, cell.font = _INFO_FILL, Font(bold=True, color="55524B")
-        elif _OLD_NAMES.get(_key(header), "").endswith("_MANUAL"):
-            cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
-            cell.comment = Comment(
-                "Deducted instead of what payroll works out, for this person. "
-                "Leave empty to let payroll work it out.",
-                "AskMira",
-            )
-        else:
-            cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-        sheet.column_dimensions[get_column_letter(index)].width = max(12, min(len(header) + 3, 28))
-    sheet.row_dimensions[1].height = 42
-    sheet.freeze_panes = "C2"
+    _header_row(sheet, headers, required, not_read)
 
     for person in people:
         salary = current.get(person.id)
@@ -332,7 +313,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
         "    is split by the salary structure.",
         "TDS / PROF. TAX / MPF / ESIC / LWF MANUAL: deducted instead of what payroll works out;",
         "    leave empty to let payroll work it out.",
-        f"{GROSS}: a check. A different gross is shown on the row.",
+        f"{GROSS}: kept as typed; the row notes it when the earnings add up to another figure.",
         f"{STRUCTURE}: empty keeps the person's present structure (or the workspace's only one).",
         f"{REASON}: why the salary changes. {NAME} is for reference and is not read.",
         "",
@@ -350,6 +331,233 @@ async def template(session: AsyncSession, user: User) -> bytes:
     out = io.BytesIO()
     book.save(out)
     return out.getvalue()
+
+
+def _header_row(sheet: Any, headers: list[str], required: set[str], not_read: set[str]) -> None:
+    """The Employee Salary Master's header row: required columns marigold, columns
+    an upload passes over cream, the rest red."""
+    sheet.append(headers)
+    for index, header in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=index)
+        if header in required:
+            cell.fill, cell.font = _REQUIRED_FILL, Font(bold=True, color="100404")
+        elif _key(header) in not_read:
+            cell.fill, cell.font = _INFO_FILL, Font(bold=True, color="55524B")
+        elif _OLD_NAMES.get(_key(header), "").endswith("_MANUAL"):
+            cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
+            cell.comment = Comment(
+                "Deducted instead of what payroll works out, for this person. "
+                "Leave empty to let payroll work it out.",
+                "AskMira",
+            )
+        else:
+            cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        sheet.column_dimensions[get_column_letter(index)].width = max(12, min(len(header) + 3, 28))
+    sheet.row_dimensions[1].height = 42
+    sheet.freeze_panes = "C2"
+
+
+# ── Exporting the present salaries ──────────────────────────────────────────
+
+
+def _present(series: list[EmployeeSalary], today: date) -> EmployeeSalary | None:
+    """The revision in force today; the latest one when all start later."""
+    in_force = [
+        s
+        for s in series
+        if s.effective_from <= today and (s.effective_to is None or s.effective_to >= today)
+    ]
+    if in_force:
+        return max(in_force, key=lambda s: s.effective_from)
+    return max(series, key=lambda s: s.effective_from) if series else None
+
+
+#: The Employee Salary Master as the old HRMS gives it out, so a downloaded sheet
+#: looks exactly like theirs: plain bold headers, these notes on the first four
+#: (the other names each column is known by), its column widths.
+_MASTER_NOTES: dict[str, str] = {
+    CODE: "Employee,EmpCode,Emp Code,Code,Emp-Code,EmployeeCode",
+    WEF: "Date,From,Revision Date,Salary Revision Date,EffectiveStartdate,Effective Start date",
+    BASIS: "RateUnit,PayBasis,Unit,Frequency",
+    REPLACE: "Update all future entries",
+}
+_MASTER_WIDTHS: tuple[float, ...] = (
+    16.39, 20.0, 10.61, 34.21, 11.94, 18.65, 30.8, 15.27, 15.19, 27.03, 27.92, 22.24, 26.2,
+    9.14, 21.96, 28.47, 24.27, 20.09, 22.99, 14.74, 21.28, 31.14, 41.93, 15.21, 12.95,
+    20.26, 22.37,
+)  # fmt: skip
+_MASTER_DATE = "dd-MMM-yy"
+_SAMPLE_FILL = PatternFill("solid", fgColor="90EE90")
+
+
+def _master_header(sheet: Any, headers: list[str]) -> None:
+    """The Employee Salary Master's header row, styled as the old HRMS styles it."""
+    sheet.append(headers)
+    for index, header in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=index)
+        cell.font = Font(bold=True, size=12)
+        cell.alignment = Alignment(horizontal="center")
+        if header in _MASTER_NOTES:
+            note = Comment(_MASTER_NOTES[header], "AskMira")
+            note.width, note.height = 144, 79
+            cell.comment = note
+        sheet.column_dimensions[get_column_letter(index)].width = (
+            _MASTER_WIDTHS[index - 1] if index <= len(_MASTER_WIDTHS) else max(12, len(header) + 4)
+        )
+    sheet.freeze_panes = "A2"
+
+
+def _row_basis(salary: EmployeeSalary, gross: tuple[Decimal, Decimal]) -> str:
+    """Monthly when every amount on the row is a whole-paisa twelfth of its year,
+    so the sheet uploads back to the very same figures; Yearly otherwise."""
+    ctc = Decimal(str(salary.ctc_annual))
+    pairs = [(ctc, (ctc / 12).quantize(Decimal("0.01"))), gross]
+    pairs += [
+        (Decimal(str(c.annual_amount)), Decimal(str(c.monthly_amount))) for c in salary.components
+    ]
+    return "Monthly" if all(monthly * 12 == annual for annual, monthly in pairs) else "Yearly"
+
+
+async def export_present(
+    session: AsyncSession,
+    user: User,
+    employee_ids: list[uuid.UUID] | None,
+    request: Request | None = None,
+) -> tuple[bytes, int]:
+    """Everyone's (or the chosen people's) present salary, as the Employee Salary Master.
+
+    The sheet is the user's own EmployeeSalaryMaster file, column for column and
+    styled the same, with one row per person filled from the salary in force
+    today (the latest one when all start later). It uploads back unchanged, so a
+    revision is: export, change WEF and the amounts, upload. A person with no
+    salary gets a row with only the code. A wage type the workspace added beyond
+    the sheet's columns gets a column after them. Audited as an export.
+    """
+    components = await _components(session, user)
+    active = [c for c in components if c.active]
+    stmt = select(Employee).where(Employee.deleted_at.is_(None))
+    if employee_ids is not None:
+        stmt = stmt.where(Employee.id.in_(employee_ids))
+    people = (
+        await session.scalars(tenant_scoped(stmt.order_by(Employee.employee_code), Employee, user))
+    ).all()
+    series: dict[uuid.UUID, list[EmployeeSalary]] = {}
+    if people:
+        for salary in (
+            await session.scalars(
+                tenant_scoped(
+                    select(EmployeeSalary).where(
+                        EmployeeSalary.employee_id.in_([p.id for p in people])
+                    ),
+                    EmployeeSalary,
+                    user,
+                )
+            )
+        ).all():
+            series.setdefault(salary.employee_id, []).append(salary)
+
+    covered = {_wage_code(h, components) for h in LAYOUT} - {None}
+    extras = [c.name.upper() for c in active if c.code not in covered]
+    headers = [*LAYOUT, *extras]
+    column_code = {h: _wage_code(h, components) for h in headers}
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Sheet1"
+    _master_header(sheet, headers)
+    sheet.cell(row=1, column=headers.index(WEF) + 1).number_format = _MASTER_DATE
+
+    today = date.today()
+    for person in people:
+        row: dict[str, Any] = {CODE: person.employee_code}
+        salary = _present(series.get(person.id, []), today)
+        if salary is not None:
+            earnings = [c for c in salary.components if c.component_type is ComponentType.EARNING]
+            if salary.gross_amount is not None:
+                gross = to_period_amounts(
+                    Decimal(str(salary.gross_amount)), salary.gross_basis or "monthly"
+                )
+            else:
+                gross = (
+                    sum((Decimal(str(c.annual_amount)) for c in earnings), Decimal(0)),
+                    sum((Decimal(str(c.monthly_amount)) for c in earnings), Decimal(0)),
+                )
+            basis = _row_basis(salary, gross)
+            monthly = basis == "Monthly"
+            ctc_annual = Decimal(str(salary.ctc_annual))
+            row.update(
+                {
+                    WEF: salary.effective_from,
+                    BASIS: basis,
+                    CTC: (ctc_annual / 12).quantize(Decimal("0.01")) if monthly else ctc_annual,
+                    GROSS: gross[1] if monthly else gross[0],
+                }
+            )
+            amounts = {
+                c.component_code: Decimal(str(c.monthly_amount if monthly else c.annual_amount))
+                for c in salary.components
+            }
+            for header, code in column_code.items():
+                if code and code in amounts:
+                    row[header] = amounts[code]
+        sheet.append([row.get(h) for h in headers])
+        sheet.cell(row=sheet.max_row, column=headers.index(WEF) + 1).number_format = _MASTER_DATE
+
+    wef = get_column_letter(headers.index(WEF) + 1)
+    dates = DataValidation(
+        type="date",
+        formula1="1",
+        formula2="730486",
+        allow_blank=False,
+        showInputMessage=True,
+        showErrorMessage=True,
+        errorTitle="An invalid date was entered",
+        error="Enter a valid date",
+        prompt="Enter a date",
+    )
+    dates.add(f"{wef}2:{wef}1048576")
+    sheet.add_data_validation(dates)
+    pay = get_column_letter(headers.index(BASIS) + 1)
+    bases = DataValidation(
+        type="list",
+        formula1='"Yearly,Monthly,Weekly,Daily,Hourly"',
+        allow_blank=False,
+        showInputMessage=True,
+        showErrorMessage=True,
+        errorTitle="An invalid Pay Basis was entered",
+        error="Select a Pay Basis from the list",
+        prompt="Select or enter a Pay Basis from the list",
+    )
+    bases.add(f"{pay}2:{pay}1048576")
+    sheet.add_data_validation(bases)
+
+    sample = book.create_sheet("Sample")
+    _master_header(sample, headers)
+    sample.append([None if h in (CODE, WEF, BASIS, REPLACE) else h for h in headers])
+    for index in range(1, len(headers) + 1):
+        cell = sample.cell(row=2, column=index)
+        cell.fill = _SAMPLE_FILL
+        cell.alignment = Alignment(wrap_text=True)
+    sample.column_dimensions[wef].width = 9.14
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.EXPORT,
+        entity_type="salary_export",
+        actor=user,
+        changes={
+            "employees": len(people),
+            "chosen": employee_ids is not None,
+        },
+        summary=f"Exported the present salary of {len(people)} employee(s)",
+        request=request,
+    )
+    await session.commit()
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue(), len(people)
 
 
 # ── Reading an upload ───────────────────────────────────────────────────────

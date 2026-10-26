@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.session import get_session
 from app.main import app
+from app.models.audit import AuditLog
 from app.models.employee import Employee
 from app.models.org import LegalEntity
 from app.models.payroll import (
@@ -828,3 +829,196 @@ async def test_bad_amounts_are_refused_by_the_api_too(
     )
     assert response.status_code == 422, (field, value, response.text)
     assert await session.scalar(select(EmployeeSalary)) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Export: the chosen people's present salary, as their EmployeeSalaryMaster
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _export(client, hr, ids: list[str] | None) -> httpx.Response:
+    return await client.post(
+        "/api/v1/salaries/export", headers=_auth(hr), json={"employee_ids": ids}
+    )
+
+
+def _sheet_rows(content: bytes) -> tuple[list, list[dict]]:
+    sheet = load_workbook(io.BytesIO(content)).worksheets[0]
+    headers = [c.value for c in sheet[1]]
+    rows = [
+        dict(zip(headers, [c.value for c in row], strict=False))
+        for row in sheet.iter_rows(min_row=2)
+    ]
+    return headers, rows
+
+
+async def test_the_export_has_every_detail_of_the_chosen_peoples_present_salary(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary",
+        headers=_auth(hr_user),
+        json=_manual(structure.id, "2026-04-01", "51666.67", SCREEN, gross_amount="48474"),
+    )
+    assert saved.status_code == 201, saved.text
+    unpaid = Employee(
+        tenant_id=tenant.id, employee_code="ACM002", first_name="Ravi", work_email="r@acme.test"
+    )
+    left_out = Employee(
+        tenant_id=tenant.id, employee_code="ACM003", first_name="Sita", work_email="s@acme.test"
+    )
+    session.add_all([unpaid, left_out])
+    await session.commit()
+
+    response = await _export(client, hr_user, [str(employee.id), str(unpaid.id)])
+    assert response.status_code == 200, response.text
+    assert "EmployeeSalaryMaster.xlsx" in response.headers["content-disposition"]
+    headers, rows = _sheet_rows(response.content)
+    assert headers == THEIR_HEADERS  # their sheet, column for column, nothing added
+    assert [r["Employee Code"] for r in rows] == ["ACM001", "ACM002"]  # only the chosen
+    anita, ravi = rows
+    assert anita["Pay Basis"] == "Monthly"
+    assert anita["Replace all future salary revisions"] is None
+    assert Decimal(str(anita["CTC TOTAL"])) == Decimal("51666.67")
+    assert Decimal(str(anita["MONTHLY GROSS"])) == Decimal("48474")
+    assert Decimal(str(anita["BASIC SALARY"])) == Decimal("25833")
+    assert Decimal(str(anita["HOUSE RENT ALLOWANCE"])) == Decimal("10334")
+    assert Decimal(str(anita["SPECIAL ALLOWANCE"])) == Decimal("12307")
+    assert anita["CONVEYANCE ALLOWANCE"] is None  # typed as 0: not paid, so not a line
+    assert Decimal(str(anita["GRATUITY AMOUNT MANUAL"])) == Decimal("1242")
+    assert Decimal(str(anita["PROF. TAX MANUAL"])) == Decimal("0.01")
+    assert Decimal(str(anita["INSURANCE"])) == Decimal("239")
+    assert anita["BONUS"] is None  # not part of this salary
+    assert anita["WEF"].date() == date(2026, 4, 1)
+    # No salary yet: the row is there with the code alone, ready to fill.
+    assert ravi["CTC TOTAL"] is None and ravi["WEF"] is None and ravi["Pay Basis"] is None
+
+    # Styled as their file: plain bold headers, the alias notes, dd-MMM-yy, a Sample sheet.
+    book = load_workbook(io.BytesIO(response.content))
+    assert book.sheetnames == ["Sheet1", "Sample"]
+    sheet = book["Sheet1"]
+    assert sheet.freeze_panes == "A2"
+    first = sheet["A1"]
+    assert first.font.b and first.font.sz == 12 and first.fill.fill_type is None
+    assert first.alignment.horizontal == "center"
+    assert "EmpCode" in sheet["A1"].comment.text and "Revision Date" in sheet["B1"].comment.text
+    assert "PayBasis" in sheet["C1"].comment.text and sheet["E1"].comment is None
+    assert sheet["B2"].number_format == "dd-MMM-yy"
+    rules = {v.type: v for v in sheet.data_validations.dataValidation}
+    assert rules["list"].formula1 == '"Yearly,Monthly,Weekly,Daily,Hourly"'
+    assert "C2" in rules["list"].sqref and "B2" in rules["date"].sqref
+    sample = book["Sample"]
+    assert [c.value for c in sample[1]] == THEIR_HEADERS
+    assert sample["A2"].value is None and sample["E2"].value == "CTC TOTAL"
+    assert sample["E2"].fill.fgColor.rgb.endswith("90EE90")
+
+    everyone = _sheet_rows((await _export(client, hr_user, None)).content)[1]
+    assert {r["Employee Code"] for r in everyone} == {"ACM001", "ACM002", "ACM003"}
+    exports = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "salary_export"))
+    ).all()
+    assert len(exports) == 2
+
+
+async def test_an_exported_sheet_uploads_back_with_a_new_wef(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    await client.post(
+        f"/api/v1/employees/{employee.id}/salary",
+        headers=_auth(hr_user),
+        json=_manual(structure.id, "2026-04-01", "51666.67", SCREEN),
+    )
+    content = (await _export(client, hr_user, [str(employee.id)])).content
+    # Unchanged, the same WEF is refused: it is already the salary.
+    [row] = (await _upload(client, hr_user, content)).json()["rows"]
+    assert row["status"] == "error" and "after the latest revision" in row["message"]
+
+    book = load_workbook(io.BytesIO(content))
+    sheet = book.worksheets[0]
+    headers = [c.value for c in sheet[1]]
+    sheet.cell(row=2, column=headers.index("WEF") + 1).value = "01-10-2026"
+    sheet.cell(row=2, column=headers.index("BASIC SALARY") + 1).value = 26000
+    out = io.BytesIO()
+    book.save(out)
+    checked = (await _upload(client, hr_user, out.getvalue())).json()
+    assert checked["errors"] == 0 and checked["ready"] == 1, checked
+    assert (await _upload(client, hr_user, out.getvalue(), apply=True)).status_code == 200
+    [newest, _] = (
+        await client.get(
+            f"/api/v1/employees/{employee.id}/salary/revisions", headers=_auth(hr_user)
+        )
+    ).json()
+    amounts = {c["component_code"]: c["monthly_amount"] for c in newest["components"]}
+    assert amounts["BASIC"] == "26000.00"
+    assert amounts["HRA"] == "10334.00"  # carried over from the export unchanged
+    assert newest["ctc_annual"] == "620000.04"
+
+
+async def test_a_salary_not_in_whole_months_exports_yearly_and_uploads_back_the_same(
+    client: httpx.AsyncClient, session: AsyncSession, hr_user: User, employee: Employee
+) -> None:
+    # 1,00,001 a year is 8,333.42 a month to the paisa, and 8,333.42 x 12 is not 1,00,001:
+    # a Monthly row would drift by paise, so the row is Yearly.
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary",
+        headers=_auth(hr_user),
+        json=_manual(
+            structure.id,
+            "2026-04-01",
+            "700001",
+            {"BASIC": ("100001", "annual"), "HRA": ("1000", "weekly")},
+            ctc_basis="annual",
+        ),
+    )
+    assert saved.status_code == 201, saved.text
+    content = (await _export(client, hr_user, [str(employee.id)])).content
+    [row] = _sheet_rows(content)[1]
+    assert row["Pay Basis"] == "Yearly"
+    assert Decimal(str(row["CTC TOTAL"])) == Decimal("700001")
+    assert Decimal(str(row["BASIC SALARY"])) == Decimal("100001")
+    assert Decimal(str(row["HOUSE RENT ALLOWANCE"])) == Decimal("52000")  # 52 weeks
+
+    book = load_workbook(io.BytesIO(content))
+    sheet = book.worksheets[0]
+    headers = [c.value for c in sheet[1]]
+    sheet.cell(row=2, column=headers.index("WEF") + 1).value = date(2026, 10, 1)
+    out = io.BytesIO()
+    book.save(out)
+    assert (await _upload(client, hr_user, out.getvalue(), apply=True)).status_code == 200
+    newest, first = (
+        await client.get(
+            f"/api/v1/employees/{employee.id}/salary/revisions", headers=_auth(hr_user)
+        )
+    ).json()
+    assert newest["effective_from"] == "2026-10-01"
+    assert newest["ctc_annual"] == first["ctc_annual"] == "700001.00"
+
+    def figures(revision: dict) -> dict:
+        return {
+            c["component_code"]: (c["annual_amount"], c["monthly_amount"])
+            for c in revision["components"]
+        }
+
+    assert figures(newest) == figures(first)  # not a paisa moved
+
+
+async def test_the_export_never_reaches_another_workspace(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    hr_user: User,
+    other_hr_user: User,
+    employee: Employee,
+) -> None:
+    response = await _export(client, other_hr_user, [str(employee.id)])
+    assert response.status_code == 200
+    assert _sheet_rows(response.content)[1] == []

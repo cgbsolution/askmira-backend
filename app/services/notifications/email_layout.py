@@ -40,8 +40,8 @@ __all__ = [
     "render_email",
 ]
 
-#: AskMira's Deep Teal, used until a workspace picks its own colour.
-DEFAULT_ACCENT = "#14595C"
+#: AskMira Red, used until a workspace picks its own colour.
+DEFAULT_ACCENT = "#EB061D"
 LOGO_CID = "company-logo"
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -97,7 +97,7 @@ def body_to_html(body: str, accent: str = DEFAULT_ACCENT) -> str:
     blocks: list[str] = []
     paragraph: list[str] = []
     bullets: list[str] = []
-    p_style = "margin:0 0 16px 0;font-size:15px;line-height:24px;color:#1E2430;"
+    p_style = "margin:0 0 16px 0;font-size:15px;line-height:24px;color:#1A1110;"
 
     def flush_paragraph() -> None:
         if paragraph:
@@ -108,7 +108,7 @@ def body_to_html(body: str, accent: str = DEFAULT_ACCENT) -> str:
         if bullets:
             items = "".join(
                 f'<li style="margin:0 0 6px 0;font-size:15px;line-height:22px;'
-                f'color:#1E2430;">{item}</li>'
+                f'color:#1A1110;">{item}</li>'
                 for item in bullets
             )
             blocks.append(f'<ul style="margin:0 0 16px 0;padding-left:22px;">{items}</ul>')
@@ -143,16 +143,21 @@ class EmailAction:
     kind: str = "primary"  # primary | secondary | danger
 
 
-_BUTTON_COLOURS = {"secondary": ("#FFFFFF", "#1E2430"), "danger": ("#B42318", "#FFFFFF")}
+# (background, text, border). Reject is outlined: beside a red Approve, a
+# filled dark-red button would read as the same action.
+_BUTTON_COLOURS = {
+    "secondary": ("#FFFFFF", "#1A1110", "#F0E2D8"),
+    "danger": ("#FFFFFF", "#B42318", "#B42318"),
+}
 
-_PAGE = "margin:0;padding:0;background:#F4F1EA;"
+_PAGE = "margin:0;padding:0;background:#FEF8F4;"
 _OUTER = 'role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"'
 _INNER = 'role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"'
 _INNER_STYLE = "width:100%;max-width:600px;font-family:Segoe UI,Helvetica,Arial,sans-serif;"
 _CARD = "background:#FFFFFF;border-radius:12px;padding:32px 32px 24px 32px;"
-_H1 = "margin:0 0 20px 0;font-size:21px;line-height:29px;font-weight:700;color:#1E2430;"
-_POWERED = "margin:12px 0 0 0;font-size:11px;line-height:16px;color:#8A919C;"
-_ASKMIRA = '<span style="font-weight:600;color:#14595C;">AskMira</span>'
+_H1 = "margin:0 0 20px 0;font-size:21px;line-height:29px;font-weight:700;color:#1A1110;"
+_POWERED = "margin:12px 0 0 0;font-size:11px;line-height:16px;color:#8C807B;"
+_ASKMIRA = '<span style="font-weight:600;color:#EB061D;">AskMira</span>'
 
 
 def _buttons(actions: tuple[EmailAction, ...], accent: str) -> str:
@@ -160,8 +165,7 @@ def _buttons(actions: tuple[EmailAction, ...], accent: str) -> str:
         return ""
     cells = []
     for action in actions:
-        background, colour = _BUTTON_COLOURS.get(action.kind, (accent, "#FFFFFF"))
-        border = "#D9DDD8" if action.kind == "secondary" else background
+        background, colour, border = _BUTTON_COLOURS.get(action.kind, (accent, "#FFFFFF", accent))
         safe = html.escape(action.url, quote=True)
         cells.append(
             f'<td style="padding:0 8px 8px 0;"><a href="{safe}" '
@@ -227,7 +231,7 @@ def render_email(
         lines = "<br>".join(html.escape(line) for line in brand.sign_off.strip().splitlines())
         sign_off = (
             f'<p style="margin:8px 0 0 0;font-size:15px;line-height:24px;'
-            f'color:#1E2430;">{lines}</p>'
+            f'color:#1A1110;">{lines}</p>'
         )
 
     footer_bits: list[str] = []
@@ -238,7 +242,7 @@ def render_email(
     if reason:
         footer_bits.append(html.escape(reason))
     footer = "".join(
-        f'<p style="margin:0 0 8px 0;font-size:12px;line-height:18px;color:#5B6472;">{bit}</p>'
+        f'<p style="margin:0 0 8px 0;font-size:12px;line-height:18px;color:#645853;">{bit}</p>'
         for bit in footer_bits
     )
 
@@ -252,7 +256,7 @@ def render_email(
 </head>
 <body style="{_PAGE}">
 <div style="display:none;max-height:0;overflow:hidden;">{title}</div>
-<table {_OUTER} style="background:#F4F1EA;">
+<table {_OUTER} style="background:#FEF8F4;">
 <tr><td align="center" style="padding:32px 12px;">
 <table {_INNER} style="{_INNER_STYLE}">
 <tr><td style="padding:0 4px 16px 4px;">{header}</td></tr>

@@ -74,7 +74,7 @@ async def save_careers_config(
     for field in ("primary_colour", "accent_colour"):
         colour = values.get(field)
         if colour and not _HEX.match(str(colour)):
-            raise _unprocessable("Colours are six-digit hex values, like #14595C.")
+            raise _unprocessable("Colours are six-digit hex values, like #EB061D.")
     if values.get("is_published") and not (values.get("privacy_notice_html") or "").strip():
         raise _unprocessable(
             "A published careers page needs a privacy notice. Collecting a resume without "

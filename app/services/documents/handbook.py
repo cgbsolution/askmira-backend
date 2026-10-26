@@ -89,7 +89,7 @@ def render_html(title: str, sections: list[dict[str, str]], *, version: int) -> 
     contents = "".join(f"<li>{escape(s.get('heading', ''))}</li>" for s in sections)
     parts = [
         f"<h1>{escape(title)}</h1>",
-        f'<p style="color:#6b788d">Version {version}</p>',
+        f'<p style="color:#7a6e68">Version {version}</p>',
         f"<h3>Contents</h3><ol>{contents}</ol>" if sections else "",
     ]
     for number, section in enumerate(sections, start=1):

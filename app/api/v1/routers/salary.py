@@ -39,6 +39,7 @@ from app.schemas.payroll import (
     SalaryComponentCreate,
     SalaryComponentRead,
     SalaryDeleteRead,
+    SalaryExportInput,
     SalaryImportRead,
     SalaryPreviewInput,
     SalaryRevisionRead,
@@ -234,6 +235,19 @@ async def salary_import_template(user: CurrentUser, session: DbSession) -> Respo
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="salary-upload-template.xlsx"'},
+    )
+
+
+@router.post("/salaries/export")
+async def salary_export(
+    payload: SalaryExportInput, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """The chosen people's present salary as an Excel sheet, in the upload layout."""
+    data, _ = await salary_import.export_present(session, user, payload.employee_ids, request)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="EmployeeSalaryMaster.xlsx"'},
     )
 
 

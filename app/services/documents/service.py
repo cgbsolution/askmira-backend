@@ -544,7 +544,7 @@ async def seed_templates(
             name=spec["name"],
             category=spec["category"],
             body_html=spec["body_html"],
-            footer_html=f'<p style="font-size:8pt;color:#6b788d">{REVIEW_BANNER}</p>',
+            footer_html=f'<p style="font-size:8pt;color:#7a6e68">{REVIEW_BANNER}</p>',
             version=1,
             active=True,
             is_seed=True,

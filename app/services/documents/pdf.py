@@ -55,15 +55,15 @@ DEFAULT_PAGE_CSS = """
     }
 }
 body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.5;
-       color: #1e2430; }
-h1, h2, h3 { color: #14595c; }
+       color: #1a1110; }
+h1, h2, h3 { color: #1a1110; }
 /* xhtml2pdf does not implement border-collapse; cell borders carry the grid. */
 table.ctc-table { width: 100%; margin: 12pt 0; }
-table.ctc-table th { background-color: #dcefe6; text-align: left; padding: 6pt;
-                     border: 1px solid #bfe0d4; font-size: 9.5pt; }
-table.ctc-table td { padding: 6pt; border: 1px solid #e8e0cf; font-size: 9.5pt; }
-table.ctc-table tfoot td { background-color: #f2ece0; font-weight: bold; }
-#page-footer { font-size: 8pt; color: #6b788d; border-top: 0.5pt solid #e8e0cf;
+table.ctc-table th { background-color: #fde8dd; text-align: left; padding: 6pt;
+                     border: 1px solid #f2c2a9; font-size: 9.5pt; }
+table.ctc-table td { padding: 6pt; border: 1px solid #f0e2d8; font-size: 9.5pt; }
+table.ctc-table tfoot td { background-color: #f9efe8; font-weight: bold; }
+#page-footer { font-size: 8pt; color: #7a6e68; border-top: 0.5pt solid #f0e2d8;
                padding-top: 4pt; }
 """
 
@@ -96,7 +96,7 @@ def wrap_document(
         else ""
     )
     address = (
-        f'<div style="font-size:8.5pt;color:#6b788d">{letterhead.address}</div>'
+        f'<div style="font-size:8.5pt;color:#7a6e68">{letterhead.address}</div>'
         if letterhead.address
         else ""
     )
@@ -108,9 +108,9 @@ def wrap_document(
 <div id="page-footer">
   {reference_number} &nbsp;|&nbsp; Page <pdf:pagenumber> of <pdf:pagecount>
 </div>
-<div style="border-bottom:1pt solid #14595c;padding-bottom:8pt;margin-bottom:18pt">
+<div style="border-bottom:1.5pt solid #eb061d;padding-bottom:8pt;margin-bottom:18pt">
   {logo}
-  <div style="font-size:13pt;font-weight:bold;color:#14595c">
+  <div style="font-size:13pt;font-weight:bold;color:#1a1110">
     {letterhead.company_name}</div>
   {address}
 </div>

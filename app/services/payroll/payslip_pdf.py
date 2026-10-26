@@ -219,15 +219,15 @@ h2 { font-size: 13pt; margin: 0 0 6pt 0; }
 h3 { font-size: 10.5pt; margin: 8pt 0 2pt 0; }
 p { margin: 3pt 0; line-height: 1.3; }
 table.slip { width: 100%; margin: 0 0 6pt 0; }
-table.slip td, table.slip th { padding: 2pt 6pt; font-size: 9.5pt; border: 1px solid #e8e0cf; }
-table.slip th { background-color: #dcefe6; text-align: left; }
+table.slip td, table.slip th { padding: 2pt 6pt; font-size: 9.5pt; border: 1px solid #f0e2d8; }
+table.slip th { background-color: #fde8dd; text-align: left; }
 td.amount, th.amount { text-align: right; }
-tr.total td { background-color: #f2ece0; font-weight: bold; }
+tr.total td { background-color: #f9efe8; font-weight: bold; }
 table.facts { margin: 0 0 6pt 0; }
 table.facts td { padding: 1pt 6pt; font-size: 9.5pt; border: none; }
-td.label { color: #6b788d; width: 18%; }
-.net { font-size: 13pt; font-weight: bold; color: #14595c; }
-.small { font-size: 8.5pt; color: #6b788d; }
+td.label { color: #7a6e68; width: 18%; }
+.net { font-size: 13pt; font-weight: bold; color: #1a1110; }
+.small { font-size: 8.5pt; color: #7a6e68; }
 """
 
 

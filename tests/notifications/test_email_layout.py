@@ -79,6 +79,27 @@ def test_a_bad_colour_falls_back_to_the_default() -> None:
     assert DEFAULT_ACCENT in rendered.html
 
 
+def test_the_default_colour_is_the_askmira_brand_red() -> None:
+    assert DEFAULT_ACCENT == "#EB061D"
+    rendered = render_email(EmailBrand(company_name="Acme"), subject="S", body="B", action_url="https://p")
+    assert "background:#EB061D" in rendered.html
+
+
+def test_a_danger_button_is_outlined_so_it_never_looks_like_the_red_primary() -> None:
+    rendered = render_email(
+        brand(accent_colour=DEFAULT_ACCENT),
+        subject="S",
+        body="B",
+        actions=(
+            EmailAction("Approve", "https://p/a"),
+            EmailAction("Reject", "https://p/r", kind="danger"),
+        ),
+    )
+    reject = rendered.html.split('href="https://p/r"', 1)[1].split(">", 1)[0]
+    assert "background:#FFFFFF" in reject
+    assert "color:#B42318" in reject
+
+
 def test_one_portal_button_unless_the_wording_has_its_own_link() -> None:
     plain = render_email(brand(), subject="S", body="Something happened.", action_url="https://p")
     assert 'href="https://p"' in plain.html
