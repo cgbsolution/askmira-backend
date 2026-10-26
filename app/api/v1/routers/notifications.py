@@ -6,14 +6,16 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, time
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.deps import CurrentUser, DbSession, require_roles, tenant_scoped
+from app.db.session import get_session_factory
 from app.models.notifications import (
     Channel,
     DigestMode,
@@ -26,6 +28,7 @@ from app.models.user import UserRole
 from app.services.notifications import admin as notification_admin
 from app.services.notifications import dispatch as notification_service
 from app.services.notifications import email_admin
+from app.services.notifications import feed as notification_feed
 from app.services.notifications.email_brand import BrandSettings
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -454,13 +457,32 @@ async def mark_read(
 
 
 @router.get("/stream")
-async def stream(user: CurrentUser, session: DbSession, request: Request) -> StreamingResponse:
+async def stream(
+    user: CurrentUser,
+    request: Request,
+    sessions: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+) -> StreamingResponse:
     """Server-sent events for the in-app bell.
 
     Polls rather than listening on a Postgres channel: the poll is cheap, and
     a LISTEN connection per signed-in user does not scale on a pooled
     connection. Revisit if the notification volume ever justifies it.
+
+    Each poll borrows a connection and gives it straight back. The stream
+    must not use the request's session: FastAPI closes it before a
+    StreamingResponse starts, and a closed session used again quietly checks
+    out a new connection that is never returned. One open app held one
+    connection for as long as it stayed open, and fifteen of them emptied the
+    pool for everyone.
     """
+
+    async def disconnected_within(seconds: int) -> bool:
+        # Look every second, so a phone that went away frees its slot quickly.
+        for _ in range(seconds):
+            if await request.is_disconnected():
+                return True
+            await asyncio.sleep(1)
+        return await request.is_disconnected()
 
     async def events():
         last_seen = datetime.now(UTC)
@@ -468,46 +490,22 @@ async def stream(user: CurrentUser, session: DbSession, request: Request) -> Str
         # rather than waiting for the first real event.
         yield ": connected\n\n"
 
-        while True:
-            if await request.is_disconnected():
-                break
-
-            rows = (
-                await session.scalars(
-                    tenant_scoped(
-                        select(Notification)
-                        .where(
-                            Notification.recipient_user_id == user.id,
-                            Notification.channel == Channel.IN_APP,
-                            Notification.created_at > last_seen,
-                        )
-                        .order_by(Notification.created_at),
-                        Notification,
-                        user,
-                    )
-                )
-            ).all()
+        while not await request.is_disconnected():
+            async with sessions() as session:
+                rows = await notification_feed.new_in_app_since(session, user, last_seen)
 
             for row in rows:
-                last_seen = max(last_seen, row.created_at)
+                last_seen = max(last_seen, row["created_at"])
                 yield (
                     "event: notification\ndata: "
-                    + json.dumps(
-                        {
-                            "id": str(row.id),
-                            "event_key": row.event_key,
-                            "subject": row.rendered_subject,
-                            "body": row.rendered_body,
-                            "is_urgent": row.is_urgent,
-                            "created_at": row.created_at.isoformat(),
-                        }
-                    )
+                    + json.dumps({**row, "created_at": row["created_at"].isoformat()})
                     + "\n\n"
                 )
 
             # Keep-alive, so proxies do not close an idle stream.
             yield ": keep-alive\n\n"
-            await asyncio.sleep(15)
+            if await disconnected_within(15):
+                break
 
     return StreamingResponse(
         events(),

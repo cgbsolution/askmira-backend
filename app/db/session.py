@@ -39,3 +39,13 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """FastAPI dependency for an endpoint that outlives its request session.
+
+    A streaming response runs after FastAPI has closed the request's session,
+    so a stream borrows a short session of its own for each read. Depending on
+    this, rather than importing `SessionLocal`, lets tests hand it another.
+    """
+    return SessionLocal
