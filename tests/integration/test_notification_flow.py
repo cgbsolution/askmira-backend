@@ -159,6 +159,37 @@ async def test_preference_off_suppresses_dispatch_entirely(
     assert await session.scalar(select(func.count(Notification.id))) == 0
 
 
+async def test_the_settings_list_matches_what_is_delivered(
+    session: AsyncSession, tenant: Tenant, hr_user: User
+) -> None:
+    """Saved choices for an event replace its defaults in delivery, so the
+    list must not show a default channel as on beside them."""
+    from app.api.v1.routers.notifications import get_preferences
+
+    session.add(
+        NotificationPreference(
+            tenant_id=tenant.id,
+            user_id=hr_user.id,
+            event_key="leave.approval.requested",
+            channel=Channel.EMAIL,
+            enabled=False,
+            digest_mode=DigestMode.OFF,
+        )
+    )
+    await session.commit()
+
+    rows = await get_preferences(hr_user, session)
+    requested = {r.channel: r.enabled for r in rows if r.event_key == "leave.approval.requested"}
+    assert requested == {Channel.EMAIL: False}, "defaults are not mixed into a saved set"
+    decided = {r.channel for r in rows if r.event_key == "leave.approval.decided"}
+    assert decided == {Channel.EMAIL, Channel.IN_APP}, "an untouched event still shows its defaults"
+
+    delivered = await notification_service._preferences_for(
+        session, tenant.id, hr_user.id, "leave.approval.requested"
+    )
+    assert delivered == {Channel.EMAIL: DigestMode.OFF}
+
+
 async def test_daily_digest_accumulates_and_sends_once(
     session: AsyncSession, tenant: Tenant, hr_user: User
 ) -> None:

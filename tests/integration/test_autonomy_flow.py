@@ -144,6 +144,15 @@ async def test_the_configuration_view_shows_defaults_for_unconfigured_actions(se
     assert {a["key"] for a in listing["protected"]} == PROTECTED_KEYS
 
 
+async def test_the_protected_statement_counts_what_it_lists(session, hr_user):
+    """It said "these four" over a list of six."""
+    listing = await autonomy.list_configuration(session, hr_user)
+    assert len(listing["protected"]) == 6
+    assert listing["protected_statement"].startswith("These six can never be applied")
+    assert autonomy.protected_statement(1).startswith("This one can never")
+    assert autonomy.protected_statement(12).startswith("These 12 can never")
+
+
 async def test_configuration_is_scoped_to_its_tenant(session, hr_user, other_hr_user):
     await autonomy.configure(
         session,

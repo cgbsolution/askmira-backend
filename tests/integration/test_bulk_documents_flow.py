@@ -172,16 +172,20 @@ async def test_nothing_is_kept_when_the_upload_fails_part_way(
         return await original(self, key, data)
 
     monkeypatch.setattr(LocalFileStorage, "put", failing)
+    # Read now: the failed upload rolls the shared session back, which expires
+    # `employee`, and reading an expired attribute afterwards is a lazy load
+    # outside the event loop (MissingGreenlet).
+    employee_id = employee.id
     response = await _upload(
         client,
         hr_user,
-        employee.id,
+        employee_id,
         [("one.pdf", PDF, "application/pdf"), ("two.pdf", PDF, "application/pdf")],
     )
     assert response.status_code == 503
     rows = (
         await session.scalars(
-            select(EmployeeDocument).where(EmployeeDocument.employee_id == employee.id)
+            select(EmployeeDocument).where(EmployeeDocument.employee_id == employee_id)
         )
     ).all()
     assert rows == []

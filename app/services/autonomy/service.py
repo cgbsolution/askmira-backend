@@ -50,6 +50,7 @@ __all__ = [
     "decide_proposal",
     "expire_stale",
     "propose",
+    "protected_statement",
     "queue",
     "revert",
     "transparency_surface",
@@ -195,16 +196,31 @@ async def list_configuration(session: AsyncSession, user: User) -> dict[str, Any
                 "configured_at": (row.configured_at.isoformat() if row else None),
             }
         )
+    protected = protected_actions()
     return {
         "actions": out,
-        "protected": [a.as_dict() for a in protected_actions()],
-        "protected_statement": (
-            "These four can never be applied automatically, whatever the "
-            "configuration says. The ceiling is enforced when a setting is "
-            "written and again when it is read, and a test asserts each one "
-            "directly by name."
-        ),
+        "protected": [a.as_dict() for a in protected],
+        "protected_statement": protected_statement(len(protected)),
     }
+
+
+_NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def protected_statement(count: int) -> str:
+    """What the transparency pages say above the protected list, counted from the list itself.
+
+    It said "these four" when six were listed: written for the original four
+    and not updated when timesheet approval and shift cover joined them.
+    """
+    number = _NUMBER_WORDS[count] if count < len(_NUMBER_WORDS) else str(count)
+    subject = "This one" if count == 1 else f"These {number}"
+    return (
+        f"{subject} can never be applied automatically, whatever the "
+        "configuration says. The ceiling is enforced when a setting is "
+        "written and again when it is read, and a test asserts each one "
+        "directly by name."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

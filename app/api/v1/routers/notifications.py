@@ -338,7 +338,11 @@ async def get_preferences(user: CurrentUser, session: DbSession) -> list[Prefere
     """This user's preferences, with the shipped defaults filled in.
 
     Returning the effective set rather than only stored rows means the settings
-    screen shows what will actually happen, not an empty form.
+    screen shows what will actually happen, not an empty form. Delivery reads
+    a person's saved choices for an event *instead of* that event's defaults
+    (`dispatch._preferences_for`), so defaults are filled in only for events
+    with nothing saved: showing a default channel as on beside saved rows
+    would promise a message that is never sent.
     """
     stored = (
         await session.scalars(
@@ -349,13 +353,13 @@ async def get_preferences(user: CurrentUser, session: DbSession) -> list[Prefere
             )
         )
     ).all()
-    explicit = {(row.event_key, row.channel) for row in stored}
+    customised = {row.event_key for row in stored}
 
     effective = [PreferenceRead.model_validate(row) for row in stored]
     for event_key, channels in notification_service.DEFAULT_PREFERENCES.items():
+        if event_key in customised:
+            continue
         for channel, mode in channels.items():
-            if (event_key, channel) in explicit:
-                continue
             effective.append(
                 PreferenceRead(
                     event_key=event_key,
