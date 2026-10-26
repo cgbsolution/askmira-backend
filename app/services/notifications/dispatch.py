@@ -74,6 +74,7 @@ __all__ = [
     "URGENT_EVENT_KEYS",
     "DispatchOutcome",
     "NotificationError",
+    "effective_channels",
     "email_adapter_for",
     "email_relay",
     "email_wording",
@@ -456,10 +457,25 @@ async def _preferences_for(
         )
     ).all()
 
-    if rows:
-        return {row.channel: (row.digest_mode if row.enabled else DigestMode.OFF) for row in rows}
+    return effective_channels(
+        event_key, [(row.channel, row.enabled, row.digest_mode) for row in rows]
+    )
 
-    return dict(DEFAULT_PREFERENCES.get(event_key, {Channel.IN_APP: DigestMode.IMMEDIATE}))
+
+def effective_channels(
+    event_key: str, stored: list[tuple[Channel, bool, DigestMode]]
+) -> dict[Channel, DigestMode]:
+    """The shipped default for this event, with each channel the user has set overriding it.
+
+    A saved choice covers only its own channel. Turning email off for an event
+    must not also silence the in-app and push messages the user never touched —
+    the preferences screen (`GET /notifications/preferences`) shows those as on,
+    so delivery has to agree with it.
+    """
+    channels = dict(DEFAULT_PREFERENCES.get(event_key, {Channel.IN_APP: DigestMode.IMMEDIATE}))
+    for channel, enabled, mode in stored:
+        channels[channel] = mode if enabled else DigestMode.OFF
+    return channels
 
 
 # ── Adapters ────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, time
 
 import pytest
 
-from app.models.notifications import NotificationPolicy
+from app.models.notifications import Channel, DigestMode, NotificationPolicy
 from app.services.notifications.adapters import (
     ConsoleEmailAdapter,
     InAppAdapter,
@@ -23,6 +23,7 @@ from app.services.notifications.dispatch import (
     _backoff,
     _in_quiet_hours,
     _next_window_open,
+    effective_channels,
     render,
 )
 
@@ -151,8 +152,6 @@ def test_approvals_are_immediate_and_social_is_digested() -> None:
     but not urgent, and an immediate shoutout notification is how a channel
     gets muted permanently.
     """
-    from app.models.notifications import Channel, DigestMode
-
     approvals = DEFAULT_PREFERENCES["leave.approval.requested"]
     assert approvals[Channel.EMAIL] is DigestMode.IMMEDIATE
     assert approvals[Channel.IN_APP] is DigestMode.IMMEDIATE
@@ -312,3 +311,31 @@ async def test_the_expo_adapter_classifies_what_expo_says(monkeypatch) -> None:
                 body="b", event_key="x",
             )
         )
+
+
+# ── Effective channels ──────────────────────────────────────────────────────
+
+
+def test_a_saved_choice_overrides_only_its_own_channel() -> None:
+    """Email off for leave approvals must leave in-app and push as they were."""
+    channels = effective_channels(
+        "leave.approval.requested", [(Channel.EMAIL, False, DigestMode.IMMEDIATE)]
+    )
+    assert channels[Channel.EMAIL] is DigestMode.OFF
+    assert channels[Channel.IN_APP] is DigestMode.IMMEDIATE
+    assert channels[Channel.PUSH] is DigestMode.IMMEDIATE
+
+
+def test_a_channel_the_default_lacks_can_be_switched_on() -> None:
+    channels = effective_channels(
+        "leave.approval.decided", [(Channel.PUSH, True, DigestMode.IMMEDIATE)]
+    )
+    assert channels[Channel.PUSH] is DigestMode.IMMEDIATE
+    assert channels[Channel.EMAIL] is DigestMode.IMMEDIATE
+
+
+def test_nothing_saved_means_the_shipped_default() -> None:
+    assert effective_channels("leave.approval.decided", []) == DEFAULT_PREFERENCES[
+        "leave.approval.decided"
+    ]
+    assert effective_channels("some.unknown.event", []) == {Channel.IN_APP: DigestMode.IMMEDIATE}
