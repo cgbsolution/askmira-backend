@@ -376,6 +376,7 @@ TABLES: dict[str, TableClassification] = {
             "custom_fields": "identity",
             "pan": "statutory_identifier",
             "aadhaar_last4": "statutory_identifier",
+            "aadhaar_number": "statutory_identifier",
             "uan": "statutory_identifier",
             "esi_number": "statutory_identifier",
             "pf_number": "statutory_identifier",

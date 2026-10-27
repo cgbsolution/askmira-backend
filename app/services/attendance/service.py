@@ -595,6 +595,9 @@ async def recompute_range(
                         regularisation.requested_status if regularisation else None
                     ),
                     regularised_kind=regularisation.kind if regularisation else None,
+                    regularised_directly=(
+                        regularisation.applied_directly if regularisation else False
+                    ),
                     regularised_first_in=(
                         regularisation.requested_first_in if regularisation else None
                     ),
@@ -1110,6 +1113,7 @@ async def raise_regularisation(
         regularisation.status = RegularisationStatus.APPROVED
         regularisation.approver_user_id = user.id
         regularisation.decided_at = datetime.now(UTC)
+        regularisation.applied_directly = True
         await audit.record(
             session,
             tenant_id=user.tenant_id,

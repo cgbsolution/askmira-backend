@@ -84,6 +84,8 @@ class DayInputs:
     # out times it corrected, when it was fixing a missed punch.
     regularised_status: AttendanceStatus | None = None
     regularised_kind: RegularisationKind | None = None
+    #: HR marked the day themselves rather than approving a request.
+    regularised_directly: bool = False
     regularised_first_in: datetime | None = None
     regularised_last_out: datetime | None = None
     # A roster rotation day with no shift: a week off even though no shift is
@@ -408,9 +410,16 @@ def _late_and_early(
     return late_by, early_by
 
 
+_MARKED_BY_HR_NOTES = {
+    RegularisationKind.MISSED_PUNCH: "Marked manually: punch time entered by HR",
+    RegularisationKind.STATUS_CHANGE: "Marked manually by HR",
+    RegularisationKind.ON_DUTY: "Marked manually by HR: on duty",
+    RegularisationKind.WORK_FROM_HOME: "Marked manually by HR: work from home",
+}
+
 _REGULARISED_NOTES = {
-    RegularisationKind.MISSED_PUNCH: "Missed punch corrected by an approved regularisation",
-    RegularisationKind.STATUS_CHANGE: "Set by an approved regularisation",
+    RegularisationKind.MISSED_PUNCH: "Missed punch approved",
+    RegularisationKind.STATUS_CHANGE: "Attendance correction approved",
     RegularisationKind.ON_DUTY: "On duty (approved)",
     RegularisationKind.WORK_FROM_HOME: "Work from home (approved)",
 }
@@ -455,7 +464,7 @@ def _regularised(inputs: DayInputs) -> ComputedDay:
         early_by_minutes=early_by,
         overtime_minutes=overtime,
         is_regularised=True,
-        note=_REGULARISED_NOTES[kind],
+        note=(_MARKED_BY_HR_NOTES if inputs.regularised_directly else _REGULARISED_NOTES)[kind],
     )
 
 

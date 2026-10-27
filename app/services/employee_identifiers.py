@@ -12,9 +12,9 @@ What each check can and cannot prove:
   There is no checksum; only the Income Tax portal can say a PAN exists.
 - **UAN** is twelve digits. EPFO publishes no checksum either.
 - **Aadhaar** is twelve digits, never starting with 0 or 1, with a Verhoeff
-  check digit — so a single mistyped or swapped digit is caught. Only the last
-  four digits are ever stored (Aadhaar Act s.29 and the UIDAI storage
-  regulations); the full number is validated and then dropped.
+  check digit — so a single mistyped or swapped digit is caught. Since
+  2026-10-27 the full number is kept encrypted (EPF KYC needs it) and shown in
+  full to admin/HR only; everyone else sees the last four.
 - **IFSC** reuses the disbursement module's own check, so a code the bank file
   would refuse is refused on the profile too.
 """
@@ -28,6 +28,7 @@ from app.services.disbursement.validation import validate_ifsc as _validate_ifsc
 __all__ = [
     "IdentifierError",
     "aadhaar_last4",
+    "format_aadhaar",
     "mask_aadhaar",
     "mask_account",
     "mask_tail",
@@ -206,6 +207,14 @@ def mask_aadhaar(last4: str | None) -> str | None:
     if not last4:
         return None
     return f"XXXX XXXX {last4[-4:]}"
+
+
+def format_aadhaar(number: str | None) -> str | None:
+    """The full twelve digits in the card's groups of four, for admin/HR."""
+    digits = re.sub(r"\D", "", number or "")
+    if len(digits) != 12:
+        return None
+    return f"{digits[:4]} {digits[4:8]} {digits[8:]}"
 
 
 def mask_account(last4: str | None) -> str | None:

@@ -293,8 +293,8 @@ def _identifier(check):
 class StatutoryDetails(_Section):
     """A write of statutory identifiers. Only the fields named are changed.
 
-    `aadhaar` is the full twelve digits, validated with its check digit and then
-    reduced to the last four before anything is stored — see
+    `aadhaar` is the full twelve digits, validated with its check digit, then
+    stored encrypted alongside its last four — see
     `app.services.employee_identifiers`.
     """
 
@@ -449,13 +449,16 @@ class ChangeRequestRejection(BaseModel):
 
 
 class StatutoryRead(BaseModel):
-    """Masked for everyone except HR. Aadhaar is only ever its last four."""
+    """Masked for everyone except HR, who see the full Aadhaar when it is on file."""
 
     pan: str | None
     uan: str | None
     pf_number: str | None
     esi_number: str | None
     aadhaar: str | None
+    #: True when `aadhaar` is the full number. False for anyone outside HR,
+    #: and for a record saved when only the last four were kept.
+    aadhaar_full: bool = False
     masked: bool
 
 

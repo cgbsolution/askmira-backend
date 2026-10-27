@@ -39,6 +39,7 @@ from app.schemas.attendance import (
     AttendanceSummaryResponse,
     CalendarHoliday,
     CalendarLeave,
+    DayCorrection,
     EmployeeAttendanceSummary,
     MyAttendancePeriod,
     RegularisationQueueItem,
@@ -152,6 +153,43 @@ def _brief(shift: Shift) -> ShiftBrief:
     return ShiftBrief.model_validate(shift)
 
 
+async def _day_corrections(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, dates: set[date]
+) -> dict[date, DayCorrection]:
+    """The approved correction behind each regularised day, and who decided it.
+
+    The same pick as the computation: the most recently decided one wins.
+    """
+    if not dates:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(AttendanceRegularisation, User.full_name)
+                .outerjoin(User, User.id == AttendanceRegularisation.approver_user_id)
+                .where(
+                    AttendanceRegularisation.employee_id == employee_id,
+                    AttendanceRegularisation.status == RegularisationStatus.APPROVED,
+                    AttendanceRegularisation.attendance_date.in_(dates),
+                )
+                .order_by(AttendanceRegularisation.decided_at.asc().nulls_first()),
+                AttendanceRegularisation,
+                user,
+            )
+        )
+    ).all()
+    out: dict[date, DayCorrection] = {}
+    for row, approver in rows:
+        out[row.attendance_date] = DayCorrection(
+            kind=row.kind,
+            marked_manually=row.applied_directly,
+            by_name=approver,
+            reason=row.reason,
+            decided_at=row.decided_at,
+        )
+    return out
+
+
 async def my_period(
     session: AsyncSession, user: User, *, employee_id: uuid.UUID, start: date, end: date
 ) -> MyAttendancePeriod:
@@ -231,12 +269,21 @@ async def my_period(
             )
             cursor += timedelta(days=1)
 
+    corrections = await _day_corrections(
+        session, user, employee_id, {d.attendance_date for d in days if d.is_regularised}
+    )
+    day_reads = []
+    for d in days:
+        read = AttendanceDayRead.model_validate(d)
+        read.correction = corrections.get(d.attendance_date)
+        day_reads.append(read)
+
     return MyAttendancePeriod(
         period_start=start,
         period_end=end,
         is_locked=lock is not None,
         summary=summarise(employee, days),
-        days=[AttendanceDayRead.model_validate(d) for d in days],
+        days=day_reads,
         today=today,
         date_of_joining=employee.date_of_joining,
         shift_today=_brief(plan_today.shift) if plan_today.shift is not None else None,

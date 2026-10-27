@@ -132,6 +132,7 @@ DIRECT_IDENTIFIERS: frozenset[str] = frozenset(
         "mobile",
         "pan",
         "aadhaar_last4",
+        "aadhaar_number",
         "uan",
         "esi_number",
         "pf_number",

@@ -238,6 +238,7 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     assert (asha.pan, asha.uan, asha.esi_number) == ("ABCPV1234F", "100234223910", "5040451052")
     assert asha.pf_number == "KRBNG00123450000012345"
     assert asha.aadhaar_last4 == AADHAAR[-4:]
+    assert asha.aadhaar_number == AADHAAR
     assert rahul.pan is None
     account = await session.scalar(
         select(EmployeeBankAccount).where(EmployeeBankAccount.employee_id == asha.id)

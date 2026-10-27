@@ -127,6 +127,10 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # Encrypted at rest by the column type; plaintext to the application.
     pan: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     aadhaar_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # The full twelve digits, encrypted at rest, shown to admin/HR only (EPF
+    # KYC and UAN seeding need it). Records saved before 2026-10-27 have only
+    # the last four; the full number appears once HR enters it again.
+    aadhaar_number: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     uan: Mapped[str | None] = mapped_column(String(12), nullable=True)
     pf_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     esi_number: Mapped[str | None] = mapped_column(String(20), nullable=True)

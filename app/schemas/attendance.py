@@ -134,6 +134,20 @@ class PunchImportResult(BaseModel):
 # ── Computed days ───────────────────────────────────────────────────────────
 
 
+class DayCorrection(BaseModel):
+    """How a day came to say what it says, when it was not plain punches.
+
+    `marked_manually` is HR setting the day themselves; otherwise HR (or the
+    manager) approved the employee's request — a missed punch, say.
+    """
+
+    kind: RegularisationKind
+    marked_manually: bool
+    by_name: str | None = None
+    reason: str
+    decided_at: datetime | None = None
+
+
 class AttendanceDayRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -151,6 +165,8 @@ class AttendanceDayRead(BaseModel):
     overtime_minutes: int = 0
     is_regularised: bool
     computation_note: str | None
+    #: Filled on the calendar's read (`/attendance/period`); None elsewhere.
+    correction: DayCorrection | None = None
 
 
 class RecomputeRequest(BaseModel):
@@ -378,6 +394,8 @@ class RegularisationRead(BaseModel):
     decided_at: datetime | None
     decision_note: str | None = None
     created_at: datetime | None = None
+    #: HR marked it themselves, rather than approving somebody's request.
+    applied_directly: bool = False
     #: The approvers in order, each with its status; empty on older requests.
     approval_chain: list[dict] = []
 

@@ -227,3 +227,101 @@ async def test_a_pending_request_is_decided_before_the_range_is_marked(
         )
     ).all()
     assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_a_day_says_whether_hr_marked_it_or_approved_a_request(
+    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+):
+    """HR marking a day shows "Marked manually"; an approved missed punch says so."""
+    from app.services.attendance import review
+
+    await _general_shift(session, hr_user)
+    monday = _past_monday()
+
+    # HR marks Monday a half day themselves.
+    marked = await attendance_service.raise_regularisation(
+        session,
+        hr_user,
+        employee_id=employee.id,
+        attendance_date=monday,
+        requested_status=AttendanceStatus.HALF_DAY,
+        reason="Marked half day manually by HR",
+    )
+    assert marked.applied_directly is True
+
+    # The employee asks for a missed punch on Tuesday, and HR approves it.
+    login = User(
+        tenant_id=tenant.id,
+        email="anita.punch@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
+    )
+    session.add(login)
+    await session.commit()
+    tuesday = monday + timedelta(days=1)
+    asked = await attendance_service.raise_regularisation(
+        session,
+        login,
+        employee_id=employee.id,
+        attendance_date=tuesday,
+        kind=RegularisationKind.MISSED_PUNCH,
+        requested_status=AttendanceStatus.PRESENT,
+        requested_first_in=datetime.combine(tuesday, time(4, 0), tzinfo=UTC),
+        requested_last_out=datetime.combine(tuesday, time(13, 0), tzinfo=UTC),
+        reason="Forgot to punch",
+    )
+    assert asked.applied_directly is False
+    await attendance_service.decide_regularisation(session, hr_user, asked.id, approve=True)
+
+    period = await review.my_period(
+        session, hr_user, employee_id=employee.id, start=monday, end=tuesday
+    )
+    by_date = {day.attendance_date: day for day in period.days}
+
+    monday_read = by_date[monday]
+    assert monday_read.status is AttendanceStatus.HALF_DAY
+    assert monday_read.computation_note == "Marked manually by HR"
+    assert monday_read.correction is not None
+    assert monday_read.correction.marked_manually is True
+    assert monday_read.correction.by_name == hr_user.full_name
+    assert monday_read.correction.reason == "Marked half day manually by HR"
+
+    tuesday_read = by_date[tuesday]
+    assert tuesday_read.status is AttendanceStatus.PRESENT
+    assert tuesday_read.computation_note == "Missed punch approved"
+    assert tuesday_read.correction is not None
+    assert tuesday_read.correction.marked_manually is False
+    assert tuesday_read.correction.kind is RegularisationKind.MISSED_PUNCH
+
+
+@pytest.mark.asyncio
+async def test_marking_a_day_again_shows_the_latest_mark(
+    session: AsyncSession, hr_user: User, employee: Employee
+):
+    await _general_shift(session, hr_user)
+    from app.services.attendance import review
+
+    wednesday = _past_monday() + timedelta(days=2)
+    for status, why in (
+        (AttendanceStatus.HALF_DAY, "Left early"),
+        (AttendanceStatus.PRESENT, "Was here all day after all"),
+    ):
+        await attendance_service.raise_regularisation(
+            session,
+            hr_user,
+            employee_id=employee.id,
+            attendance_date=wednesday,
+            requested_status=status,
+            reason=why,
+        )
+    period = await review.my_period(
+        session, hr_user, employee_id=employee.id, start=wednesday, end=wednesday
+    )
+    (day,) = period.days
+    assert day.status is AttendanceStatus.PRESENT
+    assert day.payable_fraction == 1
+    assert day.correction is not None and day.correction.reason == "Was here all day after all"

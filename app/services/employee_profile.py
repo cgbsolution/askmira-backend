@@ -14,10 +14,10 @@ Three rules live here.
    the status change and the audit row — and refuses if the record moved
    since the request was raised, rather than overwriting a correction HR made
    in between.
-3. **Identifiers are masked on the way out for everyone except HR**, and an
-   Aadhaar number is never more than its last four anywhere. A bank account
-   number reaches HR in full (salary transfers and bank queries need it);
-   everyone else gets only its last four.
+3. **Identifiers are masked on the way out for everyone except HR**. The full
+   Aadhaar number is kept encrypted and shown in full to HR only; everyone
+   else sees its last four. A bank account number also reaches HR in full
+   (salary transfers and bank queries need it); everyone else gets its last four.
 """
 
 from __future__ import annotations
@@ -285,7 +285,14 @@ async def _current_form(
             "date_of_birth": employee.date_of_birth.isoformat() if employee.date_of_birth else None,
         }
     if section is ProfileSection.STATUTORY:
-        return {field: getattr(employee, field) for field in _STATUTORY_FIELDS}
+        current = {field: getattr(employee, field) for field in _STATUTORY_FIELDS}
+        # Ciphertext, never the number: this form is kept on a change request.
+        current["aadhaar_encrypted"] = (
+            encrypt_secret(employee.aadhaar_number, user.tenant_id)
+            if employee.aadhaar_number
+            else None
+        )
+        return current
     if section is ProfileSection.BANK_ACCOUNT:
         return _bank_form(await _primary_account(session, user, employee.id), user.tenant_id)
     if profile is None:
@@ -296,8 +303,8 @@ async def _current_form(
 def _stored_form(change: Any, tenant_id: uuid.UUID) -> Any:
     """A validated write, as it is kept on a request and applied to the record.
 
-    The Aadhaar number becomes its last four here and the account number its
-    ciphertext, so neither ever reaches a JSON column in the clear.
+    The Aadhaar number and the account number become ciphertext here (plus
+    their last four), so neither ever reaches a JSON column in the clear.
     """
     section = ProfileSection(change.section)
     if section in _LIST_SECTIONS:
@@ -307,6 +314,7 @@ def _stored_form(change: Any, tenant_id: uuid.UUID) -> Any:
         if "aadhaar" in written:
             full = written.pop("aadhaar")
             written["aadhaar_last4"] = full[-4:] if full else None
+            written["aadhaar_encrypted"] = encrypt_secret(full, tenant_id) if full else None
         return written
     if section is ProfileSection.BANK_ACCOUNT:
         data = change.data
@@ -350,8 +358,17 @@ def _public(
         return value
     if section is ProfileSection.STATUTORY:
         value = dict(value or {})
-        if "aadhaar_last4" in value:
-            # Aadhaar is the last four for everyone, HR included.
+        encrypted_aadhaar = value.pop("aadhaar_encrypted", None)
+        full = (
+            ids.format_aadhaar(decrypt_secret(encrypted_aadhaar, tenant_id))
+            if hr and encrypted_aadhaar and tenant_id is not None
+            else None
+        )
+        if full:
+            # HR sees the whole number, under one "Aadhaar" row.
+            value.pop("aadhaar_last4", None)
+            value["aadhaar"] = full
+        elif "aadhaar_last4" in value:
             value["aadhaar_last4"] = ids.mask_aadhaar(value["aadhaar_last4"])
         return value if hr else _mask_statutory(value)
     if isinstance(value, list):
@@ -366,7 +383,10 @@ def _statutory_read(employee: Employee, *, hr: bool) -> StatutoryRead:
             uan=employee.uan,
             pf_number=employee.pf_number,
             esi_number=employee.esi_number,
-            aadhaar=ids.mask_aadhaar(employee.aadhaar_last4),
+            # Records saved before the full number was kept have only the last four.
+            aadhaar=ids.format_aadhaar(employee.aadhaar_number)
+            or ids.mask_aadhaar(employee.aadhaar_last4),
+            aadhaar_full=bool(employee.aadhaar_number),
             masked=False,
         )
     return StatutoryRead(
@@ -375,6 +395,7 @@ def _statutory_read(employee: Employee, *, hr: bool) -> StatutoryRead:
         pf_number=ids.mask_tail(employee.pf_number),
         esi_number=ids.mask_tail(employee.esi_number),
         aadhaar=ids.mask_aadhaar(employee.aadhaar_last4),
+        aadhaar_full=False,
         masked=True,
     )
 
@@ -506,6 +527,18 @@ async def _apply(
             if key in _STATUTORY_FIELDS and getattr(employee, key) != value:
                 setattr(employee, key, value)
                 changed.append(key)
+        if "aadhaar_encrypted" in stored:
+            encrypted = stored["aadhaar_encrypted"]
+            full = decrypt_secret(encrypted, user.tenant_id) if encrypted else None
+            if employee.aadhaar_number != full:
+                employee.aadhaar_number = full or None
+                if "aadhaar_last4" not in changed:
+                    changed.append("aadhaar_number")
+        elif "aadhaar_last4" in stored:
+            # A request raised before full numbers were kept: the old full
+            # number no longer matches the new last four, so it goes.
+            if employee.aadhaar_number and employee.aadhaar_number[-4:] != stored["aadhaar_last4"]:
+                employee.aadhaar_number = None
         return {"section": section.value, "fields": changed}
 
     if section is ProfileSection.BANK_ACCOUNT:
@@ -845,7 +878,7 @@ async def create_change_request(
     profile = await _profile(session, user, employee_id)
     current = await _current_form(session, user, employee, profile, section)
     proposed = _stored_form(change, user.tenant_id)
-    if _unchanged(section, proposed, current):
+    if _unchanged(section, proposed, current, user.tenant_id):
         raise _unprocessable("That is what the record already says, so there is nothing to change.")
 
     row = ProfileChangeRequest(
@@ -889,7 +922,19 @@ async def create_change_request(
     return (await _reads(session, user, [row]))[0]
 
 
-def _unchanged(section: ProfileSection, proposed: Any, current: Any) -> bool:
+def _same_statutory(key: str, a: Any, b: Any, tenant_id: uuid.UUID) -> bool:
+    """Compare one statutory value. Ciphertext differs on every encryption, so
+    an encrypted Aadhaar is compared by what it decrypts to."""
+    if key == "aadhaar_encrypted":
+        return (decrypt_secret(a, tenant_id) if a else None) == (
+            decrypt_secret(b, tenant_id) if b else None
+        )
+    return a == b
+
+
+def _unchanged(
+    section: ProfileSection, proposed: Any, current: Any, tenant_id: uuid.UUID
+) -> bool:
     if section is ProfileSection.BANK_ACCOUNT:
         return (
             bool(current)
@@ -900,16 +945,24 @@ def _unchanged(section: ProfileSection, proposed: Any, current: Any) -> bool:
             and current.get("bank_name") == proposed.get("bank_name")
         )
     if section is ProfileSection.STATUTORY:
-        return all(current.get(key) == value for key, value in proposed.items())
+        return all(
+            _same_statutory(key, current.get(key), value, tenant_id)
+            for key, value in proposed.items()
+        )
     return proposed == current
 
 
-def _stale(section: ProfileSection, request: ProfileChangeRequest, now: Any) -> bool:
+def _stale(
+    section: ProfileSection, request: ProfileChangeRequest, now: Any, tenant_id: uuid.UUID
+) -> bool:
     """Whether the record moved since the request was raised."""
     then = request.current_snapshot
     if section is ProfileSection.STATUTORY:
         # Only the identifiers this request touches.
-        return any(then.get(key) != now.get(key) for key in request.proposed)
+        return any(
+            not _same_statutory(key, then.get(key), now.get(key), tenant_id)
+            for key in request.proposed
+        )
     if section is ProfileSection.BANK_ACCOUNT:
         return then.get("account_id") != now.get("account_id")
     if section in _LIST_SECTIONS:
@@ -944,7 +997,7 @@ async def decide_change_request(
     if approve:
         profile = await _profile(session, user, employee.id)
         now = await _current_form(session, user, employee, profile, section)
-        if _stale(section, row, now):
+        if _stale(section, row, now, user.tenant_id):
             raise _conflict(
                 f"{employee.full_name}'s {SECTION_LABELS[section]} changed after this request "
                 "was raised, so approving it would overwrite that change. Reject it with a "

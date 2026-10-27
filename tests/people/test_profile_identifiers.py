@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from app.core.crypto import encrypt_secret
+from app.core.crypto import decrypt_secret, encrypt_secret
 from app.schemas.employee_profile import (
     DIRECT_SECTIONS,
     SENSITIVE_SECTIONS,
@@ -18,7 +18,7 @@ from app.schemas.employee_profile import (
     StatutoryDetails,
 )
 from app.services import employee_identifiers as ids
-from app.services.employee_profile import _public, _stored_form
+from app.services.employee_profile import _public, _same_statutory, _stored_form
 
 _INVERSE = (0, 4, 3, 2, 1, 5, 6, 7, 8, 9)
 
@@ -188,13 +188,44 @@ def test_statutory_writes_validate_every_identifier() -> None:
         StatutoryDetails()
 
 
-def test_a_stored_statutory_change_holds_only_the_aadhaar_last_four() -> None:
+def test_a_stored_statutory_change_holds_the_aadhaar_only_encrypted() -> None:
+    tenant_id = uuid.uuid4()
     change = _WRITE.validate_python(
         {"section": "statutory", "data": {"pan": "abcpe1234f", "aadhaar": VALID_AADHAAR}}
     )
-    stored = _stored_form(change, tenant_id=None)  # type: ignore[arg-type]
-    assert stored == {"pan": "ABCPE1234F", "aadhaar_last4": VALID_AADHAAR[-4:]}
+    stored = _stored_form(change, tenant_id=tenant_id)
+    assert stored["pan"] == "ABCPE1234F"
+    assert stored["aadhaar_last4"] == VALID_AADHAAR[-4:]
     assert VALID_AADHAAR not in str(stored)
+    assert decrypt_secret(stored["aadhaar_encrypted"], tenant_id) == VALID_AADHAAR
+
+
+def test_hr_reads_an_aadhaar_proposal_in_full_and_others_the_last_four() -> None:
+    tenant_id = uuid.uuid4()
+    stored = {
+        "aadhaar_last4": VALID_AADHAAR[-4:],
+        "aadhaar_encrypted": encrypt_secret(VALID_AADHAAR, tenant_id),
+    }
+    full = f"{VALID_AADHAAR[:4]} {VALID_AADHAAR[4:8]} {VALID_AADHAAR[8:]}"
+    for_hr = _public(ProfileSection.STATUTORY, stored, hr=True, tenant_id=tenant_id)
+    assert for_hr == {"aadhaar": full}
+    for_employee = _public(ProfileSection.STATUTORY, stored, hr=False, tenant_id=tenant_id)
+    assert for_employee == {"aadhaar_last4": f"XXXX XXXX {VALID_AADHAAR[-4:]}"}
+
+
+def test_an_encrypted_aadhaar_compares_by_its_number_not_its_ciphertext() -> None:
+    tenant_id = uuid.uuid4()
+    one = encrypt_secret(VALID_AADHAAR, tenant_id)
+    two = encrypt_secret(VALID_AADHAAR, tenant_id)
+    assert one != two
+    assert _same_statutory("aadhaar_encrypted", one, two, tenant_id)
+    assert not _same_statutory("aadhaar_encrypted", one, None, tenant_id)
+
+
+def test_format_aadhaar_groups_the_twelve_digits() -> None:
+    assert ids.format_aadhaar("234123412346") == "2341 2341 2346"
+    assert ids.format_aadhaar(None) is None
+    assert ids.format_aadhaar("1234") is None
 
 
 def test_nominee_shares_must_total_one_hundred_per_purpose() -> None:

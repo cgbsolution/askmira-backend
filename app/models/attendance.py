@@ -436,6 +436,11 @@ class AttendanceRegularisation(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: HR marked the day themselves (applied at once, nobody asked), rather
+    #: than approving the employee's request. The calendar says "Marked manually".
+    applied_directly: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     #: The approvers, in order, snapshotted from the tenant's rules when raised.
     #: Empty on requests raised before chains existed: the manager or HR decides.
     approval_chain: Mapped[list] = mapped_column(

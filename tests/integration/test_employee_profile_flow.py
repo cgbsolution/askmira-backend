@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -157,10 +157,11 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     )
     assert raised.status_code == 201, raised.text
     request_id = raised.json()["id"]
-    # The employee reads their own request back masked; the full Aadhaar is
-    # nowhere, not even for HR.
+    # The employee reads their own request back masked, with no ciphertext.
     assert raised.json()["proposed"]["pan"] == "XXXXXX234F"
     assert raised.json()["proposed"]["aadhaar_last4"] == "XXXX XXXX 0124"
+    assert "aadhaar_encrypted" not in raised.json()["proposed"]
+    assert AADHAAR not in raised.text
 
     again = await client.post(
         "/api/v1/employees/me/change-requests",
@@ -180,6 +181,8 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
         "/api/v1/employees/change-requests?status=pending", headers=_auth(hr_user)
     )
     assert queue.json()[0]["proposed"]["pan"] == "ABCPE1234F"
+    # ...and the Aadhaar in full, to check against the card.
+    assert queue.json()[0]["proposed"]["aadhaar"].replace(" ", "") == AADHAAR
     assert queue.json()[0]["can_decide"] is True
 
     # The employee cannot decide it; HR approves and it is applied.
@@ -198,6 +201,7 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     await session.refresh(employee)
     assert employee.pan == "ABCPE1234F"
     assert employee.aadhaar_last4 == "0124"
+    assert employee.aadhaar_number == AADHAAR
 
     decided = (
         await session.scalars(
@@ -209,6 +213,7 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     ).all()
     assert len(decided) == 1
     assert "ABCPE1234F" not in str(decided[0].changes)
+    assert AADHAAR not in str(decided[0].changes)
 
     # Reads: masked for the person, full for HR.
     mine = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
@@ -218,10 +223,14 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
         "pf_number": None,
         "esi_number": None,
         "aadhaar": "XXXX XXXX 0124",
+        "aadhaar_full": False,
         "masked": True,
     }
+    assert AADHAAR not in mine.text
     theirs = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(hr_user))
     assert theirs.json()["statutory"]["pan"] == "ABCPE1234F"
+    assert theirs.json()["statutory"]["aadhaar"].replace(" ", "") == AADHAAR
+    assert theirs.json()["statutory"]["aadhaar_full"] is True
     assert theirs.json()["pending_requests"] == []
 
     # A bank change lands as a new, encrypted primary salary account.
@@ -610,3 +619,68 @@ async def test_a_resignation_is_submitted_withdrawn_and_accepted(
     assert (
         await client.get(f"/api/v1/exits/{exit_id}/clearance", headers=_auth(other))
     ).status_code == 404
+
+
+@requires_db
+async def test_hr_enters_the_full_aadhaar_on_a_last_four_only_record(
+    client, session, tenant, hr_user, employee
+) -> None:
+    # A record saved before full numbers were kept: only the last four.
+    employee.aadhaar_last4 = AADHAAR[-4:]
+    await session.commit()
+    me = await _login(session, tenant, employee, UserRole.EMPLOYEE, "anita")
+
+    before = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(hr_user))
+    assert before.json()["statutory"]["aadhaar"] == "XXXX XXXX 0124"
+    assert before.json()["statutory"]["aadhaar_full"] is False
+
+    # The employee may send the same number again: the full one is not on file yet.
+    resent = await client.post(
+        "/api/v1/employees/me/change-requests",
+        headers=_auth(me),
+        json={"change": {"section": "statutory", "data": {"aadhaar": AADHAAR}}, "reason": "Full"},
+    )
+    assert resent.status_code == 201, resent.text
+    withdrawn = await client.post(
+        f"/api/v1/employees/change-requests/{resent.json()['id']}/withdraw",
+        headers=_auth(me),
+        json={},
+    )
+    assert withdrawn.status_code == 200, withdrawn.text
+
+    # HR types it in directly.
+    saved = await client.put(
+        f"/api/v1/employees/{employee.id}/profile",
+        headers=_auth(hr_user),
+        json={"change": {"section": "statutory", "data": {"aadhaar": AADHAAR}}},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["statutory"]["aadhaar"] == "2345 6789 0124"
+    assert saved.json()["statutory"]["aadhaar_full"] is True
+    await session.refresh(employee)
+    assert employee.aadhaar_number == AADHAAR
+
+    # Stored encrypted: the column in the database is not the number.
+    raw = (
+        await session.execute(
+            text("SELECT aadhaar_number FROM employees WHERE id = :id"), {"id": employee.id}
+        )
+    ).scalar_one()
+    assert raw and AADHAAR not in raw
+
+    # Never in the audit log.
+    rows = (await session.scalars(select(AuditLog))).all()
+    assert all(AADHAAR not in str(row.changes) for row in rows)
+
+    # The employee still sees the last four only.
+    mine = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
+    assert mine.json()["statutory"]["aadhaar"] == "XXXX XXXX 0124"
+    assert AADHAAR not in mine.text
+
+    # Sending the same full number again is "nothing to change".
+    same = await client.post(
+        "/api/v1/employees/me/change-requests",
+        headers=_auth(me),
+        json={"change": {"section": "statutory", "data": {"aadhaar": AADHAAR}}, "reason": "Again"},
+    )
+    assert same.status_code == 422

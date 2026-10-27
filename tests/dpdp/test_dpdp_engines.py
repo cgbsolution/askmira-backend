@@ -800,11 +800,11 @@ def test_a_stale_table_fails_the_gate():
 def test_a_new_direct_identifier_cannot_inherit_the_table_default():
     """The check the whole classification exists for."""
     schema = dict(_fixture_schema())
-    schema["employees"] = (*schema["employees"], "aadhaar_number")
+    schema["employees"] = (*schema["employees"], "aadhaar_vid")
     gaps = inventory.coverage_gaps(schema)
     assert any(
         g.kind is inventory.GapKind.IMPLICIT_DIRECT_IDENTIFIER
-        and g.column == "aadhaar_number"
+        and g.column == "aadhaar_vid"
         for g in gaps
     )
 

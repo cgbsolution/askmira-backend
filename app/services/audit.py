@@ -27,6 +27,8 @@ REDACTED_FIELDS = frozenset(
         "bank_ifsc",
         "aadhaar",
         "aadhaar_last4",
+        "aadhaar_number",
+        "aadhaar_encrypted",
         "pan",
     }
 )
