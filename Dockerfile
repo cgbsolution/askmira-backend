@@ -11,9 +11,15 @@
 # Python 3.12, as .python-version says (not 3.14: see requirements.txt).
 FROM python:3.12-slim
 
+# PIP_DEFAULT_TIMEOUT / PIP_RETRIES: the server's link to PyPI is slow enough
+# that pip's 15 s read timeout fails whole deploys ("No matching distribution
+# found for pydantic==…" is pip getting no answer, not a missing package;
+# 2026-10-27). A long timeout and more retries ride those stalls out.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
