@@ -24,7 +24,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+# Up to six tries. Every package that finished downloading stays in the pip
+# cache mount, so each try resumes where the last one stalled instead of
+# failing the deploy on one dropped connection to PyPI.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    for attempt in 1 2 3 4 5 6; do \
+      pip install -r requirements.txt && exit 0; \
+      echo "pip install failed (try $attempt of 6), retrying in 20s"; sleep 20; \
+    done; exit 1
 
 COPY . .
 
