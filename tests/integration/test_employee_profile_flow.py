@@ -256,6 +256,21 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     assert decrypt_secret(account.account_number, tenant.id) == "001234567890"
     profile = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
     assert profile.json()["bank_account"]["account_number_masked"] == "XXXXXX7890"
+    assert profile.json()["bank_account"]["account_number"] is None
+    # Admin/HR see the full number, which salary transfers and bank queries need.
+    for_hr = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(hr_user))
+    assert for_hr.json()["bank_account"]["account_number"] == "001234567890"
+    history = await client.get(
+        f"/api/v1/employees/{employee.id}/change-requests", headers=_auth(hr_user)
+    )
+    assert history.status_code == 200, history.text
+    banked = [r for r in history.json() if r["section"] == "bank_account"]
+    assert banked and banked[0]["proposed"]["account_number"] == "001234567890"
+    # The employee's own history still shows only the last four.
+    own = await client.get("/api/v1/employees/me/change-requests", headers=_auth(me))
+    own_bank = [r for r in own.json() if r["section"] == "bank_account"]
+    assert "account_number" not in own_bank[0]["proposed"]
+    assert "001234567890" not in own.text
 
     # A colleague sees none of it.
     colleague = await _login(

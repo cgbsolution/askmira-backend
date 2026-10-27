@@ -609,6 +609,19 @@ TABLES: dict[str, TableClassification] = {
         },
     ),
     "candidate_documents": _p(CAND, "documents"),
+    # A prospect who asked for a demo on the website: not a user, an employee
+    # or a candidate of any workspace, so a third party. Their name, work email,
+    # phone and company, as they typed them; the platform team's notes about
+    # the follow-up are about them too.
+    "demo_requests": _p(
+        THIRD,
+        "identity",
+        {
+            "full_name": "identity",
+            "work_email": "identity",
+            "phone": "identity",
+        },
+    ),
     "candidate_consents": _p(CAND, "recruitment"),
     "candidate_portal_tokens": _p(CAND, "account_security", {"token_hash": "account_security"}),
     "background_checks": _p(

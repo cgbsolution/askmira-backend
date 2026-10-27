@@ -174,6 +174,7 @@ from app.models.cycle_config import (
     ProbationReview,
     TemplateAssignmentRule,
 )
+from app.models.demo_request import DemoRequest, DemoRequestStatus
 from app.models.disbursement import (
     BankFileFormat,
     BankProfile,
@@ -789,6 +790,8 @@ __all__ = [
     "DeclarationWindow",
     "DeliveryStateEnum",
     "DeliveryStatus",
+    "DemoRequest",
+    "DemoRequestStatus",
     "Department",
     "DeviceIntegration",
     "DevicePunchException",

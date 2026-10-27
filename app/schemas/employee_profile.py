@@ -465,6 +465,8 @@ class BankAccountSummary(BaseModel):
     ifsc: str
     account_holder_name: str
     account_number_masked: str | None
+    #: The full number, for admin/HR only; None for everyone else.
+    account_number: str | None = None
     verification_method: str
     verified_at: datetime | None
     created_at: datetime
@@ -479,8 +481,8 @@ class ChangeRequestRead(BaseModel):
     section_label: str
     status: ProfileChangeStatus
     #: What is asked for and what was there when it was asked. Statutory
-    #: values are masked for anyone outside HR; an account number is never in
-    #: either, only its last four.
+    #: values are masked for anyone outside HR; an account number is its last
+    #: four, except for HR, who get it in full.
     proposed: dict[str, Any]
     current_snapshot: dict[str, Any]
     reason: str

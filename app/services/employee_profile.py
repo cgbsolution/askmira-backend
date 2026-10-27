@@ -16,7 +16,8 @@ Three rules live here.
    in between.
 3. **Identifiers are masked on the way out for everyone except HR**, and an
    Aadhaar number is never more than its last four anywhere. A bank account
-   number is never returned at all, only its last four.
+   number reaches HR in full (salary transfers and bank queries need it);
+   everyone else gets only its last four.
 """
 
 from __future__ import annotations
@@ -331,13 +332,21 @@ def _mask_statutory(values: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _public(section: ProfileSection, value: Any, *, hr: bool) -> dict[str, Any]:
+def _public(
+    section: ProfileSection, value: Any, *, hr: bool, tenant_id: uuid.UUID | None = None
+) -> dict[str, Any]:
     """A stored form as a reader may see it."""
     if section is ProfileSection.BANK_ACCOUNT:
         value = dict(value or {})
-        value.pop("account_number_encrypted", None)
+        encrypted = value.pop("account_number_encrypted", None)
         value.pop("account_id", None)
         value["account_number_masked"] = ids.mask_account(value.pop("account_number_last4", None))
+        if hr and encrypted and tenant_id is not None:
+            full = decrypt_secret(encrypted, tenant_id)
+            if full:
+                # One "Account number" row for HR: the full number replaces the masked one.
+                value.pop("account_number_masked", None)
+                value["account_number"] = full
         return value
     if section is ProfileSection.STATUTORY:
         value = dict(value or {})
@@ -371,7 +380,7 @@ def _statutory_read(employee: Employee, *, hr: bool) -> StatutoryRead:
 
 
 def _bank_summary(
-    account: EmployeeBankAccount | None, tenant_id: uuid.UUID
+    account: EmployeeBankAccount | None, tenant_id: uuid.UUID, *, hr: bool
 ) -> BankAccountSummary | None:
     if account is None:
         return None
@@ -381,6 +390,7 @@ def _bank_summary(
         ifsc=account.ifsc,
         account_holder_name=account.account_holder_name,
         account_number_masked=ids.mask_account(_last4(account, tenant_id)),
+        account_number=(decrypt_secret(account.account_number, tenant_id) or None) if hr else None,
         verification_method=account.verification_method.value,
         verified_at=account.verified_at,
         created_at=account.created_at,
@@ -629,8 +639,9 @@ async def read_profile(
         previous_employment=_parse(
             _LIST_SECTIONS[ProfileSection.PREVIOUS_EMPLOYMENT], stored.previous_employment, []
         ),
-        statutory=_statutory_read(employee, hr=hr and not is_self),
-        bank_account=_bank_summary(account, user.tenant_id),
+        # Admin/HR see identifiers in full on every profile, their own included.
+        statutory=_statutory_read(employee, hr=hr),
+        bank_account=_bank_summary(account, user.tenant_id, hr=hr),
         pending_requests=pending,
         hiring_snapshot=(dict(stored.hiring_snapshot or {}) if hr and not is_self else None),
         direct_sections=direct,
@@ -752,8 +763,10 @@ async def _reads(
                 section=section,
                 section_label=SECTION_LABELS[section],
                 status=row.status,
-                proposed=_public(section, row.proposed, hr=full),
-                current_snapshot=_public(section, row.current_snapshot, hr=full),
+                proposed=_public(section, row.proposed, hr=full, tenant_id=user.tenant_id),
+                current_snapshot=_public(
+                    section, row.current_snapshot, hr=full, tenant_id=user.tenant_id
+                ),
                 reason=row.reason,
                 requested_at=row.created_at,
                 requested_by_name=names.get(row.requested_by_user_id)

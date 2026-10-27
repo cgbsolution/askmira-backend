@@ -194,6 +194,12 @@ _UNSCOPED_BY_DESIGN = {
     # `test_the_cross_tenant_aggregation_is_not_reachable_from_a_request` and
     # `test_the_aggregation_job_reads_only_benchmark_tables`.
     "aggregation.py",
+    # Demo requests come from the marketing website, from people who are not
+    # customers yet, so the table has no tenant column; only the platform's
+    # super admin reads it, and the super-admin check is made in the service and
+    # on the route. Telling the team reads every active super admin's login.
+    # Fenced by `test_the_demo_request_service_reads_only_its_own_table_and_logins`.
+    "demo_requests.py",
 }
 
 
@@ -13914,4 +13920,27 @@ def test_a_scoped_rule_names_a_check_that_is_really_there() -> None:
             offenders.append((key, marker))
     assert not offenders, (
         f"{offenders}: the named check is not in the handler or anything it calls."
+    )
+
+
+def test_the_demo_request_service_reads_only_its_own_table_and_logins() -> None:
+    """`demo_requests.py` is exempt from tenant scoping because a demo request
+    belongs to no workspace. The exemption holds only while the module reads the
+    demo request table and logins (to find the super admins and the name of
+    whoever handled a request) and nothing else."""
+    source = source_of(APP / "services" / "demo_requests.py")
+    targets = set(re.findall(r"(?<![\w.])select\s*\(\s*(\w+)", source))
+    assert targets <= {"DemoRequest", "User"}, (
+        f"demo_requests.py now selects {sorted(targets)}; only DemoRequest and User are "
+        "exempt from tenant scoping there."
+    )
+    user_reads = re.findall(r"select\(User\)\.where\(\s*([^)]+)", source)
+    assert user_reads and all(
+        "UserRole.SUPER_ADMIN" in where or "User.id.in_" in where for where in user_reads
+    ), "Logins may be read only as super admins, or by the ids a request already names."
+
+    from app.models.demo_request import DemoRequest
+
+    assert "tenant_id" not in DemoRequest.__table__.columns, (
+        "DemoRequest acquired a tenant_id; scope its queries instead of keeping the exemption."
     )

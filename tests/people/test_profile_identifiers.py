@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from app.core.crypto import encrypt_secret
 from app.schemas.employee_profile import (
     DIRECT_SECTIONS,
     SENSITIVE_SECTIONS,
@@ -147,10 +149,29 @@ def test_a_bank_proposal_never_returns_the_ciphertext_or_the_number() -> None:
         "account_holder_name": "Anita Sharma",
         "bank_name": None,
     }
-    shown = _public(ProfileSection.BANK_ACCOUNT, stored, hr=True)
+    shown = _public(ProfileSection.BANK_ACCOUNT, stored, hr=False)
     assert "account_number_encrypted" not in shown
     assert "account_number_last4" not in shown
+    assert "account_number" not in shown
     assert shown["account_number_masked"] == "XXXXXX7890"
+
+
+def test_hr_reads_a_bank_proposal_with_the_full_number() -> None:
+    tenant_id = uuid.uuid4()
+    stored = {
+        "account_number_encrypted": encrypt_secret("001234567890", tenant_id),
+        "account_number_last4": "7890",
+        "ifsc": "HDFC0001234",
+        "account_holder_name": "Anita Sharma",
+        "bank_name": None,
+    }
+    for_hr = _public(ProfileSection.BANK_ACCOUNT, stored, hr=True, tenant_id=tenant_id)
+    assert for_hr["account_number"] == "001234567890"
+    assert "account_number_masked" not in for_hr
+    assert "account_number_encrypted" not in for_hr
+    for_employee = _public(ProfileSection.BANK_ACCOUNT, stored, hr=False, tenant_id=tenant_id)
+    assert "account_number" not in for_employee
+    assert for_employee["account_number_masked"] == "XXXXXX7890"
 
 
 # ── Section contracts ──────────────────────────────────────────────────────
