@@ -122,6 +122,8 @@ def _contractor_read(c: Contractor) -> dict[str, Any]:
         "id": str(c.id),
         "name": c.name,
         "kind": c.kind.value,
+        # The contractor screens are admin/sub-admin only: the PAN in full.
+        "pan": pan,
         "pan_masked": f"{pan[:2]}XXXXX{pan[-3:]}" if pan else None,
         "has_pan": bool(pan),
         "gstin": c.gstin,

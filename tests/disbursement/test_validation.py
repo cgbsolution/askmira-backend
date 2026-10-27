@@ -201,12 +201,12 @@ def test_a_duplicate_account_number_is_flagged() -> None:
     assert "occasionally legitimate" in duplicate.message
 
 
-def test_the_duplicate_message_shows_only_the_last_four_digits() -> None:
-    """An exception list is read on a shared screen."""
+def test_the_duplicate_message_shows_the_full_account_number() -> None:
+    """Only admin and sub-admin see a batch's exceptions, and they see data
+    unmasked (2026-10-27), so they can find the account without a lookup."""
     result = validate_lines([row(), row(subject="ACM002")])
     duplicate = next(e for e in result.exceptions if e.code == "ACCOUNT_DUPLICATE")
-    assert "50100123456789" not in duplicate.message
-    assert "6789" in duplicate.message
+    assert "Account 50100123456789 appears on 2 employees" in duplicate.message
 
 
 def test_two_different_accounts_are_not_flagged() -> None:

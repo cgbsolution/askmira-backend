@@ -73,6 +73,13 @@ class ImportPreview(BaseModel):
     #: Whether this person may create departments and locations.
     can_create_org: bool
     rows: list[ImportRow]
+    #: People already here whose full Aadhaar number the file supplies (only
+    #: the last four were kept before) — filled in by the import, nothing else
+    #: about them changes.
+    aadhaar_fills: int = 0
+    #: Already here, but the file's Aadhaar ends differently from the one on
+    #: record: left alone. "CODE — Name".
+    aadhaar_mismatches: list[str] = []
 
 
 class ImportResult(BaseModel):
@@ -85,3 +92,6 @@ class ImportResult(BaseModel):
     departments_created: list[str]
     locations_created: list[str]
     rows: list[ImportRow]
+    #: People already here whose full Aadhaar number was filled in.
+    aadhaar_filled: int = 0
+    aadhaar_mismatches: list[str] = []

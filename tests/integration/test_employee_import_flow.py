@@ -394,3 +394,69 @@ async def test_an_email_already_here_is_not_added_twice(client, session, tenant)
     )
     nothing = await client.post(f"{API}/rejected", headers=headers, **_upload(clean))
     assert nothing.status_code == 422
+
+
+async def test_importing_the_file_again_fills_in_full_aadhaar_numbers(client, session, tenant):
+    """People imported when only the last four digits were kept get the full
+    number from the same file, where the last four match; nothing else moves."""
+    hr, _entity = await _setup(session, tenant, role=UserRole.ADMIN)
+    headers = bearer(hr)
+    data = factohr_sheet.build(_people())
+    first = await client.post(API, headers=headers, **_upload(data))
+    assert first.status_code == 201, first.text
+
+    # As the old code left it: last four only. Another person's record ends
+    # differently from the file.
+    asha = await _employee(session, "CAP22-001")
+    asha.aadhaar_number = None
+    asha_pan = asha.pan
+    old = await _employee(session, "OLD-001")
+    await session.commit()
+
+    checked = await client.post(f"{API}/preview", headers=headers, **_upload(data))
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["aadhaar_fills"] == 1
+    assert (checked.json()["ready_current"], checked.json()["ready_leavers"]) == (0, 0)
+    await session.refresh(asha)
+    assert asha.aadhaar_number is None  # the check writes nothing
+
+    again = await client.post(API, headers=headers, **_upload(data))
+    assert again.status_code == 201, again.text
+    assert again.json()["aadhaar_filled"] == 1
+    assert again.json()["created"] == 0
+    await session.refresh(asha)
+    assert asha.aadhaar_number == AADHAAR
+    assert asha.pan == asha_pan
+    await session.refresh(old)
+    assert old.aadhaar_number is None
+
+    # The audit says which field, never the number.
+    rows = (
+        await session.scalars(
+            select(AuditLog).where(AuditLog.summary.like("Filled in%Aadhaar%"))
+        )
+    ).all()
+    assert len(rows) == 1 and AADHAAR not in str(rows[0].changes)
+
+    # Nothing left to fill: the import says so instead of doing nothing silently.
+    third = await client.post(f"{API}/preview", headers=headers, **_upload(data))
+    assert third.json()["aadhaar_fills"] == 0
+
+
+async def test_an_aadhaar_that_ends_differently_is_left_alone(client, session, tenant):
+    hr, _entity = await _setup(session, tenant, role=UserRole.ADMIN)
+    headers = bearer(hr)
+    data = factohr_sheet.build(_people())
+    assert (await client.post(API, headers=headers, **_upload(data))).status_code == 201
+    asha = await _employee(session, "CAP22-001")
+    asha.aadhaar_number = None
+    asha.aadhaar_last4 = "0000"
+    await session.commit()
+
+    checked = await client.post(f"{API}/preview", headers=headers, **_upload(data))
+    assert checked.json()["aadhaar_fills"] == 0
+    assert checked.json()["aadhaar_mismatches"] == ["CAP22-001 — Asha Verma"]
+    refused = await client.post(API, headers=headers, **_upload(data))
+    assert refused.status_code == 422  # nothing to import or fill
+    await session.refresh(asha)
+    assert (asha.aadhaar_number, asha.aadhaar_last4) == (None, "0000")

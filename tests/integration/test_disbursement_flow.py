@@ -614,7 +614,7 @@ async def test_a_response_for_an_unknown_account_is_reported_not_swallowed(
         responses=[{"account_number": "99999999999999", "status": "SUCCESS"}],
     )
     await session.commit()
-    assert outcome["unmatched"] == ["9999"]
+    assert outcome["unmatched"] == ["99999999999999"]
 
 
 async def test_an_unreleased_batch_cannot_be_reconciled(
@@ -962,7 +962,7 @@ async def test_reading_the_bank_response_twice_does_not_reissue_a_credit_twice(
     )
     await session.commit()
     assert again["failed"] == []
-    assert again["already_reissued"] == ["6789"]
+    assert again["already_reissued"] == ["50100123456789"]
     with pytest.raises(HTTPException) as exc:
         await disbursement_service.supplementary_batch(
             session, hr_user, batch_id=batch.id, value_date=date(2026, 7, 3)

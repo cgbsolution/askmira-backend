@@ -222,7 +222,7 @@ def validate_lines(
                     "ACCOUNT_DUPLICATE",
                     ", ".join(sorted(subjects)),
                     "account_number",
-                    f"Account ending {account[-4:]} appears on {len(subjects)} "
+                    f"Account {account} appears on {len(subjects)} "
                     "employees. This is occasionally legitimate — a couple who bank "
                     "together — but far more often it pays one person twice and leaves "
                     "another unpaid. Confirm the pair before releasing.",

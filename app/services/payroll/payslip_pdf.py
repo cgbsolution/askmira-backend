@@ -6,9 +6,9 @@ the payslip row, and the page's totals are checked against the row's before it
 is rendered: a PDF whose lines do not add up to the net pay it states is worse
 than no PDF.
 
-Statutory identifiers are masked to their last four characters. A payslip is
-forwarded to landlords and banks; the full PAN and UAN do not need to travel
-with it.
+PAN and UAN are printed in full (the user's call, 2026-10-27: no masking).
+They used to be masked to their last four, because a payslip gets forwarded to
+landlords and banks; `mask_identifier` is kept for anything that still wants it.
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ class PayslipDocument:
     employee_code: str
     designation: str | None
     date_of_joining: date | None
-    pan_masked: str | None
-    uan_masked: str | None
+    pan: str | None
+    uan: str | None
     payment_date: date | None
     working_days: Decimal
     paid_days: Decimal
@@ -185,8 +185,8 @@ def build_payslip_document(
         employee_code=employee_code,
         designation=designation,
         date_of_joining=date_of_joining,
-        pan_masked=mask_identifier(pan),
-        uan_masked=mask_identifier(uan),
+        pan=(pan or "").strip() or None,
+        uan=(uan or "").strip() or None,
         payment_date=payment_date,
         working_days=_d(working_days),
         paid_days=_d(paid_days),
@@ -241,8 +241,8 @@ def payslip_html(document: PayslipDocument) -> str:
         facts.append(("Designation", document.designation))
     if document.date_of_joining:
         facts.append(("Date of joining", f"{document.date_of_joining:%d %b %Y}"))
-    facts.append(("PAN", document.pan_masked or "Not on record"))
-    facts.append(("UAN", document.uan_masked or "Not on record"))
+    facts.append(("PAN", document.pan or "Not on record"))
+    facts.append(("UAN", document.uan or "Not on record"))
     if document.payment_date:
         facts.append(("Paid on", f"{document.payment_date:%d %b %Y}"))
     days = f"{_days(document.paid_days)} of {_days(document.working_days)}"

@@ -83,13 +83,19 @@ def test_a_payslip_that_does_not_add_up_is_not_rendered() -> None:
         document(net_pay="90000.00")
 
 
-def test_identifiers_are_masked_to_their_last_four() -> None:
+def test_mask_identifier_still_keeps_the_last_four() -> None:
     assert mask_identifier("ABCDE1234F") == "XXXXXX234F"
     assert mask_identifier("100200300400") == "XXXXXXXX0400"
     assert mask_identifier(None) is None
     assert mask_identifier("  ") is None
+
+
+def test_the_payslip_prints_pan_and_uan_in_full() -> None:
     doc = document()
-    assert doc.pan_masked == "XXXXXX234F" and doc.uan_masked == "XXXXXXXX0400"
+    assert (doc.pan, doc.uan) == ("ABCDE1234F", "100200300400")
+    page = payslip_html(doc)
+    assert "ABCDE1234F" in page and "100200300400" in page
+    assert "XXXXXX" not in page
 
 
 def test_the_page_says_what_an_employee_needs_and_escapes_it() -> None:
@@ -99,7 +105,7 @@ def test_the_page_says_what_an_employee_needs_and_escapes_it() -> None:
     assert "88,250.00" in page
     assert "Not employed" in page and "14 day(s)" in page
     assert "computer-generated" in page
-    assert "ABCDE1234F" not in page
+    assert "ABCDE1234F" in page  # in full since 2026-10-27
     assert "<Technologies>" not in page and "&lt;Technologies&gt;" in page
 
 

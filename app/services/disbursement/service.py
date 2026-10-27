@@ -812,12 +812,12 @@ async def reconcile(
         account = str(response.get("account_number", "")).strip()
         line = by_account.get(account)
         if line is None:
-            unmatched.append(account[-4:] if account else "(blank)")
+            unmatched.append(account or "(blank)")
             continue
         if line.status is LineStatus.REISSUED:
             # Already paid again from a supplementary batch. A response read a
             # second time must not reopen it, or it would be reissued twice.
-            already_reissued.append(account[-4:])
+            already_reissued.append(account)
             continue
 
         outcome = str(response.get("status", "")).strip().lower()
@@ -861,7 +861,12 @@ async def reconcile(
             f"Reconciled the bank response: {credited} credited, {len(failed)} failed"
             f"{f', {len(unmatched)} unmatched' if unmatched else ''}"
         ),
-        changes={"credited": credited, "failed": len(failed), "unmatched": unmatched},
+        # The audit log is append-only and read more widely: last four only.
+        changes={
+            "credited": credited,
+            "failed": len(failed),
+            "unmatched": [a[-4:] if a != "(blank)" else a for a in unmatched],
+        },
         request=request,
     )
     return {

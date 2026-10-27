@@ -10,6 +10,9 @@ What it will not do:
 
 - Overwrite. An employee code already in AskMira is skipped, so a corrected
   file can be imported again without touching anybody already brought in.
+  One exception fills a gap and changes nothing: somebody imported when only
+  the last four Aadhaar digits were kept gets the full number from the file,
+  when its last four match the ones on record (`_aadhaar_fills`).
 - Add somebody twice. A work email that already belongs to somebody here
   under another code — the admin made when the workspace was, say — or that
   two rows share stops the row, naming who has it. `rejected` hands back
@@ -17,7 +20,7 @@ What it will not do:
 - Invent. A value that fails its check is left out and listed against its
   row; only a missing employee code, first name, work email or joining date
   (or a status that cannot be squared with the dates) stops a row.
-- Keep an Aadhaar number. Its last four digits are kept, as everywhere else.
+- Keep an Aadhaar number in the clear. It is stored encrypted, as everywhere else.
 - Give anybody a login. That stays an admin's decision, person by person.
 """
 
@@ -31,7 +34,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from pydantic import EmailStr, TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -767,6 +770,49 @@ async def template(session: AsyncSession, user: User) -> bytes:
     return build_template(active)
 
 
+@dataclass
+class _AadhaarFills:
+    #: (employee, full number) to fill in.
+    fills: list[tuple[Employee, str]]
+    #: "CODE — Name" whose file number ends differently from the record.
+    mismatches: list[str]
+
+
+async def _aadhaar_fills(session: AsyncSession, user: User, plan: _Plan) -> _AadhaarFills:
+    """Full Aadhaar numbers the file has for people already here who only have
+    the last four on record. A number whose last four differ from the record's
+    is not used: the file or the record is wrong, and a person decides which."""
+    wanted: dict[str, str] = {}
+    for row in plan.rows:
+        if row.outcome != "skip" or not row.code:
+            continue
+        for change in row.sections:
+            if change.section == "statutory" and getattr(change.data, "aadhaar", None):
+                wanted[row.code.upper()] = change.data.aadhaar
+    if not wanted:
+        return _AadhaarFills([], [])
+    people = (
+        await session.scalars(
+            tenant_scoped(
+                select(Employee).where(func.upper(Employee.employee_code).in_(list(wanted))),
+                Employee,
+                user,
+            )
+        )
+    ).all()
+    fills: list[tuple[Employee, str]] = []
+    mismatches: list[str] = []
+    for person in people:
+        full = wanted.get((person.employee_code or "").upper())
+        if not full or person.aadhaar_number:
+            continue
+        if person.aadhaar_last4 and person.aadhaar_last4 != full[-4:]:
+            mismatches.append(f"{person.employee_code} — {person.full_name}")
+            continue
+        fills.append((person, full))
+    return _AadhaarFills(fills, sorted(mismatches))
+
+
 def _read(data: bytes, filename: str) -> Table:
     try:
         return read_table(data, filename)
@@ -779,6 +825,7 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
     permissions.require_hr(user, detail="Only HR imports employees.")
     plan = await _plan(session, user, _read(data, filename))
     ready = [row for row in plan.rows if row.outcome == "ready"]
+    aadhaar = await _aadhaar_fills(session, user, plan)
     return ImportPreview(
         filename=filename,
         source=plan.table.source,
@@ -798,6 +845,8 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
         columns_ignored=[column.header for column in plan.table.unused],
         can_create_org=plan.can_create_org,
         rows=[_row_read(row) for row in plan.rows],
+        aadhaar_fills=len(aadhaar.fills),
+        aadhaar_mismatches=aadhaar.mismatches,
     )
 
 
@@ -837,8 +886,24 @@ async def run(
     chosen = [
         row for row in plan.rows if row.outcome == "ready" and (include_leavers or not row.leaver)
     ]
-    if not chosen:
+    aadhaar = await _aadhaar_fills(session, user, plan)
+    if not chosen and not aadhaar.fills:
         raise _unprocessable("Nothing in this file can be imported. Check it to see why.")
+    for person, full in aadhaar.fills:
+        person.aadhaar_number = full
+        person.aadhaar_last4 = full[-4:]
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="employee_profile",
+            entity_id=person.id,
+            actor=user,
+            # Which field, never the number.
+            changes={"section": "statutory", "fields": ["aadhaar_number"], "file": filename},
+            summary=f"Filled in {person.employee_code}'s full Aadhaar number from {filename}",
+            request=request,
+        )
 
     departments_created: list[str] = []
     taken = set(ws.department_codes)
@@ -972,11 +1037,15 @@ async def run(
             "failed": sum(1 for row in plan.rows if row.outcome == "error"),
             "departments_created": departments_created,
             "locations_created": locations_created,
+            "aadhaar_filled": len(aadhaar.fills),
         },
-        summary=f"Imported {len(chosen)} employees from {filename}",
+        summary=f"Imported {len(chosen)} employees from {filename}"
+        + (f"; filled in {len(aadhaar.fills)} full Aadhaar numbers" if aadhaar.fills else ""),
         request=request,
     )
     return ImportResult(
+        aadhaar_filled=len(aadhaar.fills),
+        aadhaar_mismatches=aadhaar.mismatches,
         filename=filename,
         created=len(chosen),
         created_leavers=leavers,
