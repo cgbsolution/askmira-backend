@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
-from app.models.attendance import AttendanceDay
+from app.models.attendance import AttendanceDay, shift_off_on
 from app.models.autonomy import AgentProposal, ProposalStatusEnum
 from app.models.cycle_config import ProbationReview
 from app.models.lifecycle import LifecycleEvent, LifecycleEventType, LifecycleStatus
@@ -417,7 +417,7 @@ async def schedule_agent(
             if day in leave.get(person.id, set()):
                 continue
             own = resolver.resolve(person.id, day).shift
-            weekly_off = own is not None and day.isoweekday() in (own.weekly_off_days or [])
+            weekly_off = own is not None and shift_off_on(own, day)
             if own is not None and not weekly_off:
                 continue
             try:

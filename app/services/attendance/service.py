@@ -41,12 +41,13 @@ from app.models.attendance import (
     Shift,
     ShiftAssignment,
     WorkLocation,
+    shift_off_on,
 )
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
 from app.models.notifications import Channel, DigestMode
-from app.models.org import Location
+from app.models.org import LegalEntity, Location
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services import audit
@@ -58,7 +59,7 @@ from app.services.attendance.computation import (
     attendance_window,
     compute_day,
 )
-from app.services.leave.holidays import holidays_for_employees
+from app.services.leave.holidays import holiday_records_for_employees, holidays_for_employees
 from app.services.notifications.dispatch import notify, register_event
 
 EARTH_RADIUS_METRES = 6_371_000
@@ -182,17 +183,23 @@ class ShiftPlan:
     shift: Shift | None
     # A roster rotation day with no shift: a week off.
     roster_week_off: bool = False
-    # Nothing was assigned; the workspace's default shift applies.
+    # Nothing was assigned; the legal entity's or the workspace's default
+    # shift applies.
     from_default: bool = False
+
+    def is_off(self, day: date) -> bool:
+        """A weekly off: a rostered week off, or the shift's (alternate) weekly off."""
+        return self.roster_week_off or (self.shift is not None and shift_off_on(self.shift, day))
 
 
 class ShiftResolver:
     """Which shift is in force for each employee on each date, loaded in bulk.
 
     Resolution order: a direct shift assignment (the most specific statement
-    of intent), then a roster rotation, then the workspace's default shift.
-    Three queries for any number of employees and days — resolving per
-    employee-day is what made a month's recompute time out.
+    of intent), then a roster rotation, then the work week of the employee's
+    legal entity, then the workspace's default shift. A handful of queries for
+    any number of employees and days — resolving per employee-day is what made
+    a month's recompute time out.
     """
 
     def __init__(
@@ -200,10 +207,13 @@ class ShiftResolver:
         assignments: dict[uuid.UUID, list[ShiftAssignment]],
         rosters: dict[uuid.UUID, list[RosterAssignment]],
         default_shift: Shift | None,
+        entity_shifts: dict[uuid.UUID, Shift] | None = None,
     ) -> None:
         self._assignments = assignments
         self._rosters = rosters
         self.default_shift = default_shift
+        # Employee id to their legal entity's work week, where it has one.
+        self._entity_shifts = entity_shifts or {}
 
     @classmethod
     async def load(
@@ -256,7 +266,8 @@ class ShiftResolver:
             ).all():
                 rosters.setdefault(row.employee_id, []).append(row)
         default_shift = await default_shift_for(session, user)
-        return cls(assignments, rosters, default_shift)
+        entity_shifts = await _entity_shifts_for(session, user, employee_ids)
+        return cls(assignments, rosters, default_shift, entity_shifts)
 
     def resolve(self, employee_id: uuid.UUID, on_date: date) -> ShiftPlan:
         for assignment in self._assignments.get(employee_id, []):
@@ -281,9 +292,52 @@ class ShiftResolver:
                     return ShiftPlan(shift=None, roster_week_off=True)
                 return ShiftPlan(shift=day.shift)
 
+        entity_shift = self._entity_shifts.get(employee_id)
+        if entity_shift is not None:
+            return ShiftPlan(shift=entity_shift, from_default=True)
         if self.default_shift is not None:
             return ShiftPlan(shift=self.default_shift, from_default=True)
         return ShiftPlan(shift=None)
+
+
+async def _entity_shifts_for(
+    session: AsyncSession, user: User, employee_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, Shift]:
+    """Each employee's legal-entity work week, for those whose entity sets one."""
+    if not employee_ids:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(Employee.id, LegalEntity.default_shift_id)
+                .join(LegalEntity, LegalEntity.id == Employee.legal_entity_id)
+                .where(
+                    Employee.id.in_(employee_ids),
+                    LegalEntity.default_shift_id.is_not(None),
+                ),
+                Employee,
+                user,
+            )
+        )
+    ).all()
+    if not rows:
+        return {}
+    shifts = {
+        shift.id: shift
+        for shift in (
+            await session.scalars(
+                tenant_scoped(
+                    select(Shift).where(
+                        Shift.id.in_({shift_id for _, shift_id in rows}),
+                        Shift.active.is_(True),
+                    ),
+                    Shift,
+                    user,
+                )
+            )
+        ).all()
+    }
+    return {employee_id: shifts[shift_id] for employee_id, shift_id in rows if shift_id in shifts}
 
 
 async def default_shift_for(session: AsyncSession, user: User) -> Shift | None:
@@ -491,7 +545,7 @@ async def recompute_range(
     people = (await session.execute(tenant_scoped(people_stmt, Employee, user))).all()
     ids = [row[0] for row in people]
 
-    holidays = await holidays_for_employees(session, user, ids, start, end)
+    holidays = await holiday_records_for_employees(session, user, ids, start, end)
     zones = await employee_timezones(session, user, ids)
     resolver = await ShiftResolver.load(session, user, ids, start, end)
     now = datetime.now(UTC)
@@ -509,12 +563,8 @@ async def recompute_range(
         employee_holidays = holidays.get(employee_id, {})
 
         def is_off(day: date, employee_id: uuid.UUID = employee_id) -> bool:
-            plan = resolver.resolve(employee_id, day)
-            weekly = plan.shift.weekly_off_days if plan.shift is not None else []
-            return (
-                plan.roster_week_off
-                or day.isoweekday() in (weekly or [])
-                or day in holidays.get(employee_id, {})
+            return resolver.resolve(employee_id, day).is_off(day) or day in holidays.get(
+                employee_id, {}
             )
 
         sandwiched = _sandwiched_unpaid_days(unpaid_spans, is_off)
@@ -580,14 +630,16 @@ async def recompute_range(
                 if window_start <= p.punched_at <= window_end
             ]
             leave_entry = leave.get(day)
+            holiday = employee_holidays.get(day)
             computed = compute_day(
                 DayInputs(
                     employee_id=employee_id,
                     attendance_date=day,
                     shift=shift,
                     punches=day_punches,
-                    is_holiday=day in employee_holidays,
-                    holiday_name=employee_holidays.get(day),
+                    is_holiday=holiday is not None,
+                    holiday_name=holiday.name if holiday is not None else None,
+                    holiday_is_paid=holiday.is_paid if holiday is not None else True,
                     on_approved_leave=leave_entry is not None,
                     leave_is_half_day=leave_entry[0] if leave_entry else False,
                     leave_is_paid=leave_entry[1] if leave_entry else True,
@@ -743,7 +795,9 @@ async def get_lop_days(
 
     total = Decimal(0)
     for day in days:
-        if day.status in {AttendanceStatus.HOLIDAY, AttendanceStatus.WEEK_OFF}:
+        # A weekly off is always paid. A holiday is paid unless HR marked it
+        # unpaid, which attendance records as a zero-payable holiday.
+        if day.status is AttendanceStatus.WEEK_OFF:
             continue
         total += Decimal(1) - Decimal(str(day.payable_fraction))
     return total
@@ -1308,11 +1362,7 @@ async def raise_regularisation_range(
     while cursor <= end:
         day = cursor
         cursor += timedelta(days=1)
-        plan = resolver.resolve(employee_id, day)
-        off = plan.roster_week_off or (
-            plan.shift is not None and day.isoweekday() in (plan.shift.weekly_off_days or [])
-        )
-        if off or day in holidays:
+        if resolver.resolve(employee_id, day).is_off(day) or day in holidays:
             continue
         if marking and recorded.get(day) in (requested_status, AttendanceStatus.ON_LEAVE):
             continue

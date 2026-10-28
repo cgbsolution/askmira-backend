@@ -5,7 +5,15 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -25,7 +33,13 @@ class LegalEntity(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "legal_entities"
-    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_legal_entities_tenant_code"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_legal_entities_tenant_code"),
+        CheckConstraint(
+            "salary_days_basis IN ('calendar', 'fixed', 'working_days')",
+            name="ck_legal_entities_salary_days_basis",
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     code: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -43,6 +57,32 @@ class LegalEntity(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     registered_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    #: The work week (a shift and its weekly offs) for this company's people
+    #: who have no shift or roster of their own. Before the workspace default.
+    #: One company in a group works six days, another five, another alternate
+    #: Saturdays — this is where that is said once.
+    default_shift_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "shifts.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_legal_entities_default_shift_id",
+        ),
+        nullable=True,
+    )
+
+    #: How a month's salary is divided into days, for loss of pay and part
+    #: months. `calendar`: the days in the month (28-31), weekly offs and
+    #: holidays paid. `fixed`: `salary_fixed_days` every month (26 or 30).
+    #: `working_days`: the days the person was scheduled to work that month —
+    #: the month less their weekly offs, so it follows a five-day, six-day or
+    #: alternate-Saturday week. Holidays count as working days (they are paid).
+    salary_days_basis: Mapped[str] = mapped_column(
+        String(16), default="calendar", server_default=text("'calendar'"), nullable=False
+    )
+    salary_fixed_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     tenant: Mapped[Tenant] = relationship(back_populates="legal_entities")
     locations: Mapped[list[Location]] = relationship(

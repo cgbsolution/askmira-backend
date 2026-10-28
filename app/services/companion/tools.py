@@ -30,7 +30,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import mcp, oauth
 from app.services.ai import analytics, assistant, governance
-from app.services.companion import people_tools, product_tools
+from app.services.companion import hr_tools, people_tools, product_tools
 from app.services.companion.config import CompanionConfig, group_on
 from app.services.products import data as products_data
 from app.services.products.catalogue import PRODUCTS
@@ -183,6 +183,82 @@ TOOLS: dict[str, Tool] = {
             hr_only=True,
         ),
         Tool(
+            key="my_approvals",
+            group="approvals",
+            title="Waiting on you",
+            description=(
+                "What is waiting on the asker's decision across AskMira: leave, attendance "
+                "corrections, timesheets, expense and travel claims, payroll runs and "
+                "adjustments, loans, requisitions and offers, resignations and clearances, "
+                "profile changes and documents. Set `kind` (leave, attendance, expense, payroll, "
+                "hiring, exit or people) to narrow it, else none."
+            ),
+            inputs=("kind",),
+        ),
+        Tool(
+            key="payroll_summary",
+            hr_only=True,
+            group="payroll_figures",
+            title="Payroll",
+            description=(
+                "For admins and sub-admins who may view payroll: a month's payroll runs and "
+                "what they add up to: people paid, gross, deductions, net pay, cost to company, "
+                "PF, ESI, professional tax and TDS, and which runs are not paid yet. Set `from` "
+                "and `to` to the month(s) asked about; both empty means the latest month run."
+            ),
+            inputs=("from", "to"),
+        ),
+        Tool(
+            key="salary_totals",
+            hr_only=True,
+            group="payroll_figures",
+            title="Salary bill",
+            description=(
+                "For admins and sub-admins who may view payroll: what everyone's salary in "
+                "force today adds up to (monthly and annual CTC, average) and by department, "
+                "from the Salary master. Use it for the total salary or CTC of the company or "
+                "a department, not for one person."
+            ),
+        ),
+        Tool(
+            key="people_changes",
+            hr_only=True,
+            group="person_records",
+            title="Joiners and exits",
+            description=(
+                "For admins and sub-admins: who joined and who left between `from` and `to` "
+                "(both empty means this month), who is serving notice, the headcount at the "
+                "start and the attrition rate for the period."
+            ),
+            inputs=("from", "to"),
+        ),
+        Tool(
+            key="people_dates",
+            hr_only=True,
+            group="person_records",
+            title="Dates coming up",
+            description=(
+                "For admins and sub-admins: birthdays, work anniversaries, probation periods "
+                "ending and last working days between `from` and `to` (both empty means the "
+                "next 30 days). Set `kind` (birthdays, anniversaries, probation or "
+                "last_working_day) for one of them, else none for all four."
+            ),
+            inputs=("from", "to", "kind"),
+        ),
+        Tool(
+            key="hr_tickets",
+            group="hr_helpdesk",
+            title="HR helpdesk",
+            description=(
+                "Tickets in AskMira's own HR helpdesk (salary queries, letters, ID cards, "
+                "grievances), not IT tickets. Set `scope`: mine (tickets the asker raised), "
+                "assigned (assigned to the asker), queue (unassigned) or company (the whole "
+                "queue the asker works). Optionally `status` (new, open, in_progress, hold or "
+                "closed) and `query` (a subject or person, for the queue)."
+            ),
+            inputs=("scope", "status", "query"),
+        ),
+        Tool(
             key="hiring_overview",
             group="hiring_data",
             product="interview",
@@ -332,6 +408,7 @@ INPUTS: dict[str, dict[str, Any]] = {
     "product": {"type": "string", "enum": ["none", *PRODUCTS]},
     "status": {"type": "string", "enum": list(product_tools.STATUS_CHOICES)},
     "scope": {"type": "string", "enum": ["none", *product_tools.SCOPES]},
+    "kind": {"type": "string", "enum": list(hr_tools.KINDS)},
 }
 
 
@@ -432,6 +509,24 @@ async def _run(
             return cards, {"lookup": lookup}
         text, _, href = await assistant.lookup_own_record(session, user, lookup)
         return [{"type": "own_record", "text": text, "open": href}], {"lookup": lookup}
+
+    if tool.key == "my_approvals":
+        return await hr_tools.approvals(session, user, inputs)
+
+    if tool.key == "payroll_summary":
+        return await hr_tools.payroll_summary(session, user, inputs, today=today)
+
+    if tool.key == "salary_totals":
+        return await hr_tools.salary_totals(session, user, today=today)
+
+    if tool.key == "people_changes":
+        return await hr_tools.people_changes(session, user, inputs, today=today)
+
+    if tool.key == "people_dates":
+        return await hr_tools.people_dates(session, user, inputs, today=today)
+
+    if tool.key == "hr_tickets":
+        return await hr_tools.hr_tickets(session, user, inputs)
 
     if tool.key == "employee_record":
         return await people_tools.person_record(session, user, inputs, today=today)

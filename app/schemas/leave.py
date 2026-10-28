@@ -130,7 +130,11 @@ class HolidayCreate(BaseModel):
     holiday_date: date
     state_code: str | None = Field(default=None, min_length=2, max_length=4)
     location_id: uuid.UUID | None = None
+    #: One company of the group only; null for every legal entity.
+    legal_entity_id: uuid.UUID | None = None
     is_optional: bool = False
+    #: Unpaid: a day off that is loss of pay unless worked.
+    is_paid: bool = True
 
     @model_validator(mode="after")
     def _one_scope(self) -> HolidayCreate:
@@ -147,7 +151,10 @@ class HolidayUpdate(BaseModel):
     scope: HolidayScope | None = None
     state_code: str | None = Field(default=None, min_length=2, max_length=4)
     location_id: uuid.UUID | None = None
+    #: Send null to make it apply to every legal entity again.
+    legal_entity_id: uuid.UUID | None = None
     is_optional: bool | None = None
+    is_paid: bool | None = None
 
 
 class HolidayRead(BaseModel):
@@ -158,7 +165,10 @@ class HolidayRead(BaseModel):
     location_id: uuid.UUID | None
     location_name: str | None = None
     scope: HolidayScope
+    legal_entity_id: uuid.UUID | None = None
+    legal_entity_name: str | None = None
     is_optional: bool
+    is_paid: bool = True
     #: Whether this holiday is in scope for the caller's own work location.
     applies_to_me: bool = False
     #: An optional holiday the caller has opted in to.

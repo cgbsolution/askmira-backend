@@ -40,7 +40,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 
-from app.models.attendance import AttendanceStatus, PunchDirection, RegularisationKind, Shift
+from app.models.attendance import (
+    AttendanceStatus,
+    PunchDirection,
+    RegularisationKind,
+    Shift,
+    shift_off_on,
+)
 
 __all__ = [
     "ComputedDay",
@@ -76,6 +82,8 @@ class DayInputs:
     punches: list[PunchRecord] = field(default_factory=list)
     is_holiday: bool = False
     holiday_name: str | None = None
+    #: An unpaid holiday is still a day off, but loss of pay unless worked.
+    holiday_is_paid: bool = True
     # An approved leave covering this date, and whether it is a half day.
     on_approved_leave: bool = False
     leave_is_half_day: bool = False
@@ -158,8 +166,8 @@ def attendance_window(
 def _is_weekly_off(shift: Shift | None, day: date) -> bool:
     if shift is None:
         return False
-    # ISO weekday: Monday = 1 … Sunday = 7.
-    return day.isoweekday() in (shift.weekly_off_days or [])
+    # Every-week offs and alternate ones (2nd and 4th Saturday).
+    return shift_off_on(shift, day)
 
 
 def _pair_punches(
@@ -229,7 +237,12 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
 
     # ── 1. Holiday ──────────────────────────────────────────────────────────
     if inputs.is_holiday:
-        return _rest_day(inputs, AttendanceStatus.HOLIDAY, inputs.holiday_name or "Public holiday")
+        name = inputs.holiday_name or "Public holiday"
+        if not inputs.holiday_is_paid:
+            return _rest_day(
+                inputs, AttendanceStatus.HOLIDAY, f"{name} (unpaid holiday)", paid=False
+            )
+        return _rest_day(inputs, AttendanceStatus.HOLIDAY, name)
 
     # ── 2. Weekly off ───────────────────────────────────────────────────────
     if inputs.roster_week_off or _is_weekly_off(shift, day):
@@ -341,8 +354,13 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
     )
 
 
-def _rest_day(inputs: DayInputs, rest_status: AttendanceStatus, note: str) -> ComputedDay:
+def _rest_day(
+    inputs: DayInputs, rest_status: AttendanceStatus, note: str, *, paid: bool = True
+) -> ComputedDay:
     """A holiday or weekly off: payable whatever happens, and any work on it is overtime.
+
+    An unpaid holiday (`paid=False`) is the exception: not payable unless the
+    person worked it, and then the work is the day's pay rather than overtime.
 
     Work on a rest day is recorded rather than discarded: every worked minute is
     beyond the (zero) scheduled minutes, so it is all overtime. Whether that
@@ -363,13 +381,13 @@ def _rest_day(inputs: DayInputs, rest_status: AttendanceStatus, note: str) -> Co
                     worked_minutes=worked,
                     first_in=first_in,
                     last_out=last_out,
-                    overtime_minutes=worked,
+                    overtime_minutes=worked if paid else 0,
                     note=f"{note} — worked {worked} minutes",
                 )
     return ComputedDay(
         attendance_date=inputs.attendance_date,
         status=rest_status,
-        payable_fraction=Decimal(1),
+        payable_fraction=Decimal(1) if paid else Decimal(0),
         note=note,
     )
 

@@ -261,8 +261,24 @@ class Holiday(Base, UUIDMixin, TenantMixin, TimestampMixin):
         PgUUID(as_uuid=True), ForeignKey("locations.id", ondelete="CASCADE"), nullable=True
     )
 
+    #: One company of the group only. Null: every legal entity. Combines with
+    #: the state or location above — "Maharashtra, Company B only".
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("legal_entities.id", ondelete="CASCADE", name="fk_holidays_legal_entity_id"),
+        nullable=True,
+        index=True,
+    )
+
     # Optional holidays the employee chooses from a floating allowance.
     is_optional: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    #: A paid holiday is a paid day off: nobody loses pay for it. An unpaid one
+    #: (a plant shutdown, say) is still a day off — nobody is marked absent —
+    #: but it is loss of pay unless the person works it.
+    is_paid: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
 
 
 class OptionalHolidaySelection(Base, UUIDMixin, TenantMixin, TimestampMixin):

@@ -11,7 +11,7 @@ the moment it is encashed at exit, and half-days make binary fractions real.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -67,7 +67,7 @@ def count_leave_days(
     end: date,
     *,
     half_day: bool,
-    weekly_off_days: Sequence[int],
+    weekly_off_days: Sequence[int] | Callable[[date], bool],
     holidays: Mapping[date, str],
     sandwich: bool = False,
 ) -> DayCount:
@@ -87,12 +87,19 @@ def count_leave_days(
     if half_day and start != end:
         raise LeaveRuleError("A half day covers a single date. Pick the same start and end.")
 
+    # A weekday set (every week), or the person's own rule per date, which is
+    # what an alternate-Saturday week needs.
+    is_off: Callable[[date], bool] = (
+        weekly_off_days
+        if callable(weekly_off_days)
+        else (lambda day, days=tuple(weekly_off_days): day.isoweekday() in days)
+    )
     working: list[date] = []
     offs: list[date] = []
     skipped_holidays: list[tuple[date, str]] = []
     cursor = start
     while cursor <= end:
-        if cursor.isoweekday() in weekly_off_days:
+        if is_off(cursor):
             offs.append(cursor)
         elif cursor in holidays:
             skipped_holidays.append((cursor, holidays[cursor]))

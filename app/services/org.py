@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
+from app.models.attendance import Shift
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.org import Department, LegalEntity, Location
@@ -135,12 +136,30 @@ async def list_departments(session: AsyncSession, user: User) -> list[Department
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def _check_work_week(session: AsyncSession, user: User, shift_id: uuid.UUID | None) -> None:
+    """A legal entity's work week must be an active shift of this workspace."""
+    if shift_id is None:
+        return
+    found = await session.scalar(
+        tenant_scoped(
+            select(Shift.id).where(Shift.id == shift_id, Shift.active.is_(True)), Shift, user
+        )
+    )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Choose an active shift for the work week.",
+        )
+
+
 async def create_legal_entity(
     session: AsyncSession, user: User, payload: LegalEntityCreate, *, request: Request | None
 ) -> LegalEntity:
     await _code_free(session, user, LegalEntity, payload.code, label="legal entity")
+    await _check_work_week(session, user, payload.default_shift_id)
     values = payload.model_dump()
     values["pt_registrations"] = values.get("pt_registrations") or {}
+    values["salary_days_basis"] = values.get("salary_days_basis") or "calendar"
     entity = LegalEntity(tenant_id=user.tenant_id, **values)
     session.add(entity)
     await session.flush()
@@ -169,9 +188,18 @@ async def update_legal_entity(
 ) -> LegalEntity:
     entity = await _get(session, user, LegalEntity, entity_id, "Legal entity")
     changes = payload.model_dump(exclude_unset=True)
-    _no_nulls(changes, "name", "code", "is_active")
+    _no_nulls(changes, "name", "code", "is_active", "salary_days_basis")
     if "pt_registrations" in changes and changes["pt_registrations"] is None:
         changes["pt_registrations"] = {}
+    if changes.get("default_shift_id"):
+        await _check_work_week(session, user, changes["default_shift_id"])
+    basis = changes.get("salary_days_basis", entity.salary_days_basis)
+    fixed = changes.get("salary_fixed_days", entity.salary_fixed_days)
+    if basis == "fixed" and not fixed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Say how many days a month is divided by, such as 26 or 30.",
+        )
     if changes.get("code") and changes["code"] != entity.code:
         await _code_free(
             session, user, LegalEntity, changes["code"], label="legal entity", exclude=entity.id

@@ -28,8 +28,15 @@ TOOL_GROUPS: dict[str, str] = {
     "own_record": "Tell a person their own leave balance, latest payslip, attendance or manager.",
     "people": "Find colleagues in the directory (admins and sub-admins).",
     "person_records": "Let admins and sub-admins ask about one employee (current salary, leave "
-    "balance, attendance, manager or profile) and the company's headcount. Employees are only "
-    "ever answered about themselves.",
+    "balance, attendance, manager or profile), the company's headcount, joiners and exits, and "
+    "birthdays, anniversaries and probation ends. Employees are only ever answered about "
+    "themselves.",
+    "approvals": "Tell a person what is waiting on their approval: leave, attendance, expenses, "
+    "payroll, hiring, exits and more. Only what they may decide.",
+    "payroll_figures": "Let admins and sub-admins who may view payroll ask for a month's payroll "
+    "totals (gross, net, cost, PF, ESI, PT, TDS) and the company's salary bill.",
+    "hr_helpdesk": "Show a person their own HR helpdesk tickets, and the queue to the people who "
+    "work it.",
     "who_is_out": "Show who is on approved leave (admins and sub-admins).",
     "attendance": "Show attendance summaries (HR only).",
     "org": "List departments and office locations (admins and sub-admins).",

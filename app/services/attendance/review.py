@@ -73,7 +73,8 @@ def summarise(employee: Employee, days: list[AttendanceDay]) -> EmployeeAttendan
         (
             Decimal(1) - Decimal(str(d.payable_fraction))
             for d in days
-            if d.status not in {AttendanceStatus.HOLIDAY, AttendanceStatus.WEEK_OFF}
+            # Same rule as payroll's LOP feed: an unpaid holiday is loss of pay.
+            if d.status is not AttendanceStatus.WEEK_OFF
         ),
         start=Decimal(0),
     )
@@ -409,9 +410,7 @@ async def team_today(
             )
         elif today in holidays.get(employee.id, {}):
             state, detail = "holiday", holidays[employee.id][today]
-        elif plan.roster_week_off or (
-            shift is not None and today.isoweekday() in (shift.weekly_off_days or [])
-        ):
+        elif plan.is_off(today):
             state = "week_off"
         else:
             state = "not_in"

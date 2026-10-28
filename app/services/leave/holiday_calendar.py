@@ -25,7 +25,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.leave import Holiday, LeaveRequest, OptionalHolidaySelection
-from app.models.org import Location
+from app.models.org import LegalEntity, Location
 from app.models.user import User
 from app.schemas.leave import (
     HolidayCreate,
@@ -54,14 +54,18 @@ def _scope(holiday: Holiday) -> str:
     return "national"
 
 
-async def _place(session: AsyncSession, user: User) -> tuple[uuid.UUID | None, str | None] | None:
-    """The caller's work location and its state, or None without an employee record."""
+Place = tuple[uuid.UUID | None, str | None, uuid.UUID | None]
+
+
+async def _place(session: AsyncSession, user: User) -> Place | None:
+    """The caller's work location, its state and their legal entity, or None
+    without an employee record."""
     if user.employee_id is None:
         return None
     row = (
         await session.execute(
             tenant_scoped(
-                select(Employee.location_id, Location.state_code)
+                select(Employee.location_id, Location.state_code, Employee.legal_entity_id)
                 .outerjoin(Location, Location.id == Employee.location_id)
                 .where(Employee.id == user.employee_id),
                 Employee,
@@ -69,7 +73,16 @@ async def _place(session: AsyncSession, user: User) -> tuple[uuid.UUID | None, s
             )
         )
     ).first()
-    return (row[0], row[1]) if row else (None, None)
+    return (row[0], row[1], row[2]) if row else (None, None, None)
+
+
+async def _entity_names(session: AsyncSession, user: User) -> dict[uuid.UUID, str]:
+    rows = (
+        await session.execute(
+            tenant_scoped(select(LegalEntity.id, LegalEntity.name), LegalEntity, user)
+        )
+    ).all()
+    return {entity_id: name for entity_id, name in rows}
 
 
 async def _location_names(session: AsyncSession, user: User) -> dict[uuid.UUID, tuple[str, str]]:
@@ -85,11 +98,16 @@ def _read(
     holiday: Holiday,
     *,
     locations: dict[uuid.UUID, tuple[str, str]],
-    place: tuple[uuid.UUID | None, str | None] | None,
+    entities: dict[uuid.UUID, str],
+    place: Place | None,
     selected: set[uuid.UUID],
 ) -> HolidayRead:
     applies = place is not None and holiday_applies(
-        holiday, state_code=place[1], location_id=place[0], include_optional=True
+        holiday,
+        state_code=place[1],
+        location_id=place[0],
+        legal_entity_id=place[2],
+        include_optional=True,
     )
     location = locations.get(holiday.location_id) if holiday.location_id else None
     return HolidayRead(
@@ -100,7 +118,12 @@ def _read(
         location_id=holiday.location_id,
         location_name=location[0] if location else None,
         scope=_scope(holiday),  # type: ignore[arg-type]
+        legal_entity_id=holiday.legal_entity_id,
+        legal_entity_name=(
+            entities.get(holiday.legal_entity_id) if holiday.legal_entity_id else None
+        ),
         is_optional=holiday.is_optional,
+        is_paid=holiday.is_paid,
         applies_to_me=applies,
         selected=holiday.id in selected,
     )
@@ -150,9 +173,13 @@ async def list_holidays(
         )
     ).all()
     locations = await _location_names(session, user)
+    entities = await _entity_names(session, user)
     place = await _place(session, user)
     selected = await _selected_ids(session, user, year)
-    rows = [_read(h, locations=locations, place=place, selected=selected) for h in holidays]
+    rows = [
+        _read(h, locations=locations, entities=entities, place=place, selected=selected)
+        for h in holidays
+    ]
 
     if state_code:
         code = state_code.upper()
@@ -173,6 +200,35 @@ async def _location_state(session: AsyncSession, user: User, location_id: uuid.U
     return state
 
 
+async def _check_entity(
+    session: AsyncSession,
+    user: User,
+    legal_entity_id: uuid.UUID | None,
+    location_id: uuid.UUID | None,
+) -> None:
+    """The legal entity exists here, and an office holiday's office belongs to it."""
+    if legal_entity_id is None:
+        return
+    found = await session.scalar(
+        tenant_scoped(
+            select(LegalEntity.id).where(LegalEntity.id == legal_entity_id), LegalEntity, user
+        )
+    )
+    if found is None:
+        raise _not_found("Legal entity not found")
+    if location_id is not None:
+        owner = await session.scalar(
+            tenant_scoped(
+                select(Location.legal_entity_id).where(Location.id == location_id), Location, user
+            )
+        )
+        if owner != legal_entity_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="That office belongs to another legal entity.",
+            )
+
+
 async def _refuse_duplicate(
     session: AsyncSession,
     user: User,
@@ -180,6 +236,7 @@ async def _refuse_duplicate(
     on: date,
     state_code: str | None,
     location_id: uuid.UUID | None,
+    legal_entity_id: uuid.UUID | None = None,
     exclude: uuid.UUID | None = None,
 ) -> None:
     stmt = select(Holiday.id).where(
@@ -188,6 +245,9 @@ async def _refuse_duplicate(
         Holiday.location_id.is_(None)
         if location_id is None
         else Holiday.location_id == location_id,
+        Holiday.legal_entity_id.is_(None)
+        if legal_entity_id is None
+        else Holiday.legal_entity_id == legal_entity_id,
     )
     if exclude is not None:
         stmt = stmt.where(Holiday.id != exclude)
@@ -208,6 +268,7 @@ async def _view(session: AsyncSession, user: User, holiday: Holiday) -> HolidayR
     return _read(
         holiday,
         locations=await _location_names(session, user),
+        entities=await _entity_names(session, user),
         place=await _place(session, user),
         selected=await _selected_ids(session, user, holiday.year),
     )
@@ -219,12 +280,14 @@ async def create_holiday(
     state_code = payload.state_code.upper() if payload.state_code else None
     if payload.location_id is not None:
         await _location_state(session, user, payload.location_id)
+    await _check_entity(session, user, payload.legal_entity_id, payload.location_id)
     await _refuse_duplicate(
         session,
         user,
         on=payload.holiday_date,
         state_code=state_code,
         location_id=payload.location_id,
+        legal_entity_id=payload.legal_entity_id,
     )
     holiday = Holiday(
         tenant_id=user.tenant_id,
@@ -233,7 +296,9 @@ async def create_holiday(
         year=payload.holiday_date.year,
         state_code=state_code,
         location_id=payload.location_id,
+        legal_entity_id=payload.legal_entity_id,
         is_optional=payload.is_optional,
+        is_paid=payload.is_paid,
     )
     session.add(holiday)
     await session.flush()
@@ -277,7 +342,9 @@ async def update_holiday(
         "holiday_date": holiday.holiday_date.isoformat(),
         "state_code": holiday.state_code,
         "location_id": str(holiday.location_id) if holiday.location_id else None,
+        "legal_entity_id": str(holiday.legal_entity_id) if holiday.legal_entity_id else None,
         "is_optional": holiday.is_optional,
+        "is_paid": holiday.is_paid,
     }
 
     new_date = payload.holiday_date or holiday.holiday_date
@@ -300,12 +367,19 @@ async def update_holiday(
             )
         await _location_state(session, user, payload.location_id)
         state_code, location_id = None, payload.location_id
+    legal_entity_id = (
+        payload.legal_entity_id
+        if "legal_entity_id" in payload.model_fields_set
+        else holiday.legal_entity_id
+    )
+    await _check_entity(session, user, legal_entity_id, location_id)
     await _refuse_duplicate(
         session,
         user,
         on=new_date,
         state_code=state_code,
         location_id=location_id,
+        legal_entity_id=legal_entity_id,
         exclude=holiday.id,
     )
 
@@ -315,6 +389,9 @@ async def update_holiday(
     holiday.year = new_date.year
     holiday.state_code = state_code
     holiday.location_id = location_id
+    holiday.legal_entity_id = legal_entity_id
+    if payload.is_paid is not None:
+        holiday.is_paid = payload.is_paid
     dropped = 0
     if payload.is_optional is not None:
         if holiday.is_optional and not payload.is_optional:
@@ -382,7 +459,9 @@ async def delete_holiday(
             "holiday_date": holiday.holiday_date.isoformat(),
             "state_code": holiday.state_code,
             "location_id": str(holiday.location_id) if holiday.location_id else None,
+            "legal_entity_id": str(holiday.legal_entity_id) if holiday.legal_entity_id else None,
             "is_optional": holiday.is_optional,
+            "is_paid": holiday.is_paid,
             "opt_ins_dropped": opt_ins or 0,
         },
         summary=f"Removed holiday {holiday.name} on {holiday.holiday_date}",
@@ -430,7 +509,11 @@ async def select_optional(
         raise _conflict(f"{holiday.name} is not an optional holiday; it applies automatically.")
     place = await _place(session, user)
     if place is None or not holiday_applies(
-        holiday, state_code=place[1], location_id=place[0], include_optional=True
+        holiday,
+        state_code=place[1],
+        location_id=place[0],
+        legal_entity_id=place[2],
+        include_optional=True,
     ):
         raise _conflict(f"{holiday.name} is not offered at your work location.")
     today = await core.today_for(session, user, employee)

@@ -76,6 +76,12 @@ is on approved leave this week." — never the answer itself, and never a guess 
 about the person's own leave balance, payslip, salary, profile, attendance or manager go to \
 my_record; counting and reporting questions go to report_question, or to headcount when it \
 is listed and the question is how many people work here or are on payroll.
+- When they are listed: what is waiting on the person's approval goes to my_approvals; a \
+month's payroll cost, net pay, PF, ESI, PT or TDS goes to payroll_summary; the company's or a \
+department's total salary or CTC goes to salary_totals; who joined, who left, who is on \
+notice and attrition go to people_changes; birthdays, work anniversaries, probation ends and \
+last working days go to people_dates; HR helpdesk tickets (salary queries, letters, \
+grievances) go to hr_tickets, and IT tickets and assets go to the helpdesk_ tools.
 - A question about another named person (their salary, leave, attendance, manager or \
 profile) goes to employee_record when it is listed. When it is not listed, the person may \
 only ask about their own record: say so plainly, and never answer it with my_record.
@@ -142,6 +148,7 @@ class Plan(BaseModel):
     status: str = "none"
     scope: str = "none"
     person_lookup: str = "none"
+    kind: str = "none"
     confidence: float = 0.0
 
     @field_validator("confidence")
@@ -163,6 +170,7 @@ class Plan(BaseModel):
             # Only a pick from a list names a person by id, never the model.
             "employee_id": "",
             "person_lookup": self.person_lookup,
+            "kind": self.kind,
         }
 
 

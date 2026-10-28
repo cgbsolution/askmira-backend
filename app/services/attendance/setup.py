@@ -66,6 +66,7 @@ _SHIFT_FIELDS = (
     "full_day_threshold_minutes",
     "is_night_shift",
     "weekly_off_days",
+    "alternate_off_weeks",
     "allowance_per_day",
     "allowance_name",
     "min_headcount",

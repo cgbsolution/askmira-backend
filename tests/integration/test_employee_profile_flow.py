@@ -157,11 +157,10 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     )
     assert raised.status_code == 201, raised.text
     request_id = raised.json()["id"]
-    # The employee reads their own request back masked, with no ciphertext.
-    assert raised.json()["proposed"]["pan"] == "XXXXXX234F"
-    assert raised.json()["proposed"]["aadhaar_last4"] == "XXXX XXXX 0124"
+    # The employee reads their own request back in full (no masking), with no ciphertext.
+    assert raised.json()["proposed"]["pan"] == "ABCPE1234F"
+    assert raised.json()["proposed"]["aadhaar"] == "2345 6789 0124"
     assert "aadhaar_encrypted" not in raised.json()["proposed"]
-    assert AADHAAR not in raised.text
 
     again = await client.post(
         "/api/v1/employees/me/change-requests",
@@ -215,18 +214,17 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     assert "ABCPE1234F" not in str(decided[0].changes)
     assert AADHAAR not in str(decided[0].changes)
 
-    # Reads: masked for the person, full for HR.
+    # Reads: in full for the person and for HR — nothing is masked.
     mine = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
     assert mine.json()["statutory"] == {
-        "pan": "XXXXXX234F",
+        "pan": "ABCPE1234F",
         "uan": None,
         "pf_number": None,
         "esi_number": None,
-        "aadhaar": "XXXX XXXX 0124",
-        "aadhaar_full": False,
-        "masked": True,
+        "aadhaar": "2345 6789 0124",
+        "aadhaar_full": True,
+        "masked": False,
     }
-    assert AADHAAR not in mine.text
     theirs = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(hr_user))
     assert theirs.json()["statutory"]["pan"] == "ABCPE1234F"
     assert theirs.json()["statutory"]["aadhaar"].replace(" ", "") == AADHAAR
@@ -250,7 +248,6 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
         },
     )
     assert bank.status_code == 201, bank.text
-    assert "001234567890" not in bank.text
     ok = await client.post(
         f"/api/v1/employees/change-requests/{bank.json()['id']}/approve",
         headers=_auth(hr_user),
@@ -264,8 +261,8 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     assert account.account_number != "001234567890"
     assert decrypt_secret(account.account_number, tenant.id) == "001234567890"
     profile = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
-    assert profile.json()["bank_account"]["account_number_masked"] == "XXXXXX7890"
-    assert profile.json()["bank_account"]["account_number"] is None
+    # The person sees their own account number in full.
+    assert profile.json()["bank_account"]["account_number"] == "001234567890"
     # Admin/HR see the full number, which salary transfers and bank queries need.
     for_hr = await client.get(f"/api/v1/employees/{employee.id}/profile", headers=_auth(hr_user))
     assert for_hr.json()["bank_account"]["account_number"] == "001234567890"
@@ -275,11 +272,10 @@ async def test_a_change_request_is_applied_when_hr_approves_it(
     assert history.status_code == 200, history.text
     banked = [r for r in history.json() if r["section"] == "bank_account"]
     assert banked and banked[0]["proposed"]["account_number"] == "001234567890"
-    # The employee's own history still shows only the last four.
+    # The employee's own history shows it in full too.
     own = await client.get("/api/v1/employees/me/change-requests", headers=_auth(me))
     own_bank = [r for r in own.json() if r["section"] == "bank_account"]
-    assert "account_number" not in own_bank[0]["proposed"]
-    assert "001234567890" not in own.text
+    assert own_bank[0]["proposed"]["account_number"] == "001234567890"
 
     # A colleague sees none of it.
     colleague = await _login(
@@ -672,10 +668,9 @@ async def test_hr_enters_the_full_aadhaar_on_a_last_four_only_record(
     rows = (await session.scalars(select(AuditLog))).all()
     assert all(AADHAAR not in str(row.changes) for row in rows)
 
-    # The employee still sees the last four only.
+    # The employee now sees the full number too.
     mine = await client.get("/api/v1/employees/me/profile", headers=_auth(me))
-    assert mine.json()["statutory"]["aadhaar"] == "XXXX XXXX 0124"
-    assert AADHAAR not in mine.text
+    assert mine.json()["statutory"]["aadhaar"] == "2345 6789 0124"
 
     # Sending the same full number again is "nothing to change".
     same = await client.post(

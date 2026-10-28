@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+#: How a month's salary is divided into days (see `services/payroll/salary_days`).
+SalaryDaysBasis = Literal["calendar", "fixed", "working_days"]
 
 #: ISO 3166-2:IN subdivision codes, including the older spellings still found in
 #: payroll data (CT/CG, OR/OD, UT/UK, TG/TS, DN/DD merged into DH). A location's
@@ -100,6 +104,12 @@ class LegalEntityFields(BaseModel):
     registered_address: str | None = Field(default=None, max_length=512)
     #: Professional Tax registration number per state code.
     pt_registrations: dict[str, str] | None = None
+    #: The work week for this company's people with no shift of their own.
+    default_shift_id: uuid.UUID | None = None
+    #: How a month's salary is divided into days: calendar | fixed | working_days.
+    salary_days_basis: SalaryDaysBasis | None = None
+    #: The divisor for `fixed`, usually 26 or 30.
+    salary_fixed_days: int | None = Field(default=None, ge=20, le=31)
 
     @field_validator("pan", "tan", "gstin", mode="before")
     @classmethod
@@ -117,6 +127,12 @@ class LegalEntityFields(BaseModel):
 class LegalEntityCreate(LegalEntityFields):
     name: str = Field(min_length=1, max_length=255)
     code: str = Field(min_length=1, max_length=32, pattern=CODE)
+
+    @model_validator(mode="after")
+    def _fixed_needs_days(self) -> LegalEntityCreate:
+        if self.salary_days_basis == "fixed" and self.salary_fixed_days is None:
+            raise ValueError("Say how many days a month is divided by, such as 26 or 30.")
+        return self
 
 
 class LegalEntityUpdate(LegalEntityFields):
@@ -141,6 +157,9 @@ class LegalEntityRead(BaseModel):
     pt_registrations: dict
     registered_address: str | None
     is_active: bool
+    default_shift_id: uuid.UUID | None = None
+    salary_days_basis: str = "calendar"
+    salary_fixed_days: int | None = None
 
 
 # ── Locations ───────────────────────────────────────────────────────────────

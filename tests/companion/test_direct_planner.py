@@ -85,12 +85,16 @@ def test_raising_a_ticket_points_to_the_form() -> None:
         plan = _plan(text)
         assert plan.tool is None and "Raise a ticket" in plan.reply
     without_helpdesk = [tool for tool in ALL if tool.group != "helpdesk_data"]
-    assert "CGB Helpdesk is not available" in _plan("raise a ticket", without_helpdesk).reply
-    assert _plan("my tickets", without_helpdesk).tool is None
+    # Without the IT helpdesk, a ticket is raised in AskMira's own HR helpdesk.
+    assert "HR replies on the ticket" in _plan("raise a ticket", without_helpdesk).reply
+    assert _plan("my tickets", without_helpdesk).tool == "hr_tickets"
+    neither = [tool for tool in without_helpdesk if tool.group != "hr_helpdesk"]
+    assert "CGB Helpdesk is not available" in _plan("raise a ticket", neither).reply
+    assert _plan("my tickets", neither).tool is None
 
 
-def test_policy_and_report_questions_wait_for_ai() -> None:
-    for text in ("What is the leave policy?", "How many people joined this year?"):
+def test_policy_questions_wait_for_ai() -> None:
+    for text in ("What is the leave policy?", "what is the notice period policy"):
         plan = _plan(text)
         assert plan.tool is None and "answered by AI" in plan.reply
 

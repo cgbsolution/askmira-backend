@@ -14,10 +14,11 @@ Three rules live here.
    the status change and the audit row — and refuses if the record moved
    since the request was raised, rather than overwriting a correction HR made
    in between.
-3. **Identifiers are masked on the way out for everyone except HR**. The full
-   Aadhaar number is kept encrypted and shown in full to HR only; everyone
-   else sees its last four. A bank account number also reaches HR in full
-   (salary transfers and bank queries need it); everyone else gets its last four.
+3. **Identifiers are shown in full to everyone who may see the profile** — the
+   person and HR (the user's call, 2026-10-28: no masking anywhere). The
+   Aadhaar and bank account numbers are still kept encrypted at rest. A record
+   saved before full Aadhaar numbers were kept has only its last four, shown
+   as such until HR enters or re-imports the full number.
 """
 
 from __future__ import annotations
@@ -672,9 +673,9 @@ async def read_profile(
         previous_employment=_parse(
             _LIST_SECTIONS[ProfileSection.PREVIOUS_EMPLOYMENT], stored.previous_employment, []
         ),
-        # Admin/HR see identifiers in full on every profile, their own included.
-        statutory=_statutory_read(employee, hr=hr),
-        bank_account=_bank_summary(account, user.tenant_id, hr=hr),
+        # Identifiers in full to whoever may read this profile (self or HR).
+        statutory=_statutory_read(employee, hr=True),
+        bank_account=_bank_summary(account, user.tenant_id, hr=True),
         pending_requests=pending,
         hiring_snapshot=(dict(stored.hiring_snapshot or {}) if hr and not is_self else None),
         direct_sections=direct,
@@ -785,8 +786,8 @@ async def _reads(
         employee = employees.get(row.employee_id)
         own = user.employee_id is not None and row.employee_id == user.employee_id
         pending = row.status is ProfileChangeStatus.PENDING
-        # HR sees identifiers in full, but not on their own request.
-        full = hr and not own
+        # Only the person and HR can list requests, and both see them in full.
+        full = True
         out.append(
             ChangeRequestRead(
                 id=row.id,
@@ -932,9 +933,7 @@ def _same_statutory(key: str, a: Any, b: Any, tenant_id: uuid.UUID) -> bool:
     return a == b
 
 
-def _unchanged(
-    section: ProfileSection, proposed: Any, current: Any, tenant_id: uuid.UUID
-) -> bool:
+def _unchanged(section: ProfileSection, proposed: Any, current: Any, tenant_id: uuid.UUID) -> bool:
     if section is ProfileSection.BANK_ACCOUNT:
         return (
             bool(current)

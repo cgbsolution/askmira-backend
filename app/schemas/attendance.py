@@ -225,6 +225,7 @@ class ShiftBrief(BaseModel):
     grace_in_minutes: int
     is_night_shift: bool
     weekly_off_days: list[int]
+    alternate_off_weeks: dict[str, list[int]] = Field(default_factory=dict)
 
 
 class CalendarHoliday(BaseModel):
@@ -475,6 +476,24 @@ def _check_weekdays(days: list[int]) -> list[int]:
     return sorted(set(days))
 
 
+def _check_alternate_weeks(value: dict[str, list[int]]) -> dict[str, list[int]]:
+    """`{"6": [2, 4]}`: ISO weekday to the weeks of the month it is off in."""
+    cleaned: dict[str, list[int]] = {}
+    for key, weeks in value.items():
+        if str(key) not in {"1", "2", "3", "4", "5", "6", "7"}:
+            raise ValueError("Alternate weekly offs are keyed by ISO weekday, 1 to 7.")
+        if any(week < 1 or week > 5 for week in weeks):
+            raise ValueError("Weeks of the month run from 1 to 5.")
+        unique = sorted(set(weeks))
+        if len(unique) == 5:
+            raise ValueError(
+                "Off in all five weeks is an every-week off. Tick it under weekly off days."
+            )
+        if unique:
+            cleaned[str(key)] = unique
+    return cleaned
+
+
 class ShiftBase(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     start_time: time
@@ -486,6 +505,8 @@ class ShiftBase(BaseModel):
     full_day_threshold_minutes: int = Field(ge=1, le=1440)
     is_night_shift: bool = False
     weekly_off_days: list[int] = Field(default_factory=list, max_length=7)
+    #: Off only in some weeks: `{"6": [2, 4]}` is 2nd and 4th Saturday off.
+    alternate_off_weeks: dict[str, list[int]] = Field(default_factory=dict, max_length=7)
     #: A per-day differential for working this shift, paid by payroll.
     allowance_per_day: Decimal | None = Field(default=None, gt=0, max_digits=10, decimal_places=2)
     allowance_name: str | None = Field(default=None, max_length=128)
@@ -503,8 +524,19 @@ class ShiftBase(BaseModel):
     def _weekdays(cls, value: list[int]) -> list[int]:
         return _check_weekdays(value)
 
+    @field_validator("alternate_off_weeks")
+    @classmethod
+    def _alternate(cls, value: dict[str, list[int]]) -> dict[str, list[int]]:
+        return _check_alternate_weeks(value)
+
     @model_validator(mode="after")
     def _consistent(self) -> ShiftBase:
+        # A weekday off every week has nothing to alternate.
+        self.alternate_off_weeks = {
+            key: weeks
+            for key, weeks in self.alternate_off_weeks.items()
+            if int(key) not in self.weekly_off_days
+        }
         if self.half_day_threshold_minutes >= self.full_day_threshold_minutes:
             raise ValueError("The half-day threshold must be below the full-day threshold.")
         if self.end_time <= self.start_time and not self.is_night_shift:
@@ -538,6 +570,7 @@ class ShiftRead(BaseModel):
     full_day_threshold_minutes: int
     is_night_shift: bool
     weekly_off_days: list[int]
+    alternate_off_weeks: dict[str, list[int]] = Field(default_factory=dict)
     active: bool
     is_default: bool = False
     allowance_per_day: Decimal | None = None

@@ -449,15 +449,15 @@ class ChangeRequestRejection(BaseModel):
 
 
 class StatutoryRead(BaseModel):
-    """Masked for everyone except HR, who see the full Aadhaar when it is on file."""
+    """In full for the person and HR. `masked` stays for older clients; always False."""
 
     pan: str | None
     uan: str | None
     pf_number: str | None
     esi_number: str | None
     aadhaar: str | None
-    #: True when `aadhaar` is the full number. False for anyone outside HR,
-    #: and for a record saved when only the last four were kept.
+    #: True when `aadhaar` is the full number; False only for a record saved
+    #: when just the last four were kept.
     aadhaar_full: bool = False
     masked: bool
 
@@ -468,7 +468,7 @@ class BankAccountSummary(BaseModel):
     ifsc: str
     account_holder_name: str
     account_number_masked: str | None
-    #: The full number, for admin/HR only; None for everyone else.
+    #: The full number, for whoever may read the profile (the person and HR).
     account_number: str | None = None
     verification_method: str
     verified_at: datetime | None
@@ -483,9 +483,7 @@ class ChangeRequestRead(BaseModel):
     section: ProfileSection
     section_label: str
     status: ProfileChangeStatus
-    #: What is asked for and what was there when it was asked. Statutory
-    #: values are masked for anyone outside HR; an account number is its last
-    #: four, except for HR, who get it in full.
+    #: What is asked for and what was there when it was asked, identifiers in full.
     proposed: dict[str, Any]
     current_snapshot: dict[str, Any]
     reason: str

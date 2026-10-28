@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
-from app.models.attendance import AttendancePeriodLock, Shift, ShiftAssignment
+from app.models.attendance import AttendancePeriodLock, Shift, ShiftAssignment, shift_off_on
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import LeaveRequest, LeaveRequestStatus
@@ -116,7 +116,7 @@ async def _shift_on(
     """The shift they work that day; None on a week off, rostered or weekly."""
     resolver = await ShiftResolver.load(session, user, [employee_id], on, on)
     shift = resolver.resolve(employee_id, on).shift
-    if shift is None or on.isoweekday() in (shift.weekly_off_days or []):
+    if shift is None or shift_off_on(shift, on):
         return None
     return shift
 
@@ -651,7 +651,7 @@ async def coverage(
         counts: dict[uuid.UUID, dict[str, int]] = {}
         for employee_id in people:
             shift = resolver.resolve(employee_id, cursor).shift
-            if shift is None or cursor.isoweekday() in (shift.weekly_off_days or []):
+            if shift is None or shift_off_on(shift, cursor):
                 continue
             if work_area and (shift.work_area or "").lower() != work_area.strip().lower():
                 continue

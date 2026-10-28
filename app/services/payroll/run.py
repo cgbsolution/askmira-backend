@@ -67,6 +67,7 @@ from app.services import audit
 from app.services.attendance import service as attendance_service
 from app.services.attendance.service import AttendanceLockError
 from app.services.notifications.dispatch import notify
+from app.services.payroll import salary_days as salary_days_rules
 from app.services.payroll import statutory_service
 from app.services.payroll.engine import (
     PayrollInput,
@@ -596,6 +597,36 @@ async def compute_run(
     )
 
     working_days = Decimal((end - start).days + 1)
+    # How this company divides a month's salary into days (calendar, fixed or
+    # scheduled working days). The work week per person comes from the same
+    # resolver attendance uses, so a five-day, six-day or alternate-Saturday
+    # week gives each person their own divisor.
+    entity = await session.scalar(
+        tenant_scoped(
+            select(LegalEntity).where(LegalEntity.id == run.legal_entity_id), LegalEntity, user
+        )
+    )
+    days_basis = entity.salary_days_basis if entity is not None else salary_days_rules.CALENDAR
+    fixed_days = entity.salary_fixed_days if entity is not None else None
+    shift_plans = (
+        await attendance_service.ShiftResolver.load(
+            session, user, [e.id for e in employees], start, end
+        )
+        if days_basis == salary_days_rules.WORKING_DAYS
+        else None
+    )
+    days_notices: list[str] = []
+    if entity is not None and days_basis == salary_days_rules.FIXED and fixed_days:
+        days_notices.append(
+            f"{entity.name} divides a month's salary by {fixed_days} days, whatever the month's "
+            "length. A day's loss of pay is the monthly amount divided by that."
+        )
+    elif entity is not None and days_basis == salary_days_rules.WORKING_DAYS:
+        days_notices.append(
+            f"{entity.name} divides a month's salary by each person's scheduled working days "
+            "— the month less their weekly offs (five-day, six-day or alternate Saturdays). "
+            "Holidays are paid working days."
+        )
     payslips: list[Payslip] = []
     variances: list[dict] = []
     review_flags: list[str] = []
@@ -674,6 +705,26 @@ async def compute_run(
         except AttendanceLockError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+        divisor = salary_days_rules.salary_days(
+            days_basis,
+            period_start=start,
+            period_end=end,
+            window=window,
+            lop_days=lop,
+            fixed_days=fixed_days,
+            is_off=(
+                (
+                    lambda day, emp=employee.id, plans=shift_plans: plans.resolve(emp, day).is_off(
+                        day
+                    )
+                )
+                if shift_plans is not None
+                else None
+            ),
+        )
+        if divisor.note:
+            days_notices.append(f"{employee.employee_code}: {divisor.note}")
+
         employee_rules = {key: value for key, value in rule_sets.items() if ":" not in key}
 
         # Professional Tax is a state levy. Where the employee's work state
@@ -746,9 +797,9 @@ async def compute_run(
                     employee_salary=salary,
                     period_start=start,
                     period_end=end,
-                    working_days=working_days,
-                    lop_days=lop,
-                    not_employed_days=outside,
+                    working_days=divisor.working_days,
+                    lop_days=divisor.lop_days,
+                    not_employed_days=divisor.not_employed_days,
                     rule_sets=employee_rules,
                     pf_election=pf_election,
                     esi_contributing_at_period_start=contributing_at_start,
@@ -934,6 +985,15 @@ async def compute_run(
                 "message": message,
             }
             for message in employment_notices
+        ]
+        + [
+            {
+                "kind": "notice",
+                "key": "salary_days",
+                "label": "Salary days",
+                "message": message,
+            }
+            for message in days_notices
         ]
         + [
             {

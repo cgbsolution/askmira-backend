@@ -48,6 +48,24 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TenantMixin, TimestampMixin, UUIDMixin
 
 
+def week_of_month(day: date) -> int:
+    """Which week of its month a date is in, by date: 1-7 is 1, 8-14 is 2, ...
+
+    This is how Indian offices count "2nd and 4th Saturday": the 2nd Saturday
+    is always the one on the 8th to the 14th, whatever weekday the month began.
+    """
+    return (day.day - 1) // 7 + 1
+
+
+def shift_off_on(shift: object, day: date) -> bool:
+    """Whether `day` is a weekly off on a shift: every-week offs, then alternate weeks."""
+    weekday = day.isoweekday()
+    if weekday in (getattr(shift, "weekly_off_days", None) or []):
+        return True
+    weeks = (getattr(shift, "alternate_off_weeks", None) or {}).get(str(weekday)) or []
+    return week_of_month(day) in weeks
+
+
 class PunchDirection(str, enum.Enum):
     IN = "in"
     OUT = "out"
@@ -142,8 +160,16 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     is_night_shift: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    # ISO weekday numbers, Monday = 1 through Sunday = 7.
+    # ISO weekday numbers, Monday = 1 through Sunday = 7. Off every week.
     weekly_off_days: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list, nullable=False)
+    #: Weekdays off only in some weeks of the month — the alternate-Saturday
+    #: pattern. ISO weekday (as a string) to the week numbers it is off in,
+    #: counted by date: days 1-7 are week 1, 8-14 week 2 and so on. So
+    #: `{"6": [2, 4]}` is "2nd and 4th Saturday off". A weekday already in
+    #: `weekly_off_days` is off every week whatever this says.
+    alternate_off_weeks: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False
+    )
 
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -177,6 +203,10 @@ class Shift(Base, UUIDMixin, TenantMixin, TimestampMixin):
     required_course_ids: Mapped[list] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )
+
+    def is_off_on(self, day: date) -> bool:
+        """Whether `day` is a weekly off on this shift, alternate weeks included."""
+        return shift_off_on(self, day)
 
     def __repr__(self) -> str:
         return f"<Shift {self.code} {self.start_time}-{self.end_time}>"

@@ -108,7 +108,7 @@ async def qualifying_label(
     holidays = await core._holidays(session, user, employee, worked, worked)
     if worked in holidays:
         return holidays[worked]
-    if worked.isoweekday() in await core._weekly_off_days(session, user, employee.id, worked):
+    if (await core._weekly_off_check(session, user, employee.id, worked, worked))(worked):
         return WEEKLY_OFF
     return None
 

@@ -61,7 +61,7 @@ ENDPOINTS: dict[str, str] = {
         "working record only, without pay, documents or tickets."
     ),
     "GET /employees/{employee_id}/profile": (
-        "permissions: the person themselves and HR; identifiers masked for everyone but HR."
+        "permissions: the person themselves and HR; identifiers in full for both."
     ),
     "GET /employees/{employee_id}/change-requests": (
         "permissions: the person's own requests, or HR."

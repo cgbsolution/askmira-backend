@@ -8,8 +8,9 @@ Maharashtra, and an optional holiday became a holiday for all.
 
 A holiday applies to an employee when it is mandatory and either national
 (no state, no location), for the state of their work location, or for their
-work location itself. An optional (restricted) holiday applies only to the
-people who opted in to it (`OptionalHolidaySelection`), and only where it would
+work location itself — and, when it names a legal entity, only to that
+company's people. An optional (restricted) holiday applies only to the people
+who opted in to it (`OptionalHolidaySelection`), and only where it would
 otherwise apply to them.
 """
 
@@ -28,7 +29,7 @@ from app.models.leave import Holiday, OptionalHolidaySelection
 from app.models.org import Location
 from app.models.user import User
 
-__all__ = ["holiday_applies", "holidays_for_employees"]
+__all__ = ["holiday_applies", "holiday_records_for_employees", "holidays_for_employees"]
 
 
 def holiday_applies(
@@ -36,6 +37,7 @@ def holiday_applies(
     *,
     state_code: str | None,
     location_id: uuid.UUID | None,
+    legal_entity_id: uuid.UUID | None = None,
     include_optional: bool = False,
 ) -> bool:
     """Whether a holiday covers someone at this state and location.
@@ -45,6 +47,8 @@ def holiday_applies(
     an opt-in).
     """
     if holiday.is_optional and not include_optional:
+        return False
+    if holiday.legal_entity_id is not None and holiday.legal_entity_id != legal_entity_id:
         return False
     if holiday.location_id is not None:
         return holiday.location_id == location_id
@@ -60,11 +64,28 @@ async def holidays_for_employees(
     start: date,
     end: date,
 ) -> dict[uuid.UUID, dict[date, str]]:
-    """Holidays per employee over a date range, as `{id: {date: name}}`.
+    """Holidays per employee over a date range, as `{id: {date: name}}`."""
+    records = await holiday_records_for_employees(session, user, employee_ids, start, end)
+    return {
+        employee_id: {day: holiday.name for day, holiday in days.items()}
+        for employee_id, days in records.items()
+    }
 
-    Mandatory holidays for their place, plus the optional ones they opted in
-    to. Three queries regardless of headcount: the employees' locations, the
-    tenant's holidays in the range, and the opt-ins in the range.
+
+async def holiday_records_for_employees(
+    session: AsyncSession,
+    user: User,
+    employee_ids: list[uuid.UUID],
+    start: date,
+    end: date,
+) -> dict[uuid.UUID, dict[date, Holiday]]:
+    """Holidays per employee over a date range, as `{id: {date: Holiday}}`.
+
+    Mandatory holidays for their place and company, plus the optional ones
+    they opted in to. Three queries regardless of headcount: the employees'
+    places, the tenant's holidays in the range, and the opt-ins in the range.
+    Where two holidays fall on one date for someone, a paid one wins: the day
+    is never less paid because a second calendar also lists it.
     """
     if not employee_ids:
         return {}
@@ -72,7 +93,9 @@ async def holidays_for_employees(
     places = (
         await session.execute(
             tenant_scoped(
-                select(Employee.id, Employee.location_id, Location.state_code)
+                select(
+                    Employee.id, Employee.location_id, Location.state_code, Employee.legal_entity_id
+                )
                 .outerjoin(Location, Location.id == Employee.location_id)
                 .where(Employee.id.in_(employee_ids)),
                 Employee,
@@ -117,18 +140,27 @@ async def holidays_for_employees(
             ).all()
         }
 
-    result: dict[uuid.UUID, dict[date, str]] = defaultdict(dict)
-    for employee_id, location_id, state_code in places:
+    result: dict[uuid.UUID, dict[date, Holiday]] = defaultdict(dict)
+    for employee_id, location_id, state_code, legal_entity_id in places:
         for holiday in holidays:
             if holiday.is_optional:
                 applies = (employee_id, holiday.id) in chosen and holiday_applies(
                     holiday,
                     state_code=state_code,
                     location_id=location_id,
+                    legal_entity_id=legal_entity_id,
                     include_optional=True,
                 )
             else:
-                applies = holiday_applies(holiday, state_code=state_code, location_id=location_id)
-            if applies:
-                result[employee_id][holiday.holiday_date] = holiday.name
+                applies = holiday_applies(
+                    holiday,
+                    state_code=state_code,
+                    location_id=location_id,
+                    legal_entity_id=legal_entity_id,
+                )
+            if not applies:
+                continue
+            already = result[employee_id].get(holiday.holiday_date)
+            if already is None or (holiday.is_paid and not already.is_paid):
+                result[employee_id][holiday.holiday_date] = holiday
     return {employee_id: dict(result.get(employee_id, {})) for employee_id in employee_ids}

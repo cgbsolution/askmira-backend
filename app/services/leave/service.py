@@ -17,7 +17,7 @@ on yesterday, and a leave that "has not started yet" by UTC has started here.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
-from app.models.attendance import ShiftAssignment
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import (
@@ -287,26 +286,27 @@ async def _any_leave_type(session: AsyncSession, user: User, leave_type_id: uuid
     return leave_type
 
 
-async def _weekly_off_days(
-    session: AsyncSession, user: User, employee_id: uuid.UUID, on: date
-) -> tuple[int, ...]:
-    """The employee's shift weekly offs, or Saturday and Sunday without a shift."""
-    assignment = await session.scalar(
-        tenant_scoped(
-            select(ShiftAssignment)
-            .where(
-                ShiftAssignment.employee_id == employee_id,
-                ShiftAssignment.effective_from <= on,
-                or_(ShiftAssignment.effective_to.is_(None), ShiftAssignment.effective_to >= on),
-            )
-            .order_by(ShiftAssignment.effective_from.desc()),
-            ShiftAssignment,
-            user,
-        )
-    )
-    if assignment is not None and assignment.shift.weekly_off_days:
-        return tuple(assignment.shift.weekly_off_days)
-    return engine.DEFAULT_WEEKLY_OFF_DAYS
+async def _weekly_off_check(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, start: date, end: date
+) -> Callable[[date], bool]:
+    """Whether each date is a weekly off for the employee.
+
+    The same resolver attendance uses — their shift, roster, legal entity work
+    week or the workspace default — so leave and attendance never disagree
+    about a day, alternate Saturdays included. With no shift at all, Saturday
+    and Sunday.
+    """
+    from app.services.attendance.service import ShiftResolver
+
+    resolver = await ShiftResolver.load(session, user, [employee_id], start, end)
+
+    def is_off(day: date) -> bool:
+        plan = resolver.resolve(employee_id, day)
+        if plan.shift is None and not plan.roster_week_off:
+            return day.isoweekday() in engine.DEFAULT_WEEKLY_OFF_DAYS
+        return plan.is_off(day)
+
+    return is_off
 
 
 async def _holidays(
@@ -700,7 +700,9 @@ async def _assess(
 ) -> tuple[engine.DayCount, engine.Assessment, engine.Balance | None, LeaveType, Decimal]:
     leave_type = await _leave_type(session, user, payload.leave_type_id)
     attachments.require_leave_document_key(user, payload.document_url)
-    weekly_offs = await _weekly_off_days(session, user, employee.id, payload.start_date)
+    weekly_offs = await _weekly_off_check(
+        session, user, employee.id, payload.start_date, payload.end_date
+    )
     holidays = await _holidays(session, user, employee, payload.start_date, payload.end_date)
     policy = await _policy(session, user, employee, leave_type.id, payload.start_date)
     try:
