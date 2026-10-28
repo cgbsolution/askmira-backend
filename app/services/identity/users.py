@@ -60,6 +60,7 @@ __all__ = [
     "create_user",
     "delete_login",
     "end_logins_for_employee",
+    "follow_work_email",
     "list_users",
     "module_state",
     "resend_welcome",
@@ -725,6 +726,86 @@ async def end_logins_for_employee(
         login.is_active = False
         login.tokens_valid_from = now
     return [login.email for login in logins]
+
+
+async def follow_work_email(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    *,
+    old: str,
+    new: str,
+    request: Request | None = None,
+) -> str | None:
+    """Move an employee's login to their new work email, in the caller's transaction.
+
+    Only a login that was on the old work email moves; one deliberately kept on
+    another address (an admin signing in with a personal one) is left alone.
+    The password, role and sessions stay: it is the same person. Any
+    set-password link still outstanding went to the old address, so it is
+    retired; a welcome can be resent to the new one.
+
+    Only an admin may move a login: a sub-admin who could point somebody's
+    login at an inbox of their own could then take it over with Forgot password.
+
+    Returns the login's previous email when it moved.
+    """
+    from app.services.auth import email_in_use, retire_password_links
+
+    new = new.strip().lower()
+    if new == old.strip().lower():
+        return None
+    login = await session.scalar(
+        tenant_scoped(
+            select(User).where(
+                User.employee_id == employee.id,
+                User.role != UserRole.SUPER_ADMIN,
+                func.lower(User.email) == old.strip().lower(),
+            ),
+            User,
+            user,
+        )
+    )
+    if login is None:
+        return None
+    if user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        raise _forbidden(
+            f"{employee.first_name} signs in with {login.email}, so changing this email moves "
+            "their login too. Only an admin can do that; ask an admin to change it."
+        )
+    if await email_in_use(session, new):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{new} already signs in to AskMira as another login, and each person has one "
+                "login. Use a different email, or delete that login first."
+            ),
+        )
+
+    previous = login.email
+    tenant = await _tenant(session, user)
+    break_glass = previous.lower() == _break_glass_email(tenant)
+    if break_glass:
+        tenant.settings = {**(tenant.settings or {}), "break_glass_email": new}
+    login.email = new
+    login.is_email_verified = False
+    await retire_password_links(session, login)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.PERMISSION_CHANGE,
+        entity_type="user",
+        entity_id=login.id,
+        actor=user,
+        changes={
+            "email": {"from": previous, "to": new},
+            "reason": f"Work email of {employee.employee_code} changed",
+            **({"break_glass_email": {"from": previous, "to": new}} if break_glass else {}),
+        },
+        summary=f"Login email moved from {previous} to {new} with the work email",
+        request=request,
+    )
+    return previous
 
 
 # ── Modules ─────────────────────────────────────────────────────────────────

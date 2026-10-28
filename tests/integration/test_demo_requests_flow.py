@@ -108,6 +108,17 @@ async def test_a_request_is_stored_and_the_platform_team_is_told(
     assert "priya@newco-demo.com" in email.rendered_body
 
 
+async def test_interest_in_the_connected_apps_is_kept(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    apps = ["expenses", "helpdesk", "crm", "procurement"]
+    response = await client.post(URL, json=_form(interests=["payroll", *apps]))
+    assert response.status_code == 201, response.text
+    row = await session.scalar(select(DemoRequest))
+    assert row is not None
+    assert row.interests == ["payroll", *apps]
+
+
 async def test_names_in_any_script_are_accepted(
     client: httpx.AsyncClient, session: AsyncSession
 ) -> None:

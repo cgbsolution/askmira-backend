@@ -566,18 +566,10 @@ def web_app_url() -> str:
     return base.rstrip("/")
 
 
-async def issue_password_link(
-    session: AsyncSession,
-    user: User,
-    *,
-    lifetime: timedelta,
-    request: Request | None = None,
-) -> str:
-    """Mint a single-use set-password token and return it; only its hash is kept.
+async def retire_password_links(session: AsyncSession, user: User) -> datetime:
+    """Expire every set-password link of this login that is still outstanding.
 
-    Only the newest link works: minting one retires any earlier link still
-    outstanding. A forgotten-password email and a new login's welcome email
-    both go through here, and `reset_password` redeems either.
+    Returns the moment used, so a caller minting a new link can date it.
     """
     now = datetime.now(UTC)
     outstanding = (
@@ -591,7 +583,23 @@ async def issue_password_link(
     ).all()
     for row in outstanding:
         row.expires_at = now
+    return now
 
+
+async def issue_password_link(
+    session: AsyncSession,
+    user: User,
+    *,
+    lifetime: timedelta,
+    request: Request | None = None,
+) -> str:
+    """Mint a single-use set-password token and return it; only its hash is kept.
+
+    Only the newest link works: minting one retires any earlier link still
+    outstanding. A forgotten-password email and a new login's welcome email
+    both go through here, and `reset_password` redeems either.
+    """
+    now = await retire_password_links(session, user)
     token = secrets.token_urlsafe(32)
     session.add(
         PasswordResetToken(

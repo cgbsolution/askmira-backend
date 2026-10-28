@@ -522,6 +522,18 @@ async def update_employee(
         raise _unprocessable("The date of exit cannot be before the date of joining")
 
     diff = _diff(employee, changes)
+    if changes.get("work_email") is not None:
+        # Their login signs in with this address; it follows, or the edit fails.
+        from app.services.identity import users as user_admin
+
+        await user_admin.follow_work_email(
+            session,
+            user,
+            employee,
+            old=employee.work_email,
+            new=str(changes["work_email"]),
+            request=request,
+        )
     # A job field changed here is still a lifecycle change: filed as an
     # effected event so the history and the as-of view include it.
     from app.services.lifecycle import service as lifecycle

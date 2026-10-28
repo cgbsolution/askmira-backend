@@ -30,7 +30,19 @@ __all__ = [
 
 COMPANY_SIZES = ("1-50", "51-200", "201-500", "501-1,000", "1,000+")
 ROLES = ("HR or People", "Finance or Payroll", "Founder or Leadership", "IT", "Other")
-INTERESTS = ("payroll", "attendance", "core_hr", "hiring", "performance", "engagement", "ai")
+INTERESTS = (
+    "payroll",
+    "attendance",
+    "core_hr",
+    "hiring",
+    "performance",
+    "engagement",
+    "ai",
+    "expenses",
+    "helpdesk",
+    "crm",
+    "procurement",
+)
 TOPICS = ("demo", "pricing", "partnership", "other")
 
 #: Space, full stop, straight and curly apostrophes, hyphen.
@@ -70,7 +82,19 @@ class DemoRequestCreate(BaseModel):
         Literal["HR or People", "Finance or Payroll", "Founder or Leadership", "IT", "Other"] | None
     ) = None
     interests: list[
-        Literal["payroll", "attendance", "core_hr", "hiring", "performance", "engagement", "ai"]
+        Literal[
+            "payroll",
+            "attendance",
+            "core_hr",
+            "hiring",
+            "performance",
+            "engagement",
+            "ai",
+            "expenses",
+            "helpdesk",
+            "crm",
+            "procurement",
+        ]
     ] = Field(default_factory=list, max_length=len(INTERESTS))
     message: str | None = Field(default=None, max_length=1000)
     topic: Literal["demo", "pricing", "partnership", "other"] = "demo"
