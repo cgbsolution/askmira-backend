@@ -57,9 +57,7 @@ __all__ = [
 #: What `kind` narrows the approvals inbox to, by the inbox's source keys.
 APPROVAL_KINDS: dict[str, frozenset[str]] = {
     "leave": frozenset({"leave", "leave_comp_off"}),
-    "attendance": frozenset(
-        {"attendance_regularisation", "overtime", "shift_swap", "timesheet"}
-    ),
+    "attendance": frozenset({"attendance_regularisation", "overtime", "shift_swap", "timesheet"}),
     "expense": frozenset(
         {
             "expense_claim",
@@ -69,9 +67,7 @@ APPROVAL_KINDS: dict[str, frozenset[str]] = {
             "reimbursement_claim",
         }
     ),
-    "payroll": frozenset(
-        {"payroll_adjustment", "loan", "settlement", "payroll_run", "tax_proof"}
-    ),
+    "payroll": frozenset({"payroll_adjustment", "loan", "settlement", "payroll_run", "tax_proof"}),
     "hiring": frozenset({"requisition", "offer"}),
     "exit": frozenset({"resignation", "clearance_task", "settlement"}),
     "people": frozenset(
@@ -240,14 +236,7 @@ async def approvals(
     for item in items:
         counts[item.source_label] += 1
     rows = [
-        [
-            item.source_label,
-            item.title,
-            item.subject_name or "—",
-            item.detail or "—",
-            f"{item.submitted_at:%d %b %Y}",
-        ]
-        for item in items[:25]
+        [item.title, item.subject_name or "—", f"{item.submitted_at:%d %b}"] for item in items[:25]
     ]
     more = f" · first 25 of {len(items)} shown" if len(items) > 25 else ""
     return [
@@ -255,7 +244,7 @@ async def approvals(
             "Waiting on you",
             heading=f"{len(items)} item(s) to decide" + (f" · {label}" if label else ""),
             figures=[(name, str(count)) for name, count in sorted(counts.items())],
-            columns=["Type", "What", "Who", "Detail", "Submitted"],
+            columns=["What", "Who", "Submitted"],
             rows=rows,
             note=f"Oldest first{more}. Each is decided on its own page.",
             open_href="/approvals",
@@ -281,8 +270,11 @@ async def payroll_summary(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """A month's payroll: runs, people paid, gross, deductions, net, cost and statutory dues."""
     if not await may_view(session, user, "payroll"):
-        return [_notice("Payroll figures are for admins and sub-admins who may view payroll.",
-                        "warning")], {}
+        return [
+            _notice(
+                "Payroll figures are for admins and sub-admins who may view payroll.", "warning"
+            )
+        ], {}
 
     named = _parse(inputs.get("from")) or _parse(inputs.get("to"))
     if named is not None:
@@ -312,9 +304,7 @@ async def payroll_summary(
             tenant_scoped(
                 select(PayrollRun)
                 .where(period, PayrollRun.status != PayrollRunStatus.CANCELLED)
-                .order_by(
-                    PayrollRun.period_year, PayrollRun.period_month, PayrollRun.created_at
-                ),
+                .order_by(PayrollRun.period_year, PayrollRun.period_month, PayrollRun.created_at),
                 PayrollRun,
                 user,
             )
@@ -395,14 +385,11 @@ async def payroll_summary(
         rows.append(
             [
                 f"{date(run.period_year, run.period_month, 1):%b %Y}",
-                entities.get(run.legal_entity_id, "—"),
+                *([entities.get(run.legal_entity_id, "—")] if len(entities) > 1 else []),
                 _RUN_TYPE.get(run.run_type, run.run_type.value),
                 _RUN_STATUS.get(run.status, run.status.value),
                 figures["people"],
-                format_inr(figures["gross"]),
-                format_inr(figures["deductions"]),
                 format_inr(figures["net"]),
-                format_inr(figures["cost"]),
             ]
         )
     paid = await session.scalar(
@@ -441,8 +428,14 @@ async def payroll_summary(
                 ("Professional tax", format_inr(total["pt"])),
                 ("TDS", format_inr(total["tds"])),
             ],
-            columns=["Month", "Entity", "Run", "Status", "People", "Gross", "Deductions", "Net",
-                     "Cost to company"],
+            columns=[
+                "Month",
+                *(["Entity"] if len(entities) > 1 else []),
+                "Run",
+                "Status",
+                "People",
+                "Net pay",
+            ],
             rows=rows,
             note=" ".join(notes),
             open_href="/payroll",
@@ -456,8 +449,9 @@ async def salary_totals(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """What the salaries in force today add up to, company-wide and by department."""
     if not await may_view(session, user, "payroll"):
-        return [_notice("Salary figures are for admins and sub-admins who may view payroll.",
-                        "warning")], {}
+        return [
+            _notice("Salary figures are for admins and sub-admins who may view payroll.", "warning")
+        ], {}
     in_force = and_(
         EmployeeSalary.effective_from <= today,
         or_(EmployeeSalary.effective_to.is_(None), EmployeeSalary.effective_to >= today),
@@ -482,8 +476,11 @@ async def salary_totals(
         )
     ).all()
     if not rows:
-        return [_notice("No salary is in force today for anyone employed. Set them up in the "
-                        "Salary master.")], {}
+        return [
+            _notice(
+                "No salary is in force today for anyone employed. Set them up in the Salary master."
+            )
+        ], {}
     # One salary per person: the first in force (overlaps are refused when saving).
     per_person: dict[uuid.UUID, tuple[uuid.UUID | None, Decimal]] = {}
     for row in rows:
@@ -618,10 +615,14 @@ async def people_changes(
         cards.append(
             _table(
                 "Joiners",
-                ["Name", "Code", "Designation", "Department", "Date of joining"],
+                ["Name", "Designation", "Department", "Date of joining"],
                 [
-                    [p.full_name, p.employee_code, p.designation or "—", dept(p),
-                     _day(p.date_of_joining)]
+                    [
+                        p.full_name,
+                        p.designation or "—",
+                        dept(p),
+                        _day(p.date_of_joining),
+                    ]
                     for p in joiners[:50]
                 ],
                 caption=f"{len(joiners)} joining {_span_text(start, end)}",
@@ -631,22 +632,26 @@ async def people_changes(
         cards.append(
             _table(
                 "Exits",
-                ["Name", "Code", "Designation", "Department", "Last working day"],
+                ["Name", "Designation", "Department", "Last working day"],
                 [
-                    [p.full_name, p.employee_code, p.designation or "—", dept(p),
-                     _day(p.date_of_exit)]
+                    [
+                        p.full_name,
+                        p.designation or "—",
+                        dept(p),
+                        _day(p.date_of_exit),
+                    ]
                     for p in leavers[:50]
                 ],
                 caption=f"{len(leavers)} leaving {_span_text(start, end)}",
                 open_href="/people/exits",
             )
         )
-    if notice and not inputs.get("from"):
+    if notice:
         cards.append(
             _table(
                 "On notice",
-                ["Name", "Code", "Department", "Last working day"],
-                [[p.full_name, p.employee_code, dept(p), _day(p.date_of_exit)] for p in notice[:50]],
+                ["Name", "Department", "Last working day"],
+                [[p.full_name, dept(p), _day(p.date_of_exit)] for p in notice[:50]],
                 caption=f"{len(notice)} serving notice today",
                 open_href="/people/exits",
             )
@@ -752,10 +757,14 @@ async def people_dates(
         cards.append(
             _table(
                 "Probation ending",
-                ["Name", "Code", "Department", "Joined", "Probation ends"],
+                ["Name", "Department", "Joined", "Probation ends"],
                 [
-                    [p.full_name, p.employee_code, dept(p), _day(p.date_of_joining),
-                     _day(p.probation_end_date)]
+                    [
+                        p.full_name,
+                        dept(p),
+                        _day(p.date_of_joining),
+                        _day(p.probation_end_date),
+                    ]
                     for p in found[:60]
                 ],
                 caption=f"{len(found)} probation(s) ending {span}",
@@ -771,8 +780,8 @@ async def people_dates(
         cards.append(
             _table(
                 "Last working days",
-                ["Name", "Code", "Department", "Last working day"],
-                [[p.full_name, p.employee_code, dept(p), _day(p.date_of_exit)] for p in found[:60]],
+                ["Name", "Department", "Last working day"],
+                [[p.full_name, dept(p), _day(p.date_of_exit)] for p in found[:60]],
                 caption=f"{len(found)} last working day(s) {span}",
                 open_href="/people/exits",
             )
@@ -847,28 +856,35 @@ async def hr_tickets(
         href = "/helpdesk/queue"
     if not tickets:
         return [_notice("No HR helpdesk tickets match that.")], used
-    now_open = sum(1 for t in tickets if t.status.value in ("open", "in_progress",
-                                                             "waiting_on_employee"))
+    now_open = sum(
+        1 for t in tickets if t.status.value in ("open", "in_progress", "waiting_on_employee")
+    )
     overdue = sum(1 for t in tickets if t.sla_state == "overdue")
     rows = [
         [
             t.ticket_number,
             t.subject,
-            t.category_name,
             *([t.employee_name] if scope != "mine" else []),
             _TICKET_LABEL.get(t.status.value, t.status.value),
-            t.assignee_name or "Unassigned",
-            f"{t.created_at:%d %b %Y}",
+            *([t.assignee_name or "Unassigned"] if scope != "mine" else []),
         ]
         for t in tickets[:25]
     ]
-    columns = ["Ticket", "Subject", "Category", *(["Raised by"] if scope != "mine" else []),
-               "Status", "With", "Raised"]
+    columns = [
+        "Ticket",
+        "Subject",
+        *(["Raised by"] if scope != "mine" else []),
+        "Status",
+        *(["With"] if scope != "mine" else []),
+    ]
     return [
         _record(
             title,
-            figures=[("Shown", str(len(tickets))), ("Still open", str(now_open)),
-                     ("Past due", str(overdue))],
+            figures=[
+                ("Shown", str(len(tickets))),
+                ("Still open", str(now_open)),
+                ("Past due", str(overdue)),
+            ],
             columns=columns,
             rows=rows,
             note="Most recent first." if scope == "mine" else "Most urgent first.",

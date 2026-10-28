@@ -229,7 +229,7 @@ _PHRASES: tuple[tuple[str, str], ...] = (
 
 def normalise(text: str) -> str:
     """The message lowercased and tidied: typos fixed, Hindi-English read as English."""
-    words = text.lower().replace("’", "'").replace("‘", "'")
+    words = text.lower().replace("\u2019", "'").replace("\u2018", "'")
     words = re.sub(r"[,;!?]+", " ", words)
     words = " ".join(words.split())
     words = re.sub(r"\bwho's\b", "who is", words)
@@ -322,12 +322,26 @@ def _named_month(text: str, today: date) -> tuple[date, date] | None:
         lead, name, year = match.group(1), match.group(2), match.group(3)
         if name == "may" and not (lead or year):
             continue
-        if name in ("mar", "jan", "jun", "jul", "dec", "oct", "nov", "sep", "aug", "apr", "feb"):
-            # Short forms only next to a lead word or a year: "sep payroll", "oct 2026".
-            if not (lead or year) and not re.search(
-                rf"\b{name}\s+(payroll|salary|salaries|pay|run|month)\b", text
-            ):
-                continue
+        short = name in (
+            "mar",
+            "jan",
+            "jun",
+            "jul",
+            "dec",
+            "oct",
+            "nov",
+            "sep",
+            "aug",
+            "apr",
+            "feb",
+        )
+        # Short forms only next to a lead word or a year: "sep payroll", "oct 2026".
+        if (
+            short
+            and not (lead or year)
+            and not re.search(rf"\b{name}\s+(payroll|salary|salaries|pay|run|month)\b", text)
+        ):
+            continue
         number = _MONTHS[name]
         if year:
             value = int(year)
@@ -607,11 +621,9 @@ _STOP = {
     "bata",
     "dikhao",
     "dikha",
-    "do",
     "dena",
     "de",
     "se",
-    "me",
     "mein",
     "par",
     "pe",
@@ -637,8 +649,6 @@ _STOP = {
     "look",
     "up",
     "am",
-    "an",
-    "currently",
 }
 
 
@@ -785,7 +795,6 @@ _PERSON_FILLER = frozenset(
         "previous",
         "month's",
         "summary",
-        "report",
         "sheet",
         "register",
         "overview",
@@ -795,7 +804,6 @@ _PERSON_FILLER = frozenset(
         "all",
         "company",
         "staff",
-        "present",
         "absent",
         "late",
         "times",
@@ -804,9 +812,7 @@ _PERSON_FILLER = frozenset(
         "was",
         "were",
         "am",
-        "make",
         "made",
-        "take",
         "takes",
         "earned",
         "salary?",
@@ -1620,8 +1626,10 @@ def plan(
     payroll_words = _has(words, *_PAYROLL) or (
         _has(words, *_SALARY_TOTALS) and (paid_out or bool(when["from"]))
     )
-    on_payroll = counting and _has(words, r"(on|in) (the )?payroll") and not _has(
-        words, r"cost", r"amount", r"total pay", r"paid"
+    on_payroll = (
+        counting
+        and _has(words, r"(on|in) (the )?payroll")
+        and not _has(words, r"cost", r"amount", r"total pay", r"paid")
     )
     if payroll_words and not on_payroll:
         chosen = pick(
@@ -1665,9 +1673,29 @@ def plan(
             status=_ticket_status(words),
             query=_search_text(
                 words,
-                ("hr", "open", "closed", "new", "pending", "resolved", "done", "fixed",
-                 "grievance", "grievances", "queries", "query", "requests", "request",
-                 "overdue", "unresolved", "active", "still", "raised", "about", "regarding"),
+                (
+                    "hr",
+                    "open",
+                    "closed",
+                    "new",
+                    "pending",
+                    "resolved",
+                    "done",
+                    "fixed",
+                    "grievance",
+                    "grievances",
+                    "queries",
+                    "query",
+                    "requests",
+                    "request",
+                    "overdue",
+                    "unresolved",
+                    "active",
+                    "still",
+                    "raised",
+                    "about",
+                    "regarding",
+                ),
             )
             if scope != "mine"
             else "",
@@ -1790,8 +1818,16 @@ def plan(
 
     # IT tickets and assets (CGB Helpdesk).
     if it_ticket:
-        if _has(words, "overview", "summary", "at a glance", "how many", r"count\b", "stats",
-                "dashboard"):
+        if _has(
+            words,
+            "overview",
+            "summary",
+            "at a glance",
+            "how many",
+            r"count\b",
+            "stats",
+            "dashboard",
+        ):
             chosen = pick(
                 "helpdesk_overview", f"Here is the helpdesk at a glance from {_HELPDESK}."
             )
@@ -1891,30 +1927,62 @@ def plan(
 
     # Joiners and leavers, before hiring: "who did we hire" asks who joined.
     joiners = _has(words, *_JOINERS) and not _has(
-        words, r"when\b", r"date of joining", r"joining date", r"doj\b", "candidate",
-        "applicant", r"joining (kit|letter|bonus|formalit)"
+        words,
+        r"when\b",
+        r"date of joining",
+        r"joining date",
+        r"doj\b",
+        "candidate",
+        "applicant",
+        r"joining (kit|letter|bonus|formalit)",
     )
     leavers = _has(words, *_LEAVERS) and not _has(
-        words, r"(resignation|exit|notice|attrition) polic", r"how (do|can|to) i resign",
-        r"exit interview", r"leaves?\b"
+        words,
+        r"(resignation|exit|notice|attrition) polic",
+        r"how (do|can|to) i resign",
+        r"exit interview",
+        r"leaves?\b",
     )
 
     # Hiring (AnytimeHire).
     asked_hiring = True
     if joiners or leavers:
         asked_hiring = False
-    elif _has(words, "candidate", "applicant", "shortlist", r"resumes?\b", r"cvs?\b", "finalist",
-              r"profiles? (received|in pipeline)"):
+    elif _has(
+        words,
+        "candidate",
+        "applicant",
+        "shortlist",
+        r"resumes?\b",
+        r"cvs?\b",
+        "finalist",
+        r"profiles? (received|in pipeline)",
+    ):
         chosen = pick(
             "hiring_candidates",
             f"Here are the candidates from {_HIRE}.",
             status=_status(words, product_tools.CANDIDATE_STATUSES),
             query=_search_text(
                 words,
-                (*product_tools.CANDIDATE_STATUSES, "shortlisted", "offer", "offers",
-                 "interviewing", "stage", "resumes", "resume", "cv", "cvs", "pipeline",
-                 "finalists", "finalist",
-                 "received", "profiles", "got", "who"),
+                (
+                    *product_tools.CANDIDATE_STATUSES,
+                    "shortlisted",
+                    "offer",
+                    "offers",
+                    "interviewing",
+                    "stage",
+                    "resumes",
+                    "resume",
+                    "cv",
+                    "cvs",
+                    "pipeline",
+                    "finalists",
+                    "finalist",
+                    "received",
+                    "profiles",
+                    "got",
+                    "who",
+                ),
             ),
         )
     elif _has(words, "interview") and not _has(words, "interview tool", "exit interview"):
@@ -1922,25 +1990,67 @@ def plan(
             "hiring_interviews",
             f"Here are the interviews from {_HIRE}.",
             **_capped(when, product_tools.MAX_DAYS),
-            query=_search_text(words, ("upcoming", "held", "coming", "up", "lined", "planned",
-                                       "conducted", "pending", "taken", "schedule")),
+            query=_search_text(
+                words,
+                (
+                    "upcoming",
+                    "held",
+                    "coming",
+                    "up",
+                    "lined",
+                    "planned",
+                    "conducted",
+                    "pending",
+                    "taken",
+                    "schedule",
+                ),
+            ),
         )
-    elif _has(words, r"jobs?\b", "opening", "vacanc", r"positions?\b", "requisition",
-              r"open roles?\b", r"roles? open", r"job (posts?|postings?|ads?)",
-              r"hiring for\b", r"(what|which) (roles|positions) are we"):
+    elif _has(
+        words,
+        r"jobs?\b",
+        "opening",
+        "vacanc",
+        r"positions?\b",
+        "requisition",
+        r"open roles?\b",
+        r"roles? open",
+        r"job (posts?|postings?|ads?)",
+        r"hiring for\b",
+        r"(what|which) (roles|positions) are we",
+    ):
         chosen = pick(
             "hiring_jobs",
             f"Here are the jobs from {_HIRE}.",
             status=_status(words, product_tools.JOB_STATUSES),
             query=_search_text(
                 words,
-                (*product_tools.JOB_STATUSES, "closed", "active", "vacancy", "vacancies",
-                 "filled", "posted", "live", "postings", "posts", "unfilled", "currently"),
+                (
+                    *product_tools.JOB_STATUSES,
+                    "closed",
+                    "active",
+                    "vacancy",
+                    "vacancies",
+                    "filled",
+                    "posted",
+                    "live",
+                    "postings",
+                    "posts",
+                    "unfilled",
+                    "currently",
+                ),
             ),
         )
-    elif _has(words, "hiring", "recruit", "pipeline", "anytime", r"talent acquisition\b",
-              r"offers? [a-z ]{0,20}\b(made|released|sent|given|rolled|roll|extended)\b",
-              r"selected\b"):
+    elif _has(
+        words,
+        "hiring",
+        "recruit",
+        "pipeline",
+        "anytime",
+        r"talent acquisition\b",
+        r"offers? [a-z ]{0,20}\b(made|released|sent|given|rolled|roll|extended)\b",
+        r"selected\b",
+    ):
         chosen = pick("hiring_overview", f"Here is hiring at a glance from {_HIRE}.")
     else:
         asked_hiring = False
@@ -2080,8 +2190,24 @@ def plan(
         return chosen
 
     # People: an explicit search, or a short message that reads like a name.
-    query = _search_text(words, ("exited", "left", "former", "ex", "number", "phone", "mobile",
-                                 "no", "id", "address", "reach", "contact", "details"))
+    query = _search_text(
+        words,
+        (
+            "exited",
+            "left",
+            "former",
+            "ex",
+            "number",
+            "phone",
+            "mobile",
+            "no",
+            "id",
+            "address",
+            "reach",
+            "contact",
+            "details",
+        ),
+    )
     searching = _has(
         words,
         "find",

@@ -24,9 +24,7 @@ ALL = [tool for tool in TOOLS.values() if not tool.feature]
 
 def _tools(case: Case):
     return [
-        tool
-        for tool in ALL
-        if tool.group not in case.without and (case.hr or not tool.hr_only)
+        tool for tool in ALL if tool.group not in case.without and (case.hr or not tool.hr_only)
     ]
 
 
@@ -101,7 +99,7 @@ def test_every_plan_reads_only_the_inputs_its_tool_takes() -> None:
             continue
         assert set(plan.inputs) <= set(TOOLS[plan.tool].inputs), (case, plan.inputs)
         for value in plan.inputs.values():
-            assert isinstance(value, (str, bool))
+            assert isinstance(value, str | bool)
             if isinstance(value, str):
                 assert len(value) <= 100
 
@@ -147,7 +145,7 @@ def test_odd_input_never_breaks_the_planner(text: str) -> None:
         if plan.tool is not None:
             assert plan.tool in {tool.key for tool in tools}
             for value in plan.inputs.values():
-                assert isinstance(value, (str, bool))
+                assert isinstance(value, str | bool)
                 if isinstance(value, str):
                     assert len(value) <= 100
             if plan.tool in ("who_is_out", "attendance_summary") and plan.inputs.get("from"):

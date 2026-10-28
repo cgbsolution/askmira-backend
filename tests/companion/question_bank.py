@@ -106,13 +106,35 @@ def _range(phrase: str) -> dict[str, str]:
     return {"from": start, "to": end}
 
 
-SHORT_WHEN = ("today", "tomorrow", "this week", "next week", "last week", "this month",
-              "last month", "next 7 days", "in september", "on 2026-10-05", "yesterday",
-              "next month")
+SHORT_WHEN = (
+    "today",
+    "tomorrow",
+    "this week",
+    "next week",
+    "last week",
+    "this month",
+    "last month",
+    "next 7 days",
+    "in september",
+    "on 2026-10-05",
+    "yesterday",
+    "next month",
+)
 MONTHS_WHEN = ("this month", "last month", "in september", "for august 2026", "next month")
-PERIOD_WHEN = ("this month", "last month", "this week", "last week", "in september",
-               "this quarter", "last quarter", "this year", "last year", "next month",
-               "this financial year", "last 30 days")
+PERIOD_WHEN = (
+    "this month",
+    "last month",
+    "this week",
+    "last week",
+    "in september",
+    "this quarter",
+    "last quarter",
+    "this year",
+    "last year",
+    "next month",
+    "this financial year",
+    "last 30 days",
+)
 
 
 # ── People ───────────────────────────────────────────────────────────────────
@@ -474,8 +496,16 @@ PEOPLE_DATES = (
     ("bdays {w}", "birthdays"),
     ("janamdin {w}", "birthdays"),
 )
-DATES_WHEN = ("today", "this week", "next week", "this month", "next month", "next 7 days",
-              "in december", "tomorrow")
+DATES_WHEN = (
+    "today",
+    "this week",
+    "next week",
+    "this month",
+    "next month",
+    "next 7 days",
+    "in december",
+    "tomorrow",
+)
 
 #: HR helpdesk: (question, scope as HR, scope as an employee, status).
 HR_TICKETS = (
@@ -510,13 +540,15 @@ IT_TICKETS = (
     ("unassigned tickets", "helpdesk_tickets", {"scope": "queue"}),
     ("it tickets in the queue", "helpdesk_tickets", {"scope": "queue"}),
     ("all tickets in the company", "helpdesk_tickets", {"scope": "company"}),
-    ("helpdesk tickets this week", "helpdesk_tickets",
-     {"from": "2026-10-19", "to": "2026-10-25"}),
+    ("helpdesk tickets this week", "helpdesk_tickets", {"from": "2026-10-19", "to": "2026-10-25"}),
     ("tickets raised last month", "helpdesk_tickets", {"from": "2026-09-01", "to": "2026-09-30"}),
     ("tickets about vpn", "helpdesk_tickets", {"query": "vpn"}),
     ("ticket status", "helpdesk_tickets", {"scope": "mine"}),
-    ("is my laptop ticket resolved", "helpdesk_tickets",
-     {"scope": "mine", "status": "closed", "query": "laptop"}),
+    (
+        "is my laptop ticket resolved",
+        "helpdesk_tickets",
+        {"scope": "mine", "status": "closed", "query": "laptop"},
+    ),
     ("pending it tickets", "helpdesk_tickets", {"status": "open"}),
     ("how many tickets are open", "helpdesk_overview", {}),
     ("helpdesk summary", "helpdesk_overview", {}),
@@ -540,8 +572,7 @@ ASSETS = (
     ("spare laptops", {"scope": "company", "status": "spare", "query": "laptop"}),
     ("asset register", {"scope": "company", "query": ""}),
     ("all assets", {"scope": "company"}),
-    ("how many laptops are available", {"scope": "company", "status": "spare",
-                                        "query": "laptop"}),
+    ("how many laptops are available", {"scope": "company", "status": "spare", "query": "laptop"}),
     ("retired assets", {"scope": "company", "status": "retired"}),
     ("laptops in use", {"scope": "company", "status": "in_use", "query": "laptop"}),
     ("show the asset inventory", {"scope": "company"}),
@@ -560,33 +591,47 @@ EXPENSES = (
     ("status of my reimbursement", "expense_claims", {"scope": "mine"}),
     ("my reimbursements", "expense_claims", {"scope": "mine"}),
     ("my travel claims", "expense_claims", {"scope": "mine", "query": "travel"}),
-    ("expense claims i submitted last month", "expense_claims",
-     {"scope": "mine", "from": "2026-09-01", "to": "2026-09-30"}),
+    (
+        "expense claims i submitted last month",
+        "expense_claims",
+        {"scope": "mine", "from": "2026-09-01", "to": "2026-09-30"},
+    ),
     ("my draft claims", "expense_claims", {"scope": "mine", "status": "draft"}),
     ("my food bills", "expense_claims", {"scope": "mine", "query": "food"}),
-    ("how much did i spend this month", "expense_summary",
-     {"scope": "mine", "from": "2026-10-01", "to": "2026-10-31"}),
+    (
+        "how much did i spend this month",
+        "expense_summary",
+        {"scope": "mine", "from": "2026-10-01", "to": "2026-10-31"},
+    ),
     ("my expense total", "expense_summary", {"scope": "mine"}),
     ("my total reimbursement this month", "expense_summary", {"scope": "mine"}),
     ("my unpaid claims", "expense_summary", {"scope": "mine"}),
     ("my expenses by category", "expense_summary", {"scope": "mine"}),
     ("team expenses", "expense_claims", {"scope": "approvals"}),
     ("my team's claims", "expense_claims", {"scope": "approvals"}),
-    ("company expenses last month", "expense_claims",
-     {"scope": "company", "from": "2026-09-01"}),
+    ("company expenses last month", "expense_claims", {"scope": "company", "from": "2026-09-01"}),
     ("total company expense this month", "expense_summary", {"scope": "company"}),
     ("all expense claims", "expense_claims", {"scope": "company"}),
     ("how much did employees spend last month", "expense_summary", {"scope": "company"}),
     ("expense total this month", "expense_summary", {"scope": "mine"}),
     ("my reimbursment status", "expense_claims", {"scope": "mine"}),
     ("my expences", "expense_claims", {"scope": "mine"}),
-    ("mere kharche is mahine", "expense_claims",
-     {"scope": "mine", "from": "2026-10-01", "to": "2026-10-31"}),
+    (
+        "mere kharche is mahine",
+        "expense_claims",
+        {"scope": "mine", "from": "2026-10-01", "to": "2026-10-31"},
+    ),
     ("pending reimbursements", "expense_claims", {"status": "pending"}),
-    ("approved claims last week", "expense_claims",
-     {"status": "approved", "from": "2026-10-12", "to": "2026-10-18"}),
-    ("overall expenses this quarter", "expense_claims",
-     {"scope": "company", "from": "2026-10-01", "to": "2026-12-31"}),
+    (
+        "approved claims last week",
+        "expense_claims",
+        {"status": "approved", "from": "2026-10-12", "to": "2026-10-18"},
+    ),
+    (
+        "overall expenses this quarter",
+        "expense_claims",
+        {"scope": "company", "from": "2026-10-01", "to": "2026-12-31"},
+    ),
     ("cab bills", "expense_claims", {"scope": "mine", "query": "cab"}),
 )
 
@@ -620,16 +665,24 @@ HIRING = (
     ("interviews this week", "hiring_interviews", {"from": "2026-10-19", "to": "2026-10-25"}),
     ("interviews tomorrow", "hiring_interviews", {"from": "2026-10-22", "to": "2026-10-22"}),
     ("upcoming interviews", "hiring_interviews", {"from": "", "to": ""}),
-    ("interviews scheduled next week", "hiring_interviews",
-     {"from": "2026-10-26", "to": "2026-11-01"}),
+    (
+        "interviews scheduled next week",
+        "hiring_interviews",
+        {"from": "2026-10-26", "to": "2026-11-01"},
+    ),
     ("interviews for python developer", "hiring_interviews", {"query": "python developer"}),
-    ("interviews held last week", "hiring_interviews",
-     {"from": "2026-10-12", "to": "2026-10-18"}),
-    ("how many interviews this month", "hiring_interviews",
-     {"from": "2026-10-01", "to": "2026-10-31"}),
+    ("interviews held last week", "hiring_interviews", {"from": "2026-10-12", "to": "2026-10-18"}),
+    (
+        "how many interviews this month",
+        "hiring_interviews",
+        {"from": "2026-10-01", "to": "2026-10-31"},
+    ),
     ("intervews today", "hiring_interviews", {"from": "2026-10-21"}),
-    ("interviews in the next 7 days", "hiring_interviews",
-     {"from": "2026-10-21", "to": "2026-10-27"}),
+    (
+        "interviews in the next 7 days",
+        "hiring_interviews",
+        {"from": "2026-10-21", "to": "2026-10-27"},
+    ),
     ("hiring overview", "hiring_overview", {}),
     ("hiring status", "hiring_overview", {}),
     ("recruitment pipeline", "hiring_overview", {}),
@@ -743,8 +796,9 @@ HAND: tuple[Case, ...] = (
     Case("rohan ki salary batao", "employee_record", {"query": "rohan", "person_lookup": "salary"}),
     Case("pichle mahine ka payroll", "payroll_summary", {"from": "2026-09-01", "to": "2026-09-30"}),
     Case("is mahine ke birthdays", "people_dates", {"kind": "birthdays", "from": "2026-10-01"}),
-    Case("mere pending kharche", "expense_claims", {"scope": "mine", "status": "pending"},
-         hr=False),
+    Case(
+        "mere pending kharche", "expense_claims", {"scope": "mine", "status": "pending"}, hr=False
+    ),
     # Typos
     Case("salery of rohan", "employee_record", {"query": "rohan", "person_lookup": "salary"}),
     Case("atendance this month", "attendance_summary", {"from": "2026-10-01"}),
@@ -760,35 +814,70 @@ HAND: tuple[Case, ...] = (
     Case("pending aprovals", "my_approvals", {}, hr=False),
     Case("new joinees this month", "people_changes", {"from": "2026-10-01"}),
     # Sentences people write
-    Case("Can you please tell me who all are on leave tomorrow?", "who_is_out",
-         {"from": "2026-10-22", "to": "2026-10-22"}),
-    Case("I need the payroll cost for September 2026", "payroll_summary",
-         {"from": "2026-09-01", "to": "2026-09-30"}),
-    Case("How much did we spend on salaries last month?", "payroll_summary",
-         {"from": "2026-09-01"}),
-    Case("Give me the list of people who joined last month", "people_changes",
-         {"from": "2026-09-01", "to": "2026-09-30"}),
-    Case("What is our attrition this year", "people_changes",
-         {"from": "2026-01-01", "to": "2026-12-31"}),
+    Case(
+        "Can you please tell me who all are on leave tomorrow?",
+        "who_is_out",
+        {"from": "2026-10-22", "to": "2026-10-22"},
+    ),
+    Case(
+        "I need the payroll cost for September 2026",
+        "payroll_summary",
+        {"from": "2026-09-01", "to": "2026-09-30"},
+    ),
+    Case(
+        "How much did we spend on salaries last month?", "payroll_summary", {"from": "2026-09-01"}
+    ),
+    Case(
+        "Give me the list of people who joined last month",
+        "people_changes",
+        {"from": "2026-09-01", "to": "2026-09-30"},
+    ),
+    Case(
+        "What is our attrition this year",
+        "people_changes",
+        {"from": "2026-01-01", "to": "2026-12-31"},
+    ),
     Case("Is there anything I need to approve today?", "my_approvals", {}, hr=False),
-    Case("Whose birthday is it today?", "people_dates",
-         {"kind": "birthdays", "from": "2026-10-21", "to": "2026-10-21"}),
+    Case(
+        "Whose birthday is it today?",
+        "people_dates",
+        {"kind": "birthdays", "from": "2026-10-21", "to": "2026-10-21"},
+    ),
     Case("Which candidates have we offered?", "hiring_candidates", {"status": "offered"}),
-    Case("What is Deepak's CTC?", "employee_record", {"query": "deepak", "person_lookup": "salary"}),
+    Case(
+        "What is Deepak's CTC?", "employee_record", {"query": "deepak", "person_lookup": "salary"}
+    ),
     Case("how many people are on payroll right now", "headcount", {}),
-    Case("Show me the salary of (CGB042)", "employee_record",
-         {"query": "cgb042", "person_lookup": "salary"}),
-    Case('salary of "Rohan Verma"', "employee_record",
-         {"query": "rohan verma", "person_lookup": "salary"}),
-    Case("who is on leave from 2026-10-26 to 2026-10-30", "who_is_out",
-         {"from": "2026-10-26", "to": "2026-10-30"}),
-    Case("attendance from 2026-10-01 to 2026-10-15", "attendance_summary",
-         {"from": "2026-10-01", "to": "2026-10-15"}),
-    Case("interviews on 2026-10-23", "hiring_interviews", {"from": "2026-10-23", "to": "2026-10-23"}),
+    Case(
+        "Show me the salary of (CGB042)",
+        "employee_record",
+        {"query": "cgb042", "person_lookup": "salary"},
+    ),
+    Case(
+        'salary of "Rohan Verma"',
+        "employee_record",
+        {"query": "rohan verma", "person_lookup": "salary"},
+    ),
+    Case(
+        "who is on leave from 2026-10-26 to 2026-10-30",
+        "who_is_out",
+        {"from": "2026-10-26", "to": "2026-10-30"},
+    ),
+    Case(
+        "attendance from 2026-10-01 to 2026-10-15",
+        "attendance_summary",
+        {"from": "2026-10-01", "to": "2026-10-15"},
+    ),
+    Case(
+        "interviews on 2026-10-23", "hiring_interviews", {"from": "2026-10-23", "to": "2026-10-23"}
+    ),
     Case("who is joining next week", "people_changes", {"from": "2026-10-26", "to": "2026-11-01"}),
     Case("who is leaving next month", "people_changes", {"from": "2026-11-01"}),
-    Case("probation ending in the next 30 days", "people_dates",
-         {"kind": "probation", "from": "2026-10-21", "to": "2026-11-19"}),
+    Case(
+        "probation ending in the next 30 days",
+        "people_dates",
+        {"kind": "probation", "from": "2026-10-21", "to": "2026-11-19"},
+    ),
     Case("upcoming birthdays", "people_dates", {"kind": "birthdays", "from": "", "to": ""}),
     Case("upcoming work anniversaries", "people_dates", {"kind": "anniversaries"}),
     Case("total salary paid last month", "payroll_summary", {"from": "2026-09-01"}),
@@ -801,13 +890,18 @@ HAND: tuple[Case, ...] = (
     Case("my pf", "my_record", {"lookup": "latest_payslip"}),
     Case("my tds this month", "my_record", {"lookup": "latest_payslip"}),
     # Leave words that are not about who is out
-    Case("how many leaves do i have left this year", "my_record", {"lookup": "leave_balance"},
-         hr=False),
+    Case(
+        "how many leaves do i have left this year",
+        "my_record",
+        {"lookup": "leave_balance"},
+        hr=False,
+    ),
     Case("leaves left for me", "my_record", {"lookup": "leave_balance"}, hr=False),
     # A greeting with a question is the question
     Case("hi, who is on leave today?", "who_is_out", {"from": "2026-10-21"}),
-    Case("good morning! what is my leave balance", "my_record", {"lookup": "leave_balance"},
-         hr=False),
+    Case(
+        "good morning! what is my leave balance", "my_record", {"lookup": "leave_balance"}, hr=False
+    ),
     Case("thanks. now show open jobs", "hiring_jobs", {"status": "open"}),
     # HR helpdesk raised from chat
     Case("raise an hr ticket", None, {}, reply_has="HR replies on the ticket"),
@@ -911,9 +1005,7 @@ def build() -> list[Case]:
     for question in EXPENSE_APPROVALS:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "expense_claims", {"scope": "approvals"}))
-            cases.append(
-                Case(text, "my_approvals", {"kind": "expense"}, without=("expense_data",))
-            )
+            cases.append(Case(text, "my_approvals", {"kind": "expense"}, without=("expense_data",)))
 
     for template in PAYROLL_WHEN:
         for phrase in (*MONTHS_WHEN, "this quarter", "last quarter", "this year"):
@@ -948,9 +1040,7 @@ def build() -> list[Case]:
     for question, hr_scope, own_scope, status in HR_TICKETS:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "hr_tickets", {"scope": hr_scope, "status": status}))
-            cases.append(
-                Case(text, "hr_tickets", {"scope": own_scope, "status": status}, hr=False)
-            )
+            cases.append(Case(text, "hr_tickets", {"scope": own_scope, "status": status}, hr=False))
 
     for question, tool, inputs in IT_TICKETS:
         for text in _wrapped(question, LIGHT):
