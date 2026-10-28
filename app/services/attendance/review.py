@@ -30,13 +30,14 @@ from app.models.attendance import (
     Shift,
 )
 from app.models.employee import Employee, EmploymentStatus
-from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
+from app.models.leave import Holiday, LeaveRequest, LeaveRequestStatus, LeaveType
 from app.models.user import User
 from app.schemas.attendance import (
     AttendanceDayRead,
     AttendanceException,
     AttendanceExceptionReport,
     AttendanceSummaryResponse,
+    CalendarDayTag,
     CalendarHoliday,
     CalendarLeave,
     DayCorrection,
@@ -48,7 +49,8 @@ from app.schemas.attendance import (
     TeamToday,
 )
 from app.services.attendance import service as attendance_service
-from app.services.leave.holidays import holidays_for_employees
+from app.services.attendance.calendar_tags import day_tag
+from app.services.leave.holidays import holiday_records_for_employees, holidays_for_employees
 
 MAX_RANGE_DAYS = 93
 
@@ -215,8 +217,10 @@ async def my_period(
     days = await _days(session, user, start, end, {employee_id})
     lock = await attendance_service.active_lock_covering(session, user, start, end)
 
+    # Loaded for the whole period as well as today: the calendar shows the
+    # week offs of days not computed yet from the shift in force on each one.
     resolver = await attendance_service.ShiftResolver.load(
-        session, user, [employee_id], today, today
+        session, user, [employee_id], min(start, today), max(end, today)
     )
     plan_today = resolver.resolve(employee_id, today)
 
@@ -234,7 +238,7 @@ async def my_period(
     if plan_today.shift is not None:
         shifts[plan_today.shift.id] = plan_today.shift
 
-    holidays = (await holidays_for_employees(session, user, [employee_id], start, end)).get(
+    holidays = (await holiday_records_for_employees(session, user, [employee_id], start, end)).get(
         employee_id, {}
     )
 
@@ -292,10 +296,63 @@ async def my_period(
         has_no_shift=plan_today.shift is None and not plan_today.roster_week_off,
         shifts=[_brief(row) for row in shifts.values()],
         holidays=[
-            CalendarHoliday(holiday_date=day, name=name) for day, name in sorted(holidays.items())
+            CalendarHoliday(
+                holiday_date=day,
+                name=holiday.name,
+                is_optional=holiday.is_optional,
+                is_paid=holiday.is_paid,
+            )
+            for day, holiday in sorted(holidays.items())
         ],
         leaves=leaves,
+        day_tags=_day_tags(
+            start=start,
+            end=end,
+            today=today,
+            employee=employee,
+            days=days,
+            holidays=holidays,
+            leaves=leaves,
+            resolver=resolver,
+        ),
     )
+
+
+def _day_tags(
+    *,
+    start: date,
+    end: date,
+    today: date,
+    employee: Employee,
+    days: list[AttendanceDay],
+    holidays: dict[date, Holiday],
+    leaves: list[CalendarLeave],
+    resolver: attendance_service.ShiftResolver,
+) -> list[CalendarDayTag]:
+    """Every day of the period that has a calendar tag, in date order."""
+    rows = {d.attendance_date: d for d in days}
+    approved = {leave.leave_date for leave in leaves if leave.status == "approved"}
+    pending = {leave.leave_date for leave in leaves if leave.status == "pending"}
+    out: list[CalendarDayTag] = []
+    day = start
+    while day <= end:
+        row = rows.get(day)
+        holiday = holidays.get(day)
+        tag = day_tag(
+            day=day,
+            today=today,
+            status=row.status if row is not None else None,
+            is_regularised=row.is_regularised if row is not None else False,
+            holiday_is_optional=holiday.is_optional if holiday is not None else None,
+            leave_approved=day in approved,
+            leave_pending=day in pending,
+            scheduled_off=row is None and resolver.resolve(employee.id, day).is_off(day),
+            date_of_joining=employee.date_of_joining,
+        )
+        if tag is not None:
+            out.append(CalendarDayTag(day=day, tag=tag))
+        day += timedelta(days=1)
+    return out
 
 
 async def team_today(

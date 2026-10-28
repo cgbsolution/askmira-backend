@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -231,6 +232,31 @@ class ShiftBrief(BaseModel):
 class CalendarHoliday(BaseModel):
     holiday_date: date
     name: str
+    #: An optional (restricted) holiday the person opted in to.
+    is_optional: bool = False
+    #: An unpaid holiday is still a day off, but loss of pay unless worked.
+    is_paid: bool = True
+
+
+class DayTag(StrEnum):
+    """The calendar's eight day tags — see services/attendance/calendar_tags.py."""
+
+    FULL_DAY = "full_day"
+    PARTIAL = "partial"
+    #: Absent, or a missed punch waiting to be regularised ("MSP").
+    ABSENT = "absent"
+    WEEK_OFF = "week_off"
+    HOLIDAY = "holiday"
+    OPTIONAL_HOLIDAY = "optional_holiday"
+    APPROVED_LEAVE = "approved_leave"
+    UNAPPROVED_LEAVE = "unapproved_leave"
+
+
+class CalendarDayTag(BaseModel):
+    """The colour a day wears on the calendar — see services/attendance/calendar_tags.py."""
+
+    day: date
+    tag: DayTag
 
 
 class CalendarLeave(BaseModel):
@@ -265,6 +291,8 @@ class MyAttendancePeriod(BaseModel):
     shifts: list[ShiftBrief] = Field(default_factory=list)
     holidays: list[CalendarHoliday] = Field(default_factory=list)
     leaves: list[CalendarLeave] = Field(default_factory=list)
+    #: One entry per day that has something to show; days left out are blank.
+    day_tags: list[CalendarDayTag] = Field(default_factory=list)
 
 
 class TeamMemberToday(BaseModel):

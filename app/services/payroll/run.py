@@ -17,6 +17,9 @@ The lifecycle, and who may move it:
                   ▲        │                       │
                   └─recompute                  publish (payslips to employees)
 
+Approval is the **lock** (the screens call it "Approve & lock"). Until then a
+run can be recomputed or deleted outright; from then on it is history.
+
 - **Compute** refuses an unlocked attendance period and any unapproved rule set.
   It may be repeated until approval; every repeat replaces the payslips and
   clears variance acknowledgements, because the numbers they acknowledged moved.
@@ -45,7 +48,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -347,11 +351,16 @@ async def create_run(
             )
         )
         if existing is not None:
+            month = period_label(period_year, period_month)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"A {run_type.value} run already exists for {period_month}/{period_year}. "
-                    "A correction is a new off-cycle or arrears run, not a re-run."
+                    f"The {run_type.value} run for {month} is already locked. A correction "
+                    "is a new off-cycle or arrears run, not a re-run."
+                    if existing.status in CLOSED_STATUSES
+                    else f"A {run_type.value} run for {month} is already open "
+                    f"({existing.status.value.replace('_', ' ')}). Open it from the list to "
+                    "compute it, or delete it there to start the month again."
                 ),
             )
 
@@ -1320,6 +1329,97 @@ async def cancel_run(
     await session.commit()
     await session.refresh(run)
     return run
+
+
+# ── Delete ──────────────────────────────────────────────────────────────────
+
+#: Statuses a run can be deleted from: it is not locked yet. Approval is the
+#: lock; nothing has been consumed, paid, filed or sent to a bank before it.
+DELETABLE_STATUSES = (
+    PayrollRunStatus.DRAFT,
+    PayrollRunStatus.FAILED,
+    PayrollRunStatus.PENDING_REVIEW,
+    PayrollRunStatus.CANCELLED,
+)
+
+
+async def delete_run(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Remove a run that is not locked, with its payslips, so the month can be run again.
+
+    A locked (approved or paid) run is history and is refused: a correction is
+    an arrears or off-cycle run. What the run was — period, status, totals — is
+    kept in the audit log, which is where a deleted row's history lives.
+    """
+    run = await get_run(session, user, run_id)
+    if run.status in CLOSED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The {period_label(run.period_year, run.period_month)} run is locked "
+                f"({run.status.value}) and cannot be deleted. A locked run is history; "
+                "a correction is an arrears or off-cycle run."
+            ),
+        )
+    if run.status not in DELETABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This run is being computed right now. Try again once it finishes.",
+        )
+
+    payslip_count = int(
+        await session.scalar(
+            tenant_scoped(
+                select(func.count(Payslip.id)).where(Payslip.run_id == run.id), Payslip, user
+            )
+        )
+        or 0
+    )
+    snapshot = {
+        "period": f"{run.period_month}/{run.period_year}",
+        "type": run.run_type.value,
+        "legal_entity_id": str(run.legal_entity_id),
+        "status": run.status.value,
+        "payslips_removed": payslip_count,
+        "total_gross": str(run.total_gross),
+        "total_net": str(run.total_net),
+    }
+    label = period_label(run.period_year, run.period_month)
+    run_type, deleted_id = run.run_type.value, run.id
+
+    # Bulk statements, not `session.delete(run)`: the payslips relationship is
+    # lazily loaded, and cascading through it in async raises MissingGreenlet.
+    # Both rows were reached through `get_run`, which is tenant scoped.
+    try:
+        await session.execute(delete(Payslip).where(Payslip.run_id == deleted_id))
+        await session.execute(delete(PayrollRun).where(PayrollRun.id == deleted_id))
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The {label} run is referenced by other payroll records and cannot be "
+                "deleted. Cancel it instead."
+            ),
+        ) from exc
+
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="payroll_run",
+        entity_id=deleted_id,
+        actor=user,
+        changes=snapshot,
+        summary=f"Deleted the {run_type} payroll run for {label}",
+        request=request,
+    )
+    await session.commit()
 
 
 # ── Publish and pay ─────────────────────────────────────────────────────────

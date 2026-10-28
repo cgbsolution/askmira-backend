@@ -35,6 +35,7 @@ from app.schemas.payroll_run import (
 )
 from app.services.payroll import journal as journal_service
 from app.services.payroll import payslips as payslip_service
+from app.services.payroll import register_xlsx as register_xlsx_service
 from app.services.payroll import rule_sets as rule_set_service
 from app.services.payroll import run as run_service
 from app.services.payroll.inputs import PROVIDER_KEYS
@@ -256,6 +257,17 @@ async def cancel_run(
     return await payslip_service.run_read(session, user, run)
 
 
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_run(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """Delete a run that is not locked yet (not approved), with its payslips.
+
+    The month can then be opened and run again. A locked run is refused.
+    """
+    await run_service.delete_run(session, user, run_id, request=request)
+
+
 @router.post("/runs/{run_id}/publish", response_model=PayrollRunRead)
 async def publish_run(
     run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
@@ -293,6 +305,22 @@ async def run_register_csv(
         content=content,
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/register.xlsx", response_model=None)
+async def run_register_xlsx(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """The month's salary register in Excel: every wage type, deduction and net pay."""
+    filename, content = await register_xlsx_service.register_xlsx(session, user, run_id, request)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
     )
 
 

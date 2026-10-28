@@ -9,16 +9,18 @@ reads their own payslip, and nobody else's.
 from __future__ import annotations
 
 import calendar
+import io
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
+from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import AttendancePeriodLock
-from app.models.audit import AuditLog
+from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee, EmploymentStatus
 from app.models.loans import (
     ClaimStatus,
@@ -38,6 +40,7 @@ from app.models.payroll import (
     CalculationType,
     ComponentType,
     PayrollRuleSet,
+    PayrollRun,
     PayrollRunStatus,
     PayrollRunType,
     Payslip,
@@ -50,6 +53,7 @@ from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.schemas.payroll_run import RuleSetCreate
 from app.services.payroll import payslips as payslip_service
+from app.services.payroll import register_xlsx as register_xlsx_service
 from app.services.payroll import rule_sets as rule_set_service
 from app.services.payroll import run as run_service
 from app.services.payroll import service as salary_service
@@ -863,3 +867,294 @@ async def test_a_mid_year_joiner_is_projected_from_the_day_they_joined(
     # 13 of October's 31 days, then November to March: about 5.42 L, not 12 L or nothing.
     expected = Decimal("100000") * 13 / 31 + Decimal("100000") * 5
     assert abs(projection.gross_annual_income - expected) < Decimal("1")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Deleting a run that is not locked; approval is the lock
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _deleted_audit(session: AsyncSession, run_id) -> list[AuditLog]:
+    rows = (await session.scalars(select(AuditLog).where(AuditLog.entity_id == run_id))).all()
+    return [row for row in rows if row.action is AuditAction.DELETE]
+
+
+async def _run_exists(session: AsyncSession, run_id) -> bool:
+    return bool(
+        await session.scalar(select(func.count(PayrollRun.id)).where(PayrollRun.id == run_id))
+    )
+
+
+async def test_a_draft_run_that_never_computed_can_be_deleted_and_the_month_run_again(
+    session: AsyncSession, org
+) -> None:
+    """A regular run stuck in Draft holds its month; deleting it frees the month."""
+    run = await _open_run(session, org, 9)
+    with pytest.raises(HTTPException) as exc:
+        await _open_run(session, org, 9)
+    assert exc.value.status_code == 409
+
+    await run_service.delete_run(session, org["maker"], run.id)
+
+    assert not await _run_exists(session, run.id)
+    deleted = await _deleted_audit(session, run.id)
+    assert len(deleted) == 1
+    assert deleted[0].changes["period"] == "9/2026"
+    assert deleted[0].changes["status"] == "draft"
+    assert deleted[0].actor_user_id == org["maker"].id
+
+    again = await _open_run(session, org, 9)
+    assert again.id != run.id
+    assert again.status is PayrollRunStatus.DRAFT
+
+
+async def test_a_computed_run_is_deleted_with_its_payslips(session: AsyncSession, org) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    computed = await run_service.compute_run(session, org["maker"], run.id)
+    assert computed.status is PayrollRunStatus.PENDING_REVIEW
+    assert computed.employee_count == 4
+
+    # A sub-admin may delete too: the run is not locked yet.
+    await run_service.delete_run(session, org["checker"], run.id)
+
+    assert not await _run_exists(session, run.id)
+    left = await session.scalar(select(func.count(Payslip.id)).where(Payslip.run_id == run.id))
+    assert left == 0
+    (deleted,) = await _deleted_audit(session, run.id)
+    assert deleted.changes["payslips_removed"] == 4
+    assert deleted.changes["status"] == "pending_review"
+    assert Decimal(deleted.changes["total_net"]) == Decimal(str(computed.total_net))
+
+    # The month computes afresh.
+    again = await _open_run(session, org, 4)
+    recomputed = await run_service.compute_run(session, org["maker"], again.id)
+    assert recomputed.employee_count == 4
+
+
+async def test_failed_and_cancelled_runs_can_be_deleted(
+    session: AsyncSession, org, legal_entity: LegalEntity, location: Location
+) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    # Somebody without a salary makes the compute fail.
+    await _person(
+        session, org["tenant"], legal_entity, location, code="NOSAL", role=UserRole.EMPLOYEE
+    )
+    failed = await _open_run(session, org, 4)
+    with pytest.raises(HTTPException):
+        await run_service.compute_run(session, org["maker"], failed.id)
+    await session.refresh(failed)
+    assert failed.status is PayrollRunStatus.FAILED
+    await run_service.delete_run(session, org["maker"], failed.id)
+    assert not await _run_exists(session, failed.id)
+
+    cancelled = await _open_run(session, org, 5)
+    await run_service.cancel_run(session, org["maker"], cancelled.id, reason="Wrong month")
+    await run_service.delete_run(session, org["maker"], cancelled.id)
+    assert not await _run_exists(session, cancelled.id)
+
+
+async def test_a_locked_run_cannot_be_deleted(session: AsyncSession, org) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    await run_service.compute_run(session, org["maker"], run.id)
+    await run_service.approve_run(session, org["checker"], run.id)
+
+    with pytest.raises(HTTPException) as exc:
+        await run_service.delete_run(session, org["maker"], run.id)
+    assert exc.value.status_code == 409
+    assert "locked" in exc.value.detail
+    assert await _run_exists(session, run.id)
+
+    await run_service.mark_paid(session, org["maker"], run.id)
+    with pytest.raises(HTTPException) as exc:
+        await run_service.delete_run(session, org["maker"], run.id)
+    assert exc.value.status_code == 409
+    assert await _run_exists(session, run.id)
+    payslips_left = await session.scalar(
+        select(func.count(Payslip.id)).where(Payslip.run_id == run.id)
+    )
+    assert payslips_left == 4
+    assert await _deleted_audit(session, run.id) == []
+
+
+async def test_another_workspace_cannot_delete_a_run(
+    session: AsyncSession, org, other_hr_user: User
+) -> None:
+    run = await _open_run(session, org, 6)
+    with pytest.raises(HTTPException) as exc:
+        await run_service.delete_run(session, other_hr_user, run.id)
+    assert exc.value.status_code == 404
+    assert await _run_exists(session, run.id)
+
+
+async def test_deleting_a_run_hands_back_a_bonus_scheduled_into_it(
+    session: AsyncSession, org
+) -> None:
+    bonus_rules = PayrollRuleSet(
+        tenant_id=org["tenant"].id,
+        rule_type="bonus",
+        jurisdiction="IN",
+        version=1,
+        effective_from=date(2025, 4, 1),
+        rules={"note": "fixture"},
+        approved_at=datetime.now(UTC),
+    )
+    session.add(bonus_rules)
+    await session.flush()
+    bonus = BonusComputation(
+        tenant_id=org["tenant"].id,
+        employee_id=org["ravi_emp"].id,
+        financial_year="2025-2026",
+        rule_set_id=bonus_rules.id,
+        is_eligible=True,
+        eligible_wage=Decimal("7000"),
+        days_worked=Decimal(300),
+        total_working_days=Decimal(300),
+        percentage=Decimal("8.33"),
+        amount=Decimal("7000.00"),
+        status=BonusStatus.APPROVED,
+    )
+    session.add(bonus)
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    await statutory_service.disburse_bonus(
+        session,
+        org["maker"],
+        financial_year="2025-2026",
+        paid_on=date(2026, 4, 30),
+        run_id=run.id,
+    )
+    await session.commit()
+
+    await run_service.delete_run(session, org["maker"], run.id)
+
+    await session.refresh(bonus)
+    assert bonus.paid_in_run_id is None
+    assert bonus.status is BonusStatus.APPROVED, "still awaiting payment, by the next run"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The month's salary register in Excel
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _money_cell(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+
+async def test_the_salary_register_downloads_as_excel_and_every_row_adds_up(
+    session: AsyncSession, org
+) -> None:
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    computed = await run_service.compute_run(session, org["maker"], run.id)
+
+    filename, content = await register_xlsx_service.register_xlsx(session, org["maker"], run.id)
+    assert filename == "salary-register-ACME-2026-04.xlsx"
+    book = load_workbook(io.BytesIO(content))
+    sheet = book["Salary register"]
+    assert sheet["A1"].value.startswith("Salary register — April 2026")
+    assert sheet["A3"].value.startswith("Not locked")
+
+    headers = [cell.value for cell in sheet[7]]
+    for heading in (
+        "Employee code",
+        "Employee name",
+        "PAN",
+        "UAN",
+        "Bank account",
+        "Paid days",
+        "Basic",
+        "Special allowance",
+        "Gross earnings",
+        "Total earnings",
+        "PF (employee)",
+        "TDS (income tax)",
+        "Other deductions",
+        "Total deductions",
+        "Net pay",
+        "PF (employer)",
+        "Employer cost",
+    ):
+        assert heading in headers, heading
+    col = {heading: index for index, heading in enumerate(headers)}
+    first_deduction, last_deduction = col["PF (employee)"], col["Other deductions"]
+
+    payslips = {
+        p.employee_id: p
+        for p in (await session.scalars(select(Payslip).where(Payslip.run_id == run.id))).all()
+    }
+    people = (await session.scalars(select(Employee).where(Employee.id.in_(list(payslips))))).all()
+    codes = {e.employee_code: e for e in people}
+    data = [list(row) for row in sheet.iter_rows(min_row=8, max_row=11, values_only=True)]
+    assert [row[col["Employee code"]] for row in data] == sorted(codes)
+    for row in data:
+        payslip = payslips[codes[row[col["Employee code"]]].id]
+        gross = _money_cell(row[col["Gross earnings"]])
+        assert _money_cell(row[col["Basic"]]) + _money_cell(row[col["Special allowance"]]) == gross
+        total_earnings = _money_cell(row[col["Total earnings"]])
+        assert total_earnings == gross + _money_cell(row[col["Other earnings"]])
+        deductions = sum(
+            (_money_cell(value) for value in row[first_deduction : last_deduction + 1]),
+            start=Decimal(0),
+        )
+        assert deductions == _money_cell(row[col["Total deductions"]])
+        assert total_earnings - deductions == _money_cell(row[col["Net pay"]])
+        assert _money_cell(row[col["Net pay"]]) == Decimal(str(payslip.net_pay))
+        assert _money_cell(row[col["Employer cost"]]) == Decimal(str(payslip.employer_cost))
+
+    totals = list(next(sheet.iter_rows(min_row=12, max_row=12, values_only=True)))
+    assert totals[col["Employee name"]] == "Total"
+    assert _money_cell(totals[col["Net pay"]]) == Decimal(str(computed.total_net))
+    assert _money_cell(totals[col["Gross earnings"]]) == Decimal(str(computed.total_gross))
+    assert "Other pay & deductions" in book.sheetnames
+
+    exports = (
+        await session.scalars(
+            select(AuditLog).where(
+                AuditLog.entity_id == run.id, AuditLog.action == AuditAction.EXPORT
+            )
+        )
+    ).all()
+    assert any((row.changes or {}).get("export") == "register_xlsx" for row in exports)
+
+    # Once approved, the same download says the month is locked.
+    await run_service.approve_run(session, org["checker"], run.id)
+    _, content = await register_xlsx_service.register_xlsx(session, org["maker"], run.id)
+    locked = load_workbook(io.BytesIO(content))["Salary register"]
+    assert locked["A3"].value.startswith("Locked: approved")
+    assert "Checker Test" in locked["A3"].value
+
+
+async def test_the_register_waits_for_a_computed_run(session: AsyncSession, org) -> None:
+    run = await _open_run(session, org, 7)
+    with pytest.raises(HTTPException) as exc:
+        await register_xlsx_service.register_xlsx(session, org["maker"], run.id)
+    assert exc.value.status_code == 409
+    assert "Compute it first" in exc.value.detail
+
+
+async def test_a_name_that_looks_like_a_formula_stays_text_in_the_register(
+    session: AsyncSession, org
+) -> None:
+    await _approved_rules(session, org)
+    org["meera_emp"].first_name = '=HYPERLINK("http://evil.test","x")'
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    await session.commit()
+    run = await _open_run(session, org, 4)
+    await run_service.compute_run(session, org["maker"], run.id)
+
+    _, content = await register_xlsx_service.register_xlsx(session, org["maker"], run.id)
+    sheet = load_workbook(io.BytesIO(content))["Salary register"]
+    names = [row[2] for row in sheet.iter_rows(min_row=8, max_row=11)]
+    evil = next(cell for cell in names if str(cell.value).startswith("=HYPERLINK"))
+    assert evil.data_type == "s", "a person's name is never written as a formula"
