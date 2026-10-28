@@ -25,11 +25,12 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import mcp, oauth
 from app.services.ai import analytics, assistant, governance
-from app.services.companion import product_tools
+from app.services.companion import people_tools, product_tools
 from app.services.companion.config import CompanionConfig, group_on
 from app.services.products import data as products_data
 from app.services.products.catalogue import PRODUCTS
@@ -58,6 +59,9 @@ class Tool:
     feature: str | None = None
     #: The linked product it reads (catalogue.PRODUCTS), if any.
     product: str | None = None
+    #: About other people or the company: admins and sub-admins only. Everybody
+    #: else is answered about their own record and nothing more.
+    hr_only: bool = False
 
 
 TOOLS: dict[str, Tool] = {
@@ -80,13 +84,15 @@ TOOLS: dict[str, Tool] = {
             group="own_record",
             title="Your record",
             description=(
-                "The asker's own record: leave balance, latest payslip, attendance this month, "
-                "or who their manager is. Set `lookup`."
+                "The asker's own record: leave balance, latest payslip, their own current "
+                "salary (my_salary), their own profile (my_profile), attendance this month, or "
+                "who their manager is. Set `lookup`. Only ever the asker's own."
             ),
             inputs=("lookup",),
         ),
         Tool(
             key="search_people",
+            hr_only=True,
             group="people",
             title="People",
             description=(
@@ -99,6 +105,7 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             key="who_is_out",
+            hr_only=True,
             group="who_is_out",
             title="Who is on leave",
             description=(
@@ -110,6 +117,7 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             key="attendance_summary",
+            hr_only=True,
             group="attendance",
             title="Attendance",
             description=(
@@ -121,6 +129,7 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             key="list_departments",
+            hr_only=True,
             group="org",
             title="Departments",
             description="Every department, with its code and the department it sits under.",
@@ -128,6 +137,7 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             key="list_locations",
+            hr_only=True,
             group="org",
             title="Locations",
             description="Every office location, with its city and state.",
@@ -135,6 +145,7 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             key="report_question",
+            hr_only=True,
             group="reports",
             title="Report",
             description=(
@@ -145,6 +156,31 @@ TOOLS: dict[str, Tool] = {
             ),
             inputs=("question",),
             feature="analytics_questions",
+        ),
+        Tool(
+            key="employee_record",
+            group="person_records",
+            title="Employee record",
+            description=(
+                "For admins and sub-admins: one employee's current salary (monthly and annual "
+                "gross and CTC, with wage types), leave balance, attendance this month, manager "
+                "or profile. Put the person's name or employee code in `query` and set "
+                "`person_lookup`. Leave `employee_id` empty: when several people match, AskMira "
+                "shows the person a list to pick from. Never use it for the asker's own record."
+            ),
+            inputs=("query", "employee_id", "person_lookup"),
+            hr_only=True,
+        ),
+        Tool(
+            key="headcount",
+            group="person_records",
+            title="Headcount",
+            description=(
+                "For admins and sub-admins: how many people the company employs now, by status "
+                "(active, on notice, on long leave, yet to join, exited), how many are on "
+                "payroll (a salary in force today) and how many by department."
+            ),
+            hr_only=True,
         ),
         Tool(
             key="hiring_overview",
@@ -286,9 +322,11 @@ TOOLS: dict[str, Tool] = {
 #: answer's shape never depends on the tool chosen; unused fields stay empty.
 INPUTS: dict[str, dict[str, Any]] = {
     "question": {"type": "string", "description": "A standalone question, or empty."},
-    "lookup": {"type": "string", "enum": list(assistant.LOOKUPS)},
+    "lookup": {"type": "string", "enum": [*assistant.LOOKUPS, *people_tools.OWN_LOOKUPS]},
     "query": {"type": "string", "description": "Search text, or empty."},
     "include_exited": {"type": "boolean"},
+    "employee_id": {"type": "string", "description": "Always empty."},
+    "person_lookup": {"type": "string", "enum": ["none", *people_tools.PERSON_LOOKUPS]},
     "from": {"type": "string", "description": "First day, YYYY-MM-DD, or empty."},
     "to": {"type": "string", "description": "Last day, YYYY-MM-DD, or empty."},
     "product": {"type": "string", "enum": ["none", *PRODUCTS]},
@@ -315,9 +353,12 @@ async def offered(
     tenant = await session.get(Tenant, user.tenant_id)
     launchable = _launchable(user, tenant.linked_products if tenant else {})
     product_roles = {key: await products_data.role_in(session, user, key) for key in PRODUCTS}
+    hr = permissions.is_hr(user)
     out: list[Tool] = []
     for tool in TOOLS.values():
         if not group_on(config, tool.group):
+            continue
+        if tool.hr_only and not hr:
             continue
         if tool.scope and tool.scope not in scopes:
             continue
@@ -386,8 +427,17 @@ async def _run(
 
     if tool.key == "my_record":
         lookup = str(inputs.get("lookup") or "none")
+        if lookup in people_tools.OWN_LOOKUPS:
+            cards = await people_tools.own_record(session, user, lookup, today=today)
+            return cards, {"lookup": lookup}
         text, _, href = await assistant.lookup_own_record(session, user, lookup)
         return [{"type": "own_record", "text": text, "open": href}], {"lookup": lookup}
+
+    if tool.key == "employee_record":
+        return await people_tools.person_record(session, user, inputs, today=today)
+
+    if tool.key == "headcount":
+        return await people_tools.headcount(session, user, today=today)
 
     if tool.key == "search_people":
         used = {

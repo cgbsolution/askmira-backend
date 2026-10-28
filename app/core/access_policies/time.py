@@ -31,6 +31,10 @@ ENDPOINTS: dict[str, str] = {
     "GET /attendance/punches/{punch_id}/photo": (
         "scoped:require_manager_or_hr: the person's own punch photo, or their manager line and HR."
     ),
+    "GET /attendance/map-config": (
+        "reference: which map the portal draws and its browser key; the same for everyone, "
+        "takes no person id."
+    ),
     "GET /attendance/kiosk-pin": (
         "own: whether the caller has a kiosk PIN, by user.employee_id from the token; "
         "takes no person id."

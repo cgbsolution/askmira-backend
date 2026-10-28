@@ -12,6 +12,11 @@ they wait for AI to be on.
 The matching is deliberately plain — keywords, a few date phrases and statuses.
 When nothing matches, the reply says what can be asked, with examples drawn from
 the tools this person actually has.
+
+Who may ask what: an admin or sub-admin may ask about anybody ("what is Deepak's
+salary", "how many employees are on payroll"). Everybody else is answered about
+their own record only; a question about another person or the whole company is
+refused here, before any tool runs.
 """
 
 from __future__ import annotations
@@ -244,6 +249,263 @@ _STOP = {
 }
 
 
+#: Words that say what is asked about a person, or are filler around a name.
+_PERSON_FILLER = frozenset(
+    {
+        "salary",
+        "salaries",
+        "salary's",
+        "ctc",
+        "package",
+        "compensation",
+        "pay",
+        "paid",
+        "payslip",
+        "payslips",
+        "slip",
+        "slips",
+        "gross",
+        "net",
+        "wage",
+        "wages",
+        "earn",
+        "earns",
+        "earning",
+        "earnings",
+        "increment",
+        "monthly",
+        "annual",
+        "annually",
+        "yearly",
+        "per",
+        "year",
+        "years",
+        "day",
+        "days",
+        "structure",
+        "breakup",
+        "break",
+        "up",
+        "breakdown",
+        "current",
+        "present",
+        "latest",
+        "total",
+        "leave",
+        "leaves",
+        "balance",
+        "balances",
+        "left",
+        "remaining",
+        "available",
+        "pending",
+        "attendance",
+        "lop",
+        "loss",
+        "manager",
+        "managers",
+        "boss",
+        "lead",
+        "reporting",
+        "reports",
+        "report",
+        "profile",
+        "detail",
+        "info",
+        "information",
+        "joining",
+        "joined",
+        "join",
+        "date",
+        "doj",
+        "designation",
+        "title",
+        "code",
+        "id",
+        "emp",
+        "empid",
+        "no",
+        "number",
+        "get",
+        "gets",
+        "getting",
+        "make",
+        "makes",
+        "check",
+        "know",
+        "want",
+        "see",
+        "view",
+        "need",
+        "would",
+        "like",
+        "kindly",
+        "pls",
+        "plz",
+        "sir",
+        "mam",
+        "the",
+        "his",
+        "her",
+        "their",
+        "them",
+        "him",
+        "he",
+        "she",
+        "they",
+        "does",
+        "did",
+        "will",
+        "should",
+        "could",
+        "may",
+        "much",
+        "so",
+        "far",
+        "till",
+        "until",
+        "upto",
+        "as",
+        "by",
+        "ka",
+        "ki",
+        "ke",
+        "kitna",
+        "kitni",
+        "kya",
+        "hai",
+        "batao",
+        "bataiye",
+        "dikhao",
+    }
+)
+
+_SELF_WORDS = frozenset({"my", "mine", "myself", "me", "i", "i'm", "im", "own"})
+
+
+def _person_topic(text: str) -> str | None:
+    """What is asked about a person: salary, payslip, leave, attendance, manager or profile."""
+    if _has(text, "payslip", "pay ?slip", "salary slip"):
+        return "payslip"
+    if _has(
+        text,
+        "salar",
+        r"ctc\b",
+        r"package\b",
+        "compensation",
+        r"pay\b",
+        r"gross\b",
+        r"wages?\b",
+        r"earns?\b",
+        "earning",
+        "increment",
+    ):
+        return "salary"
+    if _has(
+        text,
+        "leave balance",
+        r"balance",
+        r"leaves? (left|remaining|available)",
+        "remaining leave",
+        r"how many leaves?\b",
+        r"leaves? do i have",
+        r"leaves? i have",
+        r"my leaves?\b",
+    ):
+        return "leave_balance"
+    if _has(text, "attendance", r"lop\b", "loss of pay"):
+        return "attendance_this_month"
+    if _has(text, "manager", r"reports? to", "reporting to", r"boss\b"):
+        return "manager"
+    if _has(
+        text,
+        "profile",
+        r"details?\b",
+        "joining",
+        r"joined\b",
+        r"doj\b",
+        "designation",
+        r"employee (code|id|number|no)\b",
+        r"emp ?(code|id|no)\b",
+    ):
+        return "profile"
+    return None
+
+
+def _person_query(text: str) -> tuple[str, bool]:
+    """(the name or employee code asked about, whether the asker asks about themselves)."""
+    code = re.search(r"\(([a-z0-9][a-z0-9/_.-]{0,31})\)", text)
+    if code:
+        return code.group(1), False
+    quoted = re.search(r"[\"“](.+?)[\"”]", text)
+    if quoted:
+        return quoted.group(1).strip()[:100], False
+    cleaned = re.sub(r"\d{4}-\d{2}-\d{2}", " ", text)
+    cleaned = re.sub(r"\b(next|last|past|coming)\s+\d{1,2}\s+days?\b", " ", cleaned)
+    tokens = re.findall(r"[a-z0-9][a-z0-9.@+'-]*", cleaned)
+    about_me = any(t in _SELF_WORDS for t in tokens)
+    kept: list[str] = []
+    for token in tokens:
+        token = token.removesuffix("'s").rstrip("'")
+        if token in _STOP or token in _PERSON_FILLER or token in _SELF_WORDS:
+            continue
+        if len(token) < 2 and not token.isdigit():
+            continue
+        kept.append(token)
+    return " ".join(kept)[:100], about_me and not kept
+
+
+_PERSON_LABEL = {
+    "salary": "salary",
+    "payslip": "payslip",
+    "leave_balance": "leave balance",
+    "attendance_this_month": "attendance",
+    "manager": "manager",
+    "profile": "profile",
+}
+
+_OWN_LOOKUP = {
+    "salary": "my_salary",
+    "payslip": "latest_payslip",
+    "leave_balance": "leave_balance",
+    "attendance_this_month": "attendance_this_month",
+    "manager": "my_manager",
+    "profile": "my_profile",
+}
+
+_OWN_REPLY = {
+    "salary": "Here is your current salary.",
+    "payslip": "Here is your latest payslip.",
+    "leave_balance": "Here is your leave balance.",
+    "attendance_this_month": "Here is your attendance this month.",
+    "manager": "Here is who your manager is.",
+    "profile": "Here is your profile.",
+}
+
+#: Tools about other people or the company: admins and sub-admins only.
+_HR_TOOLS = frozenset(
+    {
+        "search_people",
+        "who_is_out",
+        "attendance_summary",
+        "list_departments",
+        "list_locations",
+        "employee_record",
+        "headcount",
+        "report_question",
+    }
+)
+
+
+def _own_only(lead: str = "") -> DirectPlan:
+    return DirectPlan(
+        reply=(f"{lead} " if lead else "")
+        + "I can only answer about your own record: your salary, payslip, leave balance, "
+        "attendance, manager or profile. Other people's details and company-wide figures "
+        "are for admins and sub-admins."
+    )
+
+
 def _search_text(text: str, drop: tuple[str, ...] = ()) -> str:
     """What is left to search by once commands, dates, statuses and filler are taken out."""
     quoted = re.search(r"[\"“](.+?)[\"”]", text)
@@ -322,6 +584,9 @@ def examples(tools: list[Tool]) -> list[str]:
     """Questions this person can ask here, one per tool they have."""
     keys = {tool.key for tool in tools}
     sample = [
+        ("employee_record", "What is Rohan's salary?"),
+        ("headcount", "How many employees are on payroll?"),
+        ("my_record", "What is my salary?"),
         ("who_is_out", "Who is on leave this week?"),
         ("my_record", "How many leaves do I have left?"),
         ("search_people", "Find Rohan"),
@@ -358,8 +623,14 @@ def _unavailable(product: str) -> DirectPlan:
     )
 
 
-def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> DirectPlan:
-    """Match the person's message to one of `tools`, or reply with what can be asked."""
+def plan(
+    text: str, tools: list[Tool], *, today: date, name: str = "Mira", hr: bool = False
+) -> DirectPlan:
+    """Match the person's message to one of `tools`, or reply with what can be asked.
+
+    `hr` is whether the asker is an admin or sub-admin. For anybody else a question
+    that needs another person's record or company-wide figures is refused.
+    """
     offered = {tool.key for tool in tools}
     words = " ".join(text.lower().replace("\u2019", "'").split())
     words = re.sub(r"\bwho's\b", "who is", words)
@@ -367,7 +638,11 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
     when = {"from": start, "to": end}
 
     def pick(key: str, reply: str, **inputs: Any) -> DirectPlan | None:
-        return DirectPlan(reply=reply, tool=key, inputs=inputs) if key in offered else None
+        if key in offered:
+            return DirectPlan(reply=reply, tool=key, inputs=inputs)
+        if not hr and key in _HR_TOOLS:
+            return _own_only()
+        return None
 
     if _GREETING.match(words):
         return _help(tools, name, prefix=f"Hi! I'm {name}.")
@@ -619,6 +894,37 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
     if asked_hiring:
         return _unavailable(_HIRE)
 
+    # How many people work here, and how many are on payroll.
+    counting = _has(
+        words,
+        r"head ?counts?\b",
+        r"how many (people|employees|emp|staff|members|persons|workers)\b",
+        r"(employees?|staff|people|emp|workforce) (count|strength|numbers?|total)\b",
+        r"(number|count|total|strength) of (employees|people|staff|emp)\b",
+        r"total (employees|people|staff|strength|workforce)\b",
+        r"(on|in) (the )?payroll\b",
+        r"strength\b",
+    )
+    flow = _has(
+        words,
+        "on leave",
+        "absent",
+        "present",
+        r"late\b",
+        "joined",
+        "joiners",
+        "hired",
+        r"left\b",
+        "exited",
+        r"exits?\b",
+        "attrition",
+        "resigned",
+    )
+    if counting and not flow:
+        chosen = pick("headcount", "Here is your headcount today.")
+        if chosen:
+            return chosen
+
     # Policy and report questions need a model of their own.
     if _has(
         words,
@@ -628,11 +934,11 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
         "handbook",
         "holiday list",
         "holidays\\b",
-        "how many (people|employees)",
-        "headcount",
         "joiners",
         "attrition",
-    ):
+    ) or (counting and flow and not _has(words, "on leave", "absent", "present", r"late\b")):
+        if not hr and (counting or _has(words, "joiners", "attrition")):
+            return _own_only()
         return DirectPlan(
             reply=(
                 "Questions like that are answered by AI, which is not switched on here. "
@@ -640,27 +946,31 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
             )
         )
 
-    # The person's own record.
-    if _has(words, "payslip", "pay slip", "salary", "my pay\\b", "ctc"):
-        chosen = pick("my_record", "Here is your latest payslip.", lookup="latest_payslip")
-    elif _has(words, "my manager", "reporting manager", "report to", "my boss", "my lead"):
-        chosen = pick("my_record", "Here is who your manager is.", lookup="my_manager")
-    elif _has(
-        words,
-        "balance",
-        "leaves? left",
-        "leaves? do i have",
-        "leaves? i have",
-        "my leaves?\\b",
-        "remaining leave",
-    ):
-        chosen = pick("my_record", "Here is your leave balance.", lookup="leave_balance")
-    elif _has(words, "my attendance", "i present", "my presence"):
-        chosen = pick(
-            "my_record", "Here is your attendance this month.", lookup="attendance_this_month"
-        )
-    if chosen:
-        return chosen
+    # A person's record: the asker's own, or (admins and sub-admins) somebody else's.
+    topic = _person_topic(words)
+    if topic:
+        query, about_me = _person_query(words)
+        other = bool(query) and not about_me
+        label = _PERSON_LABEL[topic]
+        if other and not hr:
+            return _own_only(f"I can't show another person's {label}.")
+        if other:
+            if topic == "payslip":
+                chosen = pick(
+                    "employee_record",
+                    "Payslips are under Payroll → Payslips. Here is the current salary.",
+                    query=query,
+                    person_lookup="salary",
+                )
+            else:
+                chosen = pick("employee_record", "", query=query, person_lookup=topic)
+        elif about_me or not hr or topic == "payslip":
+            chosen = pick("my_record", _OWN_REPLY[topic], lookup=_OWN_LOOKUP[topic])
+        elif topic != "attendance_this_month":
+            # "What is the salary?" from HR: whose, the tool asks.
+            chosen = pick("employee_record", "", query="", person_lookup=topic)
+        if chosen:
+            return chosen
 
     # Who is out, and attendance.
     if _has(
@@ -711,6 +1021,8 @@ def plan(text: str, tools: list[Tool], *, today: date, name: str = "Mira") -> Di
         "team",
     )
     if query and (searching or len(words.split()) <= 3):
+        if not hr:
+            return _own_only()
         chosen = pick(
             "search_people",
             f"Here is who matches “{query}”.",

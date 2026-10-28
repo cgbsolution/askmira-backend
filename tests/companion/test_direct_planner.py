@@ -14,8 +14,8 @@ TODAY = date(2026, 10, 21)  # a Wednesday
 ALL = [tool for tool in TOOLS.values() if not tool.feature]
 
 
-def _plan(text: str, tools=ALL) -> direct.DirectPlan:
-    return direct.plan(text, tools, today=TODAY)
+def _plan(text: str, tools=ALL, *, hr: bool = True) -> direct.DirectPlan:
+    return direct.plan(text, tools, today=TODAY, hr=hr)
 
 
 @pytest.mark.parametrize(

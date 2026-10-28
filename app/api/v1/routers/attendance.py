@@ -81,12 +81,14 @@ from app.schemas.attendance import (
 from app.services.attendance import (
     csv_import,
     kiosk,
+    maps,
     punch_photos,
     review,
     setup,
     shift_swaps,
 )
 from app.services.attendance import service as attendance_service
+from app.services.attendance.maps import MapConfigRead
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
@@ -277,6 +279,15 @@ async def list_days(
     )
     rows = await review.list_days(session, user, employee_id=target, start=date_from, end=date_to)
     return [AttendanceDayRead.model_validate(row) for row in rows]
+
+
+@router.get("/map-config", response_model=MapConfigRead)
+async def map_config(user: CurrentUser) -> MapConfigRead:
+    """Which map to draw (Google first, Leaflet as the fallback) and its key.
+
+    Any signed-in person: everyone sees a map on their own punch screen.
+    """
+    return maps.map_config()
 
 
 @router.get("/period", response_model=MyAttendancePeriod)

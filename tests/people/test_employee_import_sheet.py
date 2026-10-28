@@ -183,3 +183,25 @@ def test_files_that_are_not_employee_lists_are_refused_plainly():
         read_table(b"Name,Email\nRavi,ravi@example.com\n", "people.csv")
     with pytest.raises(SheetError, match="Excel workbook"):
         read_table(b"PK\x03\x04 not really a zip", "broken.xlsx")
+
+
+def test_an_address_repeated_in_address_2_is_kept_once():
+    # factoHR's export copies the whole address into "Address 2" for some people;
+    # imported as is, the profile showed it twice.
+    from app.services.employee_import.service import _lines
+
+    full = "B-451, Rajiv Gandhi Colony, Govindpuri Kalkaji, New Delhi, South Delhi-110019"
+    assert _lines([full, full, ""]) == (full, None)
+    assert _lines([full, f" {full.upper()} ", None]) == (full, None)
+    # A piece of line 1 adds nothing; a longer cell that holds line 1 replaces it.
+    assert _lines([full, "Govindpuri Kalkaji", None]) == (full, None)
+    assert _lines(["B-451", full, None]) == (full, None)
+    # Different text stays, even when it shares a prefix ("Sector 4" is not "Sector 45").
+    assert _lines(["Plot 7, Sector 45", "Sector 4 Market", None]) == (
+        "Plot 7, Sector 45",
+        "Sector 4 Market",
+    )
+    assert _lines(["12, Lake View Road", "Indiranagar", "Near Metro"]) == (
+        "12, Lake View Road",
+        "Indiranagar, Near Metro",
+    )

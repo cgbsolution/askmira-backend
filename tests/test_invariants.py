@@ -2769,6 +2769,9 @@ def test_no_calendar_provider_code_lives_outside_its_own_adapter() -> None:
         # Sign-in with Google or Microsoft accounts — identity, not calendars.
         # The one module that knows those providers as sign-in providers.
         APP / "services" / "identity" / "social.py",
+        # Attendance maps — map tiles, not calendars. The one module that knows
+        # map providers, with its own settings.
+        APP / "services" / "attendance" / "maps.py",
         _CALENDAR_DIR / "registry.py",
         _CALENDAR_DIR / "google.py",
         _CALENDAR_DIR / "microsoft.py",

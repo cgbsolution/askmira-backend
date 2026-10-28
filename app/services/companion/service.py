@@ -73,8 +73,12 @@ every other input empty: "" for text, "none" for choices, false for yes/no.
 your reply. So `reply` is one or two short sentences that introduce the result — "Here is who \
 is on approved leave this week." — never the answer itself, and never a guess at it.
 - Questions about company policy, leave rules or holidays go to policy_question; questions \
-about the person's own leave balance, payslip, attendance or manager go to my_record; \
-counting and reporting questions go to report_question.
+about the person's own leave balance, payslip, salary, profile, attendance or manager go to \
+my_record; counting and reporting questions go to report_question, or to headcount when it \
+is listed and the question is how many people work here or are on payroll.
+- A question about another named person (their salary, leave, attendance, manager or \
+profile) goes to employee_record when it is listed. When it is not listed, the person may \
+only ask about their own record: say so plainly, and never answer it with my_record.
 - When they are listed, questions about jobs, candidates or interviews go to the hiring_ \
 tools, and questions about expense claims or reimbursements go to the expense_ tools. \
 open_product only opens a product; use it when the person asks to open one.
@@ -91,11 +95,29 @@ message.
 - Reply in the language the person writes in. Be warm and brief."""
 
 
+class PickIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(min_length=1, max_length=64)
+    inputs: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+    @field_validator("inputs")
+    @classmethod
+    def _short(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(len(k) > 32 or len(v) > 100 for k, v in value.items()):
+            raise ValueError("That choice is not valid.")
+        return value
+
+
 class MessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=2000)
     conversation_id: uuid.UUID | None = None
+    #: A choice clicked on an earlier answer (a person picked from a list): the
+    #: tool and inputs it carries. Run without planning, as the person, and only
+    #: when that tool is offered to them now.
+    pick: PickIn | None = None
 
     @field_validator("text")
     @classmethod
@@ -119,6 +141,7 @@ class Plan(BaseModel):
     product: str = "none"
     status: str = "none"
     scope: str = "none"
+    person_lookup: str = "none"
     confidence: float = 0.0
 
     @field_validator("confidence")
@@ -137,6 +160,9 @@ class Plan(BaseModel):
             "product": self.product,
             "status": self.status,
             "scope": self.scope,
+            # Only a pick from a list names a person by id, never the model.
+            "employee_id": "",
+            "person_lookup": self.person_lookup,
         }
 
 
@@ -476,9 +502,16 @@ async def send(
     session.add(mine)
     await session.flush()
 
-    if not ai:
+    if payload.pick is not None or not ai:
         return await _send_direct(
-            session, user, config, conversation, mine, payload.text, request=request
+            session,
+            user,
+            config,
+            conversation,
+            mine,
+            payload.text,
+            request=request,
+            pick=payload.pick,
         )
 
     tenant = await session.get(Tenant, user.tenant_id)
@@ -606,10 +639,24 @@ async def _send_direct(
     text: str,
     *,
     request: Request | None,
+    pick: PickIn | None = None,
 ) -> dict[str, Any]:
-    """A turn planned by rule (direct.py): no model, nothing sent outside AskMira."""
+    """A turn planned by rule (direct.py), or a choice clicked on an earlier answer.
+
+    No model, nothing sent outside AskMira.
+    """
     tools = await offered(session, user, config, ai=False)
-    plan = direct.plan(text, tools, today=_today(), name=config.name)
+    if pick is not None:
+        tool = TOOLS.get(pick.tool)
+        if tool is None or tool.key not in {t.key for t in tools}:
+            plan = direct.DirectPlan(reply="That choice is no longer available to you.")
+        else:
+            readable = {k: v for k, v in pick.inputs.items() if k in tool.inputs}
+            plan = direct.DirectPlan(reply="", tool=tool.key, inputs=readable)
+    else:
+        plan = direct.plan(
+            text, tools, today=_today(), name=config.name, hr=permissions.is_hr(user)
+        )
     # The plan only ever names an offered tool; checked again all the same.
     chosen = {tool.key: tool for tool in tools}.get(plan.tool or "")
     cards: list[dict[str, Any]] = []
@@ -637,7 +684,11 @@ async def _send_direct(
         entity_type="companion_message",
         entity_id=reply.id,
         actor=user,
-        changes={"mode": "direct", "tool": chosen.key if chosen else None, "arguments": used},
+        changes={
+            "mode": "pick" if pick is not None else "direct",
+            "tool": chosen.key if chosen else None,
+            "arguments": used,
+        },
         summary=(
             f"Ask Mira (direct) answered {user.full_name}"
             + (f" with {chosen.title.lower()}" if chosen else " without a tool")

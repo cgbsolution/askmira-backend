@@ -253,24 +253,24 @@ async def test_what_a_tool_finds_is_shown_and_never_sent_to_the_model(
     session: AsyncSession, me: User, manager: Employee
 ) -> None:
     model = FakeModel(
-        plan("search_people", "Here is who I found.", query="Engineering"),
+        plan("my_record", "Here is your profile.", lookup="my_profile"),
         plan("my_record", "Here is your manager on record.", lookup="my_manager"),
     )
     with use_backend(model):
-        first = await _say(session, me, "Who leads the engineering team?")
+        first = await _say(session, me, "Show my profile")
         second = await _say(session, me, "and who is my manager?", first["conversation"]["id"])
 
-    people = first["messages"][1]["cards"][0]
-    assert people["type"] == "table"
-    assert people["rows"][0][:2] == ["Rohan Verma", "Engineering Manager"]
+    profile = first["messages"][1]["cards"][0]
+    assert profile["type"] == "record" and profile["title"] == "Your profile"
+    assert {"label": "Reports to", "value": "Rohan Verma"} in profile["figures"]
     own = second["messages"][1]["cards"][0]
     assert own["type"] == "own_record" and "Rohan Verma" in own["text"]
 
     sent = model.everything_sent()
     assert "Rohan" not in sent and "rohan.verma" not in sent and "ACM900" not in sent
     # The second turn sees the first: the person's words, the reply, the tool and its inputs.
-    assert "Here is who I found." in model.calls[1]["user"]
-    assert '[used search_people with {"query": "Engineering"' in model.calls[1]["user"]
+    assert "Here is your profile." in model.calls[1]["user"]
+    assert '[used my_record with {"lookup": "my_profile"' in model.calls[1]["user"]
 
 
 async def test_tools_are_offered_only_within_the_persons_role(
@@ -282,7 +282,17 @@ async def test_tools_are_offered_only_within_the_persons_role(
         offered = {tool["key"] for tool in (await companion.status_for(session, me))["tools"]}
         result = await _say(session, me, "Show everyone's attendance this month")
     assert "attendance_summary" not in offered
-    assert {"search_people", "who_is_out", "my_record", "policy_question"} <= offered
+    assert {"my_record", "policy_question"} <= offered
+    # About other people or the whole company: never offered to an employee.
+    assert not offered & {
+        "search_people",
+        "who_is_out",
+        "list_departments",
+        "list_locations",
+        "employee_record",
+        "headcount",
+        "report_question",
+    }
     reply = result["messages"][1]
     assert reply["tool"] is None
     assert reply["cards"][0]["type"] == "notice"
@@ -292,13 +302,15 @@ async def test_tools_are_offered_only_within_the_persons_role(
     hr = await as_caller(session, hr_user)
     with use_backend(FakeModel()):
         hr_offered = {tool["key"] for tool in (await companion.status_for(session, hr))["tools"]}
-    assert "attendance_summary" in hr_offered
+    assert {"attendance_summary", "employee_record", "headcount", "search_people"} <= hr_offered
 
 
-async def test_who_is_out_defaults_to_today(session: AsyncSession, me: User) -> None:
+async def test_who_is_out_defaults_to_today(session: AsyncSession, hr_user: User, me: User) -> None:
+    await _consent(session, hr_user.tenant_id, hr_user.id)
+    hr = await as_caller(session, hr_user)
     model = FakeModel(plan("who_is_out", "Here is who is on leave today."))
     with use_backend(model):
-        result = await _say(session, me, "who is on leave today?")
+        result = await _say(session, hr, "who is on leave today?")
     reply = result["messages"][1]
     assert reply["arguments"]["from"] == reply["arguments"]["to"]
     assert reply["cards"][0]["type"] == "notice"  # nobody is on leave in a fresh workspace
@@ -318,13 +330,15 @@ async def test_without_an_ai_provider_it_answers_by_rule(
     offered = {tool["key"] for tool in status["tools"]}
     # The two tools that ask a model of their own wait for AI.
     assert "policy_question" not in offered and "report_question" not in offered
-    assert {"search_people", "who_is_out", "my_record"} <= offered
-    assert "Who is on leave this week?" in status["examples"]
+    assert "my_record" in offered and "search_people" not in offered
+    assert "How many leaves do I have left?" in status["examples"]
+    assert "What is my salary?" in status["examples"]
 
+    # An employee is answered about themselves only: a colleague is refused, unread.
     first = await _say(session, me, "Find Rohan")
     people = first["messages"][1]
-    assert people["tool"] == "search_people" and people["arguments"]["query"] == "rohan"
-    assert people["cards"][0]["rows"][0][:2] == ["Rohan Verma", "Engineering Manager"]
+    assert people["tool"] is None and people["cards"] == []
+    assert "only answer about your own record" in people["text"]
 
     second = await _say(session, me, "who is my manager?", first["conversation"]["id"])
     own = second["messages"][1]
@@ -530,3 +544,348 @@ async def test_the_chat_over_http(client: httpx.AsyncClient, me: User, hr_user: 
         f"/api/v1/companion/conversations/{conversation}", headers=_bearer(me)
     )
     assert deleted.status_code == 204
+
+
+# ── People questions: admins ask about anybody, employees about themselves ──
+
+
+async def _salary(
+    session: AsyncSession, tenant: Tenant, person: Employee, ctc: str, *, gross: str
+) -> None:
+    from datetime import date
+    from decimal import Decimal
+
+    from app.models.payroll import (
+        ComponentType,
+        EmployeeSalary,
+        EmployeeSalaryComponent,
+        SalaryStructure,
+    )
+
+    structure = SalaryStructure(
+        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1)
+    )
+    session.add(structure)
+    await session.flush()
+    salary = EmployeeSalary(
+        tenant_id=tenant.id,
+        employee_id=person.id,
+        structure_id=structure.id,
+        ctc_annual=Decimal(ctc),
+        effective_from=date(2026, 4, 1),
+    )
+    session.add(salary)
+    await session.flush()
+    monthly = Decimal(gross)
+    for code, name, share in (
+        ("BASIC", "Basic", Decimal("0.5")),
+        ("SPL", "Special", Decimal("0.5")),
+    ):
+        session.add(
+            EmployeeSalaryComponent(
+                tenant_id=tenant.id,
+                employee_salary_id=salary.id,
+                component_code=code,
+                component_name=name,
+                component_type=ComponentType.EARNING,
+                monthly_amount=monthly * share,
+                annual_amount=monthly * share * 12,
+            )
+        )
+    await session.commit()
+
+
+@pytest.fixture
+async def namesake(session: AsyncSession, tenant: Tenant) -> Employee:
+    """A second Rohan, so a name alone does not say whose record is wanted."""
+    person = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM901",
+        first_name="Rohan",
+        last_name="Mehta",
+        work_email="rohan.mehta@acme.test",
+        designation="Accountant",
+        status=EmploymentStatus.ACTIVE,
+    )
+    session.add(person)
+    await session.commit()
+    return person
+
+
+async def _pick(session: AsyncSession, user: User, option: dict[str, Any], conversation: str):
+    return await companion.send(
+        session,
+        user,
+        companion.MessageIn(
+            text=option["text"],
+            conversation_id=uuid.UUID(conversation),
+            pick=companion.PickIn(tool=option["tool"], inputs=option["inputs"]),
+        ),
+        request=None,
+    )
+
+
+async def test_an_admin_picks_whose_salary_and_sees_it_monthly_and_annually(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    manager: Employee,
+    namesake: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    await _salary(session, tenant, manager, "1200000", gross="100000")
+    hr = await as_caller(session, hr_user)
+
+    asked = await _say(session, hr, "what is rohans salary")
+    reply = asked["messages"][1]
+    assert reply["tool"] == "employee_record"
+    choices = reply["cards"][0]
+    assert choices["type"] == "choices" and len(choices["options"]) == 2
+    labels = {o["label"]: o for o in choices["options"]}
+    assert set(labels) == {"Rohan Verma", "Rohan Mehta"}
+    assert "ACM900" in labels["Rohan Verma"]["detail"]
+
+    picked = await _pick(session, hr, labels["Rohan Verma"], asked["conversation"]["id"])
+    card = picked["messages"][1]["cards"][0]
+    assert picked["messages"][0]["text"] == "Salary of Rohan Verma (ACM900)"
+    assert card["type"] == "record" and card["title"] == "Rohan Verma"
+    figures = {f["label"]: f["value"] for f in card["figures"]}
+    assert figures == {
+        "Monthly gross": "₹1,00,000.00",
+        "Annual gross": "₹12,00,000.00",
+        "Monthly CTC": "₹1,00,000.00",
+        "Annual CTC": "₹12,00,000.00",
+    }
+    assert card["table"]["rows"][0] == ["Basic", "Earning", "₹50,000.00", "₹6,00,000.00"]
+    assert card["open"] == f"/payroll/salaries?employee={manager.id}"
+
+    # The code typed (as a picked option reads) finds the one person straight away.
+    typed = await _say(session, hr, "Salary of Rohan Mehta (ACM901)")
+    card = typed["messages"][1]["cards"][0]
+    assert card["type"] == "record" and card["title"] == "Rohan Mehta"
+    assert "No salary is in force today" in card["note"]
+
+    audit_rows = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "companion_message"))
+    ).all()
+    assert {row.changes["mode"] for row in audit_rows} == {"direct", "pick"}
+
+
+async def test_an_employee_sees_only_their_own_salary(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,
+    employee: Employee,
+    manager: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    await _salary(session, tenant, employee, "600000", gross="50000")
+    await _salary(session, tenant, manager, "1200000", gross="100000")
+
+    own = await _say(session, me, "what is my salary")
+    card = own["messages"][1]["cards"][0]
+    assert card["type"] == "record" and card["title"] == "Your salary"
+    assert {"label": "Annual CTC", "value": "₹6,00,000.00"} in card["figures"]
+    assert card["open"] == "/pay"
+
+    for question in (
+        "what is rohan's salary",
+        "salary of Rohan Verma (ACM900)",
+        "rohan verma leave balance",
+        "how many employees are on payroll",
+        "who is on leave this week",
+        "list departments",
+    ):
+        reply = (await _say(session, me, question))["messages"][1]
+        assert reply["tool"] is None and reply["cards"] == [], question
+        assert "only answer about your own record" in reply["text"], question
+
+    # A pick sent by hand for a tool the employee does not have runs nothing.
+    sneaky = await _pick(
+        session,
+        me,
+        {
+            "text": "Salary of Rohan Verma (ACM900)",
+            "tool": "employee_record",
+            "inputs": {"employee_id": str(manager.id), "person_lookup": "salary"},
+        },
+        own["conversation"]["id"],
+    )
+    reply = sneaky["messages"][1]
+    assert reply["tool"] is None and reply["cards"] == []
+    assert "no longer available" in reply["text"]
+    everything = json.dumps([m["cards"] for m in sneaky["messages"]])
+    assert "12,00,000" not in everything
+
+
+async def test_headcount_counts_who_is_on_payroll(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    manager: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    session.add(
+        Employee(
+            tenant_id=tenant.id,
+            employee_code="ACM950",
+            first_name="Old",
+            last_name="Timer",
+            work_email="old@acme.test",
+            status=EmploymentStatus.EXITED,
+        )
+    )
+    await session.commit()
+    await _salary(session, tenant, manager, "1200000", gross="100000")
+    hr = await as_caller(session, hr_user)
+
+    result = await _say(session, hr, "what is my total employee count active on payroll")
+    reply = result["messages"][1]
+    assert reply["tool"] == "headcount"
+    figures = {f["label"]: f["value"] for f in reply["cards"][0]["figures"]}
+    assert figures["Employed now"] == "2"
+    assert figures["On payroll"] == "1"
+    assert figures["Employed, no salary set up"] == "1"
+    assert figures["Exited"] == "1"
+
+
+async def test_a_sub_admin_without_payroll_rights_cannot_see_salaries(
+    session: AsyncSession,
+    tenant: Tenant,
+    manager: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.access import UserAreaRights
+
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    await _salary(session, tenant, manager, "1200000", gross="100000")
+    sub = User(
+        tenant_id=tenant.id,
+        email="ops@acme.test",
+        password_hash="x",
+        full_name="Ops Person",
+        role=UserRole.SUB_ADMIN,
+        is_active=True,
+    )
+    session.add(sub)
+    await session.flush()
+    session.add(
+        UserAreaRights(
+            tenant_id=tenant.id,
+            user_id=sub.id,
+            area="payroll",
+            can_view=False,
+            can_create=False,
+            can_edit=False,
+            can_delete=False,
+            can_approve=False,
+            can_export=False,
+        )
+    )
+    await session.commit()
+    sub = await as_caller(session, sub)
+
+    reply = (await _say(session, sub, "salary of ACM900"))["messages"][1]
+    assert reply["tool"] == "employee_record"
+    assert reply["cards"][0]["type"] == "notice"
+    assert "cannot see that" in reply["cards"][0]["text"]
+    # Their other HR rights still work: the profile is people, not payroll.
+    profile = (await _say(session, sub, "profile of ACM900"))["messages"][1]["cards"][0]
+    assert profile["type"] == "record" and profile["title"] == "Rohan Verma"
+    # And the headcount leaves out who is on payroll.
+    count = (await _say(session, sub, "headcount"))["messages"][1]["cards"][0]
+    assert "On payroll" not in {f["label"] for f in count["figures"]}
+
+
+async def test_salary_lookups_stay_inside_the_tenant(
+    session: AsyncSession,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    hr_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    outsider = Employee(
+        tenant_id=other_tenant.id,
+        employee_code="GLX001",
+        first_name="Rohan",
+        last_name="Globex",
+        work_email="rohan@globex.test",
+        status=EmploymentStatus.ACTIVE,
+    )
+    session.add(outsider)
+    await session.commit()
+    hr = await as_caller(session, hr_user)
+
+    by_name = (await _say(session, hr, "salary of rohan globex"))["messages"][1]["cards"][0]
+    assert by_name["type"] == "notice" and "Nobody" in by_name["text"]
+    first = await _say(session, hr, "salary of GLX001")
+    assert first["messages"][1]["cards"][0]["type"] == "notice"
+    by_id = await _pick(
+        session,
+        hr,
+        {
+            "text": "Salary of Rohan Globex (GLX001)",
+            "tool": "employee_record",
+            "inputs": {"employee_id": str(outsider.id), "person_lookup": "salary"},
+        },
+        first["conversation"]["id"],
+    )
+    card = by_id["messages"][1]["cards"][0]
+    assert card["type"] == "notice" and "not in your workspace" in card["text"]
+
+
+async def test_a_pick_over_http(
+    client: httpx.AsyncClient,
+    hr_user: User,
+    manager: Employee,
+    namesake: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    asked = await client.post(
+        "/api/v1/companion/messages", json={"text": "rohan profile"}, headers=_bearer(hr_user)
+    )
+    assert asked.status_code == 200, asked.text
+    option = asked.json()["messages"][1]["cards"][0]["options"][0]
+    picked = await client.post(
+        "/api/v1/companion/messages",
+        json={
+            "text": option["text"],
+            "conversation_id": asked.json()["conversation"]["id"],
+            "pick": {"tool": option["tool"], "inputs": option["inputs"]},
+        },
+        headers=_bearer(hr_user),
+    )
+    assert picked.status_code == 200, picked.text
+    assert picked.json()["messages"][1]["cards"][0]["type"] == "record"
+    bad = await client.post(
+        "/api/v1/companion/messages",
+        json={"text": "x", "pick": {"tool": "employee_record", "inputs": {"query": "a" * 500}}},
+        headers=_bearer(hr_user),
+    )
+    assert bad.status_code == 422
+
+
+async def test_a_name_search_ignores_the_email_domain_and_wildcards(
+    session: AsyncSession,
+    hr_user: User,
+    manager: Employee,
+    namesake: Employee,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
+    hr = await as_caller(session, hr_user)
+    # Every work email here ends in @acme.test: the domain matches nobody by name.
+    for question in ("salary of acme", "salary of test", "salary of %%", "salary of a_b"):
+        card = (await _say(session, hr, question))["messages"][1]["cards"][0]
+        assert card["type"] == "notice", question
+    # The part before the "@" still finds them, and a whole address finds one.
+    by_local = (await _say(session, hr, "salary of rohan.mehta"))["messages"][1]["cards"][0]
+    assert by_local["type"] == "record" and by_local["title"] == "Rohan Mehta"
+    by_email = (await _say(session, hr, "salary of rohan.verma@acme.test"))["messages"][1]
+    assert by_email["cards"][0]["title"] == "Rohan Verma"

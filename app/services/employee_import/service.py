@@ -274,9 +274,36 @@ def _status(read: _Reader, joining: date | None, today: date) -> tuple[Employmen
     return onboarding_rules.joining_status(joining, today), None
 
 
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _within(inner: list[str], outer: list[str]) -> bool:
+    """Whether `inner`'s words appear, in order and together, inside `outer`."""
+    n = len(inner)
+    return n > 0 and any(outer[i : i + n] == inner for i in range(len(outer) - n + 1))
+
+
+def _distinct(parts: list[str | None]) -> list[str]:
+    """The address cells that add something.
+
+    factoHR's export often repeats the whole address in "Address 2" (or a piece
+    of it in "Address 3"); kept as is, every profile shows the address twice.
+    """
+    kept: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        words = _words(part)
+        if not words or any(_within(words, _words(k)) for k in kept):
+            continue
+        kept = [k for k in kept if not _within(_words(k), words)] + [part]
+    return kept
+
+
 def _lines(parts: list[str | None]) -> tuple[str | None, str | None]:
     """Up to three address cells as the two lines AskMira keeps, 255 characters each."""
-    present = [p for p in parts if p]
+    present = _distinct(parts)
     if not present:
         return None, None
     first, rest = present[0], ", ".join(present[1:]) or None

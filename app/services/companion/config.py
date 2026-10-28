@@ -26,10 +26,13 @@ __all__ = ["TOOL_GROUPS", "CompanionConfig", "get_config", "group_on", "set_conf
 TOOL_GROUPS: dict[str, str] = {
     "policy": "Answer policy, leave-rule and holiday questions from what HR published.",
     "own_record": "Tell a person their own leave balance, latest payslip, attendance or manager.",
-    "people": "Find colleagues in the directory.",
-    "who_is_out": "Show who is on approved leave.",
+    "people": "Find colleagues in the directory (admins and sub-admins).",
+    "person_records": "Let admins and sub-admins ask about one employee (current salary, leave "
+    "balance, attendance, manager or profile) and the company's headcount. Employees are only "
+    "ever answered about themselves.",
+    "who_is_out": "Show who is on approved leave (admins and sub-admins).",
     "attendance": "Show attendance summaries (HR only).",
-    "org": "List departments and office locations.",
+    "org": "List departments and office locations (admins and sub-admins).",
     "reports": "Answer counting and reporting questions with the report builder.",
     "products": "Say whether the interview, expense and helpdesk tools are connected, and open "
     "the ones this workspace has linked.",

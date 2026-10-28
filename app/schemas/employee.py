@@ -70,7 +70,7 @@ class EmployeeUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=255)
     work_email: EmailStr | None = None
     personal_email: EmailStr | None = None
-    phone: str | None = Field(default=None, max_length=32)
+    phone: str | None = Field(default=None, max_length=32, pattern=r"^[0-9+\-() ]*$")
     date_of_birth: date | None = None
     gender: Gender | None = None
 
