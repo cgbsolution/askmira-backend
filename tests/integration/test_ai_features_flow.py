@@ -575,7 +575,7 @@ async def test_a_resume_is_read_without_the_candidates_identity_and_evidence_is_
 
     # The résumé goes to a model outside India only for a candidate who ticked
     # the optional AI box when applying.
-    with pytest.raises(HTTPException) as refused:
+    with use_backend(FakeModel({})), pytest.raises(HTTPException) as refused:
         await hiring.screen_candidate(session, hr_user, candidate.id)
     assert refused.value.status_code == 409
     assert "not agreed to AI" in refused.value.detail

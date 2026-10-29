@@ -37,7 +37,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_filter
@@ -70,6 +70,35 @@ TOUCH_INTERVAL = timedelta(seconds=60)
 def device_key(user_id: uuid.UUID, user_agent: str | None) -> str:
     """A stable, one-way key for one login on one browser or app."""
     return hashlib.sha256(f"askmira-session:{user_id}:{user_agent or ''}".encode()).hexdigest()
+
+
+async def replace_device_session(
+    session: AsyncSession, user: User, request: Request | None, signed_in_at: datetime
+) -> None:
+    """A fresh sign-in on this device ends whatever session it had before.
+
+    Without this, a person who left a tab idle past the timeout and then signed
+    in again was refused on their first request: the old device session was
+    still open, idle, and the new sign-in was judged by it. Ended just before
+    the sign-in, so `_enforce_session` starts a new one. No commit: the
+    sign-in's own transaction.
+    """
+    if request is None:
+        return
+    key = device_key(user.id, request.headers.get("user-agent"))
+    await session.execute(
+        update(UserSession)
+        .where(
+            tenant_filter(UserSession, user.tenant_id),
+            UserSession.user_id == user.id,
+            UserSession.token_hash == key,
+            UserSession.revoked_at.is_(None),
+        )
+        .values(
+            revoked_at=signed_in_at - timedelta(milliseconds=1),
+            revoked_reason="Replaced by a new sign-in on this device.",
+        )
+    )
 
 
 def client_address(request: Request) -> str | None:

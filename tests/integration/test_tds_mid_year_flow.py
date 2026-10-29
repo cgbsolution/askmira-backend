@@ -210,3 +210,56 @@ def test_month_span() -> None:
     assert month_span([(2026, 4), (2026, 5), (2026, 8)]) == "Apr-Aug 2026"
     assert month_span([(2026, 9)]) == "Sep 2026"
     assert month_span([(2026, 12), (2027, 1)]) == "Dec 2026-Jan 2027"
+
+
+async def test_a_first_salary_after_the_first_month_does_not_stand_in_for_earlier_months(
+    session: AsyncSession,
+    org,
+    tenant: Tenant,
+    legal_entity: LegalEntity,
+    location: Location,
+) -> None:
+    """A consultant on the books since 2020 is put on payroll from 1 October.
+
+    September is the company's first AskMira run and leaves them out (no
+    salary on its last day). Their April-August were not salary on another
+    payroll, so October's TDS must not assume them: that would tax 11 months
+    of pay for a person paid 6.
+    """
+    await _approved_rules(session, org)
+    consultant, _ = await _person(
+        session, tenant, legal_entity, location, code="CNST14", role=UserRole.EMPLOYEE
+    )
+    await salary_service.assign_salary(
+        session,
+        org["maker"],
+        consultant.id,
+        EmployeeSalaryCreate(
+            structure_id=(await _structure_of(session, tenant)).id,
+            ctc_annual=Decimal("1200000"),
+            effective_from=date(2026, 10, 1),
+        ),
+    )
+
+    september = await _computed(session, org, 9)
+    assert [n for n in september.input_notices if n.get("key") == "no_salary"]
+    # The tax notices name only people the run pays.
+    tax = " ".join(
+        n["message"] for n in september.input_notices if n.get("key") == "tds_earlier_months"
+    )
+    assert "MEERA" in tax
+    assert "CNST14" not in tax
+    await run_service.approve_run(session, org["checker"], september.id)
+
+    october = await _computed(session, org, 10)
+    working = (await _slip(session, october.id, consultant.id)).tds_working
+    assert working["projection"]["earlier_months_from_salary_structure"] == 0
+    # October to March only: 600,000 at the flat 10%.
+    assert Decimal(working["annual_liability"]) == Decimal("60000.00")
+    assert Decimal(working["tds_assumed_deducted_by_previous_payroll"]) == 0
+
+    # The employee's own projection reads the year the same way: September
+    # was a payroll month that did not pay them, and nothing before it counts.
+    pay = await year_pay(session, org["maker"], consultant.id, FY_START, FY_END)
+    assert pay.months_paid + pay.months_projected == 6
+    assert pay.taxable_salary == Decimal("600000")

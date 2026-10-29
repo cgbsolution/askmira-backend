@@ -85,6 +85,27 @@ async def test_an_idle_session_is_ended_and_cannot_be_refreshed_back(client, ses
     assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 200
 
 
+async def test_signing_in_again_after_an_idle_spell_is_not_refused(client, session, tenant):
+    """The tab sat idle past the timeout and nothing asked the server meanwhile,
+    so the device session was never marked ended. Signing in again must start
+    a new session, not be judged by the stale one."""
+    await _policy(session, tenant, idle=30)
+    person = await make_person(
+        session, tenant, role=UserRole.EMPLOYEE, name="Meera Nair", password=PASSWORD
+    )
+    first = await _login(client, person)
+    assert (await client.get("/api/v1/auth/me", headers=first)).status_code == 200
+    await session.execute(update(UserSession).values(last_seen_at=now() - timedelta(minutes=40)))
+    await session.commit()
+
+    fresh = await _login(client, person)
+    assert (await client.get("/api/v1/auth/me", headers=fresh)).status_code == 200
+    rows = (await session.scalars(select(UserSession).order_by(UserSession.started_at))).all()
+    assert len(rows) == 2
+    assert rows[0].revoked_reason == "Replaced by a new sign-in on this device."
+    assert rows[1].revoked_at is None
+
+
 async def test_the_absolute_lifetime_is_enforced(client, session, tenant):
     await _policy(session, tenant, idle=30, lifetime=1)
     person = await make_person(

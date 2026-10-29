@@ -93,6 +93,7 @@ __all__ = [
     "collect_inputs",
     "consume_inputs",
     "expense_claim_line",
+    "merge_collected",
 ]
 
 ZERO = Decimal(0)
@@ -1879,6 +1880,30 @@ async def collect_inputs(
         )
 
     return CollectedInputs(lines=dict(lines), loans=dict(loans), reports=reports, notices=notices)
+
+
+def merge_collected(first: CollectedInputs, second: CollectedInputs) -> CollectedInputs:
+    """Two collections from different providers, as one.
+
+    A supplementary run that pays somebody's whole month asks the providers it
+    was not opened for about that person alone. Nothing is asked twice, so the
+    lines simply add up; of the second collection's reports, only the sources
+    that had something to say are kept, so the run's panel is not filled with
+    sources it was never opened for.
+    """
+    lines: dict[uuid.UUID, list[InputLine]] = defaultdict(list)
+    loans: dict[uuid.UUID, list[LoanRecoveryInput]] = defaultdict(list)
+    for collected in (first, second):
+        for employee_id, items in collected.lines.items():
+            lines[employee_id].extend(items)
+        for employee_id, items in collected.loans.items():
+            loans[employee_id].extend(items)
+    return CollectedInputs(
+        lines=dict(lines),
+        loans=dict(loans),
+        reports=first.reports + [r for r in second.reports if r.status != "nothing_due"],
+        notices=first.notices + second.notices,
+    )
 
 
 async def consume_inputs(

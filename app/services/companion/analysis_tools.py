@@ -58,6 +58,8 @@ def _pct(new: Decimal, old: Decimal) -> str:
     if old == 0:
         return "—"
     change = ((new - old) / old * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    if change == 0:
+        return "0.0%"
     return f"{'+' if change > 0 else ''}{change}%"
 
 
@@ -85,7 +87,7 @@ def _months(
 def _chart(
     title: str,
     months: list[tuple[int, int]],
-    series: list[tuple[str, list[Decimal | int]]],
+    series: list[tuple[str, list[Decimal | int | None]]],
     *,
     kind: str,
     unit: str,
@@ -99,7 +101,10 @@ def _chart(
         "chart": kind,
         "unit": unit,
         "x": [_label(y, m) for y, m in months],
-        "series": [{"name": name, "values": [str(v) for v in values]} for name, values in series],
+        "series": [
+            {"name": name, "values": ["" if v is None else str(v) for v in values]}
+            for name, values in series
+        ],
     }
 
 
@@ -212,6 +217,14 @@ async def payroll_trend(
     if not with_data:
         span = f"{_label(*months[0])} to {_label(*months[-1])}"
         return [_notice(f"No payroll was run from {span}.")], used
+    if not inputs.get("from") and not inputs.get("to"):
+        # Nothing asked for: the months that have payroll, not empty ones round them.
+        months = months[months.index(with_data[0]) : months.index(with_data[-1]) + 1]
+        used = {
+            **used,
+            "from": date(*months[0], 1).isoformat(),
+            "to": pnl_math.month_bounds(*months[-1])[1].isoformat(),
+        }
 
     cost = [pnl_math.rupees(totals[m]["cost"]) if m in totals else _ZERO for m in months]
     first = cost[months.index(with_data[0])]
@@ -221,7 +234,13 @@ async def payroll_trend(
     average = (total_cost / len(with_data)).quantize(Decimal("0.01"))
     span = f"{_label(*months[0])} to {_label(*months[-1])}"
 
-    series: list[tuple[str, list[Decimal | int]]] = [("Cost to company", list(cost))]
+    # A month with no payroll is a gap on the chart, not a fall to zero.
+    series: list[tuple[str, list[Decimal | int | None]]] = [
+        (
+            "Cost to company",
+            [c if m in with_data else None for c, m in zip(cost, months, strict=True)],
+        )
+    ]
     if group_column is not None:
         names = await _group_names(session, user, group, set(by_group))
         ranked = sorted(by_group, key=lambda g: -sum(by_group[g].values(), _ZERO))

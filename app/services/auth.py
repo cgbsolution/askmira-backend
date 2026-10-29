@@ -109,6 +109,14 @@ async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> 
     )
 
 
+async def _mark_signed_in(session: AsyncSession, user: User, request: Request | None) -> None:
+    """Record a successful sign-in, and start this device's session afresh."""
+    from app.services.opsec.enforcement import replace_device_session
+
+    user.last_login_at = datetime.now(UTC)
+    await replace_device_session(session, user, request, user.last_login_at)
+
+
 async def issue_session(session: AsyncSession, user: User) -> AuthResponse:
     """A fresh token pair for a signed-in user in their own workspace."""
     tenant = await session.get(Tenant, user.tenant_id)
@@ -342,7 +350,7 @@ async def login(
             expires_in=300,
         )
 
-    user.last_login_at = datetime.now(UTC)
+    await _mark_signed_in(session, user, request)
 
     await audit.record(
         session,
@@ -394,7 +402,7 @@ async def finish_external_login(
             expires_in=300,
         )
 
-    user.last_login_at = datetime.now(UTC)
+    await _mark_signed_in(session, user, request)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -464,7 +472,7 @@ async def complete_mfa_login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="This workspace is not active"
         )
-    user.last_login_at = datetime.now(UTC)
+    await _mark_signed_in(session, user, request)
     await audit.record(
         session,
         tenant_id=user.tenant_id,

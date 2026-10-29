@@ -310,7 +310,14 @@ async def propose_leave(
         {"label": "Days counted", "value": days},
     ]
     if preview.available_before is not None:
-        figures.append({"label": "Available now", "value": _num(preview.available_before)})
+        waiting = preview.pending_days or 0
+        figures.append(
+            {
+                "label": "Available now",
+                "value": _num(preview.available_before)
+                + (f" ({_num(waiting)} waiting for approval)" if waiting else ""),
+            }
+        )
     if preview.available_after is not None:
         figures.append({"label": "Left after this", "value": _num(preview.available_after)})
     skipped = [f"{h.name} ({h.date:%d %b})" for h in preview.holidays]

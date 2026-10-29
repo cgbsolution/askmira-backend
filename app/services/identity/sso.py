@@ -166,6 +166,9 @@ async def provision_user(
         # The existing role is left exactly as it is. An IdP cannot promote or
         # demote anyone.
         user.last_login_at = datetime.now(UTC)
+        from app.services.opsec.enforcement import replace_device_session
+
+        await replace_device_session(session, user, request, user.last_login_at)
         user.is_email_verified = True
         if user.employee_id is None and external_employee_code:
             await _try_link_employee(session, user, external_employee_code, request=request)

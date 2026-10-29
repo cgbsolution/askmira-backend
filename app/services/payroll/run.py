@@ -61,6 +61,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.org import LegalEntity
 from app.models.payroll import (
+    EmployeeSalary,
     PayrollRuleSet,
     PayrollRun,
     PayrollRunStatus,
@@ -88,6 +89,7 @@ from app.services.payroll.inputs import (
     RunScope,
     collect_inputs,
     consume_inputs,
+    merge_collected,
 )
 from app.services.payroll.service import active_salary_on
 from app.services.payroll.tds import (
@@ -594,6 +596,33 @@ async def compute_run(
 
     fy_label, fy_start, fy_end = financial_year_for(end, start_month)
     employee_ids = frozenset(e.id for e in employees)
+
+    # Who this run can pay at all: employed for part of the period, with a
+    # salary in force on its last day (a leaver's, on their last day). Worked
+    # out before anything is collected, so somebody it leaves out is not
+    # counted in its sources, its tax notices or its joiner/leaver notes.
+    leaving_on = await _agreed_last_days(session, user, employee_ids)
+    last_day_of: dict[uuid.UUID, date | None] = {}
+    window_of: dict[uuid.UUID, tuple[date, date] | None] = {}
+    salary_of: dict[uuid.UUID, EmployeeSalary | None] = {}
+    for employee in employees:
+        # Days before joining and after leaving are unpaid. The exit date is
+        # the recorded one, or — for someone still serving notice — the last
+        # working day their exit agreed.
+        left_on = employee.date_of_exit or leaving_on.get(employee.id)
+        last_day_of[employee.id] = left_on
+        window_of[employee.id] = employment_window(
+            period_start=start, period_end=end, joined_on=employee.date_of_joining, left_on=left_on
+        )
+        if window_of[employee.id] is None:
+            continue
+        salary = await active_salary_on(session, user, employee.id, run.effective_date)
+        if salary is None and left_on is not None and left_on < end:
+            # A leaver's salary is the one in force on their last day.
+            salary = await active_salary_on(session, user, employee.id, left_on)
+        salary_of[employee.id] = salary
+    payable = frozenset(person for person, salary in salary_of.items() if salary is not None)
+
     prior_pay, prior_lines = await _prior_financial_year(
         session, user, run, employee_ids=employee_ids, fy_start=fy_start, fy_end=fy_end
     )
@@ -601,7 +630,13 @@ async def compute_run(
     tax_notices: list[str] = []
     if tds_usable:
         prior_pay, tax_notices = await _earlier_months_from_structure(
-            session, user, run, employees, prior_pay, fy_start=fy_start, fy_end=fy_end
+            session,
+            user,
+            run,
+            [e for e in employees if e.id in payable],
+            prior_pay,
+            fy_start=fy_start,
+            fy_end=fy_end,
         )
 
     month_paid = (
@@ -623,21 +658,43 @@ async def compute_run(
     moves = await companies.moves_between(session, user, run.legal_entity_id, start, end)
     unplaced = await companies.unplaced_on(session, user, start, end)
 
-    collected = await collect_inputs(
-        session,
-        user,
-        RunScope(
+    def scope_for(people: frozenset[uuid.UUID]) -> RunScope:
+        return RunScope(
             run=run,
             period_start=start,
             period_end=end,
             period=f"{run.period_year}-{run.period_month:02d}",
-            employee_ids=employee_ids - skipped_movers,
+            employee_ids=people,
             fy_start=fy_start,
             fy_end=fy_end,
             prior_input_lines=prior_lines,
-        ),
-        sources=(frozenset(run.included_sources) if run.included_sources is not None else None),
-    )
+        )
+
+    # Nobody this run cannot pay is in its inputs' scope either (no salary,
+    # not employed in the period): their claims, loan EMIs and adjustments stay
+    # due for the run that pays them, rather than being counted as "included"
+    # here and paid by nobody.
+    in_scope = (employee_ids & payable) - skipped_movers
+    run_sources = frozenset(run.included_sources) if run.included_sources is not None else None
+    collected = await collect_inputs(session, user, scope_for(in_scope), sources=run_sources)
+    # A supplementary run that pays somebody's whole month (the regular run did
+    # not pay them) draws on every source for them, as the regular run would
+    # have: a month's shift allowance or loan EMI is due only from that month's
+    # runs, so leaving it to the run's chosen sources would lose it for good.
+    whole_month_ids: frozenset[uuid.UUID] = frozenset()
+    if not is_regular:
+        whole_month_ids = frozenset(
+            person for person in in_scope if not (month_paid.get(person) or {}).get("has_full")
+        )
+    other_sources = frozenset(PROVIDER_KEYS) - (run_sources or frozenset(PROVIDER_KEYS))
+    if whole_month_ids and other_sources:
+        collected = merge_collected(
+            collected,
+            await collect_inputs(session, user, scope_for(whole_month_ids), sources=other_sources),
+        )
+    # Somebody this run pays in full who is also paid in full on another open
+    # run of the month: only the first approved may pay them (approval checks).
+    open_elsewhere = await _whole_month_on_open_runs(session, user, run, whole_month_ids)
 
     proof_window = (
         await tax_service.window_for(session, user, fy_label, WindowType.PROOF)
@@ -719,6 +776,9 @@ async def compute_run(
         for move in moves:
             code = codes.get(move.employee_id, "Somebody")
             if move.to_id == this_company and move.employee_id in in_company:
+                if move.employee_id not in payable:
+                    # Not paid here after all: the no-salary notice says so.
+                    continue
                 moved_notices.append(
                     f"{code} moved here from {move.from_company} on {move.on:%d %b %Y}. "
                     f"This run pays all of {month_label}: a month is paid by the company "
@@ -736,19 +796,9 @@ async def compute_run(
                     f"{move.on:%d %b %Y}. A month is paid by the company somebody belongs "
                     "to on its last day."
                 )
-    leaving_on = await _agreed_last_days(session, user, employee_ids)
-
     for employee in employees:
-        # Days before joining and after leaving are unpaid. The exit date is
-        # the recorded one, or — for someone still serving notice — the last
-        # working day their exit agreed.
-        left_on = employee.date_of_exit or leaving_on.get(employee.id)
-        window = employment_window(
-            period_start=start,
-            period_end=end,
-            joined_on=employee.date_of_joining,
-            left_on=left_on,
-        )
+        left_on = last_day_of[employee.id]
+        window = window_of[employee.id]
         if window is None:
             employment_notices.append(
                 f"{employee.employee_code} is not paid by this run: "
@@ -759,20 +809,6 @@ async def compute_run(
                 )
             )
             continue
-        outside = days_outside(start, end, window)
-        if outside:
-            paid_window = (window[1] - window[0]).days + 1
-            if employee.date_of_joining and employee.date_of_joining > start:
-                employment_notices.append(
-                    f"{employee.employee_code} joined on {employee.date_of_joining:%d %b %Y}: "
-                    f"paid for {paid_window} of {working_days} day(s)."
-                )
-            if left_on and left_on < end:
-                employment_notices.append(
-                    f"{employee.employee_code}'s last working day is {left_on:%d %b %Y}: paid "
-                    f"for {paid_window} of {working_days} day(s) in this run. Their full and "
-                    "final settlement must not pay these days again."
-                )
 
         supplementary: SupplementaryContext | None = None
         if not is_regular:
@@ -800,13 +836,25 @@ async def compute_run(
             )
             continue
 
-        salary = await active_salary_on(session, user, employee.id, run.effective_date)
-        if salary is None and left_on is not None and left_on < end:
-            # A leaver's salary is the one in force on their last day.
-            salary = await active_salary_on(session, user, employee.id, left_on)
+        salary = salary_of.get(employee.id)
         if salary is None:
             no_salary.append(employee)
             continue
+
+        # Said only of somebody this run actually pays.
+        if days_outside(start, end, window):
+            paid_window = (window[1] - window[0]).days + 1
+            if employee.date_of_joining and employee.date_of_joining > start:
+                employment_notices.append(
+                    f"{employee.employee_code} joined on {employee.date_of_joining:%d %b %Y}: "
+                    f"paid for {paid_window} of {working_days} day(s)."
+                )
+            if left_on and left_on < end:
+                employment_notices.append(
+                    f"{employee.employee_code}'s last working day is {left_on:%d %b %Y}: paid "
+                    f"for {paid_window} of {working_days} day(s) in this run. Their full and "
+                    "final settlement must not pay these days again."
+                )
 
         try:
             # Loss of pay inside the employed days only: an absence recorded
@@ -1025,6 +1073,11 @@ async def compute_run(
             )
 
     run.computed_by_user_id = user.id
+    paid_ids = {payslip.employee_id for payslip in payslips}
+    whole_month = sorted(
+        e.employee_code for e in employees if e.id in whole_month_ids and e.id in paid_ids
+    )
+    on_open_runs = [(code, other) for person, code, other in open_elsewhere if person in paid_ids]
 
     if no_salary and not payslips and not errors:
         # Nobody on the run has a salary: there is nothing to approve.
@@ -1034,7 +1087,37 @@ async def compute_run(
         ]
 
     if not is_regular and not payslips and not errors:
+        # Back to a draft, without what an earlier compute put on it: a run that
+        # will pay nothing must not show pay, or offer a register of it.
+        stale = (
+            await session.scalars(
+                tenant_scoped(select(Payslip).where(Payslip.run_id == run.id), Payslip, user)
+            )
+        ).all()
+        for existing in stale:
+            await session.delete(existing)
         run.status = PayrollRunStatus.DRAFT
+        run.employee_count = 0
+        run.total_gross = run.total_deductions = Decimal(0)
+        run.total_net = run.total_employer_cost = Decimal(0)
+        run.variance_flags = []
+        run.review_flags = []
+        run.input_notices = []
+        run.processed_at = None
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="payroll_run",
+            entity_id=run.id,
+            actor=user,
+            changes={"step": "compute", "outcome": "nothing_due", "payslips_removed": len(stale)},
+            summary=(
+                f"Payroll for {run.period_month}/{run.period_year}: nothing due from this "
+                "run's sources"
+            ),
+            request=request,
+        )
         await session.commit()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1154,6 +1237,34 @@ async def compute_run(
                 "message": message,
             }
             for message in unpaid_notices
+        ]
+        + [
+            {
+                "kind": "notice",
+                "key": "whole_month",
+                "label": "Whole month",
+                "message": (
+                    f"{_codes(paid_whole)} {'is' if len(paid_whole) == 1 else 'are'} paid the "
+                    f"whole of {month_label} by this run: no approved run of the month paid "
+                    "their salary. So it also draws on every other source for them (loan EMI, "
+                    "shift allowances, reimbursements and the rest), as the regular run would "
+                    "have."
+                ),
+            }
+            for paid_whole in ([whole_month] if whole_month and other_sources else [])
+        ]
+        + [
+            {
+                "kind": "notice",
+                "key": "whole_month_elsewhere",
+                "label": "Also on another open run",
+                "message": (
+                    f"{code} is also paid the whole of {month_label} on another run that is "
+                    f"not approved yet ({other}). Only the first one approved pays it: the "
+                    "other is refused until it is recomputed. Delete the run you do not need."
+                ),
+            }
+            for code, other in on_open_runs
         ]
         + [
             {
@@ -1362,6 +1473,35 @@ async def approve_run(
                 f"another company's approved run ({', '.join(sorted(set(elsewhere.values())))}): "
                 f"{', '.join(sorted(codes)[:10])}. Recompute this run — it leaves them out — "
                 "then approve."
+            ),
+        )
+    # The same within this company: two runs of the month computed before
+    # either was approved can both pay somebody's whole month (two off-cycle
+    # runs for a person the regular run left out). The first approved pays it;
+    # a recompute turns this run's payslip into a top-up, or nothing due.
+    already = await _month_paid_so_far(session, user, run, frozenset(full_payslips))
+    twice = sorted(person for person, paid in already.items() if paid["has_full"])
+    if twice:
+        codes = (
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(Employee.employee_code).where(Employee.id.in_(twice)),
+                        Employee,
+                        user,
+                    ).execution_options(hr_scope_bypass=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{len(twice)} employee(s) on this run were already paid the whole of "
+                f"{period_label(run.period_year, run.period_month)} by another approved run "
+                f"of this company: {', '.join(sorted(codes)[:10])}. Recompute this run — it "
+                "then pays them only what is still due — and approve again."
             ),
         )
 
@@ -1948,6 +2088,9 @@ async def _earlier_months_from_structure(
             fy_end=fy_end,
             skip=paid.get(employee.id, set()),
             before=period,
+            # A first salary starting after the company's first AskMira month
+            # does not stand in for months before it: they were not salary.
+            assume_by=date(*period, calendar.monthrange(*period)[1]),
         )
         if not months.months:
             continue
@@ -2120,6 +2263,50 @@ async def _month_paid_so_far(
         bucket["esi_covered"] = bucket["esi_covered"] or Decimal(str(payslip.esi_employee)) > 0
         bucket["has_full"] = bucket["has_full"] or not payslip.is_supplementary
     return paid
+
+
+async def _whole_month_on_open_runs(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    employee_ids: frozenset[uuid.UUID],
+) -> list[tuple[uuid.UUID, str, str]]:
+    """Whole-month payslips for these people on this company's other runs not yet approved.
+
+    Two off-cycle runs computed for somebody the regular run left out would
+    both pay their month; approval refuses the second, and this lets the run
+    say so before anybody tries. `(employee id, code, which run)`.
+    """
+    if not employee_ids:
+        return []
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(Payslip.employee_id, Employee.employee_code, PayrollRun)
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .join(Employee, Employee.id == Payslip.employee_id)
+                .where(
+                    PayrollRun.legal_entity_id == run.legal_entity_id,
+                    PayrollRun.period_year == run.period_year,
+                    PayrollRun.period_month == run.period_month,
+                    PayrollRun.status == PayrollRunStatus.PENDING_REVIEW,
+                    PayrollRun.id != run.id,
+                    Payslip.is_supplementary.is_(False),
+                    Payslip.employee_id.in_(employee_ids),
+                ),
+                Payslip,
+                user,
+            )
+        )
+    ).all()
+    return [
+        (
+            person,
+            code,
+            f"the {other.run_type.value.replace('_', '-')} run opened {other.created_at:%d %b %Y}",
+        )
+        for person, code, other in rows
+    ]
 
 
 async def _previous_net_by_employee(

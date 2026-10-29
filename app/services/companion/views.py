@@ -110,6 +110,7 @@ def _card(card: dict[str, Any]) -> list[str]:
             pairs = ", ".join(
                 f"{label} {value}"
                 for label, value in zip(x, series.get("values") or [], strict=False)
+                if value != ""
             )
             lines.append(f"- {scrub(series.get('name'))}: {pairs}")
         return lines

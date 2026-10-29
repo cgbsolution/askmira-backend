@@ -331,7 +331,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "people directory, approved leave and attendance counts."
             ),
             location=ProcessingLocation.UNSPECIFIED,
-            country="Wherever the assistant your admin chose runs; usually the United States",
+            country="Depends on the assistant; usually the United States",
             categories_permitted=("identity", "organisational", "attendance", "leave"),
             is_ai_model_provider=True,
             is_optional=True,

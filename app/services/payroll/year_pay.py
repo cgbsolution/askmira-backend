@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -48,6 +48,7 @@ from app.models.payroll import (
     PayrollRuleSet,
     PayrollRun,
     PayrollRunStatus,
+    PayrollRunType,
     Payslip,
 )
 from app.models.user import User
@@ -190,6 +191,19 @@ async def year_pay(
         if latest_pt is None or period > latest_pt[0]:
             latest_pt = (period, _d(payslip.professional_tax))
 
+    # ── Months payroll ran without paying them ──────────────────────────────
+    # From the company's first approved AskMira month to its latest, a month
+    # with no payslip was not paid (no salary then, or not employed): it is
+    # not income. Months before that were the previous payroll's.
+    first_here, last_here = await _regular_months(session, user, employee, fy_start, fy_end)
+    not_paid: set[tuple[int, int]] = set()
+    if first_here is not None and last_here is not None:
+        current = first_here
+        while current <= last_here:
+            if current not in paid_months:
+                not_paid.add(current)
+            current = (current[0] + 1, 1) if current[1] == 12 else (current[0], current[1] + 1)
+
     # ── Months still to come (and any earlier month no payslip covers) ──────
     rest = await months_from_structure(
         session,
@@ -197,7 +211,12 @@ async def year_pay(
         employee,
         fy_start=fy_start,
         fy_end=fy_end,
-        skip=paid_months,
+        skip=paid_months | not_paid,
+        assume_by=(
+            date(*first_here, calendar.monthrange(*first_here)[1])
+            if first_here is not None
+            else None
+        ),
         latest_pt=latest_pt[1] if latest_pt is not None else None,
     )
     notes.extend(rest.notes)
@@ -213,6 +232,33 @@ async def year_pay(
         months_projected=len(rest.months),
         notes=notes,
     )
+
+
+async def _regular_months(
+    session: AsyncSession, user: User, employee: Employee, fy_start: date, fy_end: date
+) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+    """The first and latest month of the year the employee's company ran approved payroll."""
+    if employee.legal_entity_id is None:
+        return None, None
+    key = PayrollRun.period_year * 100 + PayrollRun.period_month
+    first, last = (
+        await session.execute(
+            tenant_scoped(
+                select(func.min(key), func.max(key)).where(
+                    PayrollRun.legal_entity_id == employee.legal_entity_id,
+                    PayrollRun.run_type == PayrollRunType.REGULAR,
+                    PayrollRun.status.in_(_CLOSED),
+                    PayrollRun.effective_date >= fy_start,
+                    PayrollRun.effective_date <= fy_end,
+                ),
+                PayrollRun,
+                user,
+            )
+        )
+    ).one()
+    if first is None or last is None:
+        return None, None
+    return (first // 100, first % 100), (last // 100, last % 100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +286,7 @@ async def months_from_structure(
     fy_end: date,
     skip: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
     before: tuple[int, int] | None = None,
+    assume_by: date | None = None,
     latest_pt: Decimal | None = None,
 ) -> StructureMonths:
     """The year's months no payslip covers, at the salary in force in each.
@@ -249,6 +296,12 @@ async def months_from_structure(
     later revision) is counted at the first later record and listed in
     `assumed`: leaving it out would project too little income and deduct too
     little tax, which the employer answers for.
+
+    `assume_by` limits that to a later record starting by that day: the end of
+    the company's first AskMira month. A salary loaded when the company moved
+    to AskMira stands in for the months its old payroll paid; one that starts
+    after that month is a first salary (a consultant put on payroll, say), and
+    the months before it were not salary at all.
 
     `skip` is the months a payslip already covers; `before` stops at a month,
     for a payroll run that wants only the months earlier than its own.
@@ -300,7 +353,7 @@ async def months_from_structure(
         )
         if salary is None:
             salary = next((s for s in salaries if s.effective_from > last), None)
-            if salary is None:
+            if salary is None or (assume_by is not None and salary.effective_from > assume_by):
                 continue
             assumed.append(current)
             assumed_from = assumed_from or salary.effective_from
