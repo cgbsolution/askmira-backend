@@ -262,6 +262,36 @@ class WhatsAppCloudAdapter(ChannelAdapter):
         return DeliveryResult(provider_message_id=messages[0]["id"])
 
 
+#: What a push says about each area of the product. No names, dates or amounts.
+_PUSH_AREAS: dict[str, str] = {
+    "approvals": "Something is waiting for your approval",
+    "attendance": "An attendance update",
+    "leave": "A leave update",
+    "payroll": "A payroll update",
+    "performance": "A performance update",
+    "documents": "A document update",
+    "timesheets": "A timesheet update",
+    "helpdesk": "A helpdesk update",
+    "onboarding": "An onboarding update",
+    "learning": "A learning update",
+    "culture": "A new update from your company",
+    "statutory": "A compliance update",
+    "auth": "A sign-in update",
+    "assets": "An asset update",
+    "expenses": "An expense update",
+    "exit": "An exit update",
+}
+
+
+def generic_push_text(event_key: str) -> tuple[str, str]:
+    """A push title and body that say what kind of thing is waiting, and nothing more."""
+    area = (event_key or "").split(".", 1)[0]
+    return (
+        _PUSH_AREAS.get(area, "You have a new update"),
+        "Open AskMira to see it.",
+    )
+
+
 class ExpoPushAdapter(ChannelAdapter):
     """Push to the AskMira app through Expo's push service.
 
@@ -282,10 +312,14 @@ class ExpoPushAdapter(ChannelAdapter):
                 "The recipient has no phone with the app signed in, so there is nothing to "
                 "push to. Not retrying."
             )
+        title, text = generic_push_text(message.event_key)
         body = {
             "to": message.push_token,
-            "title": (message.subject or "AskMira")[:120],
-            "body": message.body[:1000],
+            # Generic on purpose: Expo, Apple and Google carry this text, and a
+            # lock screen shows it to whoever holds the phone. The details stay
+            # in the app, behind sign-in (DPDP s.8(5), the sub-processor list).
+            "title": title,
+            "body": text,
             "data": {"event_key": message.event_key},
             "sound": "default",
         }

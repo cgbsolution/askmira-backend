@@ -529,7 +529,7 @@ CATEGORIES: dict[str, DataCategory] = {
                 PrincipalKind.PLATFORM_USER,
             ),
             lawful_basis=LawfulBasis.EMPLOYMENT_CONTRACT,
-            purposes=("employment_administration", "marketing_communication"),
+            purposes=("employment_administration",),
             retention=Retention(
                 months=24,
                 clock_starts="record_created",

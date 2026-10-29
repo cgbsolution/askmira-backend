@@ -400,6 +400,7 @@ async def apply(
     consent_talent_pool: Annotated[bool, Form()] = False,
     #: Updates about this application on WhatsApp, to the phone given.
     consent_whatsapp: Annotated[bool, Form()] = False,
+    consent_ai_screening: Annotated[bool, Form()] = False,
     notice_version: Annotated[str, Form(max_length=32)] = "1",
     #: Invisible to people. Anything in it means a script filled the form.
     website: Annotated[str | None, Form(max_length=255)] = None,
@@ -436,6 +437,7 @@ async def apply(
         consent_application_processing=consent_application_processing,
         consent_talent_pool=consent_talent_pool,
         consent_whatsapp=consent_whatsapp,
+        consent_ai_screening=consent_ai_screening,
         notice_version=notice_version,
         resume=data,
         source_ip=public_guard.client_address(request),
@@ -487,6 +489,17 @@ async def candidate_whatsapp(
     """The candidate turns WhatsApp updates on or off for themselves."""
     public_guard.throttle(request, public_guard.WHATSAPP_CHOICE)
     result = await candidate_portal.set_whatsapp(session, token[:128], opt_in=payload.opt_in)
+    await session.commit()
+    return result
+
+
+@router.post("/public/candidate/{token}/consents/{purpose}/withdraw")
+async def candidate_withdraw_consent(
+    token: str, purpose: str, request: Request, session: DbSession
+) -> dict[str, Any]:
+    """The candidate withdraws the talent pool or AI help, themselves."""
+    public_guard.throttle(request, public_guard.WHATSAPP_CHOICE)
+    result = await candidate_portal.withdraw_consent(session, token[:128], purpose[:64])
     await session.commit()
     return result
 

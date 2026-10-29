@@ -50,3 +50,16 @@ async def update_demo_request(
     request: Request,
 ) -> dict[str, Any]:
     return await demo_requests.update(session, user, request_id, payload, request=request)
+
+
+@platform_router.delete(
+    "/{request_id}",
+    dependencies=SUPER_ONLY,
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def erase_demo_request(
+    request_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """Delete an enquiry because the person who sent it asked."""
+    await demo_requests.erase(session, user, request_id, request=request)

@@ -486,6 +486,7 @@ async def get_register(
     code: str,
     user: CurrentUser,
     session: DbSession,
+    request: Request,
     run_id: uuid.UUID | None = None,
     financial_year: str | None = None,
     export_format: str = Query(default="json", pattern="^(json|csv)$"),
@@ -494,6 +495,14 @@ async def get_register(
         session, user, code=code, run_id=run_id, financial_year=financial_year
     )
     if export_format == "csv":
+        await statutory_service.record_register_export(
+            session,
+            user,
+            rendered,
+            run_id=run_id,
+            financial_year=financial_year,
+            request=request,
+        )
         return Response(
             content=register_formats.to_csv(rendered),
             media_type="text/csv",

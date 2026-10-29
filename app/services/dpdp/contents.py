@@ -55,18 +55,30 @@ def withheld_column(name: str) -> bool:
 
 
 def person_predicate(
-    table: Table, *, employee_id: uuid.UUID | None, user_id: uuid.UUID | None
+    table: Table,
+    *,
+    employee_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    candidate_id: uuid.UUID | None = None,
 ) -> ColumnElement | None:
-    """The condition that selects this person's rows in `table`, or None."""
+    """The condition that selects this person's rows in `table`, or None.
+
+    A candidate is found by `candidate_id`, the way the hiring tables hold them:
+    a candidate has no employee record or login until they join.
+    """
     if table.name == "employees":
         return table.c.id == employee_id if employee_id is not None else None
     if table.name == "users":
         return table.c.id == user_id if user_id is not None else None
+    if table.name == "candidates":
+        return table.c.id == candidate_id if candidate_id is not None else None
     if "employee_id" in table.c and employee_id is not None:
         return table.c.employee_id == employee_id
     for key in ("user_id", "recipient_user_id"):
         if key in table.c and user_id is not None:
             return table.c[key] == user_id
+    if "candidate_id" in table.c and candidate_id is not None:
+        return table.c.candidate_id == candidate_id
     return None
 
 
@@ -107,12 +119,15 @@ async def collect_personal_data(
     *,
     employee_id: uuid.UUID | None,
     user_id: uuid.UUID | None,
+    candidate_id: uuid.UUID | None = None,
     row_cap: int = ROW_CAP,
 ) -> list[dict[str, Any]]:
     """Every row held about this person, grouped by table, in the caller's tenant."""
     sections: list[dict[str, Any]] = []
     for table in personal_tables():
-        predicate = person_predicate(table, employee_id=employee_id, user_id=user_id)
+        predicate = person_predicate(
+            table, employee_id=employee_id, user_id=user_id, candidate_id=candidate_id
+        )
         if predicate is None:
             continue
         stmt = (

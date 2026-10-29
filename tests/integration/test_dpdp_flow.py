@@ -55,12 +55,44 @@ async def _configure(session, hr_user):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_nothing_works_until_a_grievance_contact_exists(session, hr_user):
-    """A notice pointing at nobody is worse than no notice: it looks like a route."""
-    with pytest.raises(HTTPException) as exc:
-        await dpdp.notice_for(session, hr_user)
-    assert exc.value.status_code == 422
-    assert "grievance contact" in exc.value.detail
+async def test_without_a_grievance_contact_the_notice_says_so_and_never_invents_one(
+    session, hr_user
+):
+    """A notice pointing at nobody looks like a route; this one says none is named."""
+    notice = await dpdp.notice_for(session, hr_user)
+    assert notice["grievance_contact"] is None
+    assert notice["grievance_contact_missing"] is True
+    assert notice["choices"], "the purposes are still disclosed"
+    status = await dpdp.configuration_status(session, hr_user)
+    assert status == {"configured": False, "grievance_contact": None}
+
+
+async def test_a_right_is_never_refused_because_setup_is_unfinished(session, hr_user, employee):
+    """DPDP s.11-13: an employee asking to see their data before HR has named a
+    contact gets a request with a statutory clock, not an error."""
+    row = await dpdp.raise_request(
+        session,
+        hr_user,
+        principal_id=employee.id,
+        principal_kind=DataPrincipalKind.EMPLOYEE,
+        principal_label="Employee",
+        request_type=DprRequestType.ACCESS,
+    )
+    assert row.status is DprRequestStatus.RECEIVED
+    assert row.due_by > row.received_at.date()
+
+
+async def test_the_notice_names_the_board_and_the_right_to_nominate(session, hr_user):
+    """Rule 3(c) and s.14: how to complain to the Board, and nomination."""
+    await _configure(session, hr_user)
+    notice = await dpdp.notice_for(session, hr_user)
+    assert "Data Protection Board of India" in notice["rights_line"]
+    assert "nominate" in notice["rights_line"]
+    assert notice["grievance_contact"] == "dpo@acme.test"
+    assert notice["data_protection_officer_name"] == "Priya Ramesh"
+    # An employee's notice is about an employee's data.
+    shown = {item["purpose"] for item in (*notice["choices"], *notice["disclosures"])}
+    assert "talent_pool" not in shown and "recruitment" not in shown
 
 
 async def test_a_tenant_cannot_publish_an_unlawful_response_period(session, hr_user):
@@ -176,7 +208,7 @@ async def test_withdrawal_stops_the_dependent_capability(session, hr_user, emplo
 
 async def test_withdrawing_one_consent_leaves_the_others_running(session, hr_user, employee):
     await _configure(session, hr_user)
-    for key in ("culture_analytics", "wellness"):
+    for key in ("culture_analytics", "directory_visibility"):
         await dpdp.record_consent(
             session,
             hr_user,
@@ -194,7 +226,7 @@ async def test_withdrawing_one_consent_leaves_the_others_running(session, hr_use
         purpose_key="culture_analytics",
     )
     state = await dpdp.list_consent(session, hr_user, principal_id=employee.id)
-    assert "wellness_nudges" in state["capabilities_permitted"]
+    assert "photo_in_directory" in state["capabilities_permitted"]
     assert "culture_survey_invitations" not in state["capabilities_permitted"]
 
 
@@ -206,7 +238,7 @@ async def test_withdrawal_is_a_new_row_not_an_edit(session, hr_user, employee):
         hr_user,
         principal_id=employee.id,
         principal_kind=DataPrincipalKind.EMPLOYEE,
-        purpose_key="wellness",
+        purpose_key="directory_visibility",
         granted=True,
         captured_via=ConsentCapturedVia.ONBOARDING,
     )
@@ -215,14 +247,14 @@ async def test_withdrawal_is_a_new_row_not_an_edit(session, hr_user, employee):
         hr_user,
         principal_id=employee.id,
         principal_kind=DataPrincipalKind.EMPLOYEE,
-        purpose_key="wellness",
+        purpose_key="directory_visibility",
     )
 
     rows = (
         (
             await session.execute(
                 select(ConsentRecord)
-                .where(ConsentRecord.purpose_key == "wellness")
+                .where(ConsentRecord.purpose_key == "directory_visibility")
                 .order_by(ConsentRecord.decided_at)
             )
         )
@@ -248,7 +280,7 @@ async def test_withdrawal_is_refused_where_there_is_nothing_to_withdraw(session,
 async def test_never_asked_is_reported_separately_from_declined(session, hr_user, employee):
     await _configure(session, hr_user)
     summary = await dpdp.consent_summary(session, hr_user)
-    wellness = next(p for p in summary["purposes"] if p["purpose"] == "wellness")
+    wellness = next(p for p in summary["purposes"] if p["purpose"] == "directory_visibility")
     assert wellness["granted"] == 0
     assert wellness["declined"] == 0
     assert wellness["never_asked"] == summary["headcount"]
@@ -258,12 +290,12 @@ async def test_never_asked_is_reported_separately_from_declined(session, hr_user
         hr_user,
         principal_id=employee.id,
         principal_kind=DataPrincipalKind.EMPLOYEE,
-        purpose_key="wellness",
+        purpose_key="directory_visibility",
         granted=False,
         captured_via=ConsentCapturedVia.SELF_SERVICE,
     )
     summary = await dpdp.consent_summary(session, hr_user)
-    wellness = next(p for p in summary["purposes"] if p["purpose"] == "wellness")
+    wellness = next(p for p in summary["purposes"] if p["purpose"] == "directory_visibility")
     assert wellness["declined"] == 1
     assert wellness["never_asked"] == summary["headcount"] - 1
 
@@ -275,13 +307,13 @@ async def test_consent_is_scoped_to_its_tenant(session, hr_user, other_hr_user, 
         hr_user,
         principal_id=employee.id,
         principal_kind=DataPrincipalKind.EMPLOYEE,
-        purpose_key="wellness",
+        purpose_key="directory_visibility",
         granted=True,
         captured_via=ConsentCapturedVia.ONBOARDING,
     )
     theirs = await dpdp.list_consent(session, other_hr_user, principal_id=employee.id)
     states = {p["purpose"]: p for p in theirs["purposes"]}
-    assert states["wellness"]["status"] == "not_asked"
+    assert states["directory_visibility"]["status"] == "not_asked"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -795,7 +827,8 @@ async def test_a_retired_purpose_on_record_is_surfaced_not_dropped(session, hr_u
 
 async def test_an_unknown_principal_produces_an_empty_but_valid_consent_view(session, hr_user):
     state = await dpdp.list_consent(session, hr_user, principal_id=uuid.uuid4())
-    assert {p["purpose"] for p in state["purposes"]} == set(consent_engine.PURPOSES)
+    # An employee's view: the employee purposes, never a candidate's.
+    assert {p["purpose"] for p in state["purposes"]} == set(consent_engine.employee_purpose_keys())
     assert state["capabilities_permitted"] == []
 
 

@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # ── AI (V2+) ────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str | None = None
     AI_MODEL: str = "claude-opus-5-5"
+    #: How hard Ask Mira thinks on each step of a conversation (low, medium,
+    #: high). Low keeps a chat quick; raise it if answers to trend and P&L
+    #: questions need more care than speed.
+    COMPANION_AI_EFFORT: str = "low"
+    #: The most model calls one Ask Mira turn may make (tool steps plus the answer).
+    COMPANION_MAX_STEPS: int = 8
 
     # ── Email over SMTP (slice 05) ──────────────────────────────────────────
     # The platform relay. A tenant may configure its own relay instead, stored

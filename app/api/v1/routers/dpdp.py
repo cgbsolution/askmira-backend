@@ -207,6 +207,12 @@ async def set_configuration(
 # ── The principal's own view ────────────────────────────────────────────────
 
 
+@router.get("/dpdp/status")
+async def privacy_setup_status(session: DbSession, user: CurrentUser) -> dict[str, Any]:
+    """Whether the workspace has named its grievance contact. Drives the admin banner."""
+    return await dpdp_service.configuration_status(session, user)
+
+
 @router.get("/dpdp/me/notice")
 async def my_notice(
     session: DbSession, user: CurrentUser, language: str | None = None
@@ -267,11 +273,11 @@ async def withdraw_my_consent(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    """Withdraw, and be told what stopped and what did not.
+    """Withdraw, and be told what stopped, what was deleted and what was kept.
 
-    Withdrawal is prospective. What was already collected under a consent that
-    was valid at the time is kept for its retention period, and the response
-    says so rather than letting somebody believe their data is gone.
+    DPDP s.8(7)(a): what was held only under this consent is erased with the
+    withdrawal, in the same transaction; what another basis still covers is
+    named in `retained` with the reason.
     """
     principal = user.employee_id or user.id
     return await dpdp_service.withdraw_consent(
@@ -483,6 +489,8 @@ async def export_for_request(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No such request.")
+    if row.principal_kind in dpdp_service.HELD_IN_EMPLOYEE_RECORD:
+        raise HTTPException(status_code=400, detail=dpdp_service.HELD_IN_EMPLOYEE_RECORD_NOTE)
     return await dpdp_service.build_access_export(session, user, principal_id=row.principal_id)
 
 
@@ -507,6 +515,8 @@ async def download_export_for_request(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No such request.")
+    if row.principal_kind in dpdp_service.HELD_IN_EMPLOYEE_RECORD:
+        raise HTTPException(status_code=400, detail=dpdp_service.HELD_IN_EMPLOYEE_RECORD_NOTE)
     document, filename = await dpdp_service.export_file(
         session, user, principal_id=row.principal_id, request=request
     )
@@ -547,6 +557,8 @@ async def erasure_preview_for_request(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No such request.")
+    if row.principal_kind in dpdp_service.HELD_IN_EMPLOYEE_RECORD:
+        raise HTTPException(status_code=400, detail=dpdp_service.HELD_IN_EMPLOYEE_RECORD_NOTE)
     return await dpdp_service.preview_erasure(session, user, principal_id=row.principal_id)
 
 

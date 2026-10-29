@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
-from app.services import platform
+from app.services import platform, tenant_purge
 from app.services.products import service as products
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -38,6 +41,28 @@ class DeleteIn(BaseModel):
 @router.get("/workspaces", dependencies=SUPER_ONLY)
 async def list_workspaces(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     return await platform.list_workspaces(session, user)
+
+
+@router.get("/workspaces/deleted", dependencies=SUPER_ONLY)
+async def list_deleted_workspaces(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Deleted workspaces, with the day each one's data is purged."""
+    return await tenant_purge.deleted_workspaces(session, user)
+
+
+@router.get(
+    "/workspaces/deleted/{tenant_id}/export", dependencies=SUPER_ONLY, response_class=FileResponse
+)
+async def export_deleted_workspace(
+    tenant_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> FileResponse:
+    """Everything a deleted workspace holds, as a zip, to hand back before the purge."""
+    path, filename = await tenant_purge.export_workspace(session, user, tenant_id, request=request)
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(os.remove, path),
+    )
 
 
 @router.get("/workspaces/{tenant_id}", dependencies=SUPER_ONLY)

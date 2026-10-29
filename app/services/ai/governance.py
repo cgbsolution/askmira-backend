@@ -66,7 +66,10 @@ FEATURES: dict[str, str] = {
     "recognition_drafts": "Help writing a shoutout from a few notes.",
     "survey_topics": "Themes in survey comments, never quotes.",
     "analytics_questions": "Ask a reporting question in plain words.",
-    "hiring_drafts": "Draft a job description and summarise a resume against it.",
+    "hiring_drafts": (
+        "Draft a job description, and summarise the résumé of a candidate who ticked "
+        "the optional AI box when applying."
+    ),
 }
 
 

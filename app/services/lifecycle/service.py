@@ -65,6 +65,7 @@ from app.services.documents import service as letter_service
 from app.services.lifecycle import events as event_engine
 from app.services.lifecycle import probation as probation_engine
 from app.services.notifications.dispatch import notify, register_event
+from app.services.payroll import companies
 from app.services.payroll import service as payroll_service
 
 #: A lifecycle event waiting on one approver in its chain.
@@ -263,6 +264,8 @@ async def raise_event(
     resolution_day = today or date.today()
     employee = await _employee(session, user, employee_id)
     await _check_new_references(session, user, employee.id, new_values)
+    if new_values.get("legal_entity_id"):
+        await companies.check_no_later_change(session, user, employee.id, effective_from)
 
     facts = await _facts(
         session,
@@ -381,6 +384,8 @@ async def preview_event(
     """
     employee = await _employee(session, user, employee_id)
     await _check_new_references(session, user, employee.id, new_values)
+    if new_values.get("legal_entity_id"):
+        await companies.check_no_later_change(session, user, employee.id, effective_from)
     facts = await _facts(
         session,
         user,
@@ -787,6 +792,27 @@ async def effect_event(
     try:
         async with session.begin_nested():
             employee = await _employee(session, user, row.employee_id)
+
+            # A company change approved for a past date cannot land after a
+            # later company change has already taken effect: the history
+            # would contradict itself about the months between.
+            if (row.new_values or {}).get("legal_entity_id"):
+                await companies.check_no_later_change(
+                    session, user, row.employee_id, row.effective_from
+                )
+
+            # What this replaces is what the record holds now. A change made
+            # after the event was raised (another transfer, a move from the
+            # directory) may have moved it on from the snapshot taken then,
+            # and the history — which company paid which month — reads these.
+            row.previous_values = {
+                **(row.previous_values or {}),
+                **{
+                    key: _plain(getattr(employee, key, None))
+                    for key in (row.new_values or {})
+                    if hasattr(employee, key)
+                },
+            }
 
             # ── The employee record ─────────────────────────────────────────
             for key, value in (row.new_values or {}).items():

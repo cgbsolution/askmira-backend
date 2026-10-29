@@ -537,6 +537,11 @@ TABLES: dict[str, TableClassification] = {
     "timesheets": _p(EMP, "attendance"),
     "timesheet_entries": _p(EMP, "attendance"),
     "hourly_rates": _p(EMP, "compensation"),
+    "client_accounts": _none(
+        "A client engagement the company bills: its code, name and who looks after it."
+    ),
+    "account_entries": _none("An amount billed to an account, or a direct cost, for a month."),
+    "account_allocations": _p(EMP, "organisational"),
     "custom_table_definitions": _none("The design of an extra table on the employee record."),
     "custom_table_rows": _p(EMP, "identity", {"values": "identity"}),
     "benefit_plans": _none("A group policy the company buys: insurer, cover, premium."),
@@ -560,7 +565,18 @@ TABLES: dict[str, TableClassification] = {
     "companion_messages": _p(
         USER,
         "ai_interaction",
-        {"text": "ai_interaction", "arguments": "ai_interaction", "cards": "identity"},
+        {
+            "text": "ai_interaction",
+            "arguments": "ai_interaction",
+            "cards": "identity",
+            "transcript": "ai_interaction",
+            "steps": "ai_interaction",
+        },
+    ),
+    "companion_actions": _p(
+        USER,
+        "ai_interaction",
+        {"payload": "leave", "summary": "leave", "result": "ai_interaction"},
     ),
     "survey_topic_summaries": _none(
         "Paraphrased themes counted across anonymous survey comments; no respondent link."

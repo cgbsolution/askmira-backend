@@ -31,7 +31,7 @@ from app.models.interview import (
     InterviewStatus,
     Recommendation,
 )
-from app.models.jobboard import Application, CareersPageConfig
+from app.models.jobboard import Application, CareersPageConfig, ConsentPurpose
 from app.models.offer import OfferStatus
 from app.models.org import LegalEntity, Location
 from app.models.tenant import Tenant
@@ -246,7 +246,9 @@ async def test_requisition_to_employee_end_to_end(session, tenant, people) -> No
     )
     assert as_manager["candidate"]["expected_ctc"] is None
     assert as_manager["candidate"]["salary_hidden"] is True
-    assert [c["status"] for c in as_manager["consent"]["purposes"]] == ["not_recorded"] * 3
+    assert [c["status"] for c in as_manager["consent"]["purposes"]] == ["not_recorded"] * len(
+        ConsentPurpose
+    )
     assert as_manager["fit_score"]["status"] == "not_computed"
     with pytest.raises(HTTPException) as exc:
         await candidate_service.candidate_profile(session, outsider, candidate_id=candidate_id)

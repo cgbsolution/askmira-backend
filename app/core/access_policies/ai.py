@@ -30,8 +30,15 @@ ENDPOINTS: dict[str, str] = {
     ),
     "POST /companion/messages": (
         "own: the caller's own conversation (user.id); each tool runs as the caller, offered "
-        "only within oauth.allowed_scopes for their role, and its result is never sent to "
-        "the model."
+        "only within oauth.allowed_scopes for their role; the model reads a trimmed result "
+        "only within the categories the DPDP register lets the model provider receive."
+    ),
+    "POST /companion/actions/{action_id}/confirm": (
+        "own: only an offer whose user_id is the caller's (user.id); it runs the module's own "
+        "service as the caller, with that service's permission checks."
+    ),
+    "POST /companion/actions/{action_id}/cancel": (
+        "own: only an offer whose user_id is the caller's (user.id) can be declined."
     ),
     "POST /analytics/ask": (
         "permissions: the definition runs through the report compiler, which refuses "

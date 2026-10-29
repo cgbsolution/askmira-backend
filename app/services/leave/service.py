@@ -718,10 +718,11 @@ async def _assess(
         raise _unprocessable(str(exc)) from exc
 
     if policy is not None:
+        # `policy.allows_negative_balance` is no longer honoured: leave is
+        # applied only against a balance (see `engine.assess_request`).
         rules: engine.PolicyRules | None = engine.PolicyRules(
             min_notice_days=policy.min_notice_days,
             max_consecutive_days=policy.max_consecutive_days,
-            allows_negative_balance=policy.allows_negative_balance,
         )
     elif leave_type.is_comp_off:
         # Comp-off has no quota to assign: the balance is whatever approved
@@ -733,7 +734,8 @@ async def _assess(
     year = payload.start_date.year
     balance: engine.Balance | None = None
     projected = engine.ZERO
-    if leave_type.is_paid and rules is not None:
+    # Unpaid leave too: it is applied only against days HR has given.
+    if rules is not None:
         balance, projected = await live_balance(
             session, user, employee, leave_type, year, today, until=payload.start_date
         )
@@ -775,7 +777,6 @@ async def _assess(
         rules=rules,
         balance=balance,
         overlapping=overlapping,
-        is_paid=leave_type.is_paid,
     )
     if not leave_type.is_paid:
         assessment.warnings.append(
@@ -976,6 +977,23 @@ async def decide(
     assert leave_type is not None
     now = datetime.now(UTC)
     today = await today_for(session, user, employee)
+
+    if approve:
+        # Leave is taken only against a balance, at approval as at applying:
+        # an HR debit, an encashment or a request from before this rule can
+        # leave too little since it was raised.
+        year = leave.start_date.year
+        balance, _ = await live_balance(
+            session, user, employee, leave_type, year, today, until=leave.start_date
+        )
+        requested = engine.days(leave.total_days)
+        if balance.available < requested:
+            raise _unprocessable(
+                f"{_name(employee)} has {engine.days_text(max(balance.available, engine.ZERO))} "
+                f"day(s) of {leave_type.name} available and this request needs "
+                f"{engine.days_text(requested)}, so it cannot be approved. Decline it, or ask "
+                "HR to credit the days first."
+            )
 
     chain, outcome = engine.apply_decision(
         leave.approval_chain,
@@ -1191,7 +1209,13 @@ async def list_requests(
         )
     ).all()
     today = local_today()
-    return [_read(leave, emp, lt, user, today) for leave, emp, lt in rows], total or 0
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    items = [_read(leave, emp, lt, user, today) for leave, emp, lt in rows]
+    await strip_hidden_photos(
+        session, user, items, id_field="employee_id", photo_field="employee_photo_url"
+    )
+    return items, total or 0
 
 
 async def document(
@@ -1289,15 +1313,9 @@ async def _request_balance(
     leave_type: LeaveType,
     today: date,
 ) -> RequestBalanceRead | None:
-    """The requester's balance of the type asked for, read the way `_assess`
-    read it when the request was raised. None where `_assess` checked no
-    balance: unpaid leave, or a type no policy covers."""
-    if not leave_type.is_paid:
-        return None
-    if not leave_type.is_comp_off and (
-        await _policy(session, user, employee, leave_type.id, leave.start_date) is None
-    ):
-        return None
+    """The requester's balance of the type asked for, the figure `decide`
+    checks an approval against. Every type has one, unpaid leave included:
+    a request with too little behind it cannot be approved."""
     balance, projected = await live_balance(
         session, user, employee, leave_type, leave.start_date.year, today, until=leave.start_date
     )
@@ -1398,6 +1416,9 @@ async def who_is_out(
                 leave_type_name=lt.name if detailed else None,
             )
         )
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    await strip_hidden_photos(session, user, result, id_field="employee_id")
     return result
 
 

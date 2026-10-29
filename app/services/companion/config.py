@@ -34,7 +34,8 @@ TOOL_GROUPS: dict[str, str] = {
     "approvals": "Tell a person what is waiting on their approval: leave, attendance, expenses, "
     "payroll, hiring, exits and more. Only what they may decide.",
     "payroll_figures": "Let admins and sub-admins who may view payroll ask for a month's payroll "
-    "totals (gross, net, cost, PF, ESI, PT, TDS) and the company's salary bill.",
+    "totals (gross, net, cost, PF, ESI, PT, TDS), the company's salary bill, payroll cost month "
+    "by month, and each client account's P&L (billed against the cost mapped to it).",
     "hr_helpdesk": "Show a person their own HR helpdesk tickets, and the queue to the people who "
     "work it.",
     "who_is_out": "Show who is on approved leave (admins and sub-admins).",
@@ -50,6 +51,15 @@ TOOL_GROUPS: dict[str, str] = {
     "helpdesk_data": "Read IT tickets and assets from the linked helpdesk: a person's own tickets "
     "and the assets they hold, IT staff's queues, and the company's tickets and asset register "
     "for helpdesk admins.",
+    "actions_leave": "Apply for leave or withdraw it for the person: Mira checks the balance, "
+    "holidays and overlaps, shows what it will send and to whom, and sends it for the normal "
+    "approval only when they confirm. Needs AI.",
+    "actions_attendance": "Raise a missed punch, a status correction, on duty or work from home "
+    "for the person, when they confirm. It then goes to their approver as usual. Needs AI.",
+    "actions_approvals": "Approve or reject leave, attendance, timesheet, shift swap, overtime, "
+    "expense, travel and asset requests waiting on the person, when they confirm. Payroll, "
+    "loans, settlements and hiring stay in the portal. Needs AI.",
+    "actions_helpdesk": "Raise an HR helpdesk ticket for the person, when they confirm. Needs AI.",
 }
 
 #: One to three plain words. The name is written into the agent's instructions,
@@ -74,6 +84,12 @@ class CompanionConfig(BaseModel):
     daily_messages_per_person: int = Field(default=60, ge=5, le=1000)
     #: Model tokens the workspace may use in a calendar month; 0 means no cap.
     monthly_token_budget: int = Field(default=0, ge=0, le=1_000_000_000)
+    #: Whether the model reads what its lookups find, so it can work with the
+    #: figures (compare, explain a trend, check a balance before offering
+    #: leave). Contact details, statutory identifiers, bank details and leave
+    #: reasons are never sent either way. Off: the model only sees that the
+    #: result is on the person's screen.
+    ai_reads_results: bool = True
 
     @field_validator("name")
     @classmethod

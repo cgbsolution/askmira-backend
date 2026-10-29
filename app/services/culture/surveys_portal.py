@@ -108,6 +108,14 @@ async def list_my_surveys(session: AsyncSession, user: User) -> list[MySurveyRea
             )
         )
     ).all()
+    from app.services.dpdp.gates import has_declined
+
+    if me is not None and await has_declined(
+        session, user, principal_id=me, purpose_key="culture_analytics"
+    ):
+        # They said no on My privacy: no survey is put to them again. What they
+        # answered before still shows, as answered.
+        rows = [(survey, responded_at) for survey, responded_at in rows if responded_at]
     today = date.today()
     return [
         MySurveyRead(
@@ -173,6 +181,37 @@ async def respond(
     missing = sorted(keys - set(payload.answers))
     if missing:
         raise _bad_request("Answer every question before submitting.")
+
+    # Culture surveys rest on consent (DPDP purpose `culture_analytics`). Someone
+    # who said no on My privacy is not asked again; someone never asked agrees
+    # by answering — the survey screen says so above the submit button — and
+    # that agreement is recorded with the answer, in one transaction.
+    from app.models.dpdp import ConsentCapturedVia, DataPrincipalKind
+    from app.services.dpdp import service as dpdp_service
+    from app.services.dpdp.gates import has_declined
+
+    if await has_declined(session, user, principal_id=me, purpose_key="culture_analytics"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "You have said no to culture surveys on My privacy, so your answers "
+                "are not collected. Agree there first if you want to take part."
+            ),
+        )
+    if not await dpdp_service.capability_permitted(
+        session, user, principal_id=me, capability="culture_survey_invitations"
+    ):
+        await dpdp_service.record_consent(
+            session,
+            user,
+            principal_id=me,
+            principal_kind=DataPrincipalKind.EMPLOYEE,
+            purpose_key="culture_analytics",
+            granted=True,
+            captured_via=ConsentCapturedVia.SELF_SERVICE,
+            notice_id=f"survey:{survey.id}",
+            commit=False,
+        )
 
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == me), Employee, user)

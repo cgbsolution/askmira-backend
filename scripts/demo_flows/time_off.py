@@ -74,7 +74,9 @@ HISTORY = (
     ("rohan", "CL", "2026-08-28", "2026-08-28", None, "Personal", "reject"),
     ("karthik", "SL", "2026-09-02", "2026-09-02", None, "Dental procedure", "approve"),
     ("sneha", "CL", "2026-09-04", "2026-09-04", "first_half", "Doctor's appointment", "approve"),
-    ("imran", "LWP", "2026-09-08", "2026-09-09", None, "Exam at college", "approve"),
+    # Leave is applied only against a balance: Leave Without Pay has none
+    # unless HR credits it, so the exam days come out of casual leave.
+    ("imran", "CL", "2026-09-08", "2026-09-09", None, "Exam at college", "approve"),
     ("divya", "SL", "2026-09-17", "2026-09-17", None, "Migraine", "approve"),
     ("rahul", "EL", "2026-09-21", "2026-09-23", None, "Diwali shopping trip to Delhi", "approve"),
     ("manoj", "CL", "2026-09-25", "2026-09-25", None, "Vehicle registration", "approve"),
@@ -151,8 +153,7 @@ async def setup(demo: Demo) -> None:
         ("CO", "Compensatory Off - all employees",
          {"annual_quota_days": "0", "accrual_frequency": "annual"}),
         ("LWP", "Leave Without Pay - all employees",
-         {"annual_quota_days": "0", "accrual_frequency": "annual",
-          "allows_negative_balance": True}),
+         {"annual_quota_days": "0", "accrual_frequency": "annual"}),
     ):
         if types[code]["id"] not in policies:
             await priya.post(

@@ -103,6 +103,32 @@ class SupabaseStorage(FileStorage):
         removed = response.json()
         return isinstance(removed, list) and len(removed) > 0
 
+    async def list_keys(self, prefix: str) -> list[str]:
+        """Walk the folders under `prefix`; Supabase lists one level at a time."""
+        bucket = self._checked_bucket()
+        found: list[str] = []
+        folders = [prefix.strip("/")]
+        while folders:
+            folder = folders.pop()
+            offset = 0
+            while True:
+                response = await self._send(
+                    "POST",
+                    f"/object/list/{bucket}",
+                    json={"prefix": folder, "limit": 1000, "offset": offset},
+                )
+                if not response.is_success:
+                    raise _failure(response, "listed")
+                items = response.json() or []
+                for item in items:
+                    name = f"{folder}/{item.get('name')}"
+                    # A folder comes back without an id.
+                    (folders if item.get("id") is None else found).append(name)
+                if len(items) < 1000:
+                    break
+                offset += 1000
+        return sorted(found)
+
     # ── Bucket ──────────────────────────────────────────────────────────────
 
     async def ensure_private_bucket(self) -> str:

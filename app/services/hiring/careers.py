@@ -143,6 +143,9 @@ async def public_job_list(
         "privacy_notice_html": config.privacy_notice_html,
         "privacy_notice_version": config.privacy_notice_version,
         "retention_days": config.resume_retention_days,
+        # Shown as its own optional tick on the form, with what it means — the
+        # careers notice is the customer's text and may not mention AI at all.
+        "ai_screening_offered": await ai_screening_offered(session, config.tenant_id),
         "jobs": [
             {
                 "code": job.code,
@@ -292,6 +295,20 @@ async def public_job_detail(session: AsyncSession, slug: str, code: str) -> dict
 
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def ai_screening_offered(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """Whether this workspace can use AI on résumés: a model, and AI and hiring drafts on."""
+    from app.models.tenant import Tenant
+    from app.services.ai import client
+    from app.services.ai.governance import AiSettings
+
+    if not client.configured():
+        return False
+    tenant = await session.get(Tenant, tenant_id)
+    raw = ((tenant.settings or {}).get("ai") or {}) if tenant else {}
+    settings = AiSettings.model_validate(raw) if raw else AiSettings()
+    return settings.enabled and settings.hiring_drafts
 
 
 async def issue_portal_token(
@@ -509,6 +526,14 @@ async def _purge_hiring_extras(
             check.cancelled_reason = "The candidate's data was erased."
 
 
+async def _remove_files(keys: set[str]) -> None:
+    """The purged candidate's résumé and documents, gone from storage."""
+    storage = get_storage()
+    for key in keys:
+        with contextlib.suppress(StorageError):
+            await storage.delete(key)
+
+
 async def _purge_candidate(
     session: AsyncSession,
     tenant_id: uuid.UUID,
@@ -521,7 +546,13 @@ async def _purge_candidate(
 
     Deleting the rows outright would silently change last year's hiring numbers.
     The count of applications is not personal data; the applicant is.
+    The files go too — the résumé and every uploaded document — because a key
+    blanked in a row leaves the file itself in storage, out of reach of every
+    later request.
     """
+    from app.services.storage.cleanup import keys_in
+
+    files: set[str] = keys_in(candidate.resume_url, tenant_id)
     candidate.full_name = REDACTED
     candidate.email = f"purged+{candidate.id}@invalid"
     candidate.phone = None
@@ -543,6 +574,7 @@ async def _purge_candidate(
         )
     ).all()
     for application in applications:
+        files |= keys_in(application.resume_storage_key, tenant_id)
         application.raw_payload = {}
         application.resume_storage_key = None
         application.purged_at = now
@@ -558,6 +590,7 @@ async def _purge_candidate(
         )
     ).all()
     for document in documents:
+        files |= keys_in(document.storage_key, tenant_id)
         document.storage_key = ""
         document.purged_at = now
 
@@ -575,10 +608,12 @@ async def _purge_candidate(
         token.revoked_at = now
 
     await session.flush()
+    await _remove_files(files)
     return {
         "candidate_id": str(candidate.id),
         "applications_purged": len(applications),
         "documents_purged": len(documents),
+        "files_deleted": len(files),
         "tokens_revoked": len(tokens),
     }
 

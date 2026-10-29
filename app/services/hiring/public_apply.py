@@ -5,9 +5,12 @@ finish is not a candidate. So there is no user here at all: the tenant comes fro
 the careers slug, a tenant-bearing stand-in carries it into the ingestion service,
 and nothing the caller sends can choose it.
 
-Consent to process the application is required and refused rather than assumed.
-Consent to be kept in the talent pool is separate and optional — a bundled
-checkbox is not consent under DPDP.
+Considering an application rests on legitimate use (DPDP s.7(a)): the
+candidate gives their details to be considered for this role. The required tick
+records that they read the notice and asked for that — it is not presented as a
+consent they could later withdraw while still being considered. Being kept in
+the talent pool, WhatsApp updates and AI help reading the résumé are real
+consents: separate, optional and withdrawable from the candidate's portal.
 """
 
 from __future__ import annotations
@@ -67,6 +70,7 @@ async def submit_application(
     consent_talent_pool: bool,
     notice_version: str,
     consent_whatsapp: bool = False,
+    consent_ai_screening: bool = False,
     resume: bytes | None,
     source_ip: str | None,
 ) -> dict[str, Any]:
@@ -82,8 +86,8 @@ async def submit_application(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "We cannot process an application without consent to handle the "
-                "information in it. Nothing has been saved."
+                "Tick the box to confirm you have read the privacy notice and want "
+                "this application considered. Nothing has been saved."
             ),
         )
 
@@ -108,6 +112,8 @@ async def submit_application(
     purposes = [ConsentPurpose.APPLICATION_PROCESSING]
     if consent_talent_pool:
         purposes.append(ConsentPurpose.TALENT_POOL_RETENTION)
+    if consent_ai_screening and await careers.ai_screening_offered(session, config.tenant_id):
+        purposes.append(ConsentPurpose.AI_SCREENING)
 
     outcome = await ingestion.ingest_application(
         session,

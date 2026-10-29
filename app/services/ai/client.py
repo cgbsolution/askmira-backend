@@ -10,6 +10,11 @@ nothing was answered (not configured, unreachable, cut off, malformed);
 `AiDeclinedError` means the model refused. Neither is ever papered over with a
 guessed answer.
 
+One feature holds a conversation instead: Ask Mira calls `step` in a loop,
+with tools, and runs each tool the model asks for itself (companion/agent.py).
+A step's content goes back to the model unchanged on the next step of the same
+turn — that is what keeps the model's reasoning valid across tool calls.
+
 Tests never reach the network: `use_backend` swaps in a deterministic backend
 for the length of a `with` block.
 """
@@ -30,8 +35,11 @@ __all__ = [
     "AiUnavailableError",
     "Backend",
     "Completion",
+    "Step",
+    "ToolCall",
     "configured",
     "model_name",
+    "step",
     "structured",
     "use_backend",
 ]
@@ -64,6 +72,45 @@ class Completion:
         return self.input_tokens + self.output_tokens
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One tool the model asked for: the id its result must carry back, and the inputs."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One model response inside a conversation.
+
+    `content` is the response's blocks exactly as they came (reasoning, text,
+    tool calls). It is appended to the conversation as it is: editing or
+    dropping a block inside a turn breaks the model's reasoning chain.
+    """
+
+    content: list[Any]
+    text: str
+    tool_calls: list[ToolCall]
+    stop_reason: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def completion(self) -> Completion:
+        return Completion(
+            text=self.text,
+            model=self.model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+        )
+
+
 class Backend(Protocol):
     async def complete(
         self,
@@ -74,6 +121,9 @@ class Backend(Protocol):
         max_tokens: int,
         effort: str,
     ) -> Completion: ...
+
+    # Optional: only Ask Mira holds a conversation. A backend without `step`
+    # answers single questions only (see `step` below).
 
 
 class AnthropicBackend:
@@ -133,6 +183,70 @@ class AnthropicBackend:
         text = next((block.text for block in response.content if block.type == "text"), "")
         return Completion(
             text=text,
+            model=response.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+
+    async def step(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        effort: str,
+        allow_tools: bool = True,
+    ) -> Step:
+        anthropic = self._anthropic
+        try:
+            response = await self._client.beta.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                # The system prompt and the tool list are the same on every
+                # request of a conversation, so both are read from cache; the
+                # top-level marker caches the conversation so far as well.
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=messages,
+                tools=tools,
+                tool_choice={"type": "auto"} if allow_tools else {"type": "none"},
+                cache_control={"type": "ephemeral"},
+                thinking={"type": "adaptive"},
+                output_config={"effort": effort},
+                betas=[_FALLBACK_BETA],
+                fallbacks="default",
+            )
+        except anthropic.AuthenticationError as exc:
+            raise AiUnavailableError("The AI provider rejected this server's API key.") from exc
+        except anthropic.RateLimitError as exc:
+            raise AiUnavailableError(
+                "The AI provider is busy for this workspace. Try again in a minute."
+            ) from exc
+        except anthropic.APIStatusError as exc:
+            raise AiUnavailableError(
+                f"The AI provider returned an error ({exc.status_code}). Nothing was answered."
+            ) from exc
+        except anthropic.APIConnectionError as exc:
+            raise AiUnavailableError("The AI provider could not be reached.") from exc
+
+        # A refusal or a cut-off can leave a tool call half written: never run it.
+        if response.stop_reason == "refusal":
+            raise AiDeclinedError("The AI model declined this request.")
+        if response.stop_reason == "max_tokens":
+            raise AiUnavailableError(
+                "The answer was cut off before it was complete, so it is not shown."
+            )
+        texts = [block.text for block in response.content if block.type == "text"]
+        calls = [
+            ToolCall(id=block.id, name=block.name, input=dict(block.input or {}))
+            for block in response.content
+            if block.type == "tool_use"
+        ]
+        return Step(
+            content=list(response.content),
+            text="\n\n".join(t.strip() for t in texts if t.strip()),
+            tool_calls=calls,
+            stop_reason=str(response.stop_reason or ""),
             model=response.model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
@@ -201,3 +315,31 @@ async def structured(
         raise AiUnavailableError(
             "The AI answer did not match the shape it was asked for, so it is not shown."
         ) from exc
+
+
+async def step(
+    *,
+    system: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    max_tokens: int = 16000,
+    effort: str = "low",
+    allow_tools: bool = True,
+) -> Step:
+    """One step of a conversation with tools: the model's next response.
+
+    The caller runs the tools it asks for and calls again with their results.
+    `allow_tools=False` asks for a written answer only, to close a turn.
+    """
+    backend = _backend()
+    stepper = getattr(backend, "step", None)
+    if stepper is None:
+        raise AiUnavailableError("This AI provider cannot hold a conversation here.")
+    return await stepper(
+        system=system,
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        effort=effort,
+        allow_tools=allow_tools,
+    )

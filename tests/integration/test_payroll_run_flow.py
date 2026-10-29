@@ -934,16 +934,22 @@ async def test_a_computed_run_is_deleted_with_its_payslips(session: AsyncSession
     assert recomputed.employee_count == 4
 
 
-async def test_failed_and_cancelled_runs_can_be_deleted(
-    session: AsyncSession, org, legal_entity: LegalEntity, location: Location
-) -> None:
-    await _approved_rules(session, org)
+async def test_failed_and_cancelled_runs_can_be_deleted(session: AsyncSession, org) -> None:
+    # A PF rule set nobody has approved makes the compute fail. (Somebody with
+    # no salary no longer does: they are left off the run with a notice.)
+    await rule_set_service.create_rule_set(
+        session,
+        org["maker"],
+        RuleSetCreate(
+            rule_type="pf",
+            jurisdiction="IN",
+            effective_from=date(2026, 4, 1),
+            rules=PF_RULES,
+            source_reference="fixture",
+        ),
+    )
     session.add(_lock(org["tenant"], org["maker"], 2026, 4))
     await session.commit()
-    # Somebody without a salary makes the compute fail.
-    await _person(
-        session, org["tenant"], legal_entity, location, code="NOSAL", role=UserRole.EMPLOYEE
-    )
     failed = await _open_run(session, org, 4)
     with pytest.raises(HTTPException):
         await run_service.compute_run(session, org["maker"], failed.id)

@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -39,7 +39,20 @@ from app.services import audit
 from app.services.auth import web_app_url
 from app.services.notifications.dispatch import notify, register_event
 
-__all__ = ["EVENT_KEY", "list_requests", "submit", "update"]
+__all__ = [
+    "EVENT_KEY",
+    "RETENTION_DAYS",
+    "erase",
+    "list_requests",
+    "purge_stale",
+    "submit",
+    "update",
+]
+
+#: How long an enquiry is kept after the last activity on it, as the website's
+#: privacy policy says. A lead nobody has touched in a year is not "being
+#: discussed" any more (DPDP s.8(7)).
+RETENTION_DAYS = 365
 
 EVENT_KEY = "platform.demo_request.received"
 
@@ -193,3 +206,35 @@ async def update(
     await session.refresh(row)
     names = await _names(session, [row])
     return _read(row, names)
+
+
+async def erase(
+    session: AsyncSession, user: User, request_id: uuid.UUID, *, request: Request | None = None
+) -> None:
+    """Delete one enquiry because its sender asked (DPDP s.12). Audited, not undoable."""
+    _require_super(user)
+    row = await session.get(DemoRequest, request_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Demo request not found")
+    company = row.company
+    await session.delete(row)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="demo_request",
+        entity_id=request_id,
+        actor=user,
+        actor_type="platform",
+        # The sender's name and email go with the row; the log keeps the company.
+        summary=f"Website enquiry from {company} deleted at the sender's request",
+        request=request,
+    )
+    await session.commit()
+
+
+async def purge_stale(session: AsyncSession, *, now: datetime | None = None) -> int:
+    """Delete enquiries with no activity for `RETENTION_DAYS`. The platform job's work."""
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=RETENTION_DAYS)
+    result = await session.execute(delete(DemoRequest).where(DemoRequest.updated_at < cutoff))
+    return int(result.rowcount or 0)

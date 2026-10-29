@@ -321,6 +321,22 @@ async def screen_candidate(
     await governance.require(session, user, "hiring_drafts")
     candidate, requisition = await visibility.load_candidate(session, user, candidate_id)
 
+    # The résumé goes to a model outside India. Only for a candidate who ticked
+    # the optional AI box when applying, and has not withdrawn it since.
+    from app.models.jobboard import ConsentPurpose
+    from app.services.hiring.ingestion import effective_consent
+
+    if not await effective_consent(
+        session, user, candidate_id=candidate.id, purpose=ConsentPurpose.AI_SCREENING
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This candidate has not agreed to AI reading their résumé, so it is not "
+                "sent to the model. Read the résumé yourself."
+            ),
+        )
+
     resume_text = str((candidate.parsed_resume or {}).get("text") or "").strip()
     if not resume_text:
         raise HTTPException(

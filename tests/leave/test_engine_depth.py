@@ -173,15 +173,17 @@ def test_paid_leave_beyond_the_balance_is_refused() -> None:
     assert not _assess().allowed
 
 
-def test_unpaid_leave_skips_the_balance_check_entirely() -> None:
-    result = _assess(is_paid=False)
-    assert result.allowed
-    assert not any("available" in p for p in result.problems)
+def test_unpaid_leave_needs_a_balance_like_any_other() -> None:
+    """Leave is applied only against a balance: an unpaid type with no days
+    given is refused, and one HR has credited days to is allowed."""
+    refused = _assess(balance=Balance())
+    assert any("No balance is available" in p for p in refused.problems)
+    assert _assess(balance=Balance(adjusted=Decimal(5))).allowed
 
 
-def test_unpaid_leave_needs_no_policy() -> None:
-    result = _assess(is_paid=False, rules=None, balance=None)
-    assert result.allowed
+def test_unpaid_leave_without_a_policy_is_refused() -> None:
+    result = _assess(rules=None, balance=None)
+    assert any("No leave policy" in p for p in result.problems)
 
 
 def test_a_paid_type_without_a_policy_is_still_refused() -> None:
@@ -190,7 +192,11 @@ def test_a_paid_type_without_a_policy_is_still_refused() -> None:
 
 
 def test_unpaid_leave_still_honours_the_policy_notice_rule() -> None:
-    result = _assess(is_paid=False, start=date(2026, 4, 3), rules=PolicyRules(min_notice_days=7))
+    result = _assess(
+        start=date(2026, 4, 3),
+        rules=PolicyRules(min_notice_days=7),
+        balance=Balance(adjusted=Decimal(5)),
+    )
     assert any("notice" in p for p in result.problems)
 
 

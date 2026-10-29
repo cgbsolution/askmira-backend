@@ -919,6 +919,14 @@ async def create_survey(
     invited = [
         employee.id for employee in (await session.execute(_current_employees_stmt(user))).scalars()
     ]
+    # Nobody who said no to culture surveys on My privacy is invited again
+    # (DPDP purpose `culture_analytics`, capability `culture_survey_invitations`).
+    from app.services.dpdp.gates import principals_declining
+
+    declined = await principals_declining(
+        session, user, principal_ids=invited, purpose_key="culture_analytics"
+    )
+    invited = [employee_id for employee_id in invited if employee_id not in declined]
     session.add_all(
         SurveyParticipant(tenant_id=user.tenant_id, survey_id=row.id, employee_id=employee_id)
         for employee_id in invited
@@ -1860,6 +1868,17 @@ async def set_event_privacy(
     row.share_work_anniversary = share_work_anniversary
     row.birthday_scope = birthday_scope
     await session.flush()
+    # The consent log is where My privacy and an access export read this choice
+    # from; written in the same transaction as the flags it describes.
+    from app.services.dpdp import service as dpdp_service
+
+    await dpdp_service.record_celebration_choice(
+        session,
+        user,
+        employee_id=employee_id,
+        shares_anything=share_birthday or share_work_anniversary,
+        request=request,
+    )
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -1995,10 +2014,12 @@ async def calendar(
             and person.department_id == viewer.department_id
         )
 
-    return {
-        "from": from_date.isoformat(),
-        "to": to_date.isoformat(),
-        "events": [
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    shown = await strip_hidden_photos(
+        session,
+        user,
+        [
             {
                 **event.as_dict(),
                 "photo_url": (
@@ -2008,6 +2029,12 @@ async def calendar(
             for event in events
             if may_see(event)
         ],
+        id_field="employee_id",
+    )
+    return {
+        "from": from_date.isoformat(),
+        "to": to_date.isoformat(),
+        "events": shown,
         "note": (
             "Birthdays and work anniversaries appear only for people who have "
             "opted in, and the two are separate choices."

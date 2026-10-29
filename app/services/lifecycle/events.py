@@ -270,9 +270,12 @@ def consequences_of(facts: EventFacts) -> list[Consequence]:
                     f"They move to another company on {facts.effective_from:%d %b %Y}. A "
                     "month is paid by the company somebody belongs to on its last day, so "
                     f"the new company's payroll pays all of {facts.effective_from:%B %Y} and "
-                    "every month after, and files their PF, ESI, Professional Tax and TDS "
-                    "for those months under its registration numbers; earlier months stay "
-                    "with their current company. A month is never split between the two."
+                    "every month after, and files their monthly PF, ESI, Professional Tax "
+                    "and TDS for those months under its registration numbers; earlier "
+                    "months stay with their current company. A month is never split "
+                    "between the two. The year's TDS salary statement (Q4 Annexure II) is "
+                    "filed by the company they belong to at year end, and that return flags "
+                    "them so it can be split between the two companies before filing."
                 ),
                 action_required=(
                     "Date a move the 1st of a month for a clean change. Check the new "

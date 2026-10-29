@@ -44,9 +44,7 @@ def test_every_category_names_purposes_that_exist():
 def test_every_purpose_names_categories_that_exist():
     for spec in consent.PURPOSES.values():
         for key in spec.data_categories:
-            assert key in CATEGORIES, (
-                f"Purpose {spec.key!r} cites category {key!r}."
-            )
+            assert key in CATEGORIES, f"Purpose {spec.key!r} cites category {key!r}."
 
 
 def test_only_consent_is_withdrawable():
@@ -62,8 +60,7 @@ def test_a_statutory_retention_names_the_statute():
             # A non-statutory retention has to explain itself, because "we keep
             # this for five years" with no reason is a number somebody guessed.
             assert cat.retention.note, (
-                f"{cat.key} has a non-statutory retention with no note saying "
-                "why that period."
+                f"{cat.key} has a non-statutory retention with no note saying why that period."
             )
 
 
@@ -107,13 +104,13 @@ def test_consent_cannot_be_recorded_for_payroll():
 
 def test_consent_can_be_recorded_where_consent_is_the_basis():
     decision = consent.record_decision(
-        "marketing_communication",
+        "celebrations",
         granted=True,
         now=NOW,
         captured_via=consent.CapturedVia.SELF_SERVICE,
     )
     assert decision.granted
-    assert decision.version == consent.purpose("marketing_communication").version
+    assert decision.version == consent.purpose("celebrations").version
 
 
 def test_a_mandatory_purpose_never_rests_on_consent():
@@ -140,8 +137,7 @@ def test_every_capability_a_purpose_stops_is_declared():
     for spec in consent.PURPOSES.values():
         for capability in spec.stops:
             assert capability in consent.CAPABILITIES, (
-                f"{spec.key} claims to stop {capability!r}, which is not a "
-                "declared capability."
+                f"{spec.key} claims to stop {capability!r}, which is not a declared capability."
             )
 
 
@@ -153,8 +149,8 @@ def test_a_non_consent_purpose_stops_nothing():
 
 def test_never_asked_is_not_the_same_as_declined():
     states = {s.purpose_key: s for s in consent.consent_state([])}
-    assert states["wellness"].status is consent.ConsentStatus.NOT_ASKED
-    assert not states["wellness"].is_permitted
+    assert states["celebrations"].status is consent.ConsentStatus.NOT_ASKED
+    assert not states["celebrations"].is_permitted
 
 
 def test_a_non_consent_purpose_is_permitted_without_a_decision():
@@ -167,36 +163,36 @@ def test_a_non_consent_purpose_is_permitted_without_a_decision():
 def test_the_latest_decision_wins_and_the_earlier_one_survives():
     decisions = [
         consent.record_decision(
-            "wellness",
+            "celebrations",
             granted=True,
             now=NOW,
             captured_via=consent.CapturedVia.ONBOARDING,
         ),
         consent.record_decision(
-            "wellness",
+            "celebrations",
             granted=False,
             now=NOW + timedelta(days=30),
             captured_via=consent.CapturedVia.SELF_SERVICE,
         ),
     ]
     states = {s.purpose_key: s for s in consent.consent_state(decisions)}
-    assert states["wellness"].status is consent.ConsentStatus.DECLINED
+    assert states["celebrations"].status is consent.ConsentStatus.DECLINED
     # Both rows are still in the input; the fold does not destroy history.
     assert len(decisions) == 2
 
 
 def test_a_stale_version_is_not_consent():
-    spec = consent.purpose("wellness")
+    spec = consent.purpose("celebrations")
     old = consent.ConsentDecision(
-        purpose_key="wellness",
+        purpose_key="celebrations",
         granted=True,
         decided_at=NOW,
         version=spec.version - 1 if spec.version > 1 else 0,
         captured_via=consent.CapturedVia.ONBOARDING,
     )
     states = {s.purpose_key: s for s in consent.consent_state([old])}
-    assert states["wellness"].status is consent.ConsentStatus.STALE
-    assert not states["wellness"].is_permitted
+    assert states["celebrations"].status is consent.ConsentStatus.STALE
+    assert not states["celebrations"].is_permitted
 
 
 def test_withdrawing_consent_stops_the_named_capability():
@@ -229,7 +225,7 @@ def test_withdrawing_one_consent_does_not_stop_another():
             captured_via=consent.CapturedVia.SELF_SERVICE,
         ),
         consent.record_decision(
-            "wellness",
+            "celebrations",
             granted=True,
             now=NOW,
             captured_via=consent.CapturedVia.SELF_SERVICE,
@@ -237,7 +233,7 @@ def test_withdrawing_one_consent_does_not_stop_another():
     ]
     states = consent.consent_state(decisions)
     assert not consent.is_permitted("culture_survey_invitations", states)
-    assert consent.is_permitted("wellness_nudges", states)
+    assert consent.is_permitted("birthday_announcements", states)
 
 
 def test_an_unknown_capability_is_refused_not_allowed():
@@ -249,8 +245,29 @@ def test_an_unknown_capability_is_refused_not_allowed():
 def test_withdrawal_effect_is_honest_about_what_stays():
     effect = consent.withdrawal_effect("culture_analytics")
     assert effect.stops
-    assert effect.retained
-    assert "separate request" in effect.summary
+    # Anonymous answers cannot be found to delete, and the person is told so.
+    assert effect.retained and "without your name" in effect.retained[0]
+    # Unanswered invitations rest only on this consent, so they go (s.8(7)(a)).
+    assert effect.erased
+    assert "deleted" in effect.summary
+
+
+def test_withdrawing_ai_consent_names_what_is_deleted():
+    effect = consent.withdrawal_effect("ai_assistance")
+    assert any("Ask Mira" in item for item in effect.erased)
+
+
+def test_purposes_for_features_that_do_not_exist_are_gone():
+    """No switch for a wellness programme or product news that nothing sends."""
+    assert "wellness" not in consent.PURPOSES
+    assert "marketing_communication" not in consent.PURPOSES
+
+
+def test_candidate_purposes_are_not_on_an_employees_privacy_screen():
+    keys = consent.employee_purpose_keys()
+    for candidate_only in ("talent_pool", "background_verification", "recruitment", "ai_screening"):
+        assert candidate_only not in keys
+    assert "directory_visibility" in keys and "celebrations" in keys
 
 
 def test_withdrawal_is_refused_for_a_non_consent_purpose():
@@ -276,29 +293,21 @@ def test_a_tenant_cannot_publish_a_period_longer_than_the_statute():
 
 
 def test_a_tenant_can_publish_a_shorter_period():
-    clock = rights.clock_for(
-        rights.RequestType.ACCESS, received_on=TODAY, sla_days=7
-    )
+    clock = rights.clock_for(rights.RequestType.ACCESS, received_on=TODAY, sla_days=7)
     assert clock.due_by == TODAY + timedelta(days=7)
 
 
 def test_a_short_period_still_escalates_at_least_a_day_in():
-    clock = rights.clock_for(
-        rights.RequestType.NOMINATION, received_on=TODAY, sla_days=1
-    )
+    clock = rights.clock_for(rights.RequestType.NOMINATION, received_on=TODAY, sla_days=1)
     assert clock.escalate_at > TODAY
 
 
 def test_overdue_requests_sort_ahead_of_approaching_ones():
-    old = rights.clock_for(
-        rights.RequestType.ACCESS, received_on=TODAY - timedelta(days=60)
-    )
+    old = rights.clock_for(rights.RequestType.ACCESS, received_on=TODAY - timedelta(days=60))
     approaching = rights.clock_for(
         rights.RequestType.ACCESS, received_on=TODAY - timedelta(days=25)
     )
-    out = rights.escalations(
-        [("approaching", approaching), ("old", old)], today=TODAY
-    )
+    out = rights.escalations([("approaching", approaching), ("old", old)], today=TODAY)
     assert [e.request_id for e in out] == ["old", "approaching"]
     assert out[0].is_overdue
 
@@ -389,9 +398,7 @@ def test_a_legal_hold_beats_everything_and_has_no_end_date():
 def test_every_category_reaches_a_decision():
     """No category is silently skipped — the whole point of the module."""
     keys = tuple(CATEGORIES)
-    plan = rights.reconcile_erasure(
-        keys, requested_on=TODAY, last_working_day=date(2025, 1, 1)
-    )
+    plan = rights.reconcile_erasure(keys, requested_on=TODAY, last_working_day=date(2025, 1, 1))
     assert {d.category_key for d in plan.decisions} == set(keys)
 
 
@@ -435,9 +442,7 @@ def test_the_review_again_date_is_the_longest_obligation():
         last_working_day=date(2025, 6, 30),
         financial_year_end=date(2026, 3, 31),
     )
-    assert plan.review_again_on == max(
-        d.retained_until for d in plan.retained if d.retained_until
-    )
+    assert plan.review_again_on == max(d.retained_until for d in plan.retained if d.retained_until)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -561,9 +566,7 @@ def test_nothing_exposed_is_negligible_and_notifies_nobody():
 
 def test_every_non_negligible_severity_notifies_principals():
     for severity in breach.BreachSeverity:
-        assert severity.notify_principals == (
-            severity is not breach.BreachSeverity.NEGLIGIBLE
-        )
+        assert severity.notify_principals == (severity is not breach.BreachSeverity.NEGLIGIBLE)
 
 
 def test_an_unclassified_category_cannot_be_graded():
@@ -699,7 +702,7 @@ def test_an_unclassified_payload_cannot_be_cleared_to_leave():
 
 def test_a_refusal_names_the_country():
     with pytest.raises(transfers.TransferError) as exc:
-        transfers.assert_transfer_allowed("resend", ("compensation",))
+        transfers.assert_transfer_allowed("google_email", ("compensation",))
     assert "United States" in str(exc.value)
 
 
@@ -715,9 +718,7 @@ def test_every_purpose_sub_processor_is_registered():
 def test_the_trust_centre_lists_model_providers_first_and_separately():
     disclosure = transfers.trust_centre_disclosure()
     assert disclosure["ai_model_providers"]
-    assert all(
-        not s["is_ai_model_provider"] for s in disclosure["other_sub_processors"]
-    )
+    assert all(not s["is_ai_model_provider"] for s in disclosure["other_sub_processors"])
     assert disclosure["when_transfers_happen"]
 
 
@@ -791,10 +792,7 @@ def test_an_unclassified_table_fails_the_gate():
 def test_a_stale_table_fails_the_gate():
     schema = {"employees": _fixture_schema()["employees"]}
     gaps = inventory.coverage_gaps(schema)
-    assert any(
-        g.kind is inventory.GapKind.STALE_TABLE and g.table == "departments"
-        for g in gaps
-    )
+    assert any(g.kind is inventory.GapKind.STALE_TABLE and g.table == "departments" for g in gaps)
 
 
 def test_a_new_direct_identifier_cannot_inherit_the_table_default():
@@ -803,8 +801,7 @@ def test_a_new_direct_identifier_cannot_inherit_the_table_default():
     schema["employees"] = (*schema["employees"], "aadhaar_vid")
     gaps = inventory.coverage_gaps(schema)
     assert any(
-        g.kind is inventory.GapKind.IMPLICIT_DIRECT_IDENTIFIER
-        and g.column == "aadhaar_vid"
+        g.kind is inventory.GapKind.IMPLICIT_DIRECT_IDENTIFIER and g.column == "aadhaar_vid"
         for g in gaps
     )
 
@@ -813,9 +810,7 @@ def test_a_direct_identifier_in_a_non_personal_table_fails_the_gate():
     schema = dict(_fixture_schema())
     schema["departments"] = (*schema["departments"], "head_phone")
     gaps = inventory.coverage_gaps(schema)
-    assert any(
-        g.kind is inventory.GapKind.IDENTIFIER_IN_NON_PERSONAL_TABLE for g in gaps
-    )
+    assert any(g.kind is inventory.GapKind.IDENTIFIER_IN_NON_PERSONAL_TABLE for g in gaps)
 
 
 def test_a_classification_for_a_column_that_does_not_exist_fails_the_gate():
@@ -823,8 +818,7 @@ def test_a_classification_for_a_column_that_does_not_exist_fails_the_gate():
     schema["employees"] = tuple(c for c in schema["employees"] if c != "pan")
     gaps = inventory.coverage_gaps(schema)
     assert any(
-        g.kind is inventory.GapKind.STALE_COLUMN_CLASSIFICATION and g.column == "pan"
-        for g in gaps
+        g.kind is inventory.GapKind.STALE_COLUMN_CLASSIFICATION and g.column == "pan" for g in gaps
     )
 
 
@@ -844,16 +838,12 @@ def test_the_ropa_is_organised_by_purpose_not_by_table():
 
 
 def test_a_purpose_with_no_data_behind_it_still_appears():
-    activities = {
-        a.purpose.key: a for a in inventory.record_of_processing(_fixture_schema())
-    }
-    assert activities["wellness"].column_count == 0
+    activities = {a.purpose.key: a for a in inventory.record_of_processing(_fixture_schema())}
+    assert activities["culture_analytics"].column_count == 0
 
 
 def test_the_ropa_carries_the_binding_retention():
-    activities = {
-        a.purpose.key: a for a in inventory.record_of_processing(_fixture_schema())
-    }
+    activities = {a.purpose.key: a for a in inventory.record_of_processing(_fixture_schema())}
     payroll = activities["payroll_processing"]
     assert payroll.max_retention_months == max(
         category(k).retention.months for k in payroll.purpose.data_categories

@@ -33,7 +33,8 @@ from app.core.deps import tenant_scoped
 from app.models.arrears import RevisionType, SalaryRevision
 from app.models.documents import LetterTemplate
 from app.models.employee import Employee
-from app.models.payroll import PayrollRun, PayrollRunStatus
+from app.models.org import LegalEntity
+from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.performance_flow import (
     IncrementCycle,
     IncrementRecommendation,
@@ -92,6 +93,49 @@ async def _paid_at_old_rate(
     return found is not None
 
 
+async def _paid_by_other_companies(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    effective_from: date,
+) -> str | None:
+    """Months since the increment another company of the group already paid.
+
+    Arrears are worked out on the runs of the company the person is in now, so
+    months another company paid at the old rate are not part of them. Said,
+    not dropped: HR works those out and pays them through that company.
+    """
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(PayrollRun.period_year, PayrollRun.period_month, LegalEntity.name)
+                .join(Payslip, Payslip.run_id == PayrollRun.id)
+                .join(LegalEntity, LegalEntity.id == PayrollRun.legal_entity_id)
+                .where(
+                    Payslip.employee_id == employee.id,
+                    Payslip.is_supplementary.is_(False),
+                    PayrollRun.legal_entity_id != employee.legal_entity_id,
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                    PayrollRun.effective_date >= effective_from,
+                )
+                .order_by(PayrollRun.period_year, PayrollRun.period_month),
+                PayrollRun,
+                user,
+            )
+        )
+    ).all()
+    if not rows:
+        return None
+    by_company: dict[str, list[str]] = defaultdict(list)
+    for year, month, company in rows:
+        by_company[company].append(date(year, month, 1).strftime("%b %Y"))
+    paid = "; ".join(f"{', '.join(months)} by {company}" for company, months in by_company.items())
+    return (
+        f"{employee.employee_code}: increment arrears not raised for months another company "
+        f"paid ({paid}). Work them out and pay them through that company's payroll."
+    )
+
+
 async def apply_approved_increments(
     session: AsyncSession,
     user: User,
@@ -121,11 +165,19 @@ async def apply_approved_increments(
         )
     ).all()
     if not rows:
-        return {"applied": 0, "letters": 0, "arrear_batches": 0, "unchanged": 0}
+        return {
+            "applied": 0,
+            "letters": 0,
+            "arrear_batches": 0,
+            "unchanged": 0,
+            "arrears_not_raised": [],
+        }
 
     template = await _template(session, user)
     revisions: dict[uuid.UUID, list[dict]] = defaultdict(list)
     letters_issued = unchanged = 0
+    # People who moved between companies since the effective date.
+    arrears_elsewhere: list[str] = []
 
     for rec in rows:
         employee = await session.scalar(
@@ -192,6 +244,9 @@ async def apply_approved_increments(
         rec.letter_id = letter.id
         rec.applied_at = datetime.now(UTC)
         letters_issued += 1
+        elsewhere = await _paid_by_other_companies(session, user, employee, cycle.effective_from)
+        if elsewhere:
+            arrears_elsewhere.append(elsewhere)
         revisions[employee.legal_entity_id].append(
             {
                 "employee_id": str(rec.employee_id),
@@ -234,4 +289,5 @@ async def apply_approved_increments(
         "letters": letters_issued,
         "arrear_batches": batches,
         "unchanged": unchanged,
+        "arrears_not_raised": arrears_elsewhere,
     }

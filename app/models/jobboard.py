@@ -94,9 +94,15 @@ class ConsentPurpose(str, enum.Enum):
     other.
     """
 
+    #: Not consent in the DPDP sense: recruitment rests on legitimate use
+    #: (s.7(a) — the candidate gave their details for this purpose). The row is
+    #: the record that they saw the notice and asked to be considered.
     APPLICATION_PROCESSING = "application_processing"
     TALENT_POOL_RETENTION = "talent_pool_retention"
     MARKETING_CONTACT = "marketing_contact"
+    #: An AI model reads the résumé (outside India), with name, email and phone
+    #: removed. Optional; without it nobody can run AI screening on them.
+    AI_SCREENING = "ai_screening"
 
 
 class JobBoardAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):

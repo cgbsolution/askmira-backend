@@ -301,6 +301,18 @@ async def _identity_purge(session: AsyncSession, ctx: JobContext) -> dict[str, A
     return {"assertions_purged": assertions, "login_attempts_purged": attempts}
 
 
+async def _workspace_purge(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import tenant_purge
+
+    return await tenant_purge.purge_due(session, today=ctx.today)
+
+
+async def _demo_request_purge(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services import demo_requests
+
+    return {"leads_purged": await demo_requests.purge_stale(session, now=ctx.now)}
+
+
 async def _prune_scheduler_history(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.scheduler import service as scheduler
 
@@ -874,6 +886,30 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=5),
         handler=_identity_purge,
         source="app.services.identity.sso.purge_expired_assertions",
+        scope=JobScope.PLATFORM,
+    ),
+    Job(
+        key="platform.workspace_purge",
+        name="Purge deleted workspaces",
+        description=(
+            "Deletes every row and file of a workspace deleted more than 90 days ago, "
+            "keeping only the insert-only audit trail (DPDP s.8(7)(b))."
+        ),
+        cadence=Cadence.daily(hour=5),
+        handler=_workspace_purge,
+        source="app.services.tenant_purge.purge_due",
+        scope=JobScope.PLATFORM,
+    ),
+    Job(
+        key="platform.demo_request_purge",
+        name="Purge old website enquiries",
+        description=(
+            "Deletes demo and contact requests from the website 12 months after the "
+            "last activity on them, as the website privacy policy says."
+        ),
+        cadence=Cadence.daily(hour=5),
+        handler=_demo_request_purge,
+        source="app.services.demo_requests.purge_stale",
         scope=JobScope.PLATFORM,
     ),
     Job(

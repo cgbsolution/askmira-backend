@@ -100,6 +100,11 @@ class SubProcessor:
     #: Whether the tenant can decline this sub-processor and still use the
     #: product. False for the ones the product cannot run without.
     is_optional: bool = False
+    #: Where the processing contract stands, said plainly. "To confirm" means
+    #: nobody has checked the signed terms yet; the Trust Center shows it as is.
+    contract_status: str = "To confirm"
+    #: What exactly leaves, in a line — so a DPO can judge it without the code.
+    what_is_sent: str = ""
 
     @property
     def is_cross_border(self) -> bool:
@@ -120,6 +125,8 @@ class SubProcessor:
                 CATEGORIES[key].name for key in self.categories_permitted if key in CATEGORIES
             ],
             "safeguards": list(self.safeguards),
+            "contract_status": self.contract_status,
+            "what_is_sent": self.what_is_sent,
         }
 
 
@@ -150,6 +157,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "Region pinned to ap-south-1; no cross-region replication enabled",
                 "Encryption at rest and in transit",
             ),
+            what_is_sent="Every record and uploaded file, stored.",
         ),
         _s(
             key="anthropic",
@@ -174,17 +182,28 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "Prompts carry no statutory identifier, bank detail or health "
                 "category — enforced by assert_transfer_allowed, not by policy",
             ),
+            what_is_sent=(
+                "The question asked, policy text, survey comments people allowed "
+                "AI to read, and résumés with name, email and phone removed."
+            ),
         ),
         _s(
-            key="resend",
-            name="Resend",
-            service="Transactional email delivery.",
+            key="google_email",
+            name="Google (Gmail SMTP relay)",
+            service=(
+                "Delivers every email the product sends: sign-in links, approval "
+                "requests, payslip notices, candidate messages."
+            ),
             location=ProcessingLocation.OUTSIDE_INDIA,
-            country="United States",
-            categories_permitted=("identity", "communication"),
+            country="United States (Google does not pin a region for Gmail)",
+            categories_permitted=("identity", "communication", "organisational"),
             safeguards=(
-                "Data processing agreement",
-                "Receives a name, an email address and the message body only",
+                "Google Workspace Data Processing Amendment",
+                "Sent over TLS; payslips and documents are never attached, only linked",
+            ),
+            what_is_sent=(
+                "The recipient's name and email address and the message text, which "
+                "can name a colleague, a leave date or an approval."
             ),
         ),
         _s(
@@ -198,6 +217,133 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             safeguards=(
                 "Data processing agreement",
                 "Receives a phone number and a pre-approved template's variables",
+                "Sent only to people who opted in to WhatsApp",
+            ),
+            what_is_sent="A phone number and the template's variables.",
+        ),
+        _s(
+            key="expo_push",
+            name="Expo push service, then Apple and Google",
+            service=(
+                "Delivers mobile-app notifications: Expo relays each one to Apple "
+                "(iPhone) or Google (Android), which show it on the phone."
+            ),
+            location=ProcessingLocation.OUTSIDE_INDIA,
+            country="United States",
+            categories_permitted=("communication",),
+            is_optional=True,
+            safeguards=(
+                "The notification says only what kind of thing is waiting "
+                '("A leave request needs your approval"); names and details stay '
+                "in the app, behind sign-in",
+            ),
+            what_is_sent="A device token and a generic one-line notification.",
+        ),
+        _s(
+            key="google_maps",
+            name="Google Maps Platform",
+            service=(
+                "Draws the map around a punch location on the attendance screens, "
+                "and the office geofence when HR sets one."
+            ),
+            location=ProcessingLocation.OUTSIDE_INDIA,
+            country="United States",
+            categories_permitted=("attendance",),
+            is_optional=True,
+            safeguards=(
+                "Only map tiles for an area are requested; no name or employee id is sent",
+                "Falls back to OpenStreetMap when the workspace has no Google key",
+            ),
+            what_is_sent=(
+                "The map area around a punch (its coordinates) and the viewer's IP "
+                "address, when someone opens a map."
+            ),
+        ),
+        _s(
+            key="openstreetmap",
+            name="OpenStreetMap tile servers",
+            service="The fallback map on the attendance screens.",
+            location=ProcessingLocation.OUTSIDE_INDIA,
+            country="United Kingdom / European Union",
+            categories_permitted=("attendance",),
+            is_optional=True,
+            safeguards=("Only map tiles for an area are requested; no name or id is sent",),
+            what_is_sent="The map area around a punch and the viewer's IP address.",
+        ),
+        _s(
+            key="digio",
+            name="Digio",
+            service="Electronic signatures on letters and documents HR sends for signing.",
+            location=ProcessingLocation.UNSPECIFIED,
+            country="India (company); hosting region not confirmed in contract",
+            categories_permitted=("identity", "documents", "communication"),
+            is_optional=True,
+            safeguards=("Used only when the workspace connects a Digio account",),
+            what_is_sent="The document to sign and the signer's name, email and phone.",
+        ),
+        _s(
+            key="cgb_products",
+            name="AnytimeHire, ExpenseGenie and CGB Helpdesk",
+            service=(
+                "CGB's linked products. When a workspace admin connects one, a "
+                "daily people sync keeps its user list in step with AskMira."
+            ),
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Hosting region not recorded",
+            categories_permitted=("identity", "organisational"),
+            is_optional=True,
+            safeguards=(
+                "Connected per workspace by its admin, with a per-workspace secret",
+                "Leavers are dropped on the next sync",
+                "No pay, bank, statutory identifier or health data is sent",
+            ),
+            what_is_sent=(
+                "Name, work email, employee code, role, manager, department, designation and grade."
+            ),
+        ),
+        _s(
+            key="vercel",
+            name="Vercel",
+            service=(
+                "Serves the web app and passes every request from a browser to the AskMira server."
+            ),
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Function region not pinned to India",
+            categories_permitted=tuple(CATEGORIES),
+            safeguards=("Encrypted in transit; Vercel does not store request bodies",),
+            what_is_sent="Every request and response, in transit.",
+        ),
+        _s(
+            key="app_server",
+            name="AskMira application server host",
+            service="Runs the AskMira server that every request reaches.",
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Region not recorded",
+            categories_permitted=tuple(CATEGORIES),
+            safeguards=("Encrypted in transit; files and records are kept in Supabase",),
+            what_is_sent="Every request, while it is processed.",
+        ),
+        _s(
+            key="mcp_client",
+            name="AI assistants your admin connects (Claude, ChatGPT and others)",
+            service=(
+                "When an admin connects an AI assistant to AskMira, it can read the "
+                "people directory, approved leave and attendance counts."
+            ),
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Wherever the assistant your admin chose runs; usually the United States",
+            categories_permitted=("identity", "organisational", "attendance", "leave"),
+            is_ai_model_provider=True,
+            is_optional=True,
+            safeguards=(
+                "Works only while the workspace has AI switched on",
+                "People who said no to AI on My privacy are left out of every answer",
+                "Read-only; never pay, bank, statutory identifiers, health or leave reasons",
+                "Every call is audited and recorded as a transfer",
+            ),
+            what_is_sent=(
+                "Names, work emails, titles, departments, managers, approved leave "
+                "dates and attendance counts of people who agreed."
             ),
         ),
     )
@@ -306,11 +452,14 @@ def trust_centre_disclosure() -> dict[str, Any]:
         "in_india_count": sum(1 for s in SUB_PROCESSORS.values() if not s.is_cross_border),
         "statement": (
             "Your employees' primary records are stored in India. The "
-            f"{len(ai)} AI model provider(s) listed above process data outside "
+            f"{len(ai)} AI recipient(s) listed above process data outside "
             "India when your users use AI features; those features are optional "
             "and can be switched off per tenant. The categories each provider "
             "may receive are enforced in code, not only in contract — a payload "
-            "containing a category not listed is refused before it is sent."
+            "containing a category not listed is refused before it is sent. "
+            "Email, mobile notifications, maps and hosting also pass through "
+            "the services listed below, some of them outside India; a region "
+            "marked as not recorded is counted as outside India until it is."
         ),
         "when_transfers_happen": (
             "AI features are off in every workspace until one of its admins "

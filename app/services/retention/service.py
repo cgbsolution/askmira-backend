@@ -49,6 +49,7 @@ from app.services.dpdp.schema_map import TABLES, is_direct_identifier
 from app.services.retention import planner as planner_engine
 from app.services.retention import policy as policy_engine
 from app.services.retention.taxonomy import BACKUP_DISCLOSURE, trust_centre_taxonomy
+from app.services.storage.cleanup import delete_files, keys_in, keys_in_rows
 
 __all__ = [
     "active_holds",
@@ -184,7 +185,12 @@ async def set_policy(
 
 
 async def seed_default_policies(
-    session: AsyncSession, user: User, *, request: Request | None = None
+    session: AsyncSession,
+    user: User,
+    *,
+    request: Request | None = None,
+    commit: bool = True,
+    actor_type: str = "user",
 ) -> list[RetentionPolicyRow]:
     """Write the system defaults for a tenant that has configured nothing.
 
@@ -223,11 +229,13 @@ async def seed_default_policies(
             tenant_id=user.tenant_id,
             action=AuditAction.CREATE,
             entity_type="retention_policy",
-            actor=user,
+            actor=user if actor_type == "user" else None,
+            actor_type=actor_type,
             summary=f"Seeded {len(written)} default retention policies.",
             request=request,
         )
-    await session.commit()
+    if commit:
+        await session.commit()
     return written
 
 
@@ -617,6 +625,8 @@ async def execute_plan(
 
     done: dict[tuple[str, str, str], list[str]] = {}
     deleted: list[tuple[str, uuid.UUID]] = []
+    #: Uploaded files of deleted or anonymised rows; removed after the commit.
+    files: set[str] = set()
     removed = anonymised = spared = not_actioned = archive_pending = 0
     problems: list[str] = []
 
@@ -650,6 +660,12 @@ async def execute_plan(
         key = (entry["category"], table.name, str(action_value))
 
         if action_value == RetentionActionKind.DELETE.value:
+            row_files = await keys_in_rows(
+                session,
+                table,
+                user.tenant_id,
+                tenant_filter(table, user.tenant_id) & (table.c.id == record_id),
+            )
             try:
                 async with session.begin_nested():
                     result = await session.execute(
@@ -666,8 +682,16 @@ async def execute_plan(
             if result.rowcount:
                 removed += 1
                 deleted.append((table.name, record_id))
+                files |= row_files
                 done.setdefault(key, []).append(entry["record_id"])
         elif action_value == RetentionActionKind.ANONYMISE.value:
+            # An anonymised row keeps no file: a scan or a photo is the person.
+            files |= await keys_in_rows(
+                session,
+                table,
+                user.tenant_id,
+                tenant_filter(table, user.tenant_id) & (table.c.id == record_id),
+            )
             if await _anonymise_row(session, user, table, record_id):
                 anonymised += 1
                 done.setdefault(key, []).append(entry["record_id"])
@@ -737,9 +761,11 @@ async def execute_plan(
         request=request,
     )
     await session.commit()
+    file_result = await delete_files(files)
 
     return {
         "run_id": str(row.id),
+        **file_result,
         "action_logs_written": len(logs),
         "suppressions_written": suppressions,
         "records_actually_removed": removed,
@@ -776,6 +802,22 @@ async def _anonymise_row(
         )
     ]
     values: dict[str, Any] = {name: None for name in columns}
+    # A column pointing at an uploaded file is cleared too; the caller deletes
+    # the file itself after the commit.
+    current = (
+        (
+            await session.execute(
+                select(table).where(tenant_filter(table, user.tenant_id), table.c.id == record_id)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if current is not None:
+        for column in table.columns:
+            value = current.get(column.name)
+            if column.nullable and isinstance(value, str) and keys_in(value, user.tenant_id):
+                values[column.name] = None
     # A required JSON column the classification names (profile sections, a
     # change request's payload) cannot be nulled, so it is emptied instead.
     # Leaving it would keep addresses, family and nominees after "erasure".
@@ -966,6 +1008,16 @@ async def scheduled_sweep(session: AsyncSession, user: User, *, today: date) -> 
     a person — it appears in their approvals inbox. Nothing is recorded on a
     night with nothing due.
     """
+    # A workspace nobody set up still gets the statutory floor (DPDP s.8(7)):
+    # retention that only runs once an admin finds the seed button keeps
+    # ex-employees' data forever while the export says "kept for N months".
+    # Seeds only when the workspace has no policy row at all, so a workspace
+    # that switched a policy off keeps its choice.
+    has_any = await session.scalar(
+        tenant_scoped(select(RetentionPolicyRow.id), RetentionPolicyRow, user).limit(1)
+    )
+    if has_any is None:
+        await seed_default_policies(session, user, commit=False, actor_type="system")
     suppression = await apply_suppressions(session, user, today=today)
     candidates = await gather_candidates(session, user, today=today)
     if not candidates:

@@ -76,6 +76,7 @@ ENDPOINTS: dict[str, str] = {
     "GET /dpdp/purposes": "reference: the purpose catalogue.",
     "GET /dpdp/sub-processors": "reference: the published sub-processor list.",
     "GET /dpdp/me/notice": "reference: the tenant's privacy notice.",
+    "GET /dpdp/status": "reference: whether the workspace has named its grievance contact.",
     "GET /dpdp/me/consent": "own: the caller's own consent record.",
     "POST /dpdp/me/consent": "own: the caller's own consent record.",
     "POST /dpdp/me/consent/{purpose_key}/withdraw": "own: the caller's own consent record.",

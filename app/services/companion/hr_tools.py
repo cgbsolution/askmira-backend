@@ -239,18 +239,19 @@ async def approvals(
         [item.title, item.subject_name or "—", f"{item.submitted_at:%d %b}"] for item in items[:25]
     ]
     more = f" · first 25 of {len(items)} shown" if len(items) > 25 else ""
-    return [
-        _record(
-            "Waiting on you",
-            heading=f"{len(items)} item(s) to decide" + (f" · {label}" if label else ""),
-            figures=[(name, str(count)) for name, count in sorted(counts.items())],
-            columns=["What", "Who", "Submitted"],
-            rows=rows,
-            note=f"Oldest first{more}. Each is decided on its own page.",
-            open_href="/approvals",
-            open_label="Open Approvals",
-        )
-    ], used
+    card = _record(
+        "Waiting on you",
+        heading=f"{len(items)} item(s) to decide" + (f" · {label}" if label else ""),
+        figures=[(name, str(count)) for name, count in sorted(counts.items())],
+        columns=["What", "Who", "Submitted"],
+        rows=rows,
+        note=f"Oldest first{more}. Each is decided on its own page.",
+        open_href="/approvals",
+        open_label="Open Approvals",
+    )
+    # Which request each row is, for Ask Mira to name when it offers to decide one.
+    card["refs"] = [f"{item.source}:{item.id}" for item in items[:25]]
+    return [card], used
 
 
 # ── Payroll figures ──────────────────────────────────────────────────────────

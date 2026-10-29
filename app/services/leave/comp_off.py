@@ -229,7 +229,15 @@ async def list_claims(
             ).limit(200)
         )
     ).all()
-    return [_read(claim, emp, user) for claim, emp in rows]
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    return await strip_hidden_photos(
+        session,
+        user,
+        [_read(claim, emp, user) for claim, emp in rows],
+        id_field="employee_id",
+        photo_field="employee_photo_url",
+    )
 
 
 async def approvals(session: AsyncSession, user: User) -> list[CompOffRead]:
@@ -251,7 +259,11 @@ async def approvals(session: AsyncSession, user: User) -> list[CompOffRead]:
         if _may_decide(user, claim):
             label = await qualifying_label(session, user, emp, claim.worked_date)
             result.append(_read(claim, emp, user, label))
-    return result
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    return await strip_hidden_photos(
+        session, user, result, id_field="employee_id", photo_field="employee_photo_url"
+    )
 
 
 async def approval_items(session: AsyncSession, user: User) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.v1.routers import (
+    accounts,
     admin,
     agenteval,
     ai,
@@ -107,6 +108,7 @@ api_router.include_router(payroll.router, dependencies=_module("payroll"))
 api_router.include_router(payroll_adjustments.router, dependencies=_module("payroll"))
 api_router.include_router(payslips.router, dependencies=_module("payroll"))
 api_router.include_router(salary.router, dependencies=_module("payroll"))
+api_router.include_router(accounts.router, dependencies=_module("payroll"))
 api_router.include_router(tax.router, dependencies=_module("payroll"))
 api_router.include_router(statutory.router, dependencies=_module("payroll"))
 api_router.include_router(filings.router, dependencies=_module("payroll"))

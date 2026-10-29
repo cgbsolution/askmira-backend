@@ -176,6 +176,8 @@ class EntityMoveSkip(BaseModel):
 class EntityMoveResult(BaseModel):
     legal_entity_id: uuid.UUID
     legal_entity_name: str
+    #: The day the moves are dated: the workspace's today.
+    effective_from: date
     #: People moved into the company now.
     moved: int
     #: People who were in it already: nothing changed for them.

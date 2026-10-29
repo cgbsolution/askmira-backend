@@ -73,6 +73,16 @@ class LocalFileStorage(FileStorage):
     async def exists(self, key: str) -> bool:
         return self._path(key).is_file()
 
+    async def list_keys(self, prefix: str) -> list[str]:
+        base = (self._root / prefix.strip("/")).resolve()
+        if self._root not in base.parents or not base.is_dir():
+            return []
+        return sorted(
+            path.relative_to(self._root).as_posix()
+            for path in base.rglob("*")
+            if path.is_file() and not path.name.startswith(".")
+        )
+
     async def delete(self, key: str) -> bool:
         path = self._path(key)
         try:

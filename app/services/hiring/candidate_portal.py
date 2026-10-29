@@ -199,6 +199,110 @@ async def portal_overview(session: AsyncSession, token: str) -> dict[str, Any]:
             "accepted_types": list(ALLOWED_TYPES),
             "max_mb": resume_files.DOCUMENT_MAX_BYTES // (1024 * 1024),
         },
+        "consents": await _consents(session, row.tenant_id, row.candidate_id),
+    }
+
+
+#: The candidate's own optional choices, as the portal shows them. WhatsApp has
+#: its own switch above; these are the rest.
+_PORTAL_CONSENTS: dict[str, tuple[str, str]] = {
+    "talent_pool_retention": (
+        "Keep me in the talent pool",
+        "Your details are kept after this role closes, so you can be considered for others.",
+    ),
+    "ai_screening": (
+        "AI help reading my résumé",
+        "An AI model, outside India, helps the recruiter compare your résumé with the role. "
+        "Your name, email and phone are removed first; a person makes every decision.",
+    ),
+}
+
+
+async def _consents(
+    session: AsyncSession, tenant_id: uuid.UUID, candidate_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    from app.models.jobboard import CandidateConsent
+
+    rows = (
+        await session.scalars(
+            select(CandidateConsent)
+            .where(
+                tenant_filter(CandidateConsent, tenant_id),
+                CandidateConsent.candidate_id == candidate_id,
+            )
+            .order_by(CandidateConsent.recorded_at)
+        )
+    ).all()
+    latest = {row.purpose.value: row for row in rows}
+    return [
+        {
+            "purpose": key,
+            "name": name,
+            "description": description,
+            "granted": bool(latest.get(key) and latest[key].granted),
+            "decided_at": latest[key].recorded_at.isoformat() if key in latest else None,
+        }
+        for key, (name, description) in _PORTAL_CONSENTS.items()
+    ]
+
+
+async def withdraw_consent(session: AsyncSession, token: str, purpose: str) -> dict[str, Any]:
+    """The candidate withdraws an optional consent, and what rested on it goes.
+
+    DPDP s.6(4): as easy as giving it — one switch, here, no request to HR.
+    s.8(7)(a): leaving the talent pool removes them from every pool; withdrawing
+    AI help deletes the AI summaries of their résumé. The application itself is
+    still considered.
+    """
+    from sqlalchemy import delete
+
+    from app.models.ai_features import CandidateScreening
+    from app.models.jobboard import ConsentPurpose
+    from app.models.talent_pools import TalentPoolMember
+
+    if purpose not in _PORTAL_CONSENTS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such choice.")
+    row = await careers.resolve_portal_token(session, token)
+    actor = _portal_actor(row.tenant_id)
+    await ingestion.record_consent(
+        session,
+        actor,
+        candidate_id=row.candidate_id,
+        purpose=ConsentPurpose(purpose),
+        granted=False,
+        notice_text="Withdrawn by the candidate on their application page.",
+        notice_version="withdrawal",
+    )
+    erased = 0
+    if purpose == "talent_pool_retention":
+        result = await session.execute(
+            delete(TalentPoolMember).where(
+                tenant_filter(TalentPoolMember, row.tenant_id),
+                TalentPoolMember.candidate_id == row.candidate_id,
+            )
+        )
+        erased = int(result.rowcount or 0)
+    elif purpose == "ai_screening":
+        result = await session.execute(
+            delete(CandidateScreening).where(
+                tenant_filter(CandidateScreening, row.tenant_id),
+                CandidateScreening.candidate_id == row.candidate_id,
+            )
+        )
+        erased = int(result.rowcount or 0)
+    await audit.record(
+        session,
+        tenant_id=row.tenant_id,
+        actor_type="candidate",
+        action=AuditAction.UPDATE,
+        entity_type="candidate_consent",
+        entity_id=row.candidate_id,
+        changes={"purpose": purpose, "granted": False, "erased": erased},
+        summary=f"Candidate withdrew {purpose.replace('_', ' ')}; {erased} record(s) removed",
+    )
+    return {
+        "consents": await _consents(session, row.tenant_id, row.candidate_id),
+        "erased": erased,
     }
 
 

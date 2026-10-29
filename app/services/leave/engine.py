@@ -44,6 +44,11 @@ def days(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+def days_text(value: Decimal) -> str:
+    """A day quantity for a sentence: "8", "0.5", never "8.00"."""
+    return format(value.normalize(), "f") if value else "0"
+
+
 def _quantize(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -417,7 +422,6 @@ def select_policy(
 class PolicyRules:
     min_notice_days: int = 0
     max_consecutive_days: int | None = None
-    allows_negative_balance: bool = False
 
 
 @dataclass
@@ -444,19 +448,15 @@ def assess_request(
     rules: PolicyRules | None,
     balance: Balance | None,
     overlapping: int,
-    is_paid: bool = True,
 ) -> Assessment:
     """Every rule a request is held to, in the order a person would fix them.
 
-    Unpaid leave has no balance to run out of: it is loss of pay, which
-    attendance and payroll account for. It needs no policy either, though a
-    policy's notice and length rules still apply when one exists.
+    Leave is applied only against a balance: every type, paid or unpaid, needs
+    enough available days after pending requests, and none can go below zero.
+    Somebody with nothing left cannot apply; a day they do not work is absent,
+    which attendance and payroll treat as loss of pay.
     """
     result = Assessment()
-    if not is_paid:
-        balance = None
-        if rules is None:
-            rules = PolicyRules()
 
     if half_day and not allows_half_day:
         result.problems.append("This leave type cannot be taken as a half day.")
@@ -473,7 +473,8 @@ def assess_request(
 
     if rules is None:
         result.problems.append(
-            "No leave policy covers you for this leave type yet. Ask HR to assign one."
+            "No leave policy covers you for this leave type, so there is no balance to apply "
+            "against. Ask HR to assign one."
         )
         return result
 
@@ -492,18 +493,18 @@ def assess_request(
             f"At most {rules.max_consecutive_days} consecutive days can be taken at once."
         )
 
-    if balance is not None and count.total > ZERO:
-        remaining = balance.available_after_pending - count.total
-        if remaining < ZERO:
-            if rules.allows_negative_balance:
-                result.warnings.append(
-                    f"This takes your balance to {remaining} days. Your policy allows that."
-                )
-            else:
-                result.problems.append(
-                    f"You have {balance.available_after_pending} days available after "
-                    f"pending requests; this request needs {count.total}."
-                )
+    if count.total > ZERO:
+        left = balance.available_after_pending if balance is not None else ZERO
+        if left <= ZERO:
+            result.problems.append(
+                "No balance is available for this leave type, so it cannot be applied. "
+                "Ask HR if this looks wrong."
+            )
+        elif left < count.total:
+            result.problems.append(
+                f"You have {days_text(left)} days available after pending requests; "
+                f"this request needs {days_text(count.total)}."
+            )
     return result
 
 

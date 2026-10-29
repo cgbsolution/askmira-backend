@@ -1218,9 +1218,15 @@ async def remove_photo(
 async def photo(session: AsyncSession, user: User, employee_id: uuid.UUID) -> tuple[str, bytes]:
     """A colleague's photo, as the directory shows it beside their name.
 
-    Anybody in the workspace may see it, as they may see the name; tenant
-    isolation is the whole rule, and another tenant's id is a 404.
+    The person and HR always see it. A colleague sees it only when its owner
+    agreed to show it (DPDP purpose `directory_visibility`, on My privacy);
+    otherwise it is a 404, exactly like no photo, and screens show initials.
+    Another tenant's id is a 404 too.
     """
+    from app.services.dpdp.gates import hidden_photo_ids
+
+    if await hidden_photo_ids(session, user, [employee_id]):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No photo")
     key = await session.scalar(
         tenant_scoped(
             select(EmployeeProfile.photo_storage_key).where(

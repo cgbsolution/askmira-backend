@@ -12,7 +12,7 @@ from __future__ import annotations
 import struct
 import uuid
 import zlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest
@@ -24,14 +24,19 @@ from app.core import hr_scope
 from app.models.access import UserAreaRights
 from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee, EmploymentStatus
+from app.models.exit_workflow import ExitRecord, ExitStatus, ExitType
 from app.models.lifecycle import LifecycleEvent, LifecycleEventType, LifecycleStatus
 from app.models.org import LegalEntity
 from app.models.payroll import PayrollRun, PayrollRunStatus, PayrollRunType, Payslip
 from app.models.tenant import Tenant
 from app.models.user import UserRole
-from app.schemas.employee import EmployeeUpdate
+from app.schemas.employee import EmployeeUpdate, EntityMoveRequest
 from app.services import employee as employee_service
+from app.services.filings import service as filings_service
+from app.services.lifecycle import service as lifecycle_service
+from app.services.payroll import companies
 from app.services.payroll import run as run_service
+from app.services.performance import increment_apply
 from tests.integration.conftest import requires_db
 from tests.integration.platform_support import bearer, client, make_person  # noqa: F401
 from tests.integration.test_payroll_run_flow import (  # noqa: F401  (fixture)
@@ -229,6 +234,24 @@ async def test_hr_moves_people_to_another_company_in_one_go(
     foreign = await _employee(session, other_tenant, "GLB001", None)
     leaver = await _employee(session, tenant, "LEFT01", legal_entity)
     leaver.status = EmploymentStatus.EXITED
+    # On notice until their access is revoked, but past their last day.
+    gone = await _employee(session, tenant, "GONE01", legal_entity)
+    gone.status = EmploymentStatus.ON_NOTICE
+    serving = await _employee(session, tenant, "SERV01", legal_entity)
+    serving.status = EmploymentStatus.ON_NOTICE
+    today = date.today()
+    last_days = ((gone, today - timedelta(days=10)), (serving, today + timedelta(days=20)))
+    for person, last_day in last_days:
+        session.add(
+            ExitRecord(
+                tenant_id=tenant.id,
+                employee_id=person.id,
+                exit_type=ExitType.RESIGNATION,
+                status=ExitStatus.NOTICE_PERIOD,
+                resignation_date=today - timedelta(days=40),
+                approved_last_working_day=last_day,
+            )
+        )
     await session.commit()
 
     body = {
@@ -240,6 +263,8 @@ async def test_hr_moves_people_to_another_company_in_one_go(
             str(hr.employee_id),  # their own record
             str(foreign.id),  # another workspace's
             str(leaver.id),  # has left
+            str(gone.id),  # past their last day, still on notice
+            str(serving.id),  # still serving notice: moved
         ],
         "legal_entity_id": str(dxc.id),
     }
@@ -249,13 +274,16 @@ async def test_hr_moves_people_to_another_company_in_one_go(
     response = await client.patch(url, json=body, headers=bearer(hr))
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["moved"] == 2
+    assert result["moved"] == 3
     assert result["already_there"] == 1
+    assert result["effective_from"]
     assert result["legal_entity_name"] == "DXC Technology (client)"
     reasons = {row["employee_id"]: row["reason"] for row in result["skipped"]}
     assert "own record" in reasons[str(hr.employee_id)]
     assert reasons[str(foreign.id)] == "Not found in this workspace."
     assert reasons[str(leaver.id)].startswith("Has left")
+    assert reasons[str(gone.id)].startswith("Has left (last working day")
+    assert str(serving.id) not in reasons
 
     await session.refresh(first)
     await session.refresh(second)
@@ -289,12 +317,17 @@ async def test_hr_moves_people_to_another_company_in_one_go(
     listed = (
         await client.get(f"{API}/employees?legal_entity_id={dxc.id}", headers=bearer(staff))
     ).json()
-    assert {row["employee_code"] for row in listed["items"]} == {"EXT001", "EXT002", "DXC001"}
+    assert {row["employee_code"] for row in listed["items"]} == {
+        "EXT001",
+        "EXT002",
+        "DXC001",
+        "SERV01",
+    }
     assert all(row["legal_entity_id"] == str(dxc.id) for row in listed["items"])
     entities = (await client.get(f"{API}/org/legal-entities", headers=bearer(staff))).json()
     counts = {row["code"]: row["headcount"] for row in entities}
-    assert counts["DXC"] == 3
-    assert counts["ACME"] == 1  # the HR person, who was not moved
+    assert counts["DXC"] == 4  # EXT001, EXT002, DXC001 and SERV01
+    assert counts["ACME"] == 2  # the HR person and GONE01, who were not moved
 
     # People with no company at all: what no payroll run pays.
     nobody = await _employee(session, tenant, "NOCO01", None)
@@ -442,18 +475,28 @@ async def test_a_month_one_company_paid_is_not_paid_again_by_another(
     approved = await run_service.approve_run(session, org["checker"], acme_april.id)
     assert approved.status is PayrollRunStatus.APPROVED
 
-    # DXC cannot approve paying the same April again — not even when the
-    # approver's own scope leaves Meera out of what they can see.
+    # DXC cannot approve paying the same April again.
+    with pytest.raises(HTTPException) as exc:
+        await run_service.approve_run(session, org["checker"], dxc_april.id)
+    assert exc.value.status_code == 409
+    assert "already paid for this month" in exc.value.detail
+    assert "MEERA" in exc.value.detail
+
+    # Nor can an approver whose department/location scope leaves out somebody
+    # on the run sign it off (or compute it): they would mark only their own
+    # people's inputs paid.
     checker_record = org["checker"].employee_id
     hr_scope.set_scope(hr_scope.HrScope(employee_ids=(checker_record,)))
     try:
         with pytest.raises(HTTPException) as exc:
             await run_service.approve_run(session, org["checker"], dxc_april.id)
+        assert exc.value.status_code == 403
+        assert "outside your department or location scope" in exc.value.detail
+        with pytest.raises(HTTPException) as exc:
+            await run_service.compute_run(session, org["maker"], dxc_april.id)
+        assert exc.value.status_code == 403
     finally:
         hr_scope.set_scope(None)
-    assert exc.value.status_code == 409
-    assert "already paid for this month" in exc.value.detail
-    assert "MEERA" in exc.value.detail
 
     # Recomputed, DXC's run leaves her out, says why, and does not hand her to
     # the run's input sources (an arrear batch or a bonus would otherwise be
@@ -601,3 +644,170 @@ async def test_a_move_inside_the_month_is_explained_on_both_runs(
     assert dxc_run.employee_count == 1
     arrived = [n["message"] for n in dxc_run.input_notices if n.get("key") == "company_move"]
     assert any("This run pays all of April 2026" in m for m in arrived)
+
+
+async def test_a_first_company_counts_from_the_start(
+    session: AsyncSession,
+    org,  # noqa: F811
+) -> None:
+    """An imported joiner put into a company today is that company's for earlier months too."""
+    await _approved_rules(session, org)
+    session.add(_lock(org["tenant"], org["maker"], 2026, 4))
+    ravi = await session.get(Employee, org["ravi_emp"].id)
+    ravi.legal_entity_id = None  # as an import into a group with several companies leaves him
+    await session.commit()
+    acme = org["entity"]
+
+    april = await run_service.create_run(
+        session, org["maker"], legal_entity_id=acme.id, period_year=2026, period_month=4
+    )
+    computed = await run_service.compute_run(session, org["maker"], april.id)
+    unplaced = [n["message"] for n in computed.input_notices if n.get("key") == "no_company"]
+    assert len(unplaced) == 1 and "RAVI" in unplaced[0]
+    assert "no run pays them" in unplaced[0]
+
+    # HR follows the notice: Move to company, today.
+    await employee_service.move_to_legal_entity(
+        session,
+        org["maker"],
+        EntityMoveRequest(employee_ids=[ravi.id], legal_entity_id=acme.id),
+    )
+    assert ravi.id in await companies.members_on(session, org["maker"], acme.id, date(2026, 4, 30))
+
+    recomputed = await run_service.compute_run(session, org["maker"], april.id)
+    slip = await session.scalar(
+        select(Payslip).where(Payslip.run_id == april.id, Payslip.employee_id == ravi.id)
+    )
+    assert slip is not None
+    keys = {n.get("key") for n in recomputed.input_notices}
+    assert "no_company" not in keys
+    assert not [
+        n
+        for n in recomputed.input_notices
+        if n.get("key") == "company_move" and "RAVI" in n["message"]
+    ]
+
+
+async def test_a_transfer_records_the_company_it_actually_replaced(
+    session: AsyncSession, tenant: Tenant, hr_user, legal_entity: LegalEntity
+) -> None:
+    """Two transfers approved in advance: the second replaces the first's company."""
+    b = await _entity(session, tenant, "Artbox Solutions", "ARTBOX")
+    c = await _entity(session, tenant, "DXC Technology (client)", "DXC")
+    person = await _employee(session, tenant, "XFER01", legal_entity)
+    now = datetime.now(UTC)
+
+    def approved(effective: date, to: LegalEntity) -> LifecycleEvent:
+        return LifecycleEvent(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            event_type=LifecycleEventType.TRANSFER,
+            effective_from=effective,
+            # Both raised while the record still said ACME.
+            previous_values={"legal_entity_id": str(legal_entity.id)},
+            new_values={"legal_entity_id": str(to.id)},
+            reason="Planned moves.",
+            status=LifecycleStatus.APPROVED,
+            raised_by_user_id=hr_user.id,
+            approved_by_user_id=hr_user.id,
+            approved_at=now,
+        )
+
+    first, second = approved(date(2026, 6, 1), b), approved(date(2026, 8, 1), c)
+    session.add_all([first, second])
+    await session.commit()
+
+    await lifecycle_service.effect_event(session, hr_user, event_id=first.id, on=date(2026, 6, 1))
+    await lifecycle_service.effect_event(session, hr_user, event_id=second.id, on=date(2026, 8, 1))
+    await session.refresh(second)
+    assert second.status is LifecycleStatus.EFFECTED
+    assert second.previous_values == {"legal_entity_id": str(b.id)}
+
+    on = await companies.companies_on(session, hr_user, {person.id}, date(2026, 7, 31))
+    assert on[person.id] == b.id
+    on = await companies.companies_on(session, hr_user, {person.id}, date(2026, 5, 31))
+    assert on[person.id] == legal_entity.id
+
+
+async def test_a_company_change_cannot_be_dated_before_a_later_one(
+    session: AsyncSession, tenant: Tenant, hr_user, legal_entity: LegalEntity
+) -> None:
+    b = await _entity(session, tenant, "Artbox Solutions", "ARTBOX")
+    c = await _entity(session, tenant, "DXC Technology (client)", "DXC")
+    person = await _employee(session, tenant, "BACK01", legal_entity)
+
+    await employee_service.update_employee(
+        session,
+        hr_user,
+        person.id,
+        EmployeeUpdate(legal_entity_id=b.id, changes_effective_from=date(2026, 9, 1)),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await employee_service.update_employee(
+            session,
+            hr_user,
+            person.id,
+            EmployeeUpdate(legal_entity_id=c.id, changes_effective_from=date(2026, 8, 1)),
+        )
+    assert exc.value.status_code == 422
+    assert "01 Sep 2026" in exc.value.detail
+    # On or after it is fine.
+    await employee_service.update_employee(
+        session,
+        hr_user,
+        person.id,
+        EmployeeUpdate(legal_entity_id=c.id, changes_effective_from=date(2026, 9, 15)),
+    )
+
+
+async def test_a_mid_year_mover_is_flagged_on_the_tds_return_and_the_increment(
+    session: AsyncSession,
+    org,  # noqa: F811
+) -> None:
+    await _approved_rules(session, org)
+    for month in (4, 5):
+        session.add(_lock(org["tenant"], org["maker"], 2026, month))
+    await session.commit()
+    acme = org["entity"]
+    dxc = await _entity(session, org["tenant"], "DXC Technology (client)", "DXC")
+    meera = org["meera_emp"].id
+
+    acme_april = await run_service.create_run(
+        session, org["maker"], legal_entity_id=acme.id, period_year=2026, period_month=4
+    )
+    await run_service.compute_run(session, org["maker"], acme_april.id)
+    await run_service.approve_run(session, org["checker"], acme_april.id)
+
+    # Meera joins DXC from 1 May; DXC pays May.
+    await employee_service.update_employee(
+        session,
+        org["maker"],
+        meera,
+        EmployeeUpdate(legal_entity_id=dxc.id, changes_effective_from=date(2026, 5, 1)),
+    )
+    dxc_may = await run_service.create_run(
+        session, org["maker"], legal_entity_id=dxc.id, period_year=2026, period_month=5
+    )
+    computed = await run_service.compute_run(session, org["maker"], dxc_may.id)
+    assert computed.employee_count == 1
+    await run_service.approve_run(session, org["checker"], dxc_may.id)
+
+    # Q4 Annexure II: one row for the year under DXC, flagged to be split; and
+    # ACME told to add the row for what it paid.
+    at_dxc = await filings_service._annexure_ii_movers(
+        session, org["maker"], dxc.id, "2026-2027"
+    )
+    assert [(w.code, w.subject) for w in at_dxc] == [("ANNEXURE_II_MOVER", "MEERA")]
+    assert "Acme Technologies Pvt Ltd" in at_dxc[0].message
+    at_acme = await filings_service._annexure_ii_movers(
+        session, org["maker"], acme.id, "2026-2027"
+    )
+    assert [(w.code, w.subject) for w in at_acme] == [("ANNEXURE_II_MOVED_OUT", "MEERA")]
+
+    # An increment effective 1 April: April was paid by ACME, so its arrears are named, not dropped.
+    record = await session.get(Employee, meera)
+    note = await increment_apply._paid_by_other_companies(
+        session, org["maker"], record, date(2026, 4, 1)
+    )
+    assert note is not None
+    assert "Apr 2026 by Acme Technologies Pvt Ltd" in note

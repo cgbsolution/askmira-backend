@@ -27,6 +27,14 @@ carries pay, bank, statutory identifiers, health or the reason someone gave for
 their leave — the same boundary as the customer API, because an assistant that
 reads this is just another integration. Each call is written to the audit log
 as an MCP action, with the tool and its arguments.
+
+An outside assistant is an AI tool processing people's records, usually outside
+India. So, as for every AI feature: nothing is answered while the workspace has
+AI switched off, a person who has not agreed to the AI purpose on My privacy is
+left out of every answer (`ai_context_retrieval`), and each call that returns
+people is recorded in the cross-border transfer register (`mcp_client`).
+Ask Mira, inside the app, calls the same handlers without that filter: it shows
+the result to the person asking and sends none of it to a model.
 """
 
 from __future__ import annotations
@@ -64,6 +72,28 @@ INSTRUCTIONS = (
 
 class ToolError(Exception):
     """A tool call that cannot be answered; the message goes back to the client."""
+
+
+async def _consenting(
+    session: AsyncSession, actor: User, ids: set[uuid.UUID], only_consenting: bool
+) -> set[uuid.UUID] | None:
+    """The people an outside AI tool may be told about, or None for no filter."""
+    if not only_consenting:
+        return None
+    from app.services.dpdp import service as dpdp_service
+
+    return await dpdp_service.principals_permitting(
+        session, actor, principal_ids=list(ids), capability="ai_context_retrieval"
+    )
+
+
+def _left_out_note(count: int) -> str | None:
+    if not count:
+        return None
+    return (
+        f"{count} person(s) are not shown: they have not agreed, on My privacy, to AI "
+        "tools reading their record."
+    )
 
 
 def _read_only(title: str) -> dict[str, Any]:
@@ -150,7 +180,7 @@ def _dates(arguments: dict[str, Any]) -> tuple[date, date]:
 
 
 async def _search_employees(
-    session: AsyncSession, actor: User, arguments: dict[str, Any]
+    session: AsyncSession, actor: User, arguments: dict[str, Any], *, only_consenting: bool = False
 ) -> dict[str, Any]:
     query = str(arguments.get("query") or "").strip()
     limit = max(1, min(int(arguments.get("limit") or 25), 100))
@@ -176,6 +206,11 @@ async def _search_employees(
             tenant_scoped(stmt.order_by(Employee.first_name).limit(limit), Employee, actor)
         )
     ).all()
+    allowed = await _consenting(session, actor, {p.id for p in people}, only_consenting)
+    left_out = 0
+    if allowed is not None:
+        left_out = sum(1 for p in people if p.id not in allowed)
+        people = [p for p in people if p.id in allowed]
     departments = {
         d.id: d.name
         for d in (await session.scalars(tenant_scoped(select(Department), Department, actor))).all()
@@ -195,7 +230,9 @@ async def _search_employees(
         if manager_ids
         else {}
     )
-    return {
+    if allowed is not None and manager_ids:
+        allowed |= await _consenting(session, actor, manager_ids, True) or set()
+    out: dict[str, Any] = {
         "count": len(people),
         "people": [
             {
@@ -203,17 +240,25 @@ async def _search_employees(
                 "name": _name(p),
                 "title": p.designation,
                 "department": departments.get(p.department_id),
-                "manager": managers.get(p.manager_id),
+                # A manager who has not agreed is not named either.
+                "manager": (
+                    managers.get(p.manager_id)
+                    if allowed is None or p.manager_id in allowed
+                    else None
+                ),
                 "status": p.status.value,
                 "work_email": p.work_email,
             }
             for p in people
         ],
     }
+    if note := _left_out_note(left_out):
+        out["not_shown"] = note
+    return out
 
 
 async def _list_departments(
-    session: AsyncSession, actor: User, arguments: dict[str, Any]
+    session: AsyncSession, actor: User, arguments: dict[str, Any], *, only_consenting: bool = False
 ) -> dict[str, Any]:
     rows = (
         await session.scalars(
@@ -229,7 +274,7 @@ async def _list_departments(
 
 
 async def _list_locations(
-    session: AsyncSession, actor: User, arguments: dict[str, Any]
+    session: AsyncSession, actor: User, arguments: dict[str, Any], *, only_consenting: bool = False
 ) -> dict[str, Any]:
     rows = (
         await session.scalars(
@@ -249,7 +294,7 @@ async def _list_locations(
 
 
 async def _who_is_out(
-    session: AsyncSession, actor: User, arguments: dict[str, Any]
+    session: AsyncSession, actor: User, arguments: dict[str, Any], *, only_consenting: bool = False
 ) -> dict[str, Any]:
     start, end = _dates(arguments)
     rows = (
@@ -269,7 +314,13 @@ async def _who_is_out(
             )
         )
     ).all()
-    return {
+    ids = {person.id for _, person, _ in rows}
+    allowed = await _consenting(session, actor, ids, only_consenting)
+    left_out = 0
+    if allowed is not None:
+        left_out = len({person.id for _, person, _ in rows if person.id not in allowed})
+        rows = [row for row in rows if row[1].id in allowed]
+    out: dict[str, Any] = {
         "from": start.isoformat(),
         "to": end.isoformat(),
         "leave": [
@@ -284,10 +335,13 @@ async def _who_is_out(
             for request, person, kind in rows
         ],
     }
+    if note := _left_out_note(left_out):
+        out["not_shown"] = note
+    return out
 
 
 async def _attendance_summary(
-    session: AsyncSession, actor: User, arguments: dict[str, Any]
+    session: AsyncSession, actor: User, arguments: dict[str, Any], *, only_consenting: bool = False
 ) -> dict[str, Any]:
     start, end = _dates(arguments)
     rows = (
@@ -304,6 +358,11 @@ async def _attendance_summary(
             )
         )
     ).all()
+    allowed = await _consenting(session, actor, {person.id for _, person in rows}, only_consenting)
+    left_out = 0
+    if allowed is not None:
+        left_out = len({person.id for _, person in rows if person.id not in allowed})
+        rows = [row for row in rows if row[1].id in allowed]
     by_person: dict[uuid.UUID, dict[str, Any]] = {}
     for day, person in rows:
         entry = by_person.setdefault(
@@ -323,13 +382,25 @@ async def _attendance_summary(
             entry[kind] += 1
         if (day.late_by_minutes or 0) > 0:
             entry["late"] += 1
-    return {
+    out: dict[str, Any] = {
         "from": start.isoformat(),
         "to": end.isoformat(),
         "days_in_range": (end - start + timedelta(days=1)).days,
         "people": sorted(by_person.values(), key=lambda e: e["employee_code"]),
     }
+    if note := _left_out_note(left_out):
+        out["not_shown"] = note
+    return out
 
+
+#: What each tool's answer carries, for the transfer register.
+_TOOL_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "search_employees": ("identity", "organisational"),
+    "list_departments": ("organisational",),
+    "list_locations": ("organisational",),
+    "who_is_out": ("identity", "leave"),
+    "attendance_summary": ("identity", "attendance"),
+}
 
 _HANDLERS = {
     "search_employees": _search_employees,
@@ -419,8 +490,27 @@ async def handle(
             return _error(request_id, -32602, f"This key does not have {spec['scope']}.")
         if not isinstance(arguments, dict):
             return _error(request_id, -32602, "Tool arguments must be an object.")
+        from app.services.ai import governance
+
+        if not (await governance.get_settings(session, actor)).enabled:
+            return _result(
+                request_id,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "AI features are switched off for this workspace, so an "
+                                "outside AI assistant cannot read it. An admin can switch "
+                                "them on in Settings → AI."
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                },
+            )
         try:
-            output = await _HANDLERS[name](session, actor, arguments)
+            output = await _HANDLERS[name](session, actor, arguments, only_consenting=True)
         except (ToolError, ValueError, TypeError) as exc:
             return _result(
                 request_id,
@@ -437,6 +527,20 @@ async def handle(
             summary=f"MCP tool {name} called by {actor.full_name}",
             ai_context={"tool": name, "arguments": arguments},
         )
+        people = len(output.get("people") or output.get("leave") or [])
+        if people:
+            from app.services.dpdp import service as dpdp_service
+
+            await dpdp_service.record_transfer(
+                session,
+                actor,
+                sub_processor_key="mcp_client",
+                purpose_key="ai_assistance",
+                category_keys=_TOOL_CATEGORIES[name],
+                principal_count=people,
+                description=f"MCP tool {name} answered an outside AI assistant.",
+                commit=False,
+            )
         await session.commit()
         return _result(
             request_id,

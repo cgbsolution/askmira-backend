@@ -73,24 +73,31 @@ async def _rows(
 
 async def my_tasks(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     """Pending clearance items that wait on the caller, oldest exit first."""
-    return [
-        {
-            "item_id": item.id,
-            "exit_id": record.id,
-            "employee_id": employee.id,
-            "employee_name": employee.full_name,
-            "employee_code": employee.employee_code,
-            "photo_url": employee.photo_url,
-            "last_working_day": record.approved_last_working_day
-            or record.requested_last_working_day,
-            "department": item.department,
-            "description": item.description,
-            "is_mandatory": item.is_mandatory,
-            "owner_role": item.owner_role,
-            "created_at": item.created_at,
-        }
-        for item, record, employee in await _rows(session, user)
-    ]
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    return await strip_hidden_photos(
+        session,
+        user,
+        [
+            {
+                "item_id": item.id,
+                "exit_id": record.id,
+                "employee_id": employee.id,
+                "employee_name": employee.full_name,
+                "employee_code": employee.employee_code,
+                "photo_url": employee.photo_url,
+                "last_working_day": record.approved_last_working_day
+                or record.requested_last_working_day,
+                "department": item.department,
+                "description": item.description,
+                "is_mandatory": item.is_mandatory,
+                "owner_role": item.owner_role,
+                "created_at": item.created_at,
+            }
+            for item, record, employee in await _rows(session, user)
+        ],
+        id_field="employee_id",
+    )
 
 
 async def inbox_items(session: AsyncSession, user: User) -> list[dict[str, Any]]:

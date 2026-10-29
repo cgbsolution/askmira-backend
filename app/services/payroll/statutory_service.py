@@ -967,3 +967,36 @@ async def _employee_state(
     return await session.scalar(
         tenant_scoped(select(Location.state_code).where(Location.id == location_id), Location, user)
     )
+
+
+async def record_register_export(
+    session: AsyncSession,
+    user: User,
+    rendered: register_formats.RenderedRegister,
+    *,
+    run_id: uuid.UUID | None,
+    financial_year: str | None,
+    request: Request | None = None,
+) -> None:
+    """Audit a statutory register leaving as a file: names and wages, in bulk.
+
+    Like every other bulk download, the audit row is written before the file
+    is returned — "who took a copy of the wage register" must be answerable.
+    """
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.EXPORT,
+        entity_type="statutory_register",
+        actor=user,
+        changes={
+            "register": rendered.spec.code,
+            "rows": rendered.row_count,
+            "run_id": str(run_id) if run_id else None,
+            "financial_year": financial_year,
+            "format": "csv",
+        },
+        summary=f"{rendered.spec.title} downloaded as CSV ({rendered.row_count} rows)",
+        request=request,
+    )
+    await session.commit()

@@ -33,6 +33,7 @@ from app.schemas.employee_profile import (
 from app.services import custom_tables, employee_timeline
 from app.services import employee as employee_service
 from app.services import employee_profile as profile_service
+from app.services.dpdp.gates import strip_hidden_photos
 from app.services.employee_import import service as import_service
 from app.services.employee_import.sheet import MAX_BYTES as IMPORT_MAX_BYTES
 from app.services.employee_profile import PHOTO_MAX_BYTES
@@ -76,8 +77,10 @@ async def list_employees(
         offset=(page - 1) * page_size,
         limit=page_size,
     )
+    items = [EmployeeSummary.model_validate(row) for row in rows]
+    await strip_hidden_photos(session, user, items)
     return Page[EmployeeSummary](
-        items=[EmployeeSummary.model_validate(row) for row in rows],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,

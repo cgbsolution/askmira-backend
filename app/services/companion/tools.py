@@ -8,8 +8,12 @@ against the same list.
 
 Every tool runs here, as the person, through code that already enforces their
 access — the MCP gateway's read tools, the policy assistant, the report
-compiler. Each returns cards for the screen. Nothing a tool returns is given to
-the model.
+compiler, payroll's payslips. Each returns cards for the screen; the model
+reads a trimmed view of the same cards (views.py), within the DPDP categories
+the tool declares in `reads`.
+
+An action tool (`kind="action"`) never changes anything itself: it checks what
+the module would check and saves an offer the person confirms (actions.py).
 
 A tool that reads a linked product (AnytimeHire, ExpenseGenie, CGB Helpdesk) is offered only
 when the workspace has that product linked and the person has a role in it;
@@ -18,7 +22,8 @@ it asks the product as them (product_tools.py).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any
 
@@ -30,7 +35,13 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import mcp, oauth
 from app.services.ai import analytics, assistant, governance
-from app.services.companion import hr_tools, people_tools, product_tools
+from app.services.companion import (
+    actions,
+    analysis_tools,
+    hr_tools,
+    people_tools,
+    product_tools,
+)
 from app.services.companion.config import CompanionConfig, group_on
 from app.services.products import data as products_data
 from app.services.products.catalogue import PRODUCTS
@@ -39,7 +50,7 @@ _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
 _HELPDESK = PRODUCTS["helpdesk"].brand
 
-__all__ = ["INPUTS", "TOOLS", "Tool", "offered", "run"]
+__all__ = ["INPUTS", "TOOLS", "Tool", "coerce", "offered", "run", "tool_schema"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +73,12 @@ class Tool:
     #: About other people or the company: admins and sub-admins only. Everybody
     #: else is answered about their own record and nothing more.
     hr_only: bool = False
+    #: The DPDP categories the model reads in this tool's result (views.py).
+    reads: tuple[str, ...] = ("organisational",)
+    #: "read" looks something up; "action" offers to do something, on the person's say.
+    kind: str = "read"
+    #: Needs a model to hold the conversation: never offered without AI.
+    needs_ai: bool = False
 
 
 TOOLS: dict[str, Tool] = {
@@ -370,6 +387,163 @@ TOOLS: dict[str, Tool] = {
             inputs=("scope", "status", "query"),
         ),
         Tool(
+            key="payroll_trend",
+            hr_only=True,
+            group="payroll_figures",
+            title="Payroll cost trend",
+            description=(
+                "For admins and sub-admins who may view payroll: payroll cost month by month - "
+                "cost to company, gross, net pay and people paid - with the change each month, "
+                "from the payslips of every run. Set `from` and `to` to the months asked about "
+                "(both empty: the twelve months up to the latest payroll). Set `group` to split "
+                "the cost by department, entity (company) or location, else none. Use it for "
+                "any trend, comparison or 'why did payroll go up' question."
+            ),
+            inputs=("from", "to", "group"),
+            reads=("compensation", "organisational"),
+        ),
+        Tool(
+            key="headcount_trend",
+            hr_only=True,
+            group="person_records",
+            title="Headcount trend",
+            description=(
+                "For admins and sub-admins: headcount at each month's end, who joined, who "
+                "left and the attrition rate, month by month. Set `from` and `to` (both "
+                "empty: the last twelve months)."
+            ),
+            inputs=("from", "to"),
+            reads=("organisational",),
+        ),
+        Tool(
+            key="account_pnl",
+            hr_only=True,
+            group="payroll_figures",
+            title="Account P&L",
+            description=(
+                "For admins and sub-admins who may view payroll: a client account's P&L - what "
+                "was billed against the people cost mapped to it (payroll cost shared by each "
+                "person's account mapping) and its other direct costs, month by month, with "
+                "the margin and the people on it. Put the account's name or code in `query`; "
+                "leave it empty for every account side by side and the payroll cost on no "
+                "account. Set `from` and `to` (empty: this financial year so far)."
+            ),
+            inputs=("query", "from", "to"),
+            reads=("compensation", "identity", "organisational"),
+        ),
+        Tool(
+            key="apply_leave",
+            group="actions_leave",
+            title="Leave request",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Prepares a leave request for the asker: checks the leave type, the days "
+                "counted (weekly offs and holidays left out), the balance before and after, "
+                "overlaps and notice rules, and who approves it, then shows the person an offer "
+                "to send it. It does not apply anything: the person confirms. Set `leave_type` "
+                "(the name or code; empty shows their balances to choose from), `from` and `to` "
+                "(the same day for one day), `half_day` and `half_day_session` for a half day, "
+                "and `reason` if they gave one."
+            ),
+            inputs=("leave_type", "from", "to", "half_day", "half_day_session", "reason"),
+            reads=("leave", "identity"),
+        ),
+        Tool(
+            key="cancel_leave",
+            group="actions_leave",
+            title="Withdraw leave",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Finds the asker's own pending or approved leave on the day in `from` and offers "
+                "to withdraw it. The person confirms."
+            ),
+            inputs=("from",),
+            reads=("leave",),
+        ),
+        Tool(
+            key="request_attendance_change",
+            group="actions_attendance",
+            title="Attendance request",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Prepares an attendance request for the asker for one day (`from`): a missed "
+                "punch (`in_time` and/or `out_time`, like 09:30), a correction of the day's "
+                "status (`attendance_status`), on duty, or work from home (`attendance_kind`). "
+                "`reason` is required: ask for it if they have not given one. The person "
+                "confirms. Time off is leave, not this."
+            ),
+            inputs=(
+                "from",
+                "attendance_kind",
+                "attendance_status",
+                "in_time",
+                "out_time",
+                "reason",
+            ),
+            reads=("attendance",),
+        ),
+        Tool(
+            key="decide_approvals",
+            group="actions_approvals",
+            title="Decide requests",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Offers to approve or reject requests waiting on the asker: leave, comp-off, "
+                "attendance corrections, timesheets, shift swaps, overtime, expense and travel "
+                "claims, asset requests. Look them up with my_approvals first and put their "
+                "refs in `refs` (comma separated), `decision` approve or reject, and `note` if "
+                "the person gave one. Payroll, loans, settlements and hiring are decided in "
+                "the portal. The person confirms."
+            ),
+            inputs=("refs", "decision", "note"),
+            reads=("identity", "leave", "attendance"),
+        ),
+        Tool(
+            key="raise_hr_ticket",
+            group="actions_helpdesk",
+            title="HR ticket",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Prepares an HR helpdesk ticket for the asker (a salary query, a letter, a "
+                "question for HR, a grievance): `category` (empty lists them), `subject` and "
+                "`description` in the person's words. The person confirms."
+            ),
+            inputs=("category", "subject", "description"),
+            reads=("ai_interaction",),
+        ),
+        Tool(
+            key="confirm_action",
+            group="actions",
+            title="Done",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Carries out an offer you made earlier in this conversation, when the person's "
+                "latest message is a plain yes to it. Put the offer's id in `action_id`. Never "
+                "use it in the same turn as the offer, and never when they asked for a change: "
+                "make a new offer instead."
+            ),
+            inputs=("action_id",),
+            reads=("leave", "attendance", "identity"),
+        ),
+        Tool(
+            key="cancel_action",
+            group="actions",
+            title="Cancelled",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "Withdraws an offer you made in this conversation when the person says no or "
+                "changes their mind. Put its id in `action_id`."
+            ),
+            inputs=("action_id",),
+        ),
+        Tool(
             key="product_connections",
             group="products",
             title="Linked products",
@@ -409,7 +583,88 @@ INPUTS: dict[str, dict[str, Any]] = {
     "status": {"type": "string", "enum": list(product_tools.STATUS_CHOICES)},
     "scope": {"type": "string", "enum": ["none", *product_tools.SCOPES]},
     "kind": {"type": "string", "enum": list(hr_tools.KINDS)},
+    "group": {"type": "string", "enum": list(analysis_tools.GROUPS)},
+    "leave_type": {"type": "string", "description": "A leave type's name or code, or empty."},
+    "half_day": {"type": "boolean"},
+    "half_day_session": {"type": "string", "enum": ["none", "first_half", "second_half"]},
+    "reason": {"type": "string", "description": "In the person's own words, or empty."},
+    "attendance_kind": {
+        "type": "string",
+        "enum": ["none", "missed_punch", "status_change", "on_duty", "work_from_home"],
+    },
+    "attendance_status": {"type": "string", "enum": ["present", "half_day", "absent", "lop"]},
+    "in_time": {"type": "string", "description": "HH:MM, or empty."},
+    "out_time": {"type": "string", "description": "HH:MM, or empty."},
+    "refs": {"type": "string", "description": "Refs from my_approvals, comma separated."},
+    "decision": {"type": "string", "enum": ["none", "approve", "reject"]},
+    "note": {"type": "string", "description": "A note for the requester, or empty."},
+    "category": {"type": "string", "description": "A helpdesk category's name, or empty."},
+    "subject": {"type": "string"},
+    "description": {"type": "string"},
+    "action_id": {"type": "string", "description": "An offer's id, from earlier in this chat."},
 }
+
+#: What each existing lookup lets the model read (views.py strips the rest).
+_READS: dict[str, tuple[str, ...]] = {
+    "my_record": ("identity", "compensation", "leave", "attendance", "organisational"),
+    "search_people": ("identity", "organisational"),
+    "who_is_out": ("identity", "leave"),
+    "attendance_summary": ("identity", "attendance"),
+    "report_question": ("identity", "organisational"),
+    "employee_record": ("identity", "compensation", "leave", "attendance", "organisational"),
+    "my_approvals": ("identity", "leave", "attendance", "organisational"),
+    "payroll_summary": ("compensation", "organisational"),
+    "salary_totals": ("compensation", "organisational"),
+    "people_changes": ("identity", "organisational"),
+    "people_dates": ("identity", "organisational"),
+    "hr_tickets": ("identity", "organisational"),
+    "hiring_overview": ("recruitment",),
+    "hiring_jobs": ("recruitment",),
+    "hiring_candidates": ("recruitment",),
+    "hiring_interviews": ("recruitment",),
+    "expense_claims": ("compensation", "identity"),
+    "expense_summary": ("compensation",),
+    "helpdesk_tickets": ("identity", "organisational"),
+    "helpdesk_overview": ("organisational",),
+    "helpdesk_assets": ("identity", "organisational"),
+}
+TOOLS = {key: replace(tool, reads=_READS.get(key, tool.reads)) for key, tool in TOOLS.items()}
+
+#: Inputs the model never fills: a pick from a list carries them.
+_PICK_ONLY = frozenset({"employee_id"})
+
+
+def tool_schema(tool: Tool) -> dict[str, Any]:
+    """The tool as the model is shown it: name, what it does, and only the inputs it reads."""
+    names = [name for name in tool.inputs if name not in _PICK_ONLY]
+    return {
+        "name": tool.key,
+        "description": tool.description,
+        "input_schema": {
+            "type": "object",
+            "properties": {name: INPUTS[name] for name in names},
+            "required": [],
+            "additionalProperties": False,
+        },
+    }
+
+
+def coerce(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
+    """The model's inputs, kept to what the tool reads and to each input's type and choices."""
+    out: dict[str, Any] = {}
+    for name in tool.inputs:
+        if name in _PICK_ONLY:
+            continue
+        spec = INPUTS[name]
+        value = raw.get(name)
+        if spec.get("type") == "boolean":
+            out[name] = value is True or str(value).lower() == "true"
+            continue
+        text = "" if value is None else str(value).strip()[:2000]
+        if "enum" in spec and text not in spec["enum"]:
+            text = "none" if "none" in spec["enum"] else spec["enum"][0]
+        out[name] = text
+    return out
 
 
 def _launchable(user: User, linked: dict[str, bool]) -> list[str]:
@@ -445,7 +700,12 @@ async def offered(
             continue
         if tool.key == "open_product" and not launchable:
             continue
+        if tool.needs_ai and not ai:
+            continue
         out.append(tool)
+    # Confirming and withdrawing offers come with any action that makes them.
+    if not any(t.kind == "action" and t.group != "actions" for t in out):
+        out = [t for t in out if t.group != "actions"]
     return out
 
 
@@ -474,10 +734,20 @@ def _range(inputs: dict[str, Any], today: date) -> dict[str, str]:
 
 
 async def run(
-    session: AsyncSession, user: User, tool: Tool, inputs: dict[str, Any], *, today: date
+    session: AsyncSession,
+    user: User,
+    tool: Tool,
+    inputs: dict[str, Any],
+    *,
+    today: date,
+    ctx: actions.ToolContext | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run one tool as `user`. Returns the cards and the inputs it actually used."""
     try:
+        if tool.kind == "action":
+            if ctx is None:
+                return [_notice("That can only be done in a conversation.")], {}
+            return await _act(session, user, tool, inputs, ctx)
         return await _run(session, user, tool, inputs, today=today)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "That could not be done."
@@ -530,6 +800,15 @@ async def _run(
 
     if tool.key == "employee_record":
         return await people_tools.person_record(session, user, inputs, today=today)
+
+    if tool.key == "payroll_trend":
+        return await analysis_tools.payroll_trend(session, user, inputs, today=today)
+
+    if tool.key == "headcount_trend":
+        return await analysis_tools.headcount_trend(session, user, inputs, today=today)
+
+    if tool.key == "account_pnl":
+        return await analysis_tools.account_pnl(session, user, inputs, today=today)
 
     if tool.key == "headcount":
         return await people_tools.headcount(session, user, today=today)
@@ -644,4 +923,55 @@ async def _run(
             {"type": "launch", "product": product, "name": name, "href": f"/launch/{product}"}
         ], {"product": product}
 
+    return [_notice("That is not something I can do here.")], {}
+
+
+async def _act(
+    session: AsyncSession,
+    user: User,
+    tool: Tool,
+    inputs: dict[str, Any],
+    ctx: actions.ToolContext,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """An action tool: an offer to make, or one to carry out or withdraw."""
+    if tool.key == "apply_leave":
+        return await actions.propose_leave(session, user, inputs, ctx)
+    if tool.key == "cancel_leave":
+        return await actions.propose_leave_cancel(session, user, inputs, ctx)
+    if tool.key == "request_attendance_change":
+        return await actions.propose_regularisation(session, user, inputs, ctx)
+    if tool.key == "decide_approvals":
+        return await actions.propose_decision(session, user, inputs, ctx)
+    if tool.key == "raise_hr_ticket":
+        return await actions.propose_hr_ticket(session, user, inputs, ctx)
+    if tool.key in ("confirm_action", "cancel_action"):
+        try:
+            action_id = uuid.UUID(str(inputs.get("action_id") or "").strip())
+        except ValueError:
+            return [_notice("Which offer? Its id is on the offer card.")], {}
+        used = {"action_id": str(action_id)}
+        if tool.key == "cancel_action":
+            row = await actions.cancel(
+                session,
+                user,
+                action_id,
+                owner_id=user.id,
+                via="message",
+                request=ctx.request,
+                conversation_id=ctx.conversation_id,
+            )
+        else:
+            # The person's message and anything offered before it are saved
+            # first: carrying out an offer commits, and a failure rolls back.
+            await session.commit()
+            row = await actions.confirm(
+                session,
+                user,
+                action_id,
+                owner_id=user.id,
+                via="message",
+                request=ctx.request,
+                ctx=ctx,
+            )
+        return [actions.card_for(row)], used
     return [_notice("That is not something I can do here.")], {}

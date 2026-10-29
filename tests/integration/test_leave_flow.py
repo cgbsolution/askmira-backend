@@ -421,23 +421,131 @@ async def test_the_approver_sees_the_requesters_balance(session: AsyncSession, o
     assert balance.after_approval == Decimal(19)
 
 
-async def test_unpaid_leave_reaches_the_approver_without_a_balance(
-    session: AsyncSession, org
-) -> None:
+async def _lwp(session: AsyncSession, org, *, with_policy: bool) -> LeaveType:
     unpaid = LeaveType(
         tenant_id=org["tenant"].id, name="Leave Without Pay", code="LWP", is_paid=False
     )
     session.add(unpaid)
+    await session.flush()
+    if with_policy:
+        session.add(
+            LeavePolicy(
+                tenant_id=org["tenant"].id,
+                leave_type_id=unpaid.id,
+                name="Leave without pay - everyone",
+                annual_quota_days=Decimal(0),
+                accrual_frequency="annual",
+                effective_from=date(2020, 1, 1),
+            )
+        )
     await session.commit()
-    created = await leave_service.apply(
+    return unpaid
+
+
+def _one_day(leave_type: LeaveType) -> LeaveRequestCreate:
+    return LeaveRequestCreate(
+        leave_type_id=leave_type.id, start_date=START, end_date=START, reason="Personal"
+    )
+
+
+async def test_unpaid_leave_needs_a_balance_like_any_other(session: AsyncSession, org) -> None:
+    """Leave is applied only against a balance. Unpaid leave with no days given
+    is refused; once HR credits days it goes through, and the approver sees them."""
+    from app.schemas.leave import BalanceAdjustmentCreate
+    from app.services.leave import ledger
+
+    unpaid = await _lwp(session, org, with_policy=True)
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.apply(session, org["meera"], _one_day(unpaid))
+    assert refused.value.status_code == 422
+    assert "No balance is available" in refused.value.detail
+    preview = await leave_service.preview(session, org["meera"], _one_day(unpaid))
+    assert not preview.allowed and preview.available_before == Decimal(0)
+
+    await ledger.adjust(
         session,
-        org["meera"],
-        LeaveRequestCreate(
-            leave_type_id=unpaid.id, start_date=START, end_date=START, reason="Personal"
+        org["hr"],
+        BalanceAdjustmentCreate(
+            employee_id=org["meera_emp"].id,
+            leave_type_id=unpaid.id,
+            year=START.year,
+            kind="credit",
+            days=Decimal(2),
+            reason="Agreed unpaid break",
+        ),
+    )
+    created = await leave_service.apply(session, org["meera"], _one_day(unpaid))
+    inbox = await leave_service.approvals_inbox(session, org["boss"])
+    assert [r.id for r in inbox] == [created.id]
+    assert inbox[0].balance is not None
+    assert (inbox[0].balance.available, inbox[0].balance.after_approval) == (2, 1)
+
+
+async def test_unpaid_leave_with_no_policy_is_refused(session: AsyncSession, org) -> None:
+    unpaid = await _lwp(session, org, with_policy=False)
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.apply(session, org["meera"], _one_day(unpaid))
+    assert "No leave policy" in refused.value.detail
+
+
+async def test_a_negative_balance_policy_no_longer_lets_the_balance_go_below_zero(
+    session: AsyncSession, org
+) -> None:
+    policy = await session.scalar(
+        select(LeavePolicy).where(LeavePolicy.leave_type_id == org["earned"].id)
+    )
+    assert policy is not None
+    policy.allows_negative_balance = True
+    await session.commit()
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.apply(
+            session, org["meera"], _payload(org, end=START + timedelta(days=40))
+        )
+    assert "24 days available" in refused.value.detail
+
+
+async def test_hr_on_behalf_is_held_to_the_same_balance(session: AsyncSession, org) -> None:
+    unpaid = await _lwp(session, org, with_policy=True)
+    payload = _one_day(unpaid)
+    payload.employee_id = org["meera_emp"].id
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.apply(session, org["hr"], payload)
+    assert "No balance is available" in refused.value.detail
+
+
+async def test_approval_is_refused_once_the_balance_is_gone(session: AsyncSession, org) -> None:
+    from app.schemas.leave import BalanceAdjustmentCreate
+    from app.services.leave import ledger
+
+    created = await leave_service.apply(session, org["meera"], _payload(org))  # 5 of 24
+    await ledger.adjust(
+        session,
+        org["hr"],
+        BalanceAdjustmentCreate(
+            employee_id=org["meera_emp"].id,
+            leave_type_id=org["earned"].id,
+            year=START.year,
+            kind="debit",
+            days=Decimal(22),
+            reason="Leave taken before AskMira",
         ),
     )
     inbox = await leave_service.approvals_inbox(session, org["boss"])
-    assert [(r.id, r.balance) for r in inbox] == [(created.id, None)]
+    assert inbox[0].balance is not None and inbox[0].balance.after_approval == Decimal(-3)
+
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.decide(session, org["boss"], created.id, approve=True, note=None)
+    assert refused.value.status_code == 422
+    assert "Meera Nair has 2 day(s) of Earned Leave available" in refused.value.detail
+
+    # Nothing moved: still pending, nothing taken from the ledger.
+    assert (await _ledger(session, org, START.year)).used == 0
+    still = await session.get(LeaveRequest, created.id)
+    assert still is not None and still.status is LeaveRequestStatus.PENDING
+    declined = await leave_service.decide(
+        session, org["boss"], created.id, approve=False, note="Not enough balance left"
+    )
+    assert declined.status is LeaveRequestStatus.REJECTED
 
 
 async def test_team_balances_follow_the_reporting_line(session: AsyncSession, org) -> None:

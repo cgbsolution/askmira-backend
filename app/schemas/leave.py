@@ -77,7 +77,6 @@ class LeavePolicyCreate(BaseModel):
     max_carry_forward_days: Decimal = Field(default=Decimal(0), ge=0, le=366, decimal_places=2)
     max_consecutive_days: int | None = Field(default=None, ge=1, le=366)
     min_notice_days: int = Field(default=0, ge=0, le=365)
-    allows_negative_balance: bool = False
     sandwich_weekends_holidays: bool = False
     effective_from: date
 
@@ -100,7 +99,6 @@ class LeavePolicyUpdate(BaseModel):
     #: Sent as null to remove the limit; left out to keep it.
     max_consecutive_days: int | None = Field(default=None, ge=1, le=366)
     min_notice_days: int | None = Field(default=None, ge=0, le=365)
-    allows_negative_balance: bool | None = None
     sandwich_weekends_holidays: bool | None = None
 
 
@@ -118,7 +116,6 @@ class LeavePolicyRead(BaseModel):
     max_carry_forward_days: Decimal
     max_consecutive_days: int | None
     min_notice_days: int
-    allows_negative_balance: bool
     sandwich_weekends_holidays: bool
     effective_from: date
     effective_to: date | None
@@ -275,7 +272,7 @@ class LeaveRequestRead(BaseModel):
     can_decide: bool = False
     #: True when the caller may cancel it.
     can_cancel: bool = False
-    #: In the approvals inbox only, for a paid type with a balance to draw on.
+    #: In the approvals inbox only: what the approval would be checked against.
     balance: RequestBalanceRead | None = None
 
 

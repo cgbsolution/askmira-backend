@@ -95,19 +95,21 @@ CAPABILITIES: frozenset[str] = frozenset(
         "culture_sentiment_analysis",
         "ai_companion_queries",
         "ai_context_retrieval",
-        "wellness_programme_enrolment",
-        "wellness_nudges",
-        "marketing_email",
-        "marketing_whatsapp",
-        "product_research_invitations",
         "talent_pool_retention",
         "talent_pool_outreach",
+        "ai_resume_screening",
         "background_check_initiation",
         "photo_in_directory",
         "birthday_announcements",
+        "work_anniversary_announcements",
         "reference_contact",
     }
 )
+
+#: Who is asked about a purpose. An employee's My privacy screen lists only the
+#: employee purposes; candidate purposes are asked and withdrawn on the careers
+#: portal, where the candidate is, and stored with the candidate record.
+AUDIENCES: frozenset[str] = frozenset({"employee", "candidate"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,15 @@ class Purpose:
     #: to v1 has not consented to v2, and the state machine says so rather than
     #: quietly carrying the old tick forward.
     version: int = 1
+    #: "employee" or "candidate" — see `AUDIENCES`.
+    audience: str = "employee"
+    #: What a withdrawal deletes, in plain words. DPDP s.8(7)(a): data held only
+    #: because of a consent is erased when that consent goes. The service does
+    #: the deleting (`dpdp.service.withdraw_consent`); this is what the person
+    #: is told before they confirm.
+    withdrawal_erases: tuple[str, ...] = ()
+    #: What a withdrawal does not delete, and why. The honest half.
+    withdrawal_keeps: tuple[str, ...] = ()
 
     @property
     def requires_consent(self) -> bool:
@@ -164,6 +175,9 @@ class Purpose:
             "stops_if_withdrawn": list(self.stops),
             "sub_processors": list(self.sub_processors),
             "version": self.version,
+            "audience": self.audience,
+            "withdrawal_erases": list(self.withdrawal_erases),
+            "withdrawal_keeps": list(self.withdrawal_keeps),
         }
 
 
@@ -289,6 +303,7 @@ PURPOSES: dict[str, Purpose] = {
             ),
             lawful_basis=LawfulBasis.LEGITIMATE_USE,
             data_categories=("recruitment", "identity"),
+            audience="candidate",
         ),
         _p(
             key="dpdp_compliance",
@@ -309,7 +324,7 @@ PURPOSES: dict[str, Purpose] = {
             name="Culture and engagement surveys",
             description=(
                 "Inviting you to pulse surveys and analysing the answers — "
-                "including reading the free text for sentiment — to produce team "
+                "including reading the free text for themes — to produce team "
                 "and company culture measures. Your individual answers are only "
                 "released as part of a group large enough to keep them anonymous."
             ),
@@ -317,6 +332,12 @@ PURPOSES: dict[str, Purpose] = {
             data_categories=("culture_response",),
             stops=("culture_survey_invitations", "culture_sentiment_analysis"),
             sub_processors=("anthropic",),
+            withdrawal_erases=("Survey invitations you have not answered yet",),
+            withdrawal_keeps=(
+                "Answers you already gave. They were stored without your name, so they "
+                "cannot be traced back to you or picked out to delete; they count only "
+                "in group results.",
+            ),
         ),
         _p(
             key="ai_assistance",
@@ -325,38 +346,21 @@ PURPOSES: dict[str, Purpose] = {
                 "Answering your questions and drafting for you using an AI model. "
                 "To do that, the parts of your record relevant to your question "
                 "are sent to our AI provider, which processes them outside India. "
-                "Declining means the assistant will not answer questions about you."
+                "Declining means the assistant will not answer questions about you, "
+                "and nothing about you is sent to an AI tool your HR team connects."
             ),
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("ai_interaction",),
             stops=("ai_companion_queries", "ai_context_retrieval"),
             sub_processors=("anthropic",),
-        ),
-        _p(
-            key="wellness",
-            name="Wellness programme",
-            description=(
-                "Enrolling you in your employer's wellness programme and sending "
-                "you nudges about it. Entirely optional, and declining has no "
-                "effect on anything else."
+            withdrawal_erases=(
+                "Your Ask Mira conversations",
+                "Feedback you gave on AI answers",
+                "The questions and answers kept in the AI call log",
             ),
-            lawful_basis=LawfulBasis.CONSENT,
-            data_categories=("health", "communication"),
-            stops=("wellness_programme_enrolment", "wellness_nudges"),
-        ),
-        _p(
-            key="marketing_communication",
-            name="Product news from AskMira",
-            description=(
-                "Sending you news about AskMira itself — new features, webinars, "
-                "research invitations. Nothing to do with your employment."
-            ),
-            lawful_basis=LawfulBasis.CONSENT,
-            data_categories=("identity", "communication"),
-            stops=(
-                "marketing_email",
-                "marketing_whatsapp",
-                "product_research_invitations",
+            withdrawal_keeps=(
+                "A line for each past AI call (when, which feature, which model), with "
+                "the text removed — the record your employer keeps of AI use.",
             ),
         ),
         _p(
@@ -370,6 +374,23 @@ PURPOSES: dict[str, Purpose] = {
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("recruitment",),
             stops=("talent_pool_retention", "talent_pool_outreach"),
+            audience="candidate",
+            withdrawal_erases=("Your place in the talent pool",),
+        ),
+        _p(
+            key="ai_screening",
+            name="AI help reading your résumé",
+            description=(
+                "Letting an AI model help the recruiter compare your résumé with the "
+                "role. Your name, email and phone are removed first, and the model "
+                "runs outside India. A person reads the result and makes every decision."
+            ),
+            lawful_basis=LawfulBasis.CONSENT,
+            data_categories=("recruitment",),
+            stops=("ai_resume_screening",),
+            sub_processors=("anthropic",),
+            audience="candidate",
+            withdrawal_erases=("AI summaries of your résumé",),
         ),
         _p(
             key="background_verification",
@@ -382,18 +403,36 @@ PURPOSES: dict[str, Purpose] = {
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("background_check", "identity", "statutory_identifier"),
             stops=("background_check_initiation", "reference_contact"),
+            audience="candidate",
+            withdrawal_erases=("Checks that have not finished are cancelled",),
         ),
         _p(
             key="directory_visibility",
             name="Your photo in the company directory",
             description=(
-                "Showing your photograph and birthday to colleagues in the "
-                "directory. Your name and role appear either way; this is about "
-                "the picture and the announcement."
+                "Showing your photograph to colleagues in the directory, the org "
+                "chart and search. Your name and role appear either way, and HR "
+                "still sees the photo on your record."
             ),
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("identity",),
-            stops=("photo_in_directory", "birthday_announcements"),
+            stops=("photo_in_directory",),
+            withdrawal_keeps=(
+                "The photo itself stays on your HR record, where only you and HR see "
+                "it. Remove it from your profile if you want it gone.",
+            ),
+        ),
+        _p(
+            key="celebrations",
+            name="Birthday and work-anniversary announcements",
+            description=(
+                "Announcing your birthday (day and month, never the year) and your "
+                "work anniversary to colleagues on the home page and in the "
+                "celebrations calendar."
+            ),
+            lawful_basis=LawfulBasis.CONSENT,
+            data_categories=("identity",),
+            stops=("birthday_announcements", "work_anniversary_announcements"),
         ),
     )
 }
@@ -412,13 +451,22 @@ def purpose_keys() -> frozenset[str]:
     return frozenset(PURPOSES)
 
 
-def consent_purposes() -> tuple[Purpose, ...]:
+def consent_purposes(audience: str | None = None) -> tuple[Purpose, ...]:
     """The purposes a person is actually asked about.
 
     Everything else is disclosed in the notice and not offered as a choice,
     which is the honest presentation of a basis that is not consent.
     """
-    return tuple(p for p in PURPOSES.values() if p.requires_consent)
+    return tuple(
+        p
+        for p in PURPOSES.values()
+        if p.requires_consent and (audience is None or p.audience == audience)
+    )
+
+
+def employee_purpose_keys() -> tuple[str, ...]:
+    """Every purpose an employee's own privacy screen shows: theirs, not a candidate's."""
+    return tuple(key for key, p in PURPOSES.items() if p.audience == "employee")
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,6 +679,8 @@ class WithdrawalEffect:
     #: What does not stop, and why. The honest half.
     retained: tuple[str, ...]
     summary: str
+    #: What the withdrawal deletes.
+    erased: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -638,6 +688,7 @@ class WithdrawalEffect:
             "name": self.purpose_name,
             "stops": list(self.stops),
             "retained": list(self.retained),
+            "erased": list(self.erased),
             "summary": self.summary,
         }
 
@@ -653,20 +704,13 @@ def withdrawal_effect(purpose_key: str) -> WithdrawalEffect:
             "button here would promise something we cannot do."
         )
 
-    # Data already collected under a consent that was valid at the time is not
-    # deleted by a withdrawal. Withdrawal is prospective; erasure is a separate
-    # right with its own workflow and its own statutory reconciliation, and
-    # conflating them would either delete records we must keep or leave a person
-    # thinking their data is gone when it is not.
-    retained = tuple(
-        f"{category_key} already collected, until its retention period ends"
-        for category_key in spec.data_categories
-    )
-    summary = (
-        f"{spec.name} stops immediately. What was already collected is kept for "
-        "its stated retention period — withdrawing consent stops future "
-        "processing, and deleting what is held is a separate request you can "
-        "also make."
+    # DPDP s.8(7)(a): what was held only because of this consent is erased when
+    # it goes. What was held on another basis too — the photo on an HR record,
+    # an AI call's log line — is named, with why it stays.
+    erased = spec.withdrawal_erases
+    retained = spec.withdrawal_keeps
+    summary = f"{spec.name} has stopped." + (
+        " What was held only for it has been deleted." if erased else ""
     )
     return WithdrawalEffect(
         purpose_key=spec.key,
@@ -674,4 +718,5 @@ def withdrawal_effect(purpose_key: str) -> WithdrawalEffect:
         stops=spec.stops,
         retained=retained,
         summary=summary,
+        erased=erased,
     )

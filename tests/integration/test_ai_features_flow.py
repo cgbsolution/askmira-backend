@@ -38,6 +38,7 @@ from app.models.dpdp import (
 from app.models.employee import Employee, EmploymentStatus
 from app.models.grounding import AgentInvocation, InvocationOutcome
 from app.models.hiring import Candidate, Requisition, RequisitionStatus
+from app.models.jobboard import CandidateConsent, ConsentPurpose
 from app.models.leave import Holiday
 from app.models.lifecycle import (
     LifecycleEvent,
@@ -570,6 +571,25 @@ async def test_a_resume_is_read_without_the_candidates_identity_and_evidence_is_
         },
     )
     session.add(candidate)
+    await session.commit()
+
+    # The résumé goes to a model outside India only for a candidate who ticked
+    # the optional AI box when applying.
+    with pytest.raises(HTTPException) as refused:
+        await hiring.screen_candidate(session, hr_user, candidate.id)
+    assert refused.value.status_code == 409
+    assert "not agreed to AI" in refused.value.detail
+    session.add(
+        CandidateConsent(
+            tenant_id=tenant.id,
+            candidate_id=candidate.id,
+            purpose=ConsentPurpose.AI_SCREENING,
+            granted=True,
+            notice_text="AI help reading my résumé",
+            notice_version="1",
+            recorded_at=datetime.now(UTC),
+        )
+    )
     await session.commit()
 
     model = FakeModel(

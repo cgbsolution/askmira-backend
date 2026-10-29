@@ -416,6 +416,11 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "gender": None,
         "custom_fields": {},
     }
+    from app.services.dpdp.gates import hidden_photo_ids
+
+    if await hidden_photo_ids(session, user, [employee.id]):
+        # A colleague sees the photo only if its owner agreed on My privacy.
+        hidden["photo_url"] = None
     if await permissions.is_line_manager_of(session, user, employee.id):
         hidden["in_your_line"] = True
     else:
@@ -509,7 +514,9 @@ async def update_employee(
     changes = payload.model_dump(exclude_unset=True)
     effective = changes.pop("changes_effective_from", None)
     if effective is not None:
-        if effective > datetime.now(UTC).date():
+        from app.services.attendance.service import local_today
+
+        if effective > await local_today(session, user):
             raise _unprocessable(
                 "A change dated in the future is raised as a lifecycle event (promotion, "
                 "transfer…), so it is approved and takes effect on its day."
@@ -559,10 +566,21 @@ async def update_employee(
             request=request,
         )
     # A job field changed here is still a lifecycle change: filed as an
-    # effected event so the history and the as-of view include it.
+    # effected event so the history and the as-of view include it. Dated in
+    # the workspace's own day, not the server's UTC one: for a company change
+    # that date decides which company pays the month.
+    from app.services.attendance.service import local_today
     from app.services.lifecycle import service as lifecycle
+    from app.services.payroll import companies
 
-    lifecycle.record_direct_edit(session, user, employee, changes, on=effective)
+    on = effective or await local_today(session, user)
+    if (
+        "legal_entity_id" in changes
+        and changes["legal_entity_id"] is not None
+        and changes["legal_entity_id"] != employee.legal_entity_id
+    ):
+        await companies.check_no_later_change(session, user, employee.id, on)
+    lifecycle.record_direct_edit(session, user, employee, changes, on=on)
     for key, value in changes.items():
         setattr(employee, key, value)
 
@@ -699,6 +717,9 @@ async def celebrations(session: AsyncSession, user: User, *, days: int) -> Celeb
             )
         )
     items.sort(key=lambda item: (item.on_date, item.name))
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    await strip_hidden_photos(session, user, items, id_field="employee_id")
     return CelebrationsRead(
         from_date=today,
         to_date=until,
@@ -754,7 +775,12 @@ async def move_to_legal_entity(
         ).all()
     }
 
+    from app.services.attendance.service import local_today
+    from app.services.exit_workflow.last_days import agreed_last_days
     from app.services.lifecycle import service as lifecycle
+
+    today = await local_today(session, user)
+    last_days = await agreed_last_days(session, user, set(found))
 
     moved = 0
     already = 0
@@ -766,15 +792,21 @@ async def move_to_legal_entity(
                 EntityMoveSkip(employee_id=employee_id, reason="Not found in this workspace.")
             )
             continue
-        if employee.status is EmploymentStatus.EXITED:
+        # Somebody past their agreed last day has left, even while they are
+        # still "on notice" until their access is revoked: moving them would
+        # hand their final month to a company they never worked for.
+        left_on = employee.date_of_exit or last_days.get(employee.id)
+        if employee.status is EmploymentStatus.EXITED or (left_on is not None and left_on < today):
             skipped.append(
                 EntityMoveSkip(
                     employee_id=employee.id,
                     employee_code=employee.employee_code,
                     name=employee.full_name,
                     reason=(
-                        "Has left: their company is not changed, so their past payroll and "
-                        "returns stay with the company that paid them."
+                        "Has left"
+                        + (f" (last working day {left_on:%d %b %Y})" if left_on else "")
+                        + ": their company is not changed, so their past payroll and returns "
+                        "stay with the company that paid them."
                     ),
                 )
             )
@@ -794,7 +826,7 @@ async def move_to_legal_entity(
             continue
         previous = employee.legal_entity_id
         changes = {"legal_entity_id": entity.id}
-        lifecycle.record_direct_edit(session, user, employee, changes)
+        lifecycle.record_direct_edit(session, user, employee, changes, on=today)
         employee.legal_entity_id = entity.id
         await audit.record(
             session,
@@ -813,6 +845,7 @@ async def move_to_legal_entity(
     return EntityMoveResult(
         legal_entity_id=entity.id,
         legal_entity_name=entity.name,
+        effective_from=today,
         moved=moved,
         already_there=already,
         skipped=skipped,

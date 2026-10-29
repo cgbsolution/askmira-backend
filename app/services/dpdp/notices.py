@@ -43,6 +43,7 @@ from typing import Any
 
 from app.services.dpdp.categories import LawfulBasis, category
 from app.services.dpdp.consent import PURPOSES, Purpose
+from app.services.dpdp.transfers import sub_processor
 
 __all__ = [
     "SHIPPED_LANGUAGES",
@@ -146,7 +147,11 @@ _FRAMING: dict[Language, dict[str, str]] = {
         "rights_line": (
             "You can ask to see what is held about you, to have it corrected, "
             "or to have it deleted. Where something has to be kept by law, you "
-            "will be told which law and for how long."
+            "will be told which law and for how long. You can also nominate "
+            "someone to use these rights for you if you die or become unable "
+            "to. If you are not satisfied with the answer to a grievance you "
+            "raise with the contact below, you can complain to the Data "
+            "Protection Board of India through its online complaint service."
         ),
         "withdraw_line": (
             "You can change any of these choices at any time, as easily as you "
@@ -171,7 +176,12 @@ _FRAMING: dict[Language, dict[str, str]] = {
         "rights_line": (
             "आप यह देखने के लिए कह सकते हैं कि आपके बारे में क्या रखा गया है, उसे "
             "ठीक कराने के लिए, या उसे हटाने के लिए। जहाँ कानून के अनुसार कुछ रखना "
-            "आवश्यक है, आपको बताया जाएगा कि कौन सा कानून और कितने समय के लिए।"
+            "आवश्यक है, आपको बताया जाएगा कि कौन सा कानून और कितने समय के लिए। "
+            "आप किसी व्यक्ति को नामित भी कर सकते हैं, जो आपकी मृत्यु या असमर्थता "
+            "की स्थिति में आपकी ओर से इन अधिकारों का उपयोग करे। नीचे दिए गए संपर्क "
+            "से अपनी शिकायत के उत्तर से संतुष्ट न होने पर, आप भारतीय डेटा संरक्षण "
+            "बोर्ड (Data Protection Board of India) की ऑनलाइन शिकायत सेवा के "
+            "माध्यम से शिकायत कर सकते हैं।"
         ),
         "withdraw_line": (
             "आप इनमें से कोई भी विकल्प कभी भी बदल सकते हैं, उतनी ही आसानी से जितनी "
@@ -275,7 +285,11 @@ def _item(spec: Purpose, framing: dict[str, str], *, translated: bool) -> Notice
         data_used=data_used,
         offers_a_choice=spec.requires_consent,
         stops_if_declined=spec.stops,
-        sub_processors=spec.sub_processors,
+        # Named as a reader knows them, with the country — not as a register key.
+        sub_processors=tuple(
+            f"{sub_processor(key).name} ({sub_processor(key).country})"
+            for key in spec.sub_processors
+        ),
         # Purpose text is authored in English. A notice rendered in Hindi has
         # translated framing and English bodies, and says how many.
         body_untranslated=not translated,

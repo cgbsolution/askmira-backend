@@ -270,12 +270,25 @@ def test_insufficient_balance_is_refused_counting_pending_requests() -> None:
     assert "1 days available after pending" in result.problems[0]
 
 
-def test_a_negative_balance_policy_warns_instead_of_refusing() -> None:
-    result = _assess(
-        balance=Balance(accrued=Decimal(1)), rules=PolicyRules(allows_negative_balance=True)
-    )
-    assert result.allowed
-    assert "-1" in result.warnings[0]
+def test_a_balance_never_goes_below_zero() -> None:
+    result = _assess(balance=Balance(accrued=Decimal(1)))
+    assert not result.allowed
+    assert result.problems == [
+        "You have 1 days available after pending requests; this request needs 2."
+    ]
+
+
+def test_with_nothing_left_leave_cannot_be_applied() -> None:
+    for balance in (Balance(), Balance(accrued=Decimal(2), pending=Decimal(2)), None):
+        result = _assess(balance=balance)
+        assert not result.allowed
+        assert any("No balance is available" in p for p in result.problems)
+
+
+def test_exactly_the_balance_is_allowed_including_a_half_day() -> None:
+    assert _assess(balance=Balance(accrued=Decimal(2))).allowed
+    half = _assess(count=_count("0.5"), half_day=True, balance=Balance(accrued=Decimal("0.5")))
+    assert half.allowed
 
 
 def test_short_notice_is_refused() -> None:

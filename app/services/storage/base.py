@@ -66,3 +66,12 @@ class FileStorage(ABC):
     @abstractmethod
     async def delete(self, key: str) -> bool:
         """Remove a stored file. True when something was removed."""
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        """Every stored key under a tenant prefix (`<tenant id>/`).
+
+        Used by the workspace purge, so a file no row points at any more is
+        not left behind. A backend that cannot list returns nothing, and the
+        purge falls back to the keys the rows held.
+        """
+        return []

@@ -68,3 +68,19 @@ async def put_settings(
 ) -> dict[str, Any]:
     await companion_config.set_config(session, user, payload, request=request)
     return await companion.settings_view(session, user)
+
+
+@router.post("/actions/{action_id}/confirm")
+async def confirm_action(
+    action_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """The caller pressed Confirm on an offer Ask Mira made them: carry it out, as them."""
+    return await companion.confirm_offer(session, user, action_id, request=request)
+
+
+@router.post("/actions/{action_id}/cancel")
+async def cancel_action(
+    action_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """The caller declined an offer Ask Mira made them. Nothing is done."""
+    return await companion.cancel_offer(session, user, action_id, request=request)

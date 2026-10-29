@@ -13,11 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_session
 from app.main import app
 from app.models.audit import AuditLog
+from app.models.dpdp import ConsentCapturedVia, DataPrincipalKind
 from app.models.employee import Employee
 from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import integrations
+from app.services.dpdp import service as dpdp_service
 from tests.integration.conftest import requires_db
 
 pytestmark = requires_db
@@ -45,6 +47,24 @@ async def _key(session: AsyncSession, user: User, scopes: list[str]) -> str:
     return created["key"]
 
 
+async def _ai_on(session: AsyncSession, actor: User, *people: Employee) -> None:
+    """What an outside assistant needs: AI on for the workspace, and each
+    person's agreement to AI reading their record (DPDP purpose ai_assistance)."""
+    tenant = await session.get(Tenant, actor.tenant_id)
+    tenant.settings = {**(tenant.settings or {}), "ai": {"enabled": True}}
+    for person in people:
+        await dpdp_service.record_consent(
+            session,
+            actor,
+            principal_id=person.id,
+            principal_kind=DataPrincipalKind.EMPLOYEE,
+            purpose_key="ai_assistance",
+            granted=True,
+            captured_via=ConsentCapturedVia.SELF_SERVICE,
+        )
+    await session.commit()
+
+
 def _rpc(method: str, params: dict | None = None, request_id: int = 1) -> dict:
     body: dict = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:
@@ -61,6 +81,7 @@ async def test_a_client_can_connect_list_and_call_only_what_its_key_allows(
 ) -> None:
     key = await _key(session, hr_user, ["employees:read"])
     headers = {"Authorization": f"Bearer {key}"}
+    await _ai_on(session, hr_user, employee)
 
     hello = await client.post(
         "/api/v1/mcp",
@@ -143,6 +164,8 @@ async def test_who_is_out_never_carries_the_reason_and_stays_in_its_workspace(
 
     mine = await _key(session, hr_user, ["leave:read"])
     theirs = await _key(session, other_hr_user, ["leave:read"])
+    await _ai_on(session, hr_user, employee)
+    await _ai_on(session, other_hr_user)
     call = _rpc(
         "tools/call",
         {"name": "who_is_out", "arguments": {"from": "2026-10-01", "to": "2026-10-31"}},
@@ -163,6 +186,7 @@ async def test_a_bad_range_is_a_tool_error_not_a_crash(
     session: AsyncSession, hr_user: User, client: httpx.AsyncClient
 ) -> None:
     key = await _key(session, hr_user, ["attendance:read"])
+    await _ai_on(session, hr_user)
     response = await client.post(
         "/api/v1/mcp",
         json=_rpc(

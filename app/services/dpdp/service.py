@@ -200,6 +200,7 @@ async def record_consent(
     notice_language: str = "en",
     request: Request | None = None,
     now: datetime | None = None,
+    commit: bool = True,
 ) -> ConsentRecord:
     """Write one consent decision, refusing where consent is not the basis.
 
@@ -243,6 +244,11 @@ async def record_consent(
     session.add(row)
     await session.flush()
 
+    if purpose_key == "celebrations":
+        # The celebrations calendar reads the per-event sharing flags; My privacy
+        # writes them here so the one switch and the calendar cannot disagree.
+        await _sync_celebration_flags(session, user, principal_id=principal_id, granted=granted)
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -256,9 +262,79 @@ async def record_consent(
         ),
         request=request,
     )
-    await session.commit()
-    await session.refresh(row)
+    if commit:
+        await session.commit()
+        await session.refresh(row)
     return row
+
+
+async def _sync_celebration_flags(
+    session: AsyncSession, user: User, *, principal_id: uuid.UUID, granted: bool
+) -> None:
+    """Agreeing on My privacy shares both; withdrawing stops both. Scope is kept."""
+    from app.models.culture_depth import EventPrivacyPreference
+
+    employee_id = await session.scalar(
+        tenant_scoped(select(Employee.id).where(Employee.id == principal_id), Employee, user)
+    )
+    if employee_id is None:
+        return
+    pref = await session.scalar(
+        tenant_scoped(
+            select(EventPrivacyPreference).where(EventPrivacyPreference.employee_id == employee_id),
+            EventPrivacyPreference,
+            user,
+        )
+    )
+    if pref is None:
+        pref = EventPrivacyPreference(
+            tenant_id=user.tenant_id, employee_id=employee_id, birthday_scope="team"
+        )
+        session.add(pref)
+    pref.share_birthday = granted
+    pref.share_work_anniversary = granted
+    await session.flush()
+
+
+async def record_celebration_choice(
+    session: AsyncSession,
+    user: User,
+    *,
+    employee_id: uuid.UUID,
+    shares_anything: bool,
+    request: Request | None = None,
+) -> None:
+    """The evidence row for a change made on the celebrations settings screen.
+
+    That screen sets each event separately; the consent log records whether the
+    person now shares anything at all, so My privacy and an access export show
+    the same answer the calendar acts on. No commit: the caller's transaction.
+    """
+    decision = consent_engine.record_decision(
+        "celebrations",
+        granted=shares_anything,
+        now=datetime.now(UTC),
+        captured_via=consent_engine.CapturedVia.SELF_SERVICE,
+        ip_address=request.client.host if request and request.client else None,
+    )
+    session.add(
+        ConsentRecord(
+            tenant_id=user.tenant_id,
+            principal_id=employee_id,
+            principal_kind=DataPrincipalKind.EMPLOYEE,
+            purpose_key="celebrations",
+            granted=decision.granted,
+            decided_at=decision.decided_at,
+            purpose_version=decision.version,
+            captured_via=ConsentCapturedVia.SELF_SERVICE,
+            notice_version=1,
+            notice_language="en",
+            ip_address=decision.ip_address,
+            user_agent=request.headers.get("user-agent") if request else None,
+            recorded_by_user_id=user.id,
+        )
+    )
+    await session.flush()
 
 
 async def _decisions_for(
@@ -336,7 +412,11 @@ async def principals_permitting(
 
 
 async def list_consent(
-    session: AsyncSession, user: User, *, principal_id: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    *,
+    principal_id: uuid.UUID,
+    audience: str | None = "employee",
 ) -> dict[str, Any]:
     """Where every purpose stands for one person.
 
@@ -346,7 +426,14 @@ async def list_consent(
     opening this screen is actually asking.
     """
     decisions = await _decisions_for(session, user, principal_id)
-    states = consent_engine.consent_state(decisions)
+    if not any(d.purpose_key == "celebrations" for d in decisions):
+        decisions.extend(await _legacy_celebration_decision(session, user, principal_id))
+    wanted = (
+        tuple(k for k, p in consent_engine.PURPOSES.items() if p.audience == audience)
+        if audience
+        else ()
+    )
+    states = consent_engine.consent_state(decisions, purpose_keys_wanted=wanted)
 
     stored = tenant_scoped(
         select(ConsentRecord.purpose_key)
@@ -360,7 +447,19 @@ async def list_consent(
 
     return {
         "principal_id": str(principal_id),
-        "purposes": [state.as_dict() for state in states],
+        "purposes": [
+            state.as_dict()
+            | {
+                "description": consent_engine.purpose(state.purpose_key).description,
+                "withdrawal_erases": list(
+                    consent_engine.purpose(state.purpose_key).withdrawal_erases
+                ),
+                "withdrawal_keeps": list(
+                    consent_engine.purpose(state.purpose_key).withdrawal_keeps
+                ),
+            }
+            for state in states
+        ],
         "capabilities_permitted": sorted(
             capability
             for capability in consent_engine.CAPABILITIES
@@ -372,6 +471,39 @@ async def list_consent(
         # somebody's history.
         "retired_purposes_on_record": retired,
     }
+
+
+async def _legacy_celebration_decision(
+    session: AsyncSession, user: User, principal_id: uuid.UUID
+) -> list[consent_engine.ConsentDecision]:
+    """A celebrations choice made before the consent log recorded it.
+
+    The sharing flags were set on the celebrations screen before that screen
+    wrote a consent row. Read as the decision they are, so My privacy does not
+    say "not asked" to somebody who answered.
+    """
+    from app.models.culture_depth import EventPrivacyPreference
+
+    pref = await session.scalar(
+        tenant_scoped(
+            select(EventPrivacyPreference).where(
+                EventPrivacyPreference.employee_id == principal_id
+            ),
+            EventPrivacyPreference,
+            user,
+        )
+    )
+    if pref is None:
+        return []
+    return [
+        consent_engine.ConsentDecision(
+            purpose_key="celebrations",
+            granted=bool(pref.share_birthday or pref.share_work_anniversary),
+            decided_at=pref.updated_at,
+            version=consent_engine.purpose("celebrations").version,
+            captured_via=consent_engine.CapturedVia.SELF_SERVICE,
+        )
+    ]
 
 
 async def withdraw_consent(
@@ -391,7 +523,9 @@ async def withdraw_consent(
     except KeyError as exc:
         raise _bad_request(str(exc.args[0])) from exc
 
-    await record_consent(
+    from app.services.dpdp.withdrawal import erase_on_withdrawal
+
+    row = await record_consent(
         session,
         user,
         principal_id=principal_id,
@@ -400,8 +534,32 @@ async def withdraw_consent(
         granted=False,
         captured_via=ConsentCapturedVia.SELF_SERVICE,
         request=request,
+        commit=False,
     )
-    return effect.as_dict()
+    # DPDP s.8(7)(a): what was held only under this consent goes with it, in the
+    # same transaction as the withdrawal — never a withdrawal that stuck and a
+    # deletion that did not.
+    erased = await erase_on_withdrawal(
+        session, user, principal_id=principal_id, purpose_key=purpose_key
+    )
+    if any(erased.values()):
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.DELETE,
+            entity_type="consent_withdrawal_erasure",
+            entity_id=row.id,
+            actor=user,
+            changes=erased,
+            summary=(
+                f"Consent for {purpose_key} withdrawn; data held only for it erased: "
+                + ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in erased.items())
+                + "."
+            ),
+            request=request,
+        )
+    await session.commit()
+    return effect.as_dict() | {"erased_counts": erased}
 
 
 async def consent_summary(session: AsyncSession, user: User) -> dict[str, Any]:
@@ -435,9 +593,7 @@ async def consent_summary(session: AsyncSession, user: User) -> dict[str, Any]:
         latest[(purpose_key, principal_id)] = granted
 
     out = []
-    for spec in consent_engine.PURPOSES.values():
-        if not spec.requires_consent:
-            continue
+    for spec in consent_engine.consent_purposes("employee"):
         answers = [granted for (key, _pid), granted in latest.items() if key == spec.key]
         yes = sum(1 for a in answers if a)
         no = len(answers) - yes
@@ -462,17 +618,35 @@ async def consent_summary(session: AsyncSession, user: User) -> dict[str, Any]:
 async def notice_for(
     session: AsyncSession, user: User, *, language: str | None = None
 ) -> dict[str, Any]:
-    config = await require_configuration(session, user)
+    config = await get_configuration(session, user)
     try:
-        chosen = Language(language or config.default_notice_language)
+        chosen = Language(language or (config.default_notice_language if config else "en"))
     except ValueError as exc:
         raise _bad_request(f"{language!r} is not English or an Eighth Schedule language.") from exc
 
     notice = render_notice(
         language=chosen,
         notice_id=f"{user.tenant_id}:{chosen.value}:v1",
+        # An employee's notice covers what is done with an employee's data; the
+        # candidate purposes are in the careers notice, where candidates read it.
+        purpose_keys=consent_engine.employee_purpose_keys(),
     )
-    return notice.as_dict() | {"grievance_contact": config.grievance_contact}
+    # Without a configuration the notice still says what is done and why, and
+    # says plainly that no contact has been named — never an invented address.
+    return notice.as_dict() | {
+        "grievance_contact": config.grievance_contact if config else None,
+        "data_protection_officer_name": (config.data_protection_officer_name if config else None),
+        "grievance_contact_missing": config is None,
+    }
+
+
+async def configuration_status(session: AsyncSession, user: User) -> dict[str, Any]:
+    """Whether this workspace has named its grievance contact — for the admin banner."""
+    config = await get_configuration(session, user)
+    return {
+        "configured": config is not None,
+        "grievance_contact": config.grievance_contact if config else None,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -499,14 +673,17 @@ async def raise_request(
     somebody is is our problem; treating it as a pause button is how a 30-day
     response period becomes a 30-day response period plus however long we take.
     """
-    config = await require_configuration(session, user)
+    # A right is never refused because the workspace has not finished its
+    # privacy setup: without a configuration the statutory default periods
+    # apply, and the admins see a banner until a grievance contact is set.
+    config = await get_configuration(session, user)
     moment = now or datetime.now(UTC)
 
     engine_type = rights_engine.RequestType(request_type.value)
     clock = rights_engine.clock_for(
         engine_type,
         received_on=moment.date(),
-        sla_days=config.sla_days.get(request_type.value),
+        sla_days=(config.sla_days or {}).get(request_type.value) if config else None,
     )
 
     row = DataPrincipalRequest(
@@ -627,6 +804,37 @@ async def _principal_identities(
     return (employee.id if employee else None, login.id if login else None)
 
 
+async def _candidate_id(
+    session: AsyncSession, user: User, principal_id: uuid.UUID
+) -> uuid.UUID | None:
+    """The candidate a principal id refers to, in this tenant, if it is one."""
+    from app.models.hiring import Candidate
+
+    return await session.scalar(
+        tenant_scoped(select(Candidate.id).where(Candidate.id == principal_id), Candidate, user)
+    )
+
+
+#: People whose details live inside an employee's record — a nominee, a family
+#: member, an emergency contact. They have no record of their own to export or
+#: erase; their request is honoured by correcting the employee's record.
+HELD_IN_EMPLOYEE_RECORD = frozenset(
+    {
+        DataPrincipalKind.DEPENDENT,
+        DataPrincipalKind.EMERGENCY_CONTACT,
+        DataPrincipalKind.THIRD_PARTY,
+    }
+)
+
+HELD_IN_EMPLOYEE_RECORD_NOTE = (
+    "This person's details are held inside an employee's record — as a nominee, a "
+    "family member or an emergency contact — not in a record of their own. To answer: "
+    "open that employee's profile, show or correct or remove the entries about this "
+    "person (Family, Nominees, Emergency contacts), then mark this request completed "
+    "with what was done."
+)
+
+
 async def export_file(
     session: AsyncSession,
     user: User,
@@ -728,7 +936,14 @@ async def build_access_export(
         )
 
     employee_id, login_id = await _principal_identities(session, user, principal_id)
-    contents = await collect_personal_data(session, user, employee_id=employee_id, user_id=login_id)
+    candidate_id = (
+        await _candidate_id(session, user, principal_id)
+        if employee_id is None and login_id is None
+        else None
+    )
+    contents = await collect_personal_data(
+        session, user, employee_id=employee_id, user_id=login_id, candidate_id=candidate_id
+    )
 
     return {
         "principal_id": str(principal_id),
@@ -1213,7 +1428,13 @@ async def tenant_compliance_surface(
         "sub_processors": transfer_engine.trust_centre_disclosure(),
         "known_gaps": [
             "The access export covers tables linked directly to the person's "
-            "employee record or login; child rows are covered through their parent.",
+            "employee record, login or candidate record; child rows are covered "
+            "through their parent. Nominees, family members and emergency contacts "
+            "have no record of their own: their requests are answered on the "
+            "employee's record.",
+            "A deleted workspace's data is purged 90 days after deletion, files "
+            "included, except its audit trail, which is insert-only by design and "
+            "kept as the record of what was done.",
             "Erasure is executed by an administrator on an approved request. It does "
             "not reach database backups: deleted rows are suppressed if a backup is "
             "restored, and the audit trail is never pseudonymised.",

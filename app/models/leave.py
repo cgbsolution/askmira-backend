@@ -112,6 +112,8 @@ class LeavePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
     max_carry_forward_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)
     max_consecutive_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     min_notice_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Retired 2026-10-29: leave is applied only against an available balance,
+    # whatever this says. The column stays so old rows and migrations still load.
     allows_negative_balance: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Sandwich rule: weekly offs and holidays that fall between two days of
     # the same request are charged as leave (Friday to Monday costs four days).

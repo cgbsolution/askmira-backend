@@ -54,11 +54,11 @@ from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import hr_scope
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
-from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.org import LegalEntity
 from app.models.payroll import (
     PayrollRuleSet,
@@ -72,6 +72,7 @@ from app.models.user import User
 from app.services import audit
 from app.services.attendance import service as attendance_service
 from app.services.attendance.service import AttendanceLockError
+from app.services.exit_workflow import last_days
 from app.services.notifications.dispatch import notify
 from app.services.payroll import companies, statutory_service
 from app.services.payroll import salary_days as salary_days_rules
@@ -459,6 +460,10 @@ async def compute_run(
 
     Refuses when attendance for the period is not locked. See the module
     docstring for why that is a refusal rather than a warning.
+
+    Somebody with no salary in force is left off the run with a notice, not
+    a failure for everybody: the run pays the rest. A recompute picks them up
+    once their salary is added, or an off-cycle run pays them after approval.
     """
     run = await get_run(session, user, run_id)
     if run.status in CLOSED_STATUSES:
@@ -496,33 +501,48 @@ async def compute_run(
     # one on their record now: a transfer dated 1 October leaves September
     # with the old company even when September is run on the 3rd.
     in_company = await companies.members_on(session, user, run.legal_entity_id, end)
+
+    def on_this_run(members: set[uuid.UUID]) -> list:
+        return [
+            Employee.id.in_(members),
+            Employee.deleted_at.is_(None),
+            or_(
+                Employee.status.in_(
+                    [
+                        EmploymentStatus.ACTIVE,
+                        EmploymentStatus.ON_NOTICE,
+                        EmploymentStatus.ON_LEAVE,
+                    ]
+                ),
+                and_(
+                    Employee.status == EmploymentStatus.EXITED,
+                    Employee.date_of_exit >= start,
+                ),
+            ),
+            *(
+                (Employee.id.in_([uuid.UUID(e) for e in run.employee_scope]),)
+                if run.employee_scope
+                else ()
+            ),
+        ]
+
+    # A run pays everybody in it, so it is computed by somebody whose HR scope
+    # covers all of them: a department-scoped sub-admin would otherwise see
+    # only their own people and produce the month's run without the rest.
+    if hr_scope.current_scope() is not None:
+        whole_company = await companies.members_on(
+            session, user, run.legal_entity_id, end, whole_workspace=True
+        )
+        everyone = await session.scalars(
+            tenant_scoped(
+                select(Employee.id).where(*on_this_run(whole_company)), Employee, user
+            ).execution_options(hr_scope_bypass=True)
+        )
+        _require_scope_covers(set(everyone.all()), doing="compute")
     employees = (
         await session.scalars(
             tenant_scoped(
-                select(Employee)
-                .where(
-                    Employee.id.in_(in_company),
-                    Employee.deleted_at.is_(None),
-                    or_(
-                        Employee.status.in_(
-                            [
-                                EmploymentStatus.ACTIVE,
-                                EmploymentStatus.ON_NOTICE,
-                                EmploymentStatus.ON_LEAVE,
-                            ]
-                        ),
-                        and_(
-                            Employee.status == EmploymentStatus.EXITED,
-                            Employee.date_of_exit >= start,
-                        ),
-                    ),
-                    *(
-                        (Employee.id.in_([uuid.UUID(e) for e in run.employee_scope]),)
-                        if run.employee_scope
-                        else ()
-                    ),
-                )
-                .order_by(Employee.employee_code),
+                select(Employee).where(*on_this_run(in_company)).order_by(Employee.employee_code),
                 Employee,
                 user,
             )
@@ -601,6 +621,7 @@ async def compute_run(
         if is_regular or not (month_paid.get(person) or {}).get("has_full")
     )
     moves = await companies.moves_between(session, user, run.legal_entity_id, start, end)
+    unplaced = await companies.unplaced_on(session, user, start, end)
 
     collected = await collect_inputs(
         session,
@@ -675,6 +696,10 @@ async def compute_run(
     # People another company of the group already paid for this month, and
     # moves between companies dated inside it.
     moved_notices: list[str] = []
+    # People with no salary in force are left off the run rather than failing
+    # it for everybody else. The run names them; once their salary is added a
+    # recompute — or, after approval, an off-cycle run — pays them.
+    no_salary: list[Employee] = []
     month_label = f"{calendar.month_name[run.period_month]} {run.period_year}"
     if moves:
         codes = dict(
@@ -780,7 +805,7 @@ async def compute_run(
             # A leaver's salary is the one in force on their last day.
             salary = await active_salary_on(session, user, employee.id, left_on)
         if salary is None:
-            errors.append(f"{employee.employee_code}: no salary assigned for {run.effective_date}")
+            no_salary.append(employee)
             continue
 
         try:
@@ -1001,6 +1026,13 @@ async def compute_run(
 
     run.computed_by_user_id = user.id
 
+    if no_salary and not payslips and not errors:
+        # Nobody on the run has a salary: there is nothing to approve.
+        errors = [
+            f"{employee.employee_code}: no salary assigned for {run.effective_date}"
+            for employee in no_salary
+        ]
+
     if not is_regular and not payslips and not errors:
         run.status = PayrollRunStatus.DRAFT
         await session.commit()
@@ -1085,6 +1117,20 @@ async def compute_run(
         + [
             {
                 "kind": "notice",
+                "key": "no_company",
+                "label": "No company",
+                "message": (
+                    f"{len(unplaced)} {'person' if len(unplaced) == 1 else 'people'} employed in "
+                    f"{month_label} belong to no company on its last day, so no run pays them: "
+                    f"{', '.join(unplaced[:10])}{' and more' if len(unplaced) > 10 else ''}. "
+                    "Put them in a company (Employees → Move to company), then compute again."
+                ),
+            }
+            for _ in ([unplaced] if unplaced else [])
+        ]
+        + [
+            {
+                "kind": "notice",
                 "key": "salary_days",
                 "label": "Salary days",
                 "message": message,
@@ -1109,6 +1155,19 @@ async def compute_run(
             }
             for message in unpaid_notices
         ]
+        + [
+            {
+                "kind": "notice",
+                "key": "no_salary",
+                "label": "Not paid: no salary",
+                "message": (
+                    f"{employee.employee_code} ({employee.full_name}) had no salary on "
+                    f"{run.effective_date:%d %b %Y} when this run was computed, so it does "
+                    "not pay them."
+                ),
+            }
+            for employee in no_salary
+        ]
     )
     run.rule_set_snapshot = {key: str(value.id) for key, value in rule_sets.items()}
     run.processed_at = datetime.now(UTC)
@@ -1129,10 +1188,12 @@ async def compute_run(
             "variances": len(variances),
             "review_flags": len(run.review_flags),
             "input_items": sum(len(p.input_lines) for p in payslips),
+            "left_out_no_salary": [employee.employee_code for employee in no_salary],
         },
         summary=(
             f"Computed payroll for {run.period_month}/{run.period_year}: "
             f"{len(payslips)} employees, {len(variances)} variance flag(s)"
+            + (f", {len(no_salary)} left out with no salary" if no_salary else "")
         ),
         request=request,
     )
@@ -1248,6 +1309,16 @@ async def approve_run(
     # Approvals for one month wait for each other (the lock ends with this
     # transaction), so two at the same moment cannot both pass the check; and
     # the check sees everybody on the run, not only the approver's own scope.
+    # Approval marks every input on the run paid and locks everybody's tax
+    # regime, so it is signed off by somebody whose HR scope covers all of
+    # them; a scoped approver's view would mark only their own people's.
+    if hr_scope.current_scope() is not None:
+        on_run = await session.scalars(
+            tenant_scoped(
+                select(Payslip.employee_id).where(Payslip.run_id == run.id), Payslip, user
+            ).execution_options(hr_scope_bypass=True)
+        )
+        _require_scope_covers(set(on_run.all()), doing="approve")
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
         {"key": f"payroll-approve:{run.tenant_id}:{run.period_year}-{run.period_month}"},
@@ -1928,27 +1999,28 @@ async def _agreed_last_days(
 
     `Employee.date_of_exit` is written only when access is revoked, which is
     usually after the last payroll that should pay them; until then the exit
-    record's approved last day is the date employment ends.
+    record's approved last day is the date employment ends. Shared with the
+    directory's bulk move (`exit_workflow.last_days`), so both agree on who
+    has left.
     """
-    if not employee_ids:
-        return {}
-    rows = (
-        await session.execute(
-            tenant_scoped(
-                select(ExitRecord.employee_id, ExitRecord.approved_last_working_day)
-                .where(
-                    ExitRecord.employee_id.in_(employee_ids),
-                    ExitRecord.status != ExitStatus.CANCELLED,
-                    ExitRecord.approved_last_working_day.is_not(None),
-                )
-                .order_by(ExitRecord.created_at),
-                ExitRecord,
-                user,
-            )
+    return await last_days.agreed_last_days(session, user, employee_ids)
+
+
+def _require_scope_covers(people: set[uuid.UUID], *, doing: str) -> None:
+    """Refuse when the caller's department/location scope leaves out somebody on the run."""
+    scope = hr_scope.current_scope()
+    if scope is None:
+        return
+    outside = people - set(scope.employee_ids)
+    if outside:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"This run pays {len(outside)} people outside your department or location "
+                f"scope, so you cannot {doing} it. A run is computed and signed off by "
+                "somebody whose scope covers everybody on it."
+            ),
         )
-    ).all()
-    # The latest exit wins, should there ever be more than one open.
-    return {employee_id: last_day for employee_id, last_day in rows}
 
 
 async def paid_by_another_company(

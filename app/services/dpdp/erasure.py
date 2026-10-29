@@ -42,6 +42,7 @@ from app.services import audit
 from app.services.dpdp import rights as rights_engine
 from app.services.dpdp.contents import person_predicate, personal_tables, withheld_column
 from app.services.dpdp.schema_map import STRUCTURAL_COLUMNS, TABLES
+from app.services.storage.cleanup import delete_files, keys_in_rows
 
 __all__ = ["NEVER_DELETED", "execute_erasure"]
 
@@ -80,6 +81,69 @@ def _hold_covers(hold: Any, *, principal_id: uuid.UUID, employee: Employee | Non
     return True
 
 
+async def _erase_candidate(
+    session: AsyncSession,
+    user: User,
+    row: DataPrincipalRequest,
+    candidate_id: uuid.UUID,
+    *,
+    request: Request | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """A candidate's erasure, through hiring's own purge.
+
+    Hiring clears the person and keeps the shape — application counts are not
+    personal data, the applicant is — and deletes their résumé and documents.
+    One transaction with the request's resolution and its audit row.
+    """
+    from app.services.hiring import careers
+
+    result = await careers.purge_on_request(
+        session, user, candidate_id=candidate_id, reason=f"DPDP erasure request {row.id}", now=now
+    )
+    row.status = DprRequestStatus.COMPLETED
+    row.responded_at = now
+    row.response_payload = {
+        "executed_at": now.isoformat(),
+        "candidate": result,
+        "kept": (
+            "Application rows are kept without any personal data, so hiring numbers do "
+            "not change; the record of this request and of the consent given are kept "
+            "as evidence."
+        ),
+    }
+    row.actions = [
+        *(row.actions or []),
+        {
+            "at": now.isoformat(),
+            "actor": str(user.id),
+            "action": row.status.value,
+            "note": "Candidate data erased through hiring's purge.",
+        },
+    ]
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="data_principal_request",
+        entity_id=row.id,
+        actor=user,
+        summary=f"Erasure executed for candidate {row.principal_label}.",
+        changes={"candidate": result},
+        request=request,
+    )
+    await session.commit()
+    return {
+        "id": str(row.id),
+        "status": row.status.value,
+        "rows_deleted": 0,
+        "candidate": result,
+        "executed": [],
+        "plan": None,
+    }
+
+
 async def execute_erasure(
     session: AsyncSession,
     user: User,
@@ -109,6 +173,20 @@ async def execute_erasure(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="An erasure of your own data has to be executed by another administrator.",
+        )
+
+    from app.services.dpdp.service import (
+        HELD_IN_EMPLOYEE_RECORD,
+        HELD_IN_EMPLOYEE_RECORD_NOTE,
+        _candidate_id,
+    )
+
+    if row.principal_kind in HELD_IN_EMPLOYEE_RECORD:
+        raise _bad_request(HELD_IN_EMPLOYEE_RECORD_NOTE)
+    candidate_id = await _candidate_id(session, user, row.principal_id)
+    if candidate_id is not None:
+        return await _erase_candidate(
+            session, user, row, candidate_id, request=request, now=moment
         )
 
     employee = await session.scalar(
@@ -143,6 +221,9 @@ async def execute_erasure(
 
     executed: list[dict[str, Any]] = []
     deleted: list[tuple[str, uuid.UUID]] = []
+    #: Uploaded files of the rows deleted or fields cleared; removed from storage
+    #: after the commit, so a rolled-back erasure leaves every file in place.
+    files: set[str] = set()
     anything_retained = False
 
     for table in personal_tables():
@@ -181,6 +262,13 @@ async def execute_erasure(
                 and not c.foreign_keys
             ]
             if clearable:
+                files |= await keys_in_rows(
+                    session,
+                    table,
+                    user.tenant_id,
+                    tenant_filter(table, user.tenant_id) & table.c.id.in_(ids),
+                    only=clearable,
+                )
                 await session.execute(
                     update(table)
                     .where(tenant_filter(table, user.tenant_id), table.c.id.in_(ids))
@@ -206,6 +294,12 @@ async def execute_erasure(
             continue
 
         if categories and categories <= purgeable:
+            row_files = await keys_in_rows(
+                session,
+                table,
+                user.tenant_id,
+                tenant_filter(table, user.tenant_id) & table.c.id.in_(ids),
+            )
             try:
                 async with session.begin_nested():
                     await session.execute(
@@ -225,6 +319,7 @@ async def execute_erasure(
                 )
                 continue
             deleted.extend((table.name, rid) for rid in ids)
+            files |= row_files
             executed.append({"table": table.name, "outcome": "deleted", "rows": len(ids)})
             continue
 
@@ -269,6 +364,7 @@ async def execute_erasure(
         "plan": plan.as_dict(),
         "executed": executed,
         "rows_deleted": len(deleted),
+        "files_to_delete": len(files),
         "suppressed_against_restore": suppressed,
         "not_executed": (
             "The audit trail is not pseudonymised: it is insert-only, and its entries "
@@ -304,10 +400,12 @@ async def execute_erasure(
         request=request,
     )
     await session.commit()
+    file_result = await delete_files(files)
     return {
         "id": str(row.id),
         "status": row.status.value,
         "rows_deleted": len(deleted),
+        **file_result,
         "executed": executed,
         "plan": plan.as_dict(),
     }

@@ -135,6 +135,9 @@ async def person_refs(
         tenant_scoped(select(Employee).where(Employee.id.in_(wanted)), Employee, user)
     )
     found = {row.id: _ref(row) for row in rows}
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    await strip_hidden_photos(session, user, list(found.values()), id_field="employee_id")
     return {i: found.get(i) or _missing_ref(i) for i in wanted}
 
 
@@ -891,6 +894,9 @@ async def club_members(
         )
         for member, employee in rows
     ]
+    from app.services.dpdp.gates import strip_hidden_photos
+
+    await strip_hidden_photos(session, user, members, id_field="employee_id")
     return sorted(members, key=lambda m: (m.role != "organiser", m.name.lower()))
 
 

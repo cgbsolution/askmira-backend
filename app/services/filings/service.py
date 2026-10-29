@@ -1279,6 +1279,10 @@ async def generate_tds_24q(
         unmapped_deductions=unmapped,
         salary_details=[{"pan": d.pan} for d in salary_details],
     )
+    if quarter == 4:
+        result.exceptions.extend(
+            await _annexure_ii_movers(session, user, legal_entity_id, financial_year)
+        )
 
     period = f"{financial_year}-Q{quarter}"
     if result.is_blocked:
@@ -1340,6 +1344,82 @@ async def generate_tds_24q(
         request=request,
     )
     return GeneratedFile(content, record, result)
+
+
+async def _annexure_ii_movers(
+    session: AsyncSession, user: User, legal_entity_id: uuid.UUID, financial_year: str
+) -> list[validation.FilingException]:
+    """Warnings for people who moved between companies of the group this year.
+
+    Annexure II carries one row per person for the whole year, from their tax
+    snapshot, under the company they belong to on the year's last day. For
+    somebody two companies paid that is not yet split between the two TANs, so
+    the rows are named here, before the file is filed, rather than left to be
+    found in a mismatch notice.
+    """
+    year_start, year_end = statutory_service.financial_year_bounds(financial_year)
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(
+                    Payslip.employee_id, Employee.employee_code, LegalEntity.id, LegalEntity.name
+                )
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .join(Employee, Employee.id == Payslip.employee_id)
+                .join(LegalEntity, LegalEntity.id == PayrollRun.legal_entity_id)
+                .where(
+                    PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                    PayrollRun.effective_date >= year_start,
+                    PayrollRun.effective_date <= year_end,
+                ),
+                Payslip,
+                user,
+            )
+        )
+    ).all()
+    payers: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
+    codes: dict[uuid.UUID, str] = {}
+    for employee_id, code, entity_id, entity_name in rows:
+        payers.setdefault(employee_id, {})[entity_id] = entity_name
+        codes[employee_id] = code
+    movers = {person: paid for person, paid in payers.items() if len(paid) > 1}
+    if not movers:
+        return []
+    in_company = await companies.members_on(session, user, legal_entity_id, year_end)
+    warnings: list[validation.FilingException] = []
+    for person, paid in sorted(movers.items(), key=lambda item: codes[item[0]]):
+        others = ", ".join(
+            sorted(name for entity, name in paid.items() if entity != legal_entity_id)
+        )
+        if person in in_company:
+            warnings.append(
+                validation.FilingException(
+                    severity=validation.Severity.WARNING,
+                    code="ANNEXURE_II_MOVER",
+                    subject=codes[person],
+                    field="annexure_ii",
+                    message=(
+                        f"Also paid by {others} this year. This row carries their whole year's "
+                        "salary and TDS: before filing, keep what this company paid and "
+                        "deducted, and enter the rest as income from a previous employer."
+                    ),
+                )
+            )
+        elif legal_entity_id in paid:
+            warnings.append(
+                validation.FilingException(
+                    severity=validation.Severity.WARNING,
+                    code="ANNEXURE_II_MOVED_OUT",
+                    subject=codes[person],
+                    field="annexure_ii",
+                    message=(
+                        f"Paid by this company before moving to {others} this year, so they are "
+                        "not in this Annexure II. Before filing, add their row with the salary "
+                        "this company paid and the TDS it deducted."
+                    ),
+                )
+            )
+    return warnings
 
 
 async def _annexure_ii(

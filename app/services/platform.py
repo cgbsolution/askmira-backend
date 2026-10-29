@@ -308,7 +308,29 @@ class WorkspaceIn(CompanyDetails):
     #: Email the admin their sign-in page and a link to set their password.
     send_welcome_email: bool = True
 
-    _admin_blanks = field_validator("workspace", "admin_designation", mode="before")(_blank_to_none)
+    # ── Privacy (DPDP s.8(9), 8(10)) ────────────────────────────────────────
+    #: Who employees write to about their data. Printed in every privacy
+    #: notice, so a workspace never starts without one. Left out, it is the
+    #: first admin's email — the person who runs the workspace — and the
+    #: console shows it pre-filled so the super admin can name a DPO instead.
+    grievance_contact: str | None = Field(default=None, max_length=200)
+    data_protection_officer_name: str | None = Field(default=None, max_length=200)
+
+    _admin_blanks = field_validator(
+        "workspace", "admin_designation", "data_protection_officer_name", mode="before"
+    )(_blank_to_none)
+
+    @field_validator("grievance_contact")
+    @classmethod
+    def _grievance_contact(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            return None
+        if len(cleaned) < 3:
+            raise ValueError("Give the email or phone employees use to raise a privacy concern.")
+        return cleaned
 
     @field_validator("admin_phone")
     @classmethod
@@ -546,6 +568,7 @@ async def create(
         employee = await session.get(Employee, admin.employee_id)
         if employee is not None:
             employee.designation = payload.admin_designation.strip()
+    await _start_privacy_setup(session, tenant, admin, payload)
     await audit.record(
         session,
         tenant_id=tenant.id,
@@ -582,6 +605,34 @@ async def create(
             )
         ),
     }
+
+
+async def _start_privacy_setup(
+    session: Any, tenant: Tenant, admin: User, payload: WorkspaceIn
+) -> None:
+    """What a workspace needs from its first minute to honour DPDP.
+
+    The grievance contact (every notice and rights request points at it) and
+    the default retention policies (the statutory floors, so data is not kept
+    forever because nobody found the seed button). Same transaction as the
+    workspace itself.
+    """
+    from app.models.dpdp import DpdpConfiguration
+    from app.services.retention import service as retention
+
+    session.add(
+        DpdpConfiguration(
+            tenant_id=tenant.id,
+            grievance_contact=payload.grievance_contact or str(payload.admin_email),
+            data_protection_officer_name=payload.data_protection_officer_name,
+            sla_days={},
+            default_notice_language="en",
+            ai_processing_enabled=False,
+            configured_by_user_id=None,
+        )
+    )
+    await session.flush()
+    await retention.seed_default_policies(session, admin, commit=False, actor_type="platform")
 
 
 async def upload_logo(
@@ -1026,16 +1077,16 @@ async def delete(
 ) -> dict[str, Any]:
     """Delete a workspace: closed for good, its emails and its address freed.
 
-    Nothing in it is erased. Its audit trail is insert-only and its payroll and
-    statutory records have to be kept, so the rows stay, out of everyone's
-    reach: every login is switched off and its sessions ended; every key,
-    token, grant and device that reaches it without a login is revoked; its
-    careers page comes down; and it leaves this console. Each login's email
-    and the workspace's address are renamed, so a person from it can be given
-    a login elsewhere and the address can be used again.
+    Nothing is erased at once. Every login is switched off and its sessions
+    ended; every key, token, grant and device that reaches it without a login
+    is revoked; its careers page comes down; and it moves to the console's
+    deleted list. Each login's email and the workspace's address are renamed,
+    so a person from it can be given a login elsewhere and the address can be
+    used again.
 
-    Purging the rows at the end of the retention period is a DBA's job,
-    outside the app, because the audit log's trigger refuses it from here.
+    Its data is kept for `tenant_purge.PURGE_GRACE_DAYS` so it can be exported
+    and handed back to the customer, then purged by a nightly job — every row
+    and file except the insert-only audit trail (DPDP s.8(7)(b)).
     """
     _require_super(user)
     tenant = await _workspace(session, tenant_id)
@@ -1094,11 +1145,20 @@ async def delete(
         .values(is_published=False)
     )
 
+    from app.services.tenant_purge import purge_date
+
     tenant.is_active = False
     tenant.deleted_at = now
     tenant.slug = f"deleted-{tenant.id.hex}"
+    # DPDP s.8(7)(b): kept only long enough to be handed back, then purged.
+    tenant.purge_after = purge_date(now.date())
 
-    changes = {"workspace": slug, "logins_closed": logins.rowcount, "revoked": revoked}
+    changes = {
+        "workspace": slug,
+        "logins_closed": logins.rowcount,
+        "revoked": revoked,
+        "purge_after": tenant.purge_after.isoformat(),
+    }
     await audit.record(
         session,
         tenant_id=tenant.id,
@@ -1127,6 +1187,7 @@ async def delete(
         "id": str(tenant.id),
         "name": name,
         "deleted_at": now.isoformat(),
+        "purge_after": tenant.purge_after.isoformat(),
         "logins_closed": logins.rowcount,
         "revoked": revoked,
     }

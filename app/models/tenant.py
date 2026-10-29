@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import enum
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, String
+from sqlalchemy import Boolean, Date, DateTime, Enum, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,9 +26,11 @@ class TenantPlan(str, enum.Enum):
 class Tenant(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     """A customer company. Everything else in the schema hangs off this.
 
-    `deleted_at` is set when the platform deletes the company. The row stays:
-    its audit trail hangs off it and is insert-only, and its payroll and
-    statutory records are kept for as long as the law requires.
+    `deleted_at` is set when the platform deletes the company. Its data is
+    kept until `purge_after` so it can be exported and handed back, and then
+    purged (`services/tenant_purge.py`) — every row and every file. The tenant
+    row itself and its audit trail stay: the audit log is insert-only and is
+    the record that the workspace existed and was purged.
     """
 
     __tablename__ = "tenants"
@@ -54,6 +57,10 @@ class Tenant(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # The company's logo in file storage, shown on its own sign-in page and in
     # the portal. Public by design: it is on the company's website already.
     logo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    #: For a deleted workspace: the day its data is purged, and when it was.
+    purge_after: Mapped[date | None] = mapped_column(Date, nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     users: Mapped[list[User]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     legal_entities: Mapped[list[LegalEntity]] = relationship(
