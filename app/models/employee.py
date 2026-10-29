@@ -91,6 +91,13 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     department_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("departments.id", ondelete="SET NULL"), nullable=True
     )
+    #: The project they work on: a client's, or the company's own ("Internal").
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL", name="fk_employees_project_id"),
+        nullable=True,
+        index=True,
+    )
     manager_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
     )

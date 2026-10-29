@@ -532,7 +532,9 @@ TABLES: dict[str, TableClassification] = {
         {"pan": "statutory_identifier", "email": "identity", "gstin": "statutory_identifier"},
     ),
     "contractor_invoices": _none("An invoice from a contractor and the TDS deducted on it."),
-    "projects": _none("A project people log time against."),
+    "projects": _none(
+        "Where people work: a client's project or Internal, also logged against in timesheets."
+    ),
     "project_tasks": _none("A task within a project that people log time against."),
     "timesheets": _p(EMP, "attendance"),
     "timesheet_entries": _p(EMP, "attendance"),

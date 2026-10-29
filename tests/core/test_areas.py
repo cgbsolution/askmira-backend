@@ -49,3 +49,9 @@ def test_moving_people_to_another_company_is_an_edit() -> None:
     path = "/api/v1/employees/bulk/legal-entity"
     assert area_for_path(path) == "people"
     assert required_right("PATCH", path) == "can_edit"
+
+
+def test_moving_people_to_a_project_is_an_edit() -> None:
+    path = "/api/v1/employees/bulk/project"
+    assert area_for_path(path) == "people"
+    assert required_right("PATCH", path) == "can_edit"

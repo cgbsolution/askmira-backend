@@ -282,6 +282,9 @@ class RegisterRowRead(BaseModel):
     employee_id: uuid.UUID
     employee_code: str
     employee_name: str
+    #: The project they were on when the run was computed (a client's, or Internal).
+    project_id: uuid.UUID | None = None
+    project_name: str | None = None
     working_days: Money
     paid_days: Money
     lop_days: Money

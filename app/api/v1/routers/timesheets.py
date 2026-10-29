@@ -38,6 +38,8 @@ class ProjectUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=2, max_length=160)
     client: str | None = Field(default=None, max_length=160)
+    #: The company that staffs it; sent as null to clear it.
+    legal_entity_id: uuid.UUID | None = None
     billable: bool | None = None
     active: bool | None = None
 
@@ -73,6 +75,10 @@ async def update_project(
         client=payload.client,
         billable=payload.billable,
         active=payload.active,
+        legal_entity_id=payload.legal_entity_id,
+        clear_legal_entity=(
+            "legal_entity_id" in payload.model_fields_set and payload.legal_entity_id is None
+        ),
         request=request,
     )
 

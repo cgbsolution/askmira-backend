@@ -173,6 +173,7 @@ _DEPARTMENT_JOIN = JoinSpec(
     table="departments", local_table="employees", local_column="department_id"
 )
 _LOCATION_JOIN = JoinSpec(table="locations", local_table="employees", local_column="location_id")
+_PROJECT_JOIN = JoinSpec(table="projects", local_table="employees", local_column="project_id")
 _MANAGER_JOIN = JoinSpec(
     table="employees", local_table="employees", local_column="manager_id", alias="manager"
 )
@@ -258,6 +259,22 @@ def _employee_dimensions(via: tuple[JoinSpec, ...] = ()) -> list[Field]:
             "name",
             DataType.STRING,
             joins=(*via, _LOCATION_JOIN),
+        ),
+        Field(
+            "project",
+            "Project",
+            "projects",
+            "name",
+            DataType.STRING,
+            joins=(*via, _PROJECT_JOIN),
+        ),
+        Field(
+            "project_client",
+            "Project client",
+            "projects",
+            "client",
+            DataType.STRING,
+            joins=(*via, _PROJECT_JOIN),
         ),
         Field(
             "state",

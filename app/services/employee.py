@@ -30,6 +30,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
 from app.models.org import Department, LegalEntity, Location
+from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.employee import (
     EmployeeCreate,
@@ -39,6 +40,8 @@ from app.schemas.employee import (
     EntityMoveRequest,
     EntityMoveResult,
     EntityMoveSkip,
+    ProjectMoveRequest,
+    ProjectMoveResult,
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
@@ -95,6 +98,33 @@ async def _validate_references(
         if found is None:
             raise _unprocessable(f"That {label} is not part of this workspace.")
 
+    project_id = values.get("project_id")
+    if project_id is not None:
+        project = await session.scalar(
+            tenant_scoped(select(Project).where(Project.id == project_id), Project, user)
+        )
+        if project is None:
+            raise _unprocessable("That project is not part of this workspace.")
+        if not project.active:
+            current = (
+                await session.scalar(
+                    tenant_scoped(
+                        select(Employee.project_id).where(Employee.id == employee_id),
+                        Employee,
+                        user,
+                    )
+                )
+                if employee_id is not None
+                else None
+            )
+            # Somebody already on a closed project keeps it when other
+            # fields are saved; nobody new is put on it.
+            if current != project_id:
+                raise _unprocessable(
+                    f"{project.name} is closed. Open it again under Settings → Organisation → "
+                    "Projects, or choose another."
+                )
+
     dotted = values.get("dotted_line_manager_id")
     if dotted is not None:
         if employee_id is not None and dotted == employee_id:
@@ -141,6 +171,8 @@ async def list_employees(
     manager_id: uuid.UUID | None = None,
     legal_entity_id: uuid.UUID | None = None,
     without_legal_entity: bool = False,
+    project_id: uuid.UUID | None = None,
+    without_project: bool = False,
     status_filter: str | None = None,
     current_only: bool = False,
     include_deleted: bool = False,
@@ -169,6 +201,10 @@ async def list_employees(
         stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
     if without_legal_entity:
         stmt = stmt.where(Employee.legal_entity_id.is_(None))
+    if project_id:
+        stmt = stmt.where(Employee.project_id == project_id)
+    if without_project:
+        stmt = stmt.where(Employee.project_id.is_(None))
     if status_filter:
         stmt = stmt.where(Employee.status == status_filter)
     if search and search.strip():
@@ -219,6 +255,8 @@ async def directory_csv(
     manager_id: uuid.UUID | None = None,
     legal_entity_id: uuid.UUID | None = None,
     without_legal_entity: bool = False,
+    project_id: uuid.UUID | None = None,
+    without_project: bool = False,
     status_filter: str | None = None,
     current_only: bool = False,
     request: Request | None = None,
@@ -239,9 +277,18 @@ async def directory_csv(
         manager_id=manager_id,
         legal_entity_id=legal_entity_id,
         without_legal_entity=without_legal_entity,
+        project_id=project_id,
+        without_project=without_project,
         status_filter=status_filter,
         current_only=current_only,
         limit=EXPORT_LIMIT,
+    )
+    projects = dict(
+        (
+            await session.execute(
+                tenant_scoped(select(Project.id, Project.name), Project, user)
+            )
+        ).all()
     )
     companies = dict(
         (
@@ -284,6 +331,7 @@ async def directory_csv(
             "Name",
             "Designation",
             "Company",
+            "Project",
             "Department",
             "Location",
             "Work email",
@@ -305,6 +353,7 @@ async def directory_csv(
                     row.full_name,
                     row.designation,
                     companies.get(row.legal_entity_id),
+                    projects.get(row.project_id),
                     departments.get(row.department_id),
                     locations.get(row.location_id),
                     row.work_email,
@@ -328,6 +377,8 @@ async def directory_csv(
             "search": search,
             "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
             "without_legal_entity": without_legal_entity,
+            "project_id": str(project_id) if project_id else None,
+            "without_project": without_project,
             "department_id": str(department_id) if department_id else None,
             "location_id": str(location_id) if location_id else None,
             "manager_id": str(manager_id) if manager_id else None,
@@ -845,6 +896,125 @@ async def move_to_legal_entity(
     return EntityMoveResult(
         legal_entity_id=entity.id,
         legal_entity_name=entity.name,
+        effective_from=today,
+        moved=moved,
+        already_there=already,
+        skipped=skipped,
+    )
+
+
+async def move_to_project(
+    session: AsyncSession,
+    user: User,
+    payload: ProjectMoveRequest,
+    *,
+    request: Request | None = None,
+) -> ProjectMoveResult:
+    """HR puts several people on one project at once (or takes them off every project).
+
+    The project says whose work they do — a client's or the company's own —
+    and is what the directory, reports and the salary register group them by.
+    Their company, and so their payroll, does not change. Each move is in the
+    person's history as a project change dated today, with its own audit row,
+    in one transaction. Their own record and people who have left are skipped,
+    as in the move between companies.
+    """
+    project: Project | None = None
+    if payload.project_id is not None:
+        project = await session.scalar(
+            tenant_scoped(select(Project).where(Project.id == payload.project_id), Project, user)
+        )
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        if not project.active:
+            raise _unprocessable(
+                f"{project.name} is closed. Open it again under Settings → Organisation → "
+                "Projects first."
+            )
+
+    wanted = list(dict.fromkeys(payload.employee_ids))
+    found = {
+        row.id: row
+        for row in (
+            await session.scalars(
+                tenant_scoped(
+                    select(Employee).where(
+                        Employee.id.in_(wanted), Employee.deleted_at.is_(None)
+                    ),
+                    Employee,
+                    user,
+                )
+            )
+        ).all()
+    }
+
+    from app.services.attendance.service import local_today
+    from app.services.exit_workflow.last_days import agreed_last_days
+    from app.services.lifecycle import service as lifecycle
+
+    today = await local_today(session, user)
+    last_days = await agreed_last_days(session, user, set(found))
+    target = project.id if project is not None else None
+    label = project.code if project is not None else "no project"
+
+    moved = 0
+    already = 0
+    skipped: list[EntityMoveSkip] = []
+    for employee_id in wanted:
+        employee = found.get(employee_id)
+        if employee is None:
+            skipped.append(
+                EntityMoveSkip(employee_id=employee_id, reason="Not found in this workspace.")
+            )
+            continue
+        left_on = employee.date_of_exit or last_days.get(employee.id)
+        if employee.status is EmploymentStatus.EXITED or (left_on is not None and left_on < today):
+            skipped.append(
+                EntityMoveSkip(
+                    employee_id=employee.id,
+                    employee_code=employee.employee_code,
+                    name=employee.full_name,
+                    reason=(
+                        "Has left"
+                        + (f" (last working day {left_on:%d %b %Y})" if left_on else "")
+                        + ": the project they left on stays on their record."
+                    ),
+                )
+            )
+            continue
+        if user.employee_id is not None and employee.id == user.employee_id:
+            skipped.append(
+                EntityMoveSkip(
+                    employee_id=employee.id,
+                    employee_code=employee.employee_code,
+                    name=employee.full_name,
+                    reason="Your own record is changed by somebody else in HR.",
+                )
+            )
+            continue
+        if employee.project_id == target:
+            already += 1
+            continue
+        previous = employee.project_id
+        lifecycle.record_direct_edit(session, user, employee, {"project_id": target}, on=today)
+        employee.project_id = target
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="employee",
+            entity_id=employee.id,
+            actor=user,
+            changes={"project_id": {"from": str(previous), "to": str(target)}},
+            summary=f"Moved {employee.employee_code} to project {label}",
+            request=request,
+        )
+        moved += 1
+
+    await session.commit()
+    return ProjectMoveResult(
+        project_id=target,
+        project_name=project.name if project is not None else None,
         effective_from=today,
         moved=moved,
         already_there=already,

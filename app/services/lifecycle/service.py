@@ -57,6 +57,7 @@ from app.models.lifecycle import (
     SilencePolicy,
 )
 from app.models.org import Department, LegalEntity, Location
+from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.lifecycle import EventRead, ProbationPolicyIn, ProbationPolicyRead
 from app.schemas.payroll import EmployeeSalaryCreate
@@ -168,6 +169,7 @@ async def _check_new_references(
     """An event may only point the record at things in this workspace."""
     for key, model, label in (
         ("legal_entity_id", LegalEntity, "company"),
+        ("project_id", Project, "project"),
         ("location_id", Location, "location"),
         ("department_id", Department, "department"),
         ("manager_id", Employee, "manager"),
@@ -653,6 +655,8 @@ _LETTER_CATEGORY: dict[LifecycleEventType, LetterCategory] = {
     LifecycleEventType.DEPUTATION: LetterCategory.TRANSFER,
     LifecycleEventType.LOCATION_CHANGE: LetterCategory.TRANSFER,
     LifecycleEventType.DEPARTMENT_CHANGE: LetterCategory.TRANSFER,
+    # Deployed to a client's project: the same letter as a transfer, where there is one.
+    LifecycleEventType.PROJECT_CHANGE: LetterCategory.TRANSFER,
 }
 
 
@@ -726,6 +730,7 @@ async def _letter_manual_values(
             )
     for key, model, label in (
         ("legal_entity_id", LegalEntity, "new_company_name"),
+        ("project_id", Project, "new_project_name"),
         ("department_id", Department, "new_department_name"),
         ("location_id", Location, "new_location_name"),
     ):
@@ -1410,6 +1415,7 @@ async def state_on(
         "grade",
         "designation",
         "legal_entity_id",
+        "project_id",
         "department_id",
         "location_id",
         "manager_id",
@@ -1695,6 +1701,7 @@ async def resolve_probation_drift(
 #: one department change, as it would be if raised as an event.
 _DIRECT_EDIT_EVENTS: tuple[tuple[LifecycleEventType, frozenset[str]], ...] = (
     (LifecycleEventType.TRANSFER, frozenset({"legal_entity_id"})),
+    (LifecycleEventType.PROJECT_CHANGE, frozenset({"project_id"})),
     (LifecycleEventType.DEPARTMENT_CHANGE, frozenset({"department_id"})),
     (LifecycleEventType.LOCATION_CHANGE, frozenset({"location_id"})),
     (LifecycleEventType.MANAGER_CHANGE, frozenset({"manager_id"})),
@@ -1797,7 +1804,9 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
 
 
 #: Fields that are stored as ids or enums and arrive as strings.
-_UUID_FIELDS = frozenset({"legal_entity_id", "location_id", "department_id", "manager_id"})
+_UUID_FIELDS = frozenset(
+    {"legal_entity_id", "project_id", "location_id", "department_id", "manager_id"}
+)
 _DATE_FIELDS = frozenset({"probation_end_date"})
 
 

@@ -59,6 +59,7 @@ class LifecycleEventType(str, enum.Enum):
     LOCATION_CHANGE = "location_change"
     MANAGER_CHANGE = "manager_change"
     EMPLOYMENT_TYPE_CHANGE = "employment_type_change"
+    PROJECT_CHANGE = "project_change"
 
 
 class LifecycleStatus(str, enum.Enum):

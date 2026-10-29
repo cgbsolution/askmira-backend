@@ -30,7 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentStatus
+from app.models.org import LegalEntity
 from app.models.payroll_inputs import (
     AdjustmentCategory,
     AdjustmentKind,
@@ -107,6 +108,8 @@ class ProjectIn(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     client: str | None = Field(default=None, max_length=160)
     billable: bool = True
+    #: The company of the group that staffs it.
+    legal_entity_id: uuid.UUID | None = None
 
 
 class TaskIn(BaseModel):
@@ -151,7 +154,9 @@ def _task_read(t: ProjectTask) -> dict[str, Any]:
     return {"id": str(t.id), "project_id": str(t.project_id), "name": t.name, "active": t.active}
 
 
-def _project_read(p: Project, tasks: list[ProjectTask] | None = None) -> dict[str, Any]:
+def _project_read(
+    p: Project, tasks: list[ProjectTask] | None = None, headcount: int | None = None
+) -> dict[str, Any]:
     return {
         "id": str(p.id),
         "code": p.code,
@@ -159,8 +164,39 @@ def _project_read(p: Project, tasks: list[ProjectTask] | None = None) -> dict[st
         "client": p.client,
         "billable": p.billable,
         "active": p.active,
+        "legal_entity_id": str(p.legal_entity_id) if p.legal_entity_id else None,
         "tasks": [_task_read(t) for t in tasks or []],
+        # People on it who have not left; HR's list only.
+        "headcount": headcount,
     }
+
+
+async def project_headcounts(session: AsyncSession, user: User) -> dict[uuid.UUID, int]:
+    """People on each project who have not left."""
+    rows = await session.execute(
+        tenant_scoped(
+            select(Employee.project_id, func.count(Employee.id))
+            .where(
+                Employee.project_id.is_not(None),
+                Employee.deleted_at.is_(None),
+                Employee.status != EmploymentStatus.EXITED,
+            )
+            .group_by(Employee.project_id),
+            Employee,
+            user,
+        )
+    )
+    return {project_id: count for project_id, count in rows.all()}
+
+
+async def _check_entity(session: AsyncSession, user: User, entity_id: uuid.UUID | None) -> None:
+    if entity_id is None:
+        return
+    found = await session.scalar(
+        tenant_scoped(select(LegalEntity.id).where(LegalEntity.id == entity_id), LegalEntity, user)
+    )
+    if found is None:
+        raise _unprocessable("That company is not part of this workspace.")
 
 
 async def _tasks_by_project(
@@ -190,7 +226,11 @@ async def list_projects(
     tasks = await _tasks_by_project(
         session, user, {p.id for p in projects}, include_inactive=everything
     )
-    return [_project_read(p, tasks.get(p.id)) for p in projects]
+    counts = await project_headcounts(session, user) if permissions.is_hr(user) else None
+    return [
+        _project_read(p, tasks.get(p.id), counts.get(p.id, 0) if counts is not None else None)
+        for p in projects
+    ]
 
 
 async def _project(session: AsyncSession, user: User, project_id: uuid.UUID) -> Project:
@@ -288,6 +328,7 @@ async def create_project(
     )
     if taken is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That code is in use.")
+    await _check_entity(session, user, payload.legal_entity_id)
     row = Project(tenant_id=user.tenant_id, **payload.model_dump())
     session.add(row)
     await session.flush()
@@ -298,7 +339,7 @@ async def create_project(
         entity_type="project",
         entity_id=row.id,
         actor=user,
-        changes=_project_read(row),
+        changes={**_project_read(row), "tasks": []},
         summary=f"Added the project {row.code}",
         request=request,
     )
@@ -316,6 +357,8 @@ async def update_project(
     billable: bool | None,
     active: bool | None,
     request: Request | None,
+    legal_entity_id: uuid.UUID | None = None,
+    clear_legal_entity: bool = False,
 ) -> dict[str, Any]:
     row = await session.scalar(
         tenant_scoped(select(Project).where(Project.id == project_id), Project, user)
@@ -331,6 +374,11 @@ async def update_project(
     ):
         if value is not None:
             setattr(row, key, value)
+    if legal_entity_id is not None:
+        await _check_entity(session, user, legal_entity_id)
+        row.legal_entity_id = legal_entity_id
+    elif clear_legal_entity:
+        row.legal_entity_id = None
     await audit.record(
         session,
         tenant_id=user.tenant_id,

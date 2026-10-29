@@ -131,6 +131,11 @@ FIELDS: tuple[Field, ...] = (
     Field("department", "Department", "Job details", ("department", "department name", "dept"),
           hint="Matched by name; a new one is created when you are an admin.",
           example="Engineering"),
+    Field("project", "Project", "Job details",
+          ("project", "project name", "client project", "client"),
+          hint="The client's project they work on, or Internal. Matched by name or code; a new "
+               "one is created when you are an admin.",
+          example="Internal"),
     Field("location", "Location", "Job details",
           ("location", "work location", "office location", "branch"),
           hint="Matched by name; a new one is created when its state can be told.",

@@ -621,6 +621,14 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     employee_salary_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("employee_salaries.id", ondelete="SET NULL"), nullable=True
     )
+    #: The project they were on when the run was computed, kept with the
+    #: payslip so a month's register still says which project paid for whom
+    #: after they move on.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL", name="fk_payslips_project_id"),
+        nullable=True,
+    )
 
     working_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)
     paid_days: Mapped[float] = mapped_column(Numeric(5, 2), default=0, nullable=False)

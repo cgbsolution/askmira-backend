@@ -35,6 +35,7 @@ from app.models.payroll import (
     Payslip,
 )
 from app.models.tenant import Tenant
+from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.payroll_run import (
     InputNoticeRead,
@@ -277,13 +278,37 @@ _TOTAL_FIELDS = (
 )
 
 
+def payslip_project_id(payslip: Payslip, employee: Employee) -> uuid.UUID | None:
+    """The project a payslip was for: kept on it since projects began, else the person's."""
+    return payslip.project_id or employee.project_id
+
+
+async def project_names(
+    session: AsyncSession, user: User, ids: set[uuid.UUID | None]
+) -> dict[uuid.UUID, str]:
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    rows = await session.execute(
+        tenant_scoped(select(Project.id, Project.name).where(Project.id.in_(wanted)), Project, user)
+    )
+    return dict(rows.all())
+
+
 async def register(session: AsyncSession, user: User, run_id: uuid.UUID) -> RegisterRead:
     run = await get_run(session, user, run_id)
     variance_ids = {flag.get("employee_id") for flag in run.variance_flags or []}
-    rows = [
-        _register_row(payslip, employee, variance_ids)
-        for payslip, employee in await _payslips_with_people(session, user, run.id)
-    ]
+    people = await _payslips_with_people(session, user, run.id)
+    names = await project_names(
+        session, user, {payslip_project_id(payslip, employee) for payslip, employee in people}
+    )
+    rows = []
+    for payslip, employee in people:
+        row = _register_row(payslip, employee, variance_ids)
+        project_id = payslip_project_id(payslip, employee)
+        row.project_id = project_id
+        row.project_name = names.get(project_id) if project_id else None
+        rows.append(row)
     totals = {
         name: sum((getattr(row, name) for row in rows), start=_ZERO) for name in _TOTAL_FIELDS
     }

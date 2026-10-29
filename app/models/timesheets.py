@@ -45,14 +45,31 @@ from app.models.base import Base, TenantMixin, TimestampMixin, UUIDMixin
 
 
 class Project(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """Where somebody works: a client's project, or the company's own internal work.
+
+    One list for timesheets and for HR. A staffing company employs its people
+    through a legal entity and deploys most of them to clients' projects (DXC
+    INET, JK Paper, UIDAI…): the legal entity still pays them and files their
+    returns, the project says whose work they do — the salary register's
+    PROJECT column. "Internal" is a project too, not billable: the company's
+    own staff. Each employee carries their current one (`Employee.project_id`).
+    """
+
     __tablename__ = "projects"
     __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_projects_code"),)
 
     code: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     client: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    #: A client's project; the company's own internal work is not billable.
     billable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: The company of the group that staffs it, when the workspace has several.
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("legal_entities.id", ondelete="SET NULL", name="fk_projects_legal_entity_id"),
+        nullable=True,
+    )
 
 
 class ProjectTask(Base, UUIDMixin, TenantMixin, TimestampMixin):

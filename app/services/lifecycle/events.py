@@ -68,6 +68,7 @@ class EventType(str, enum.Enum):
     LOCATION_CHANGE = "location_change"
     MANAGER_CHANGE = "manager_change"
     EMPLOYMENT_TYPE_CHANGE = "employment_type_change"
+    PROJECT_CHANGE = "project_change"
 
     @property
     def affects_pay(self) -> bool:
@@ -104,17 +105,27 @@ CHANGED_FIELDS: dict[EventType, frozenset[str]] = {
     # A transfer may move somebody to another company of the group (a sister
     # company, a client the group staffs): their payroll and filings follow it.
     EventType.TRANSFER: frozenset(
-        {"legal_entity_id", "location_id", "department_id", "manager_id", "designation"}
+        {
+            "legal_entity_id",
+            "project_id",
+            "location_id",
+            "department_id",
+            "manager_id",
+            "designation",
+        }
     ),
     EventType.PROMOTION: frozenset({"grade", "designation", "manager_id"}),
     EventType.DEMOTION: frozenset({"grade", "designation"}),
     EventType.REDESIGNATION: frozenset({"designation"}),
-    EventType.DEPUTATION: frozenset({"location_id", "department_id", "manager_id"}),
+    # Deputed to a client's project: the project is what changes most often.
+    EventType.DEPUTATION: frozenset({"project_id", "location_id", "department_id", "manager_id"}),
     EventType.GRADE_CHANGE: frozenset({"grade"}),
     EventType.DEPARTMENT_CHANGE: frozenset({"department_id", "manager_id"}),
     EventType.LOCATION_CHANGE: frozenset({"location_id"}),
     EventType.MANAGER_CHANGE: frozenset({"manager_id"}),
     EventType.EMPLOYMENT_TYPE_CHANGE: frozenset({"employment_type", "notice_period_days"}),
+    # Onto a client's project, back to Internal, or between clients.
+    EventType.PROJECT_CHANGE: frozenset({"project_id"}),
 }
 
 

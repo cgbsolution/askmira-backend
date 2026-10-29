@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
@@ -25,7 +25,7 @@ from app.schemas.org import (
     LocationRead,
     LocationUpdate,
 )
-from app.services import custom_fields, custom_tables
+from app.services import custom_fields, custom_tables, projects
 from app.services import org as org_service
 
 router = APIRouter(prefix="/org", tags=["core-hr"])
@@ -270,3 +270,31 @@ async def delete_logo(user: CurrentUser, session: DbSession, request: Request) -
 
     tenant = await session.get(Tenant, user.tenant_id)
     await branding.remove_logo(session, user, tenant, request=request)
+
+
+# ── Projects: putting people on them in bulk ────────────────────────────────
+
+
+@router.post("/projects/from-departments", dependencies=ADMIN_ONLY)
+async def projects_from_departments(
+    payload: projects.FromDepartmentsIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Each chosen department becomes a project of the same name, with its people on it."""
+    return await projects.from_departments(session, user, payload, request=request)
+
+
+@router.post("/projects/assign-from-sheet", dependencies=ADMIN_ONLY)
+async def projects_from_sheet(
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+    apply: bool = Form(False),
+) -> dict[str, Any]:
+    """Everybody a sheet lists (Emp Code + Project) onto that project; a preview unless `apply`."""
+    from app.services.employee_import.sheet import MAX_BYTES
+
+    data = await file.read(MAX_BYTES + 1)
+    return await projects.assign_from_sheet(
+        session, user, data, file.filename or "sheet.xlsx", apply=apply, request=request
+    )

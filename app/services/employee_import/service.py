@@ -43,6 +43,7 @@ from app.models.audit import AuditAction
 from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
 from app.models.org import Department, LegalEntity, Location
 from app.models.pay_grades import PayGrade
+from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import (
@@ -122,6 +123,9 @@ class _Workspace:
     emails: dict[str, tuple[str, str]]
     department_codes: set[str]
     location_codes: set[str]
+    #: Project name or code -> (id, name); and every project code, for new ones.
+    projects: dict[str, tuple[uuid.UUID, str]]
+    project_codes: set[str]
     #: Active grade codes; None while the workspace keeps no grade list.
     grades: set[str] | None
     custom: dict[str, CustomFieldDefinition]
@@ -164,6 +168,13 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
         codes[row.employee_code.upper()] = row.id
         name = row.display_name or " ".join(filter(None, [row.first_name, row.last_name]))
         emails.setdefault(row.work_email.lower(), (row.employee_code, name))
+    projects: dict[str, tuple[uuid.UUID, str]] = {}
+    project_codes: set[str] = set()
+    for row in (await session.execute(scoped(Project, Project.id, Project.name,
+                                             Project.code))).all():
+        projects.setdefault(_key(row.name), (row.id, row.name))
+        projects.setdefault(_key(row.code), (row.id, row.name))
+        project_codes.add(row.code.upper())
     grade_rows = (await session.execute(scoped(PayGrade, PayGrade.code, PayGrade.active))).all()
     definitions = await custom_fields.employee_definitions(session, user)
     return _Workspace(
@@ -175,6 +186,8 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
         emails=emails,
         department_codes=department_codes,
         location_codes=location_codes,
+        projects=projects,
+        project_codes=project_codes,
         grades={row.code for row in grade_rows if row.active} if grade_rows else None,
         custom={key: d for key, d in definitions.items() if d.is_active},
     )
@@ -197,6 +210,7 @@ class _Row:
     record: dict[str, Any] = field(default_factory=dict)
     department: str | None = None
     location: str | None = None
+    project: str | None = None
     entity: str | None = None
     manager_code: str | None = None
     sections: list[Any] = field(default_factory=list)
@@ -602,6 +616,7 @@ def _read_row(
     row.record = record
 
     row.department = read.limited("department", 255)
+    row.project = read.limited("project", 160)
     row.location = read.limited("location", 255)
     row.entity = read.get("legal_entity")
     row.manager_code = read.get("manager", f.manager_code)
@@ -623,6 +638,7 @@ class _Plan:
     #: Names to create, keyed by `_key`.
     new_departments: dict[str, str]
     new_locations: dict[str, tuple[str, str]]
+    new_projects: dict[str, str]
     columns_used: list[ImportColumn]
 
 
@@ -681,7 +697,16 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
     # Departments and locations by name; what is missing is created (admin) or left blank.
     new_departments: dict[str, str] = {}
     new_locations: dict[str, tuple[str, str]] = {}
+    new_projects: dict[str, str] = {}
     for row in ready:
+        if row.project and _key(row.project) not in ws.projects:
+            if can_create:
+                new_projects.setdefault(_key(row.project), row.project)
+            else:
+                row.warnings.append(
+                    f"Project '{row.project}' is not in AskMira — left blank. An admin can "
+                    "import this file to create it."
+                )
         if row.department and _key(row.department) not in ws.departments:
             if can_create:
                 new_departments.setdefault(_key(row.department), row.department)
@@ -767,6 +792,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         can_create_org=can_create,
         new_departments=new_departments,
         new_locations=new_locations,
+        new_projects=new_projects,
         columns_used=columns_used,
     )
 
@@ -874,6 +900,7 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
         errors=sum(1 for row in plan.rows if row.outcome == "error"),
         with_warnings=sum(1 for row in ready if row.warnings),
         new_departments=sorted(plan.new_departments.values(), key=str.lower),
+        new_projects=sorted(plan.new_projects.values(), key=str.lower),
         new_locations=[
             ImportNewLocation(name=name, state_code=state)
             for name, state in sorted(plan.new_locations.values(), key=lambda v: v[0].lower())
@@ -965,6 +992,35 @@ async def run(
             request=request,
         )
 
+    projects_created: list[str] = []
+    taken = set(ws.project_codes)
+    for key, name in sorted(plan.new_projects.items()):
+        if not any(row.project and _key(row.project) == key for row in chosen):
+            continue
+        project = Project(
+            tenant_id=user.tenant_id,
+            name=name[:160],
+            code=_unique_code(name, taken),
+            # The company's own staff are not a client's billable work.
+            billable=_key(name) != "internal",
+            legal_entity_id=ws.only_entity,
+        )
+        session.add(project)
+        await session.flush()
+        ws.projects[key] = (project.id, project.name)
+        projects_created.append(project.name)
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.CREATE,
+            entity_type="project",
+            entity_id=project.id,
+            actor=user,
+            changes={"name": project.name, "code": project.code, "source": filename},
+            summary=f"Created project {project.code} while importing employees",
+            request=request,
+        )
+
     locations_created: list[str] = []
     taken = set(ws.location_codes)
     for key, (name, state) in sorted(plan.new_locations.items()):
@@ -1002,11 +1058,13 @@ async def run(
         record = dict(row.record)
         department = ws.departments.get(_key(row.department)) if row.department else None
         location = ws.locations.get(_key(row.location)) if row.location else None
+        project = ws.projects.get(_key(row.project)) if row.project else None
         employee = Employee(
             id=uuid.uuid4(),
             tenant_id=user.tenant_id,
             legal_entity_id=_entity_for(row, ws),
             department_id=department[0] if department else None,
+            project_id=project[0] if project else None,
             location_id=location[0] if location else None,
             is_active=record["status"] is not EmploymentStatus.EXITED,
             **record,
@@ -1089,6 +1147,7 @@ async def run(
         skipped=sum(1 for row in plan.rows if row.outcome == "skip"),
         failed=sum(1 for row in plan.rows if row.outcome == "error"),
         departments_created=departments_created,
+        projects_created=projects_created,
         locations_created=locations_created,
         rows=[_row_read(row) for row in plan.rows],
     )

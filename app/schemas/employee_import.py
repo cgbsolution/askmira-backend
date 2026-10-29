@@ -67,6 +67,8 @@ class ImportPreview(BaseModel):
     with_warnings: int
     #: Created by the import (an admin's import only; otherwise left blank and listed).
     new_departments: list[str]
+    #: Projects the file names that are not here yet; created on import (admin).
+    new_projects: list[str] = []
     new_locations: list[ImportNewLocation]
     columns_used: list[ImportColumn]
     columns_ignored: list[str]
@@ -90,6 +92,7 @@ class ImportResult(BaseModel):
     skipped: int
     failed: int
     departments_created: list[str]
+    projects_created: list[str] = []
     locations_created: list[str]
     rows: list[ImportRow]
     #: People already here whose full Aadhaar number was filled in.

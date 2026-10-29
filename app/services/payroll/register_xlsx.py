@@ -38,7 +38,7 @@ from app.models.org import Department, LegalEntity, Location
 from app.models.payroll import Payslip
 from app.models.user import User
 from app.services import audit
-from app.services.payroll.payslips import run_read
+from app.services.payroll.payslips import payslip_project_id, project_names, run_read
 from app.services.payroll.run import CLOSED_STATUSES, get_run, other_earnings_of, period_label
 
 _ZERO = Decimal(0)
@@ -169,6 +169,9 @@ async def register_xlsx(
         session, user, Department, {e.department_id for e in employees}
     )
     locations = await _names_by_id(session, user, Location, {e.location_id for e in employees})
+    projects = await project_names(
+        session, user, {payslip_project_id(payslip, employee) for payslip, employee in rows}
+    )
     payslips = [payslip for payslip, _ in rows]
 
     earnings = _ordered_lines(payslips, "earning", frozenset())
@@ -214,6 +217,7 @@ async def register_xlsx(
         ("Employee", "Employee code", "text"),
         ("Employee", "Employee name", "text"),
         ("Employee", "Department", "text"),
+        ("Employee", "Project", "text"),
         ("Employee", "Designation", "text"),
         ("Employee", "Location", "text"),
         ("Employee", "Date of joining", "date"),
@@ -289,6 +293,7 @@ async def register_xlsx(
             employee.employee_code,
             employee.full_name,
             departments.get(employee.department_id) if employee.department_id else None,
+            projects.get(payslip_project_id(payslip, employee)),
             employee.designation,
             locations.get(employee.location_id) if employee.location_id else None,
             employee.date_of_joining,

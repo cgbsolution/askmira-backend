@@ -986,6 +986,8 @@ async def compute_run(
                 run_id=run.id,
                 employee_id=employee.id,
                 employee_salary_id=salary.id,
+                # Which project they were on this month, kept with the payslip.
+                project_id=employee.project_id,
                 working_days=computation.working_days,
                 paid_days=computation.paid_days,
                 lop_days=computation.lop_days,

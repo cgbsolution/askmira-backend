@@ -19,6 +19,8 @@ from app.schemas.employee import (
     EmployeeUpdate,
     EntityMoveRequest,
     EntityMoveResult,
+    ProjectMoveRequest,
+    ProjectMoveResult,
 )
 from app.schemas.employee_import import ImportPreview, ImportResult
 from app.schemas.employee_profile import (
@@ -56,6 +58,8 @@ async def list_employees(
     without_legal_entity: bool = Query(
         default=False, description="Only people with no company: no payroll run pays them."
     ),
+    project_id: uuid.UUID | None = None,
+    without_project: bool = Query(default=False, description="Only people on no project."),
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     current: bool = Query(
         default=False, description="Everybody who has not left: every status but exited."
@@ -72,6 +76,8 @@ async def list_employees(
         manager_id=manager_id,
         legal_entity_id=legal_entity_id,
         without_legal_entity=without_legal_entity,
+        project_id=project_id,
+        without_project=without_project,
         status_filter=employment_status.value if employment_status else None,
         current_only=current,
         offset=(page - 1) * page_size,
@@ -98,6 +104,8 @@ async def export_directory(
     manager_id: uuid.UUID | None = None,
     legal_entity_id: uuid.UUID | None = None,
     without_legal_entity: bool = False,
+    project_id: uuid.UUID | None = None,
+    without_project: bool = False,
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     current: bool = False,
 ) -> Response:
@@ -111,6 +119,8 @@ async def export_directory(
         manager_id=manager_id,
         legal_entity_id=legal_entity_id,
         without_legal_entity=without_legal_entity,
+        project_id=project_id,
+        without_project=without_project,
         status_filter=employment_status.value if employment_status else None,
         current_only=current,
         request=request,
@@ -151,6 +161,18 @@ async def move_to_legal_entity(
     who have left are not moved.
     """
     return await employee_service.move_to_legal_entity(session, user, payload, request=request)
+
+
+@router.patch("/bulk/project", response_model=ProjectMoveResult, dependencies=HR_ONLY)
+async def move_to_project(
+    payload: ProjectMoveRequest, user: CurrentUser, session: DbSession, request: Request
+) -> ProjectMoveResult:
+    """Put the chosen people on one project (a client's or Internal), or on none.
+
+    Their company and payroll do not change. Each move is in their history as
+    a project change; people who have left are not moved.
+    """
+    return await employee_service.move_to_project(session, user, payload, request=request)
 
 
 # ── Import from a spreadsheet ───────────────────────────────────────────────

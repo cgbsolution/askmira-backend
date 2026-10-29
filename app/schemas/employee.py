@@ -24,6 +24,8 @@ class EmployeeBase(BaseModel):
     legal_entity_id: uuid.UUID | None = None
     location_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+    #: The project they work on: a client's, or the company's own (Internal).
+    project_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
     #: A second, dotted-line manager. Informational: no approval rights.
     dotted_line_manager_id: uuid.UUID | None = None
@@ -77,6 +79,8 @@ class EmployeeUpdate(BaseModel):
     legal_entity_id: uuid.UUID | None = None
     location_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+    #: The project they work on: a client's, or the company's own (Internal).
+    project_id: uuid.UUID | None = None
     manager_id: uuid.UUID | None = None
     dotted_line_manager_id: uuid.UUID | None = None
 
@@ -150,6 +154,7 @@ class EmployeeSummary(BaseModel):
     designation: str | None
     legal_entity_id: uuid.UUID | None = None
     department_id: uuid.UUID | None
+    project_id: uuid.UUID | None = None
     location_id: uuid.UUID | None
     manager_id: uuid.UUID | None
     dotted_line_manager_id: uuid.UUID | None = None
@@ -183,4 +188,24 @@ class EntityMoveResult(BaseModel):
     #: People who were in it already: nothing changed for them.
     already_there: int
     #: People not moved, each with why.
+    skipped: list[EntityMoveSkip]
+
+
+class ProjectMoveRequest(BaseModel):
+    """Put these people on one project, or on none (`project_id` null)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    project_id: uuid.UUID | None
+
+
+class ProjectMoveResult(BaseModel):
+    project_id: uuid.UUID | None
+    #: The project's name; None when they were taken off every project.
+    project_name: str | None
+    #: The day the moves are dated: the workspace's today.
+    effective_from: date
+    moved: int
+    already_there: int
     skipped: list[EntityMoveSkip]
