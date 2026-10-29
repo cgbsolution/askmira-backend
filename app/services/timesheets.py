@@ -394,6 +394,101 @@ async def update_project(
     return _project_read(row)
 
 
+def _project_references() -> list[tuple[type, Any]]:
+    """Every (model, column) beyond employees and the project's own tasks naming a project."""
+    from app.models.base import Base
+
+    found: list[tuple[type, Any]] = []
+    for mapper in Base.registry.mappers:
+        table = mapper.local_table
+        if table.name in ("employees", "project_tasks", "projects"):
+            continue
+        for column in table.columns:
+            if any(
+                fk.column.table.name == "projects" and fk.column.name == "id"
+                for fk in column.foreign_keys
+            ):
+                found.append((mapper.class_, column))
+    return found
+
+
+_REFERENCE_LABELS = {
+    "payslips": "payslips",
+    "timesheet_entries": "timesheet entries",
+    "hourly_rates": "hourly rates",
+}
+
+
+async def delete_project(
+    session: AsyncSession, user: User, project_id: uuid.UUID, *, request: Request | None
+) -> None:
+    """Delete a project nobody has been on and nothing has been booked or paid against.
+
+    Anything that would lose its project — a person (current or left), a
+    payslip, a timesheet row, an hourly rate — refuses it with what uses it;
+    closing the project is the way to retire one with a history.
+    """
+    row = await _project(session, user, project_id)
+    reasons: list[str] = []
+    current, left = 0, 0
+    for status_value, count in (
+        await session.execute(
+            tenant_scoped(
+                select(Employee.status, func.count(Employee.id))
+                .where(Employee.project_id == row.id, Employee.deleted_at.is_(None))
+                .group_by(Employee.status),
+                Employee,
+                user,
+            )
+        )
+    ).all():
+        if status_value is EmploymentStatus.EXITED:
+            left += count
+        else:
+            current += count
+    if current:
+        reasons.append(
+            f"{current} {'person works' if current == 1 else 'people work'} on it — move "
+            "them to another project first"
+        )
+    if left:
+        who = "person who has left was" if left == 1 else "people who have left were"
+        reasons.append(f"{left} {who} on it")
+    for model, column in _project_references():
+        stmt = select(func.count()).select_from(model).where(column == row.id)
+        count = await session.scalar(
+            tenant_scoped(stmt, model, user) if hasattr(model, "tenant_id") else stmt
+        )
+        if count:
+            name = model.__tablename__
+            label = _REFERENCE_LABELS.get(name, name.replace("_", " "))
+            reasons.append(f"{count} {label} name it")
+    if reasons:
+        tail = (
+            ""
+            if current and len(reasons) == 1
+            else " Close it instead: it stays on those records but is no longer offered."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{row.name} cannot be deleted: " + "; ".join(reasons) + "." + tail,
+        )
+    snapshot = _project_read(row)
+    await session.delete(row)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.DELETE,
+        entity_type="project",
+        entity_id=project_id,
+        actor=user,
+        changes=snapshot,
+        summary=f"Deleted the project {snapshot['code']}",
+        request=request,
+    )
+    await session.commit()
+
+
 # ── Weeks ───────────────────────────────────────────────────────────────────
 
 

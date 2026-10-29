@@ -1,7 +1,8 @@
 """Organisation structure endpoints: legal entities, locations, departments.
 
 Reads are reference material for every signed-in person. Writes are admin-only
-and audited; nothing is deleted — a closed office is deactivated.
+and audited. A closed office is deactivated; a department nothing uses any more
+can be deleted.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
@@ -174,6 +175,19 @@ async def update_department(
     return DepartmentRead.model_validate(row)
 
 
+@router.delete(
+    "/departments/{department_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=ADMIN_ONLY,
+)
+async def delete_department(
+    department_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """Delete a department nobody works in and nothing else names (409 says what does)."""
+    await org_service.delete_department(session, user, department_id, request=request)
+
+
 # ── Custom fields on the employee record ────────────────────────────────────
 
 
@@ -272,29 +286,12 @@ async def delete_logo(user: CurrentUser, session: DbSession, request: Request) -
     await branding.remove_logo(session, user, tenant, request=request)
 
 
-# ── Projects: putting people on them in bulk ────────────────────────────────
+# ── Projects: departments that stood in for them ────────────────────────────
 
 
 @router.post("/projects/from-departments", dependencies=ADMIN_ONLY)
 async def projects_from_departments(
     payload: projects.FromDepartmentsIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Each chosen department becomes a project of the same name, with its people on it."""
+    """Each chosen department becomes a project with its people on it; the department goes."""
     return await projects.from_departments(session, user, payload, request=request)
-
-
-@router.post("/projects/assign-from-sheet", dependencies=ADMIN_ONLY)
-async def projects_from_sheet(
-    user: CurrentUser,
-    session: DbSession,
-    request: Request,
-    file: UploadFile = File(...),
-    apply: bool = Form(False),
-) -> dict[str, Any]:
-    """Everybody a sheet lists (Emp Code + Project) onto that project; a preview unless `apply`."""
-    from app.services.employee_import.sheet import MAX_BYTES
-
-    data = await file.read(MAX_BYTES + 1)
-    return await projects.assign_from_sheet(
-        session, user, data, file.filename or "sheet.xlsx", apply=apply, request=request
-    )

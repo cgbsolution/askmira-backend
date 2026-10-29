@@ -83,6 +83,19 @@ async def update_project(
     )
 
 
+@router.delete(
+    "/projects/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+async def delete_project(
+    project_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """Delete a project with no history (409 says what uses it; close it instead)."""
+    await timesheets.delete_project(session, user, project_id, request=request)
+
+
 class TaskUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

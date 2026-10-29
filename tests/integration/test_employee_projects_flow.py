@@ -2,9 +2,9 @@
 
 CGB employs everybody through one legal entity; about half work on clients'
 projects (DXC INET, JK Paper, UIDAI…), the rest are Internal. The project is
-set per person, moved in bulk, made from the departments they used to stand in
-for, or read from the old HRMS's salary register (Emp Code + PROJECT). Payroll
-keeps the project on each payslip, and the salary register shows it.
+set on each person's profile, moved in bulk, or made from the departments that
+used to stand in for it (which then leave Departments). Payroll keeps the
+project on each payslip, and the salary register shows it.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from openpyxl import Workbook, load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.approval_rules import ApprovalProcess, ApprovalRule
 from app.models.audit import AuditLog
 from app.models.employee import Employee, EmploymentStatus
 from app.models.lifecycle import LifecycleEvent, LifecycleEventType
@@ -57,7 +58,7 @@ async def _employee(
         employee_code=code,
         first_name=code.title(),
         work_email=f"{code.lower()}-{uuid.uuid4().hex[:6]}@cgb.test",
-        status=EmploymentStatus.ACTIVE,
+        status=extra.pop("status", EmploymentStatus.ACTIVE),
         date_of_joining=date(2024, 1, 1),
         department_id=department.id if department else None,
         project_id=project.id if project else None,
@@ -67,29 +68,6 @@ async def _employee(
     await session.commit()
     await session.refresh(row)
     return row
-
-
-def _register_sheet(rows: list[tuple[str, str | None]]) -> bytes:
-    """Like the old HRMS's salary register: title rows, then S#, Emp Code, Name, PROJECT."""
-    book = Workbook()
-    sheet = book.active
-    sheet["A1"] = "CGBiz Solutions Private Limited"
-    sheet["A2"] = "SALARY DETAIL FOR THE MONTH OF SEP-26"
-    for col, head in enumerate(["S#", "Emp Code", "Name", "Designation", "PROJECT"], start=1):
-        sheet.cell(row=6, column=col, value=head)
-    for i, (code, project) in enumerate(rows, start=1):
-        sheet.cell(row=6 + i, column=1, value=i)
-        sheet.cell(row=6 + i, column=2, value=code)
-        sheet.cell(row=6 + i, column=3, value=f"Person {code}")
-        sheet.cell(row=6 + i, column=4, value="Consultant")
-        sheet.cell(row=6 + i, column=5, value=project)
-    sheet.cell(row=7 + len(rows), column=1, value="Grand Total:-")
-    out = io.BytesIO()
-    book.save(out)
-    return out.getvalue()
-
-
-# ── The list of projects ────────────────────────────────────────────────────
 
 
 async def test_a_project_names_its_company_and_counts_its_people(
@@ -266,7 +244,7 @@ async def test_a_project_on_the_record_is_checked_and_kept(
     assert event.new_values == {"project_id": str(internal.id)}
 
 
-# ── From departments, and from the old register ─────────────────────────────
+# ── Departments that stood in for projects; deleting either ─────────────────
 
 
 async def test_departments_that_stood_in_for_projects_become_projects(
@@ -279,106 +257,183 @@ async def test_departments_that_stood_in_for_projects_become_projects(
     sub = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Sana Sub")
     internal = Department(tenant_id=tenant.id, name="Internal", code="INTERNAL")
     external = Department(tenant_id=tenant.id, name="External", code="EXTERNAL")
+    external_1 = Department(tenant_id=tenant.id, name="External 1", code="EXTERNAL-1")
     engineering = Department(tenant_id=tenant.id, name="Engineering", code="ENG")
-    session.add_all([internal, external, engineering])
+    session.add_all([internal, external, external_1, engineering])
+    await session.flush()
+    # A department under External 1 keeps it from being deleted: it is closed.
+    session.add(
+        Department(tenant_id=tenant.id, name="North", code="NORTH", parent_id=external_1.id)
+    )
     await session.commit()
     a = await _employee(session, tenant, "I001", department=internal)
-    b = await _employee(session, tenant, "E001", department=external)
+    gone = await _employee(
+        session,
+        tenant,
+        "E001",
+        department=external,
+        status=EmploymentStatus.EXITED,
+        date_of_exit=date(2025, 3, 31),
+    )
     c = await _employee(session, tenant, "G001", department=engineering)
+    own = await session.get(Employee, admin.employee_id)
+    own.department_id = internal.id  # the admin's own record moves too
+    await session.commit()
 
     url = f"{API}/org/projects/from-departments"
-    body = {"department_ids": [str(internal.id), str(external.id)], "clear_department": True}
+    body = {"department_ids": [str(internal.id), str(external.id), str(external_1.id)]}
     assert (await client.post(url, json=body, headers=bearer(sub))).status_code == 403
     response = await client.post(url, json=body, headers=bearer(admin))
     assert response.status_code == 200, response.text
     result = response.json()
-    assert sorted(result["projects_created"]) == ["External", "Internal"]
-    assert result["moved"] == 2
+    assert sorted(result["projects_created"]) == ["External", "External 1", "Internal"]
+    assert result["moved"] == 2 and result["leavers_moved"] == 1
+    assert result["departments_deleted"] == ["External", "Internal"]
+    assert [row["name"] for row in result["departments_closed"]] == ["External 1"]
+    assert result["departments_closed"][0]["reasons"] == ["1 department sits under it"]
 
     projects = {p.code: p for p in (await session.scalars(select(Project))).all()}
     assert projects["INTERNAL"].billable is False  # the company's own staff
     assert projects["EXTERNAL"].billable is True
     assert projects["INTERNAL"].legal_entity_id == legal_entity.id  # the only company
-    for person, code in ((a, "INTERNAL"), (b, "EXTERNAL")):
+    for person, code in ((a, "INTERNAL"), (own, "INTERNAL"), (gone, "EXTERNAL")):
         await session.refresh(person)
         assert person.project_id == projects[code].id
         assert person.department_id is None
     await session.refresh(c)
     assert c.project_id is None and c.department_id == engineering.id
 
-    # Again: nothing new, nothing moved.
-    again = (await client.post(url, json=body, headers=bearer(admin))).json()
-    assert again["projects_created"] == [] and again["moved"] == 0
-    assert sorted(again["projects_reused"]) == ["External", "Internal"]
+    # Departments now hold functions only.
+    a_id, gone_id = a.id, gone.id
+    fresh = select(Department).execution_options(populate_existing=True)
+    left = {d.code: d for d in (await session.scalars(fresh)).all()}
+    assert set(left) == {"EXTERNAL-1", "ENG", "NORTH"}
+    assert left["EXTERNAL-1"].is_active is False
+    assert left["ENG"].is_active is True
+
+    # A current employee's move is in their history; a leaver's only in the audit log.
+    with_history = set(
+        (
+            await session.scalars(
+                select(LifecycleEvent.employee_id).where(
+                    LifecycleEvent.employee_id.in_([a_id, gone_id])
+                )
+            )
+        ).all()
+    )
+    assert with_history == {a_id}
+    deleted = await session.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.entity_type == "department", AuditLog.action == "delete")
+    )
+    assert deleted == 2
+
+    # Again (External 1 is still there, closed): nothing new, nothing moved.
+    again = await client.post(url, json={"department_ids": [body["department_ids"][2]]},
+                              headers=bearer(admin))
+    assert again.status_code == 200, again.text
+    assert again.json()["projects_created"] == [] and again.json()["moved"] == 0
+    assert again.json()["projects_reused"] == ["External 1"]
 
 
-async def test_the_old_salary_register_puts_everybody_on_their_project(
+async def test_a_department_is_deleted_only_when_nothing_uses_it(
     session: AsyncSession,
     client: httpx.AsyncClient,  # noqa: F811
     tenant: Tenant,
-    legal_entity: LegalEntity,
 ) -> None:
     admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Deepak Admin")
-    internal = await _project(session, tenant, "INTERNAL", "Internal", billable=False)
-    first = await _employee(session, tenant, "CDL23-232")
-    second = await _employee(session, tenant, "DIC-CNST1")
-    third = await _employee(session, tenant, "INT-CNST54", project=internal)
-    await _employee(session, tenant, "AB0031")
-    sheet = _register_sheet(
-        [
-            ("CDL23-232", "JK Paper Limited"),
-            ("DIC-CNST1", "Data  Intensity"),  # spaces as typed
-            ("INT-CNST54", "Internal"),
-            ("AB0031", None),
-            ("ZZZ-999", "UIDAI"),
-            ("CDL23-232", "Powergrid"),
-        ]
+    sub = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Sana Sub")
+    staffed = Department(tenant_id=tenant.id, name="Finance", code="FIN")
+    emptied = Department(tenant_id=tenant.id, name="External", code="EXTERNAL")
+    ruled = Department(tenant_id=tenant.id, name="Sales", code="SAL")
+    session.add_all([staffed, emptied, ruled])
+    await session.commit()
+    await _employee(session, tenant, "F001", department=staffed)
+    leaver = await _employee(
+        session,
+        tenant,
+        "X001",
+        department=emptied,
+        status=EmploymentStatus.EXITED,
+        date_of_exit=date(2025, 1, 31),
     )
-    files = {"file": ("Salary Register - Sep-26.xlsx", sheet, XLSX)}
-    url = f"{API}/org/projects/assign-from-sheet"
+    session.add(
+        ApprovalRule(
+            tenant_id=tenant.id,
+            process=ApprovalProcess.LEAVE,
+            name="Sales leave",
+            department_ids=[str(ruled.id)],
+        )
+    )
+    await session.commit()
 
-    preview = await client.post(url, files=files, data={"apply": "false"}, headers=bearer(admin))
-    assert preview.status_code == 200, preview.text
-    checked = preview.json()
-    outcomes = {(row["employee_code"], row["outcome"]) for row in checked["rows"]}
-    assert ("CDL23-232", "assign") in outcomes
-    assert ("CDL23-232", "duplicate") in outcomes
-    assert ("INT-CNST54", "unchanged") in outcomes
-    assert ("AB0031", "blank") in outcomes
-    assert ("ZZZ-999", "unknown") in outcomes
-    assert checked["new_projects"] == ["Data Intensity", "JK Paper Limited"]
-    # The preview changed nothing.
-    assert await session.scalar(select(func.count()).select_from(Project)) == 1
+    def url(key: uuid.UUID) -> str:
+        return f"{API}/org/departments/{key}"
 
-    applied = await client.post(url, files=files, data={"apply": "true"}, headers=bearer(admin))
-    assert applied.status_code == 200, applied.text
-    assert applied.json()["moved"] == 2
-    projects = {p.name: p for p in (await session.scalars(select(Project))).all()}
-    assert set(projects) == {"Internal", "JK Paper Limited", "Data Intensity"}
-    assert projects["JK Paper Limited"].legal_entity_id == legal_entity.id
-    await session.refresh(first)
-    await session.refresh(second)
-    await session.refresh(third)
-    assert first.project_id == projects["JK Paper Limited"].id
-    assert second.project_id == projects["Data Intensity"].id
-    assert third.project_id == internal.id
+    assert (await client.delete(url(emptied.id), headers=bearer(sub))).status_code == 403
+    refused = await client.delete(url(staffed.id), headers=bearer(admin))
+    assert refused.status_code == 409
+    assert "1 person works in it" in refused.json()["detail"]
+    refused = await client.delete(url(ruled.id), headers=bearer(admin))
+    assert refused.status_code == 409
+    assert "named on 1 approval rule" in refused.json()["detail"]
+    assert (await client.delete(url(uuid.uuid4()), headers=bearer(admin))).status_code == 404
 
-    # The same file again changes nothing.
-    again = (
-        await client.post(url, files=files, data={"apply": "true"}, headers=bearer(admin))
-    ).json()
-    assert again["moved"] == 0 and again["projects_created"] == []
+    # Only a leaver: deleted, and the department comes off their record.
+    done = await client.delete(url(emptied.id), headers=bearer(admin))
+    assert done.status_code == 204, done.text
+    still_there = select(func.count()).select_from(Department).where(Department.id == emptied.id)
+    assert await session.scalar(still_there) == 0
+    await session.refresh(leaver)
+    assert leaver.department_id is None
+    row = await session.scalar(
+        select(AuditLog).where(AuditLog.entity_type == "department", AuditLog.action == "delete")
+    )
+    assert row is not None and leaver.employee_code in str(row.changes)
 
-    # A sheet without a project column is refused, saying what it needs.
-    book = Workbook()
-    book.active.append(["Emp Code", "Name"])
-    book.active.append(["CDL23-232", "Someone"])
-    out = io.BytesIO()
-    book.save(out)
-    bad = {"file": ("people.xlsx", out.getvalue(), XLSX)}
-    response = await client.post(url, files=bad, data={"apply": "false"}, headers=bearer(admin))
-    assert response.status_code == 422
-    assert "Project" in response.json()["detail"]
+
+async def test_a_project_is_deleted_only_when_nobody_has_been_on_it(
+    session: AsyncSession,
+    client: httpx.AsyncClient,  # noqa: F811
+    tenant: Tenant,
+) -> None:
+    admin = await make_person(session, tenant, role=UserRole.ADMIN, name="Deepak Admin")
+    sub = await make_person(session, tenant, role=UserRole.SUB_ADMIN, name="Sana Sub")
+    busy = await _project(session, tenant, "DXC", "DXC INET")
+    history = await _project(session, tenant, "JIO", "Jio")
+    unused = await _project(session, tenant, "TYPO", "Typo project")
+    await _employee(session, tenant, "D001", project=busy)
+    await _employee(
+        session,
+        tenant,
+        "J001",
+        project=history,
+        status=EmploymentStatus.EXITED,
+        date_of_exit=date(2025, 1, 31),
+    )
+
+    def url(project: Project) -> str:
+        return f"{API}/timesheets/projects/{project.id}"
+
+    assert (await client.delete(url(unused), headers=bearer(sub))).status_code == 403
+    refused = await client.delete(url(busy), headers=bearer(admin))
+    assert refused.status_code == 409
+    assert "move them to another project" in refused.json()["detail"]
+    refused = await client.delete(url(history), headers=bearer(admin))
+    assert refused.status_code == 409
+    assert "Close it instead" in refused.json()["detail"]
+
+    done = await client.delete(url(unused), headers=bearer(admin))
+    assert done.status_code == 204, done.text
+    remaining = set((await session.scalars(select(Project.code))).all())
+    assert remaining == {"DXC", "JIO"}
+    deleted = await session.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.entity_type == "project", AuditLog.action == "delete")
+    )
+    assert deleted == 1
 
 
 async def test_the_employee_import_reads_a_project_column(

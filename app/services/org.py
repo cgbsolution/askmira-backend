@@ -38,9 +38,12 @@ __all__ = [
     "create_department",
     "create_legal_entity",
     "create_location",
+    "delete_department",
+    "department_blockers",
     "list_departments",
     "list_legal_entities",
     "list_locations",
+    "remove_department",
     "update_department",
     "update_legal_entity",
     "update_location",
@@ -425,3 +428,160 @@ async def update_department(
     await session.commit()
     await session.refresh(department)
     return department
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Deleting a department
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+#: What a record that names a department is called, one and many.
+_RECORD_NAMES: dict[str, tuple[str, str]] = {
+    "positions": ("position", "positions"),
+    "requisitions": ("hiring requisition", "hiring requisitions"),
+    "headcount_budgets": ("headcount budget", "headcount budgets"),
+    "offers": ("offer", "offers"),
+    "onboarding_templates": ("onboarding checklist", "onboarding checklists"),
+    "expense_claims": ("expense claim", "expense claims"),
+    "expense_policy_violations": ("expense policy flag", "expense policy flags"),
+    "increment_recommendations": ("increment recommendation", "increment recommendations"),
+    "admin_scopes": ("sub-admin access rule", "sub-admin access rules"),
+    "approval_rules": ("approval rule", "approval rules"),
+}
+
+
+def _records(table: str, count: int) -> str:
+    one, many = _RECORD_NAMES.get(table, (table.replace("_", " "), table.replace("_", " ")))
+    return f"{count} {one if count == 1 else many}"
+
+
+def _department_references() -> list[tuple[type, Any]]:
+    """Every (model, column) outside employees and departments that points at a department."""
+    from app.models.base import Base
+
+    found: list[tuple[type, Any]] = []
+    for mapper in Base.registry.mappers:
+        table = mapper.local_table
+        if table.name in ("employees", "departments"):
+            continue
+        for column in table.columns:
+            if any(
+                fk.column.table.name == "departments" and fk.column.name == "id"
+                for fk in column.foreign_keys
+            ):
+                found.append((mapper.class_, column))
+    return found
+
+
+async def department_blockers(
+    session: AsyncSession, user: User, department: Department, *, people_too: bool = True
+) -> list[str]:
+    """What still uses a department, so deleting it would break or lose something.
+
+    People who have left do not block it: their department is cleared. People
+    still working, departments under it, and anything else that names it do —
+    positions, requisitions, budgets, approval rules, sub-admin access.
+    """
+    from app.models.access import AdminScope
+    from app.models.approval_rules import ApprovalRule
+
+    reasons: list[str] = []
+    if people_too:
+        current = await session.scalar(
+            tenant_scoped(
+                select(func.count(Employee.id)).where(
+                    Employee.department_id == department.id,
+                    Employee.deleted_at.is_(None),
+                    Employee.status != EmploymentStatus.EXITED,
+                ),
+                Employee,
+                user,
+            )
+        )
+        if current:
+            reasons.append(
+                f"{current} {'person works' if current == 1 else 'people work'} in it — move "
+                "them to another department (or to Projects) first"
+            )
+    children = await session.scalar(
+        tenant_scoped(
+            select(func.count(Department.id)).where(Department.parent_id == department.id),
+            Department,
+            user,
+        )
+    )
+    if children:
+        reasons.append(
+            f"{children} {'department sits' if children == 1 else 'departments sit'} under it"
+        )
+    used_by: list[str] = []
+    for model, column in _department_references():
+        stmt = select(func.count()).select_from(model).where(column == department.id)
+        count = await session.scalar(
+            tenant_scoped(stmt, model, user) if hasattr(model, "tenant_id") else stmt
+        )
+        if count:
+            used_by.append(_records(model.__tablename__, count))
+    marker = [str(department.id)]
+    for model in (AdminScope, ApprovalRule):
+        count = await session.scalar(
+            tenant_scoped(
+                select(func.count(model.id)).where(model.department_ids.contains(marker)),
+                model,
+                user,
+            )
+        )
+        if count:
+            used_by.append(_records(model.__tablename__, count))
+    if used_by:
+        reasons.append("it is named on " + ", ".join(used_by))
+    return reasons
+
+
+async def remove_department(
+    session: AsyncSession, user: User, department: Department, *, request: Request | None
+) -> None:
+    """Delete a department nothing uses any more. People who left lose it from their record.
+
+    The caller has checked `department_blockers` and commits.
+    """
+    leavers = (
+        await session.scalars(
+            tenant_scoped(
+                select(Employee).where(Employee.department_id == department.id), Employee, user
+            )
+        )
+    ).all()
+    for person in leavers:
+        person.department_id = None
+    await session.flush()
+    snapshot = {
+        "name": department.name,
+        "code": department.code,
+        "people_cleared": [person.employee_code for person in leavers],
+    }
+    await session.delete(department)
+    await _record(
+        session,
+        user,
+        action=AuditAction.DELETE,
+        entity_type="department",
+        entity_id=department.id,
+        summary=f"Deleted department {department.code}",
+        changes=snapshot,
+        request=request,
+    )
+
+
+async def delete_department(
+    session: AsyncSession, user: User, department_id: uuid.UUID, *, request: Request | None
+) -> None:
+    department = await _get(session, user, Department, department_id, "Department")
+    reasons = await department_blockers(session, user, department)
+    if reasons:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{department.name} cannot be deleted: " + "; ".join(reasons) + ".",
+        )
+    await remove_department(session, user, department, request=request)
+    await session.commit()
