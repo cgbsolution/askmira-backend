@@ -112,6 +112,10 @@ class PriorPay:
     one_off_taxable: Decimal = ZERO
     tds_deducted: Decimal = ZERO
     months_on_record: int = 0
+    #: Earlier months of the year paid on the previous payroll (before the
+    #: company's first AskMira run), counted at the salary structure. Their tax
+    #: is taken as deducted at the year's steady monthly rate.
+    months_from_structure: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +207,24 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
     projection = project(without_one_off, context.rules)
 
     rounding = str(context.rules.get("tds_rounding", "nearest_rupee"))
+    # Months paid on the previous payroll had tax deducted there; AskMira has no
+    # record of how much. Taken at the year's steady rate (the liability spread
+    # over every month of the year worked), the remaining months deduct that
+    # same rate rather than the whole year's tax again.
+    months_in_year = prior.months_from_structure + prior.months_on_record
+    months_in_year += context.months_remaining
+    assumed_earlier = (
+        _money(
+            projection.annual_tax_liability
+            * Decimal(prior.months_from_structure)
+            / Decimal(months_in_year)
+        )
+        if prior.months_from_structure
+        else ZERO
+    )
     recurring_amount = monthly_tds(
         annual_liability=projection.annual_tax_liability,
-        already_deducted=prior.tds_deducted,
+        already_deducted=prior.tds_deducted + assumed_earlier,
         months_remaining=context.months_remaining,
         previous_employer_tds=context.base.previous_tds,
         rounding=rounding,
@@ -237,6 +256,7 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
         "months_remaining": context.months_remaining,
         "projection": {
             "earlier_months_taxable_pay": str(_money(prior.recurring_taxable)),
+            "earlier_months_from_salary_structure": prior.months_from_structure,
             "this_month_taxable_pay": str(_money(figures.taxable_this_month)),
             "later_months_projected_at": str(_money(figures.taxable_full_month)),
             "later_months": int(later),
@@ -248,6 +268,7 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
         "annual_liability_excluding_this_month_one_off": str(projection.annual_tax_liability),
         "annual_liability": str(with_projection.annual_tax_liability),
         "tds_already_deducted": str(_money(prior.tds_deducted)),
+        "tds_assumed_deducted_by_previous_payroll": str(assumed_earlier),
         "recurring_tds": str(recurring_amount),
         "one_off_tds": str(one_off_amount),
         "tds": str(amount),

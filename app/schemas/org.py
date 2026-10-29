@@ -160,6 +160,10 @@ class LegalEntityRead(BaseModel):
     default_shift_id: uuid.UUID | None = None
     salary_days_basis: str = "calendar"
     salary_fixed_days: int | None = None
+    #: The company's logo (a path on the API), or None when it has none.
+    logo_url: str | None = None
+    #: People in this company who have not left. Set on the list only.
+    headcount: int | None = None
 
 
 # ── Locations ───────────────────────────────────────────────────────────────

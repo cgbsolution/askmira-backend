@@ -42,3 +42,10 @@ def test_the_right_follows_the_method_and_the_path() -> None:
 def test_rights_default_to_everything() -> None:
     assert all(AreaRights().allows(r) for r in ("can_view", "can_approve", "can_export"))
     assert not AreaRights(can_approve=False).allows("can_approve")
+
+
+def test_moving_people_to_another_company_is_an_edit() -> None:
+    """It changes existing records, so a sub-admin needs Edit on People, not Create."""
+    path = "/api/v1/employees/bulk/legal-entity"
+    assert area_for_path(path) == "people"
+    assert required_right("PATCH", path) == "can_edit"

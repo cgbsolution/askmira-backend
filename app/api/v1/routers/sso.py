@@ -497,8 +497,12 @@ async def _complete_login(
     await session.commit()
     await session.refresh(user)
     user.has_reports = await has_direct_reports(session, user)
+    from app.services import branding
+
+    company = await branding.company_for(session, user, tenant)
 
     return AuthResponse(
+        company=company,
         # The role in this token is the one AskMira holds, never one the IdP
         # asserted.
         access_token=create_access_token(

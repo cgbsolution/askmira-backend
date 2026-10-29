@@ -35,6 +35,7 @@ from app.schemas.auth import (
     UserRead,
 )
 from app.services import auth as auth_service
+from app.services import branding
 from app.services import mfa as mfa_service
 from app.services.hiring.public_guard import Limit, throttle
 from app.services.identity import directory, social
@@ -254,7 +255,12 @@ async def current_session(user: CurrentUser, session: DbSession) -> SessionRead:
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace not found")
-    return SessionRead(user=UserRead.model_validate(user), tenant=TenantRead.model_validate(tenant))
+    company = await branding.company_for(session, user, tenant)
+    return SessionRead(
+        user=UserRead.model_validate(user),
+        tenant=TenantRead.model_validate(tenant),
+        company=company,
+    )
 
 
 @router.post(

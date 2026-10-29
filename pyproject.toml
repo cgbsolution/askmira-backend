@@ -39,6 +39,7 @@ ignore = [
 # Reuses the payroll-run flow's `org` fixture: pytest injects it by parameter
 # name, which pyflakes reads as redefining the imported name.
 "tests/integration/test_payroll_inputs_flow.py" = ["F811"]
+"tests/integration/test_tds_mid_year_flow.py" = ["F811"]
 # Imports the hiring portal's fixtures, which pytest then injects by name.
 "tests/integration/test_candidate_comms_flow.py" = ["F811"]
 "tests/integration/test_talent_pools_flow.py" = ["F811"]

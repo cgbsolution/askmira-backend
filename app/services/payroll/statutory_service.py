@@ -38,6 +38,7 @@ from app.models.payroll import (
 )
 from app.models.user import User
 from app.services import audit
+from app.services.payroll import companies
 from app.services.payroll import registers as register_formats
 from app.services.payroll.statutory import (
     PfElection,
@@ -368,11 +369,14 @@ async def compute_bonus_for_year(
     )
     config = rule_set.rules
 
+    # The company's people on the last day of the year, which is not always
+    # the company on their record today (a move made after the year ended).
+    in_company = await companies.members_on(session, user, legal_entity_id, year_end)
     employees = (
         await session.scalars(
             tenant_scoped(
                 select(Employee).where(
-                    Employee.legal_entity_id == legal_entity_id,
+                    Employee.id.in_(in_company),
                     Employee.deleted_at.is_(None),
                 ),
                 Employee,

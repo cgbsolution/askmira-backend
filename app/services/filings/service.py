@@ -66,7 +66,7 @@ from app.services.filings.records import (
     TdsSalaryDetail,
 )
 from app.services.filings.wages import WageError, compute_ecr_wages
-from app.services.payroll import statutory_service
+from app.services.payroll import companies, statutory_service
 
 __all__ = [
     "FilingBlockedError",
@@ -1350,7 +1350,13 @@ async def _annexure_ii(
     This is where slice 07's declarations and exemptions reach a statutory
     return. The latest snapshot for the year is used — it is the one computed
     against the proofs actually submitted.
+
+    The people are those in this company on the last day of the year, not on
+    the day the return is generated: somebody moved to another company of the
+    group in April is still this company's for the year just ended.
     """
+    _, year_end = statutory_service.financial_year_bounds(financial_year)
+    in_company = await companies.members_on(session, user, legal_entity_id, year_end)
     rows = (
         await session.execute(
             tenant_scoped(
@@ -1358,7 +1364,7 @@ async def _annexure_ii(
                 .join(Employee, TaxComputationSnapshot.employee_id == Employee.id)
                 .where(
                     TaxComputationSnapshot.financial_year == financial_year,
-                    Employee.legal_entity_id == legal_entity_id,
+                    Employee.id.in_(in_company),
                 )
                 .order_by(
                     Employee.employee_code,

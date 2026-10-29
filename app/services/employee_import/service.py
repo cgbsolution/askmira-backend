@@ -710,7 +710,17 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
             else:
                 new_locations.setdefault(_key(row.location), (row.location, state))
         if row.entity and _key(row.entity) not in ws.entities and ws.only_entity is None:
-            row.warnings.append(f"Company '{row.entity}' is not a legal entity here — left blank.")
+            row.warnings.append(
+                f"Company '{row.entity}' is not a legal entity here — left blank. No payroll "
+                "run pays them until one is set (Settings → Organisation, then People → "
+                "Employees → Move to company)."
+            )
+        elif not row.entity and ws.only_entity is None and ws.entities:
+            row.warnings.append(
+                "No company given and there are several — left blank. No payroll run pays "
+                "them until one is set: fill the Company column, or use People → Employees → "
+                "Move to company afterwards."
+            )
 
     # Reporting lines: to somebody in the file or already here.
     in_file = {row.code.upper() for row in ready if row.code}

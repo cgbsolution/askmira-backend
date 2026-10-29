@@ -93,8 +93,12 @@ async def _unique_slug(session: AsyncSession, base: str) -> str:
 
 
 async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> AuthResponse:
+    from app.services import branding
+
     user.has_reports = await has_direct_reports(session, user)
+    company = await branding.company_for(session, user, tenant)
     return AuthResponse(
+        company=company,
         access_token=create_access_token(
             user_id=str(user.id), tenant_id=str(user.tenant_id), role=user.role.value
         ),

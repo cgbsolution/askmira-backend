@@ -56,7 +56,7 @@ from app.models.lifecycle import (
     ProbationReminder,
     SilencePolicy,
 )
-from app.models.org import Department, Location
+from app.models.org import Department, LegalEntity, Location
 from app.models.user import User
 from app.schemas.lifecycle import EventRead, ProbationPolicyIn, ProbationPolicyRead
 from app.schemas.payroll import EmployeeSalaryCreate
@@ -166,6 +166,7 @@ async def _check_new_references(
 ) -> None:
     """An event may only point the record at things in this workspace."""
     for key, model, label in (
+        ("legal_entity_id", LegalEntity, "company"),
         ("location_id", Location, "location"),
         ("department_id", Department, "department"),
         ("manager_id", Employee, "manager"),
@@ -719,6 +720,7 @@ async def _letter_manual_values(
                 else Decimal(0)
             )
     for key, model, label in (
+        ("legal_entity_id", LegalEntity, "new_company_name"),
         ("department_id", Department, "new_department_name"),
         ("location_id", Location, "new_location_name"),
     ):
@@ -1381,6 +1383,7 @@ async def state_on(
     tracked = {
         "grade",
         "designation",
+        "legal_entity_id",
         "department_id",
         "location_id",
         "manager_id",
@@ -1665,6 +1668,7 @@ async def resolve_probation_drift(
 #: filed is not filed again, so a department and manager change together is
 #: one department change, as it would be if raised as an event.
 _DIRECT_EDIT_EVENTS: tuple[tuple[LifecycleEventType, frozenset[str]], ...] = (
+    (LifecycleEventType.TRANSFER, frozenset({"legal_entity_id"})),
     (LifecycleEventType.DEPARTMENT_CHANGE, frozenset({"department_id"})),
     (LifecycleEventType.LOCATION_CHANGE, frozenset({"location_id"})),
     (LifecycleEventType.MANAGER_CHANGE, frozenset({"manager_id"})),
@@ -1767,7 +1771,7 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
 
 
 #: Fields that are stored as ids or enums and arrive as strings.
-_UUID_FIELDS = frozenset({"location_id", "department_id", "manager_id"})
+_UUID_FIELDS = frozenset({"legal_entity_id", "location_id", "department_id", "manager_id"})
 _DATE_FIELDS = frozenset({"probation_end_date"})
 
 

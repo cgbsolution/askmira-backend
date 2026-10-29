@@ -61,6 +61,11 @@ def _narrow(state: ORMExecuteState) -> None:
     scope = _CURRENT.get()
     if scope is None or not (state.is_select or state.is_update or state.is_delete):
         return
+    # A check that must see everybody it is about, whoever runs it — such as
+    # payroll's "already paid by another company" at approval — opts out with
+    # `.execution_options(hr_scope_bypass=True)`. Tenant scoping still applies.
+    if state.execution_options.get("hr_scope_bypass"):
+        return
     from app.models.employee import Employee
 
     allowed = scope.employee_ids

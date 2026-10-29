@@ -17,6 +17,8 @@ from app.schemas.employee import (
     EmployeeSelfUpdate,
     EmployeeSummary,
     EmployeeUpdate,
+    EntityMoveRequest,
+    EntityMoveResult,
 )
 from app.schemas.employee_import import ImportPreview, ImportResult
 from app.schemas.employee_profile import (
@@ -49,6 +51,10 @@ async def list_employees(
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = Query(
+        default=False, description="Only people with no company: no payroll run pays them."
+    ),
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     current: bool = Query(
         default=False, description="Everybody who has not left: every status but exited."
@@ -63,6 +69,8 @@ async def list_employees(
         department_id=department_id,
         location_id=location_id,
         manager_id=manager_id,
+        legal_entity_id=legal_entity_id,
+        without_legal_entity=without_legal_entity,
         status_filter=employment_status.value if employment_status else None,
         current_only=current,
         offset=(page - 1) * page_size,
@@ -85,6 +93,8 @@ async def export_directory(
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = False,
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     current: bool = False,
 ) -> Response:
@@ -96,6 +106,8 @@ async def export_directory(
         department_id=department_id,
         location_id=location_id,
         manager_id=manager_id,
+        legal_entity_id=legal_entity_id,
+        without_legal_entity=without_legal_entity,
         status_filter=employment_status.value if employment_status else None,
         current_only=current,
         request=request,
@@ -122,6 +134,20 @@ async def create_employee(
 ) -> EmployeeRead:
     employee = await employee_service.create_employee(session, user, payload, request)
     return EmployeeRead.model_validate(employee)
+
+
+@router.patch("/bulk/legal-entity", response_model=EntityMoveResult, dependencies=HR_ONLY)
+async def move_to_legal_entity(
+    payload: EntityMoveRequest, user: CurrentUser, session: DbSession, request: Request
+) -> EntityMoveResult:
+    """Put the chosen people in one company (legal entity), all in one go.
+
+    A PATCH, so a sub-admin needs the Edit right on People (it changes existing
+    records). Their payroll from this month, their filings and the logo they
+    see follow the company. Each move is in their history as a transfer; people
+    who have left are not moved.
+    """
+    return await employee_service.move_to_legal_entity(session, user, payload, request=request)
 
 
 # ── Import from a spreadsheet ───────────────────────────────────────────────

@@ -14,9 +14,13 @@ So this works the year out the way a payroll run does (`run.py`,
 - **months already paid** come from approved payslips — what was actually paid,
   after loss of pay, at the salary of the day;
 - **months still to come** are projected at the salary in force in each of them,
-  prorated for the days employed in a joining or leaving month;
-- **Professional Tax** is what the payslips deducted, then the latest month's
-  amount (or the state's slab, before any payslip exists) for the months to come;
+  prorated for the days employed in a joining or leaving month — and so are
+  earlier months no payslip covers, for a year that began on another payroll. A
+  month worked before the first salary record is counted at that record, and a
+  note says so (`months_from_structure`, which payroll runs use too);
+- **Professional Tax** is the salary master's fixed amount when it has one, else
+  what the payslips deducted, then the latest month's amount (or the state's
+  slab, before any payslip exists) for the months to come;
 - **one-off pay** that payroll paid (bonus, incentives, perquisites) is counted
   from the payslips' input lines, except the kinds the tax projection's own
   income sources already report (arrears, in-service encashment), which would
@@ -38,6 +42,7 @@ from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.payroll import (
+    STATUTORY_OVERRIDE_CODES,
     ComponentType,
     EmployeeSalary,
     PayrollRuleSet,
@@ -49,7 +54,7 @@ from app.models.user import User
 from app.services.payroll import statutory_service
 from app.services.payroll.engine import PayrollRuleError, professional_tax_slab
 
-__all__ = ["YearPay", "year_pay"]
+__all__ = ["StructureMonths", "YearPay", "month_span", "months_from_structure", "year_pay"]
 
 ZERO = Decimal(0)
 _CLOSED = (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID)
@@ -185,12 +190,76 @@ async def year_pay(
         if latest_pt is None or period > latest_pt[0]:
             latest_pt = (period, _d(payslip.professional_tax))
 
-    # ── Months still to come ────────────────────────────────────────────────
+    # ── Months still to come (and any earlier month no payslip covers) ──────
+    rest = await months_from_structure(
+        session,
+        user,
+        employee,
+        fy_start=fy_start,
+        fy_end=fy_end,
+        skip=paid_months,
+        latest_pt=latest_pt[1] if latest_pt is not None else None,
+    )
+    notes.extend(rest.notes)
+
+    return YearPay(
+        taxable_salary=totals["taxable"] + rest.taxable,
+        basic_plus_da=totals["basic"] + rest.basic_plus_da,
+        hra=totals["hra"] + rest.hra,
+        employer_nps=totals["nps"] + rest.employer_nps,
+        professional_tax=totals["pt"] + rest.professional_tax,
+        one_off_taxable=totals["one_off"],
+        months_paid=len(paid_months),
+        months_projected=len(rest.months),
+        notes=notes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StructureMonths:
+    """Months worked out from the salary structure, not from payslips."""
+
+    taxable: Decimal = ZERO
+    basic_plus_da: Decimal = ZERO
+    hra: Decimal = ZERO
+    employer_nps: Decimal = ZERO
+    professional_tax: Decimal = ZERO
+    #: `(year, month)` of every month counted.
+    months: tuple[tuple[int, int], ...] = ()
+    #: Months worked with no salary record in force, counted at the first later one.
+    assumed: tuple[tuple[int, int], ...] = ()
+    notes: tuple[str, ...] = ()
+
+
+async def months_from_structure(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    *,
+    fy_start: date,
+    fy_end: date,
+    skip: set[tuple[int, int]] | frozenset[tuple[int, int]] = frozenset(),
+    before: tuple[int, int] | None = None,
+    latest_pt: Decimal | None = None,
+) -> StructureMonths:
+    """The year's months no payslip covers, at the salary in force in each.
+
+    Prorated for the days employed in a joining or leaving month. A month the
+    person worked with no salary record yet (the salary master was loaded from a
+    later revision) is counted at the first later record and listed in
+    `assumed`: leaving it out would project too little income and deduct too
+    little tax, which the employer answers for.
+
+    `skip` is the months a payslip already covers; `before` stops at a month,
+    for a payroll run that wants only the months earlier than its own.
+    Professional Tax is the salary master's fixed amount when it has one (as
+    payroll deducts it), else `latest_pt`, else the state's slab.
+    """
     salaries = (
         await session.scalars(
             tenant_scoped(
                 select(EmployeeSalary)
-                .where(EmployeeSalary.employee_id == employee_id)
+                .where(EmployeeSalary.employee_id == employee.id)
                 .order_by(EmployeeSalary.effective_from),
                 EmployeeSalary,
                 user,
@@ -199,7 +268,11 @@ async def year_pay(
     ).all()
     joined = employee.date_of_joining
     leaves = await _last_day(session, user, employee)
-    projected = 0
+    totals = {"taxable": ZERO, "basic": ZERO, "hra": ZERO, "nps": ZERO, "pt": ZERO}
+    counted: list[tuple[int, int]] = []
+    assumed: list[tuple[int, int]] = []
+    assumed_from: date | None = None
+    notes: list[str] = []
     state: str | None = None
     state_known = False
 
@@ -209,7 +282,9 @@ async def year_pay(
         month_start, month_end = date(year, month, 1), date(year, month, days)
         current = (year, month)
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-        if current in paid_months:
+        if before is not None and current >= before:
+            break
+        if current in skip:
             continue
         first = max(month_start, joined) if joined else month_start
         last = min(month_end, leaves) if leaves else month_end
@@ -224,10 +299,18 @@ async def year_pay(
             None,
         )
         if salary is None:
-            continue
+            salary = next((s for s in salaries if s.effective_from > last), None)
+            if salary is None:
+                continue
+            assumed.append(current)
+            assumed_from = assumed_from or salary.effective_from
         share = Decimal((last - first).days + 1) / Decimal(days)
         month_taxable = month_gross = ZERO
+        fixed_pt: Decimal | None = None
         for component in salary.components:
+            if STATUTORY_OVERRIDE_CODES.get(component.component_code) == "pt":
+                fixed_pt = _d(component.monthly_amount)
+                continue
             amount = _d(component.monthly_amount) * share
             if component.component_type is ComponentType.EARNING:
                 month_gross += amount
@@ -240,10 +323,13 @@ async def year_pay(
             elif component.component_code in _EMPLOYER_NPS_CODES:
                 totals["nps"] += amount
         totals["taxable"] += month_taxable
-        projected += 1
+        counted.append(current)
 
+        if fixed_pt is not None:
+            totals["pt"] += fixed_pt
+            continue
         if latest_pt is not None:
-            totals["pt"] += latest_pt[1]
+            totals["pt"] += latest_pt
             continue
         # No payslip yet this year: the state's slab on the month's pay.
         if not state_known:
@@ -267,14 +353,29 @@ async def year_pay(
             notes.append(f"Professional Tax is not projected: {exc}")
             state = None
 
-    return YearPay(
-        taxable_salary=totals["taxable"],
+    if assumed and assumed_from is not None:
+        notes.append(
+            f"No salary is recorded for {month_span(assumed)}: counted at the salary from "
+            f"{assumed_from:%d %b %Y}. Add the earlier salary in the salary master if it "
+            "was different."
+        )
+    return StructureMonths(
+        taxable=totals["taxable"],
         basic_plus_da=totals["basic"],
         hra=totals["hra"],
         employer_nps=totals["nps"],
         professional_tax=totals["pt"],
-        one_off_taxable=totals["one_off"],
-        months_paid=len(paid_months),
-        months_projected=projected,
-        notes=notes,
+        months=tuple(counted),
+        assumed=tuple(assumed),
+        notes=tuple(notes),
     )
+
+
+def month_span(months: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> str:
+    """'Apr-Aug 2026', or 'Sep 2026' for one month. Months in order."""
+    first, last = date(*months[0], 1), date(*months[-1], 1)
+    if first == last:
+        return f"{first:%b %Y}"
+    if first.year == last.year:
+        return f"{first:%b}-{last:%b %Y}"
+    return f"{first:%b %Y}-{last:%b %Y}"

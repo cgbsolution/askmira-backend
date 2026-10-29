@@ -58,6 +58,10 @@ class LegalEntity(Base, UUIDMixin, TenantMixin, TimestampMixin):
     registered_address: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    #: This company's logo in file storage. After sign-in, its people see it at
+    #: the top of the portal and on the app's Home instead of the workspace's.
+    logo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     #: The work week (a shift and its weekly offs) for this company's people
     #: who have no shift or roster of their own. Before the workspace default.
     #: One company in a group works six days, another five, another alternate

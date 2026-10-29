@@ -142,6 +142,20 @@ class TenantRead(BaseModel):
     linked_products: dict = {}
 
 
+class CompanyBrand(BaseModel):
+    """The company the signed-in person works for, as the portal and app draw it.
+
+    Their legal entity's name and logo (a sister company, a client the group
+    staffs); the workspace's logo when that company has none; the workspace's
+    name for somebody with no company.
+    """
+
+    name: str
+    #: A path on the API, or None: then the portal and the app show the name.
+    logo_url: str | None = None
+    legal_entity_id: uuid.UUID | None = None
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
@@ -158,6 +172,7 @@ class AuthResponse(TokenPair):
 
     user: UserRead
     tenant: TenantRead
+    company: CompanyBrand | None = None
 
 
 class SessionRead(BaseModel):
@@ -165,3 +180,5 @@ class SessionRead(BaseModel):
 
     user: UserRead
     tenant: TenantRead
+    #: Their own company's name and logo, drawn at the top of the portal and app.
+    company: CompanyBrand | None = None

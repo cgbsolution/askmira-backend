@@ -40,8 +40,8 @@ from sqlalchemy.pool import NullPool  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.core.crypto import EncryptionError  # noqa: E402
-from app.models import types as coltypes  # noqa: E402
 from app.core.deps import tenant_scoped  # noqa: E402
+from app.models import types as coltypes  # noqa: E402
 from app.models.attendance import AttendanceDay, PunchDirection, Shift  # noqa: E402
 from app.models.employee import Employee, EmploymentStatus  # noqa: E402
 from app.models.leave import LeavePolicy, LeaveRequest, LeaveRequestStatus, LeaveType  # noqa: E402

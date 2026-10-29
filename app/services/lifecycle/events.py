@@ -101,7 +101,11 @@ class EventType(str, enum.Enum):
 CHANGED_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.CONFIRMATION: frozenset({"status", "probation_end_date"}),
     EventType.PROBATION_EXTENSION: frozenset({"probation_end_date"}),
-    EventType.TRANSFER: frozenset({"location_id", "department_id", "manager_id", "designation"}),
+    # A transfer may move somebody to another company of the group (a sister
+    # company, a client the group staffs): their payroll and filings follow it.
+    EventType.TRANSFER: frozenset(
+        {"legal_entity_id", "location_id", "department_id", "manager_id", "designation"}
+    ),
     EventType.PROMOTION: frozenset({"grade", "designation", "manager_id"}),
     EventType.DEMOTION: frozenset({"grade", "designation"}),
     EventType.REDESIGNATION: frozenset({"designation"}),
@@ -255,6 +259,28 @@ def consequences_of(facts: EventFacts) -> list[Consequence]:
     it when payroll runs is discovering it from the employee.
     """
     out: list[Consequence] = []
+
+    new_company = facts.new_values.get("legal_entity_id")
+    if new_company and new_company != facts.previous_values.get("legal_entity_id"):
+        out.append(
+            Consequence(
+                kind="company",
+                severity=Severity.PAYROLL,
+                message=(
+                    f"They move to another company on {facts.effective_from:%d %b %Y}. A "
+                    "month is paid by the company somebody belongs to on its last day, so "
+                    f"the new company's payroll pays all of {facts.effective_from:%B %Y} and "
+                    "every month after, and files their PF, ESI, Professional Tax and TDS "
+                    "for those months under its registration numbers; earlier months stay "
+                    "with their current company. A month is never split between the two."
+                ),
+                action_required=(
+                    "Date a move the 1st of a month for a clean change. Check the new "
+                    "company's work week and salary days, and that it has the registration "
+                    "numbers its returns need."
+                ),
+            )
+        )
 
     previous = facts.previous_location
     new = facts.new_location

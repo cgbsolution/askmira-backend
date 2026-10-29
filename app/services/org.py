@@ -14,19 +14,20 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.attendance import Shift
 from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentStatus
 from app.models.org import Department, LegalEntity, Location
 from app.models.user import User
 from app.schemas.org import (
     DepartmentCreate,
     DepartmentUpdate,
     LegalEntityCreate,
+    LegalEntityRead,
     LegalEntityUpdate,
     LocationCreate,
     LocationUpdate,
@@ -119,6 +120,31 @@ async def _record(
 async def list_legal_entities(session: AsyncSession, user: User) -> list[LegalEntity]:
     stmt = tenant_scoped(select(LegalEntity).order_by(LegalEntity.name), LegalEntity, user)
     return list((await session.scalars(stmt)).all())
+
+
+async def entity_headcounts(session: AsyncSession, user: User) -> dict[uuid.UUID, int]:
+    """People in each company who have not left (exited and deleted records excluded)."""
+    stmt = tenant_scoped(
+        select(Employee.legal_entity_id, func.count(Employee.id))
+        .where(
+            Employee.legal_entity_id.is_not(None),
+            Employee.deleted_at.is_(None),
+            Employee.status != EmploymentStatus.EXITED,
+        )
+        .group_by(Employee.legal_entity_id),
+        Employee,
+        user,
+    )
+    return {entity_id: count for entity_id, count in (await session.execute(stmt)).all()}
+
+
+def entity_read(entity: LegalEntity, *, headcount: int | None = None) -> LegalEntityRead:
+    """The read shape, with the logo's URL and (on the list) the headcount."""
+    from app.services import branding
+
+    return LegalEntityRead.model_validate(entity).model_copy(
+        update={"logo_url": branding.entity_logo_url(entity), "headcount": headcount}
+    )
 
 
 async def list_locations(session: AsyncSession, user: User) -> list[Location]:

@@ -38,8 +38,10 @@ ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 @router.get("/legal-entities", response_model=list[LegalEntityRead])
 async def list_legal_entities(user: CurrentUser, session: DbSession) -> list[LegalEntityRead]:
+    """Every company in the workspace, each with its logo and how many people it has."""
     rows = await org_service.list_legal_entities(session, user)
-    return [LegalEntityRead.model_validate(row) for row in rows]
+    headcount = await org_service.entity_headcounts(session, user)
+    return [org_service.entity_read(row, headcount=headcount.get(row.id, 0)) for row in rows]
 
 
 @router.post(
@@ -52,7 +54,7 @@ async def create_legal_entity(
     payload: LegalEntityCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> LegalEntityRead:
     row = await org_service.create_legal_entity(session, user, payload, request=request)
-    return LegalEntityRead.model_validate(row)
+    return org_service.entity_read(row)
 
 
 @router.patch(
@@ -66,7 +68,36 @@ async def update_legal_entity(
     request: Request,
 ) -> LegalEntityRead:
     row = await org_service.update_legal_entity(session, user, entity_id, payload, request=request)
-    return LegalEntityRead.model_validate(row)
+    return org_service.entity_read(row)
+
+
+@router.post("/legal-entities/{entity_id}/logo", dependencies=ADMIN_ONLY)
+async def upload_entity_logo(
+    entity_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """This company's logo: its people see it at the top of the portal and app. PNG/JPEG, 1 MB."""
+    from app.services import branding
+
+    data = await file.read(branding.LOGO_MAX_BYTES + 1)
+    return await branding.save_entity_logo(session, user, entity_id, data, request=request)
+
+
+@router.delete(
+    "/legal-entities/{entity_id}/logo",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=ADMIN_ONLY,
+)
+async def delete_entity_logo(
+    entity_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    from app.services import branding
+
+    await branding.remove_entity_logo(session, user, entity_id, request=request)
 
 
 # ── Locations ───────────────────────────────────────────────────────────────

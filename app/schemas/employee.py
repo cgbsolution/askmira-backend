@@ -148,9 +148,37 @@ class EmployeeSummary(BaseModel):
     #: A plain string for the same reason as `EmployeeRead.work_email`.
     work_email: str
     designation: str | None
+    legal_entity_id: uuid.UUID | None = None
     department_id: uuid.UUID | None
     location_id: uuid.UUID | None
     manager_id: uuid.UUID | None
     dotted_line_manager_id: uuid.UUID | None = None
     photo_url: str | None
     status: EmploymentStatus
+
+
+class EntityMoveRequest(BaseModel):
+    """Put these people in one company (legal entity)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    legal_entity_id: uuid.UUID
+
+
+class EntityMoveSkip(BaseModel):
+    employee_id: uuid.UUID
+    employee_code: str | None = None
+    name: str | None = None
+    reason: str
+
+
+class EntityMoveResult(BaseModel):
+    legal_entity_id: uuid.UUID
+    legal_entity_name: str
+    #: People moved into the company now.
+    moved: int
+    #: People who were in it already: nothing changed for them.
+    already_there: int
+    #: People not moved, each with why.
+    skipped: list[EntityMoveSkip]

@@ -44,11 +44,13 @@ from __future__ import annotations
 
 import calendar
 import uuid
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,8 +73,8 @@ from app.services import audit
 from app.services.attendance import service as attendance_service
 from app.services.attendance.service import AttendanceLockError
 from app.services.notifications.dispatch import notify
+from app.services.payroll import companies, statutory_service
 from app.services.payroll import salary_days as salary_days_rules
-from app.services.payroll import statutory_service
 from app.services.payroll.engine import (
     PayrollInput,
     PayrollRuleError,
@@ -95,6 +97,7 @@ from app.services.payroll.tds import (
     months_remaining,
     without_income_paid_by_payroll,
 )
+from app.services.payroll.year_pay import StructureMonths, month_span, months_from_structure
 from app.services.tax import service as tax_service
 from app.services.tax.computation import TaxRuleError
 from app.services.tax.sources import PAID_THROUGH_PAYROLL
@@ -311,13 +314,16 @@ async def create_run(
                     "before then is paid by the regular run itself."
                 ),
             )
+        # The company that pays a month is the one they belong to on its last
+        # day, which is not always the one on their record today.
+        in_company = await companies.members_on(session, user, legal_entity_id, end)
         found = set(
             (
                 await session.scalars(
                     tenant_scoped(
                         select(Employee.id).where(
                             Employee.id.in_(employee_ids),
-                            Employee.legal_entity_id == legal_entity_id,
+                            Employee.id.in_(in_company),
                             Employee.deleted_at.is_(None),
                         ),
                         Employee,
@@ -331,8 +337,9 @@ async def create_run(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
-                    f"{len(missing)} of the chosen employees are not on {entity.name}'s "
-                    "payroll. A run pays one legal entity's employees."
+                    f"{len(missing)} of the chosen employees were not on {entity.name}'s "
+                    f"payroll on {end:%d %b %Y}. A run pays one legal entity's employees: "
+                    "a month is paid by the company somebody belongs to on its last day."
                 ),
             )
         scope = [str(e) for e in dict.fromkeys(employee_ids)]
@@ -485,12 +492,16 @@ async def compute_run(
     # Everyone employed for any part of the period. Someone whose exit was
     # processed before this run is computed is still owed the days they worked
     # in it; `employment_window` below pays exactly those days.
+    # The company is the one they belong to on the period's last day, not the
+    # one on their record now: a transfer dated 1 October leaves September
+    # with the old company even when September is run on the 3rd.
+    in_company = await companies.members_on(session, user, run.legal_entity_id, end)
     employees = (
         await session.scalars(
             tenant_scoped(
                 select(Employee)
                 .where(
-                    Employee.legal_entity_id == run.legal_entity_id,
+                    Employee.id.in_(in_company),
                     Employee.deleted_at.is_(None),
                     or_(
                         Employee.status.in_(
@@ -566,12 +577,30 @@ async def compute_run(
     prior_pay, prior_lines = await _prior_financial_year(
         session, user, run, employee_ids=employee_ids, fy_start=fy_start, fy_end=fy_end
     )
+    # A year that began on another payroll: its earlier months are income too.
+    tax_notices: list[str] = []
+    if tds_usable:
+        prior_pay, tax_notices = await _earlier_months_from_structure(
+            session, user, run, employees, prior_pay, fy_start=fy_start, fy_end=fy_end
+        )
 
     month_paid = (
         {}
         if is_regular
         else await _month_paid_so_far(session, user, run, frozenset(e.id for e in employees))
     )
+    # Somebody moved here from another company of the group after that
+    # company's run paid them for this month: the month is paid once.
+    paid_elsewhere = await paid_by_another_company(session, user, run, employee_ids)
+    # Those this run will not pay leave the inputs' scope as well, so an
+    # arrear batch or a bonus that includes them is held with its notice
+    # rather than marked paid by a run that never paid them.
+    skipped_movers = frozenset(
+        person
+        for person in paid_elsewhere
+        if is_regular or not (month_paid.get(person) or {}).get("has_full")
+    )
+    moves = await companies.moves_between(session, user, run.legal_entity_id, start, end)
 
     collected = await collect_inputs(
         session,
@@ -581,7 +610,7 @@ async def compute_run(
             period_start=start,
             period_end=end,
             period=f"{run.period_year}-{run.period_month:02d}",
-            employee_ids=employee_ids,
+            employee_ids=employee_ids - skipped_movers,
             fy_start=fy_start,
             fy_end=fy_end,
             prior_input_lines=prior_lines,
@@ -643,6 +672,45 @@ async def compute_run(
     employment_notices: list[str] = []
     # People named on a supplementary run who turned out to have nothing due.
     unpaid_notices: list[str] = []
+    # People another company of the group already paid for this month, and
+    # moves between companies dated inside it.
+    moved_notices: list[str] = []
+    month_label = f"{calendar.month_name[run.period_month]} {run.period_year}"
+    if moves:
+        codes = dict(
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(Employee.id, Employee.employee_code).where(
+                            Employee.id.in_({move.employee_id for move in moves})
+                        ),
+                        Employee,
+                        user,
+                    )
+                )
+            ).all()
+        )
+        this_company = str(run.legal_entity_id)
+        for move in moves:
+            code = codes.get(move.employee_id, "Somebody")
+            if move.to_id == this_company and move.employee_id in in_company:
+                moved_notices.append(
+                    f"{code} moved here from {move.from_company} on {move.on:%d %b %Y}. "
+                    f"This run pays all of {month_label}: a month is paid by the company "
+                    "somebody belongs to on its last day."
+                )
+            elif move.from_id == this_company and move.employee_id not in in_company:
+                moved_notices.append(
+                    f"{code} moved to {move.to_company} on {move.on:%d %b %Y}, so this run "
+                    f"does not pay them: the company they belong to on {end:%d %b} pays all "
+                    f"of {month_label}."
+                )
+            else:
+                moved_notices.append(
+                    f"{code} moved from {move.from_company} to {move.to_company} on "
+                    f"{move.on:%d %b %Y}. A month is paid by the company somebody belongs "
+                    "to on its last day."
+                )
     leaving_on = await _agreed_last_days(session, user, employee_ids)
 
     for employee in employees:
@@ -696,6 +764,16 @@ async def compute_run(
                     pt_already_deducted=paid["pt"],
                     esi_covered=paid["esi_covered"],
                 )
+
+        if supplementary is None and employee.id in paid_elsewhere:
+            moved_notices.append(
+                f"{employee.employee_code} is not paid by this run: "
+                f"{paid_elsewhere[employee.id]}'s "
+                f"approved run already paid them for {calendar.month_name[run.period_month]} "
+                f"{run.period_year}, before they moved to this company. Their move takes "
+                "effect in this company's next month."
+            )
+            continue
 
         salary = await active_salary_on(session, user, employee.id, run.effective_date)
         if salary is None and left_on is not None and left_on < end:
@@ -998,11 +1076,29 @@ async def compute_run(
         + [
             {
                 "kind": "notice",
+                "key": "company_move",
+                "label": "Moved between companies",
+                "message": message,
+            }
+            for message in moved_notices
+        ]
+        + [
+            {
+                "kind": "notice",
                 "key": "salary_days",
                 "label": "Salary days",
                 "message": message,
             }
             for message in days_notices
+        ]
+        + [
+            {
+                "kind": "notice",
+                "key": "tds_earlier_months",
+                "label": "Income tax",
+                "message": message,
+            }
+            for message in tax_notices
         ]
         + [
             {
@@ -1146,6 +1242,56 @@ async def approve_run(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"A run in status '{run.status.value}' cannot be approved",
+        )
+    # Two companies' runs computed before either was approved can both hold
+    # somebody who moved between them. The first approved pays the month.
+    # Approvals for one month wait for each other (the lock ends with this
+    # transaction), so two at the same moment cannot both pass the check; and
+    # the check sees everybody on the run, not only the approver's own scope.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"payroll-approve:{run.tenant_id}:{run.period_year}-{run.period_month}"},
+    )
+    full_payslips = (
+        (
+            await session.execute(
+                tenant_scoped(
+                    select(Payslip.employee_id).where(
+                        Payslip.run_id == run.id, Payslip.is_supplementary.is_(False)
+                    ),
+                    Payslip,
+                    user,
+                ).execution_options(hr_scope_bypass=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    elsewhere = await paid_by_another_company(
+        session, user, run, frozenset(full_payslips), whole_run=True
+    )
+    if elsewhere:
+        codes = (
+            (
+                await session.execute(
+                    tenant_scoped(
+                        select(Employee.employee_code).where(Employee.id.in_(list(elsewhere))),
+                        Employee,
+                        user,
+                    ).execution_options(hr_scope_bypass=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{len(elsewhere)} employee(s) on this run were already paid for this month by "
+                f"another company's approved run ({', '.join(sorted(set(elsewhere.values())))}): "
+                f"{', '.join(sorted(codes)[:10])}. Recompute this run — it leaves them out — "
+                "then approve."
+            ),
         )
 
     unacknowledged = [flag for flag in (run.variance_flags or []) if not flag.get("acknowledged")]
@@ -1656,6 +1802,125 @@ async def _prior_financial_year(
     return prior, lines
 
 
+async def _earlier_months_from_structure(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    employees: Sequence[Employee],
+    prior: dict[uuid.UUID, PriorPay],
+    *,
+    fy_start: date,
+    fy_end: date,
+) -> tuple[dict[uuid.UUID, PriorPay], list[str]]:
+    """Months of the year paid on the previous payroll, at the salary structure.
+
+    A company that moves to AskMira mid-year paid April onwards on its old
+    payroll. Without those months the projection sees part of a year, finds the
+    income under the rebate limit and deducts no tax at all. Counted at the
+    salary in force in each month (as the employee's own projection counts
+    them), the year's tax is right; `tds.compute_monthly_tds` takes their tax
+    as deducted at the year's steady rate, and the notice says so.
+
+    Only months before this company's first AskMira run of the year: a later
+    month somebody was not paid here (a hold, a gap) was not paid elsewhere.
+    """
+    period = (run.period_year, run.period_month)
+    first_here = await session.scalar(
+        tenant_scoped(
+            select(func.min(PayrollRun.period_year * 100 + PayrollRun.period_month)).where(
+                PayrollRun.legal_entity_id == run.legal_entity_id,
+                PayrollRun.id != run.id,
+                PayrollRun.run_type == PayrollRunType.REGULAR,
+                PayrollRun.status.in_(CLOSED_STATUSES),
+                PayrollRun.effective_date >= fy_start,
+                PayrollRun.effective_date <= fy_end,
+            ),
+            PayrollRun,
+            user,
+        )
+    )
+    if first_here is not None:
+        period = min(period, (first_here // 100, first_here % 100))
+    if not employees or (fy_start.year, fy_start.month) >= period:
+        return prior, []
+
+    paid_rows = (
+        await session.execute(
+            tenant_scoped(
+                select(Payslip.employee_id, PayrollRun.period_year, PayrollRun.period_month)
+                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+                .where(
+                    Payslip.employee_id.in_([e.id for e in employees]),
+                    Payslip.is_supplementary.is_(False),
+                    PayrollRun.id != run.id,
+                    PayrollRun.status.in_(CLOSED_STATUSES),
+                    PayrollRun.effective_date >= fy_start,
+                    PayrollRun.effective_date <= fy_end,
+                ),
+                Payslip,
+                user,
+            )
+        )
+    ).all()
+    paid: dict[uuid.UUID, set[tuple[int, int]]] = {}
+    for employee_id, year, month in paid_rows:
+        paid.setdefault(employee_id, set()).add((year, month))
+
+    updated = dict(prior)
+    counted: list[tuple[str, StructureMonths]] = []
+    for employee in employees:
+        months = await months_from_structure(
+            session,
+            user,
+            employee,
+            fy_start=fy_start,
+            fy_end=fy_end,
+            skip=paid.get(employee.id, set()),
+            before=period,
+        )
+        if not months.months:
+            continue
+        base = updated.get(employee.id, PriorPay())
+        updated[employee.id] = replace(
+            base,
+            recurring_taxable=base.recurring_taxable + months.taxable,
+            basic_plus_da=base.basic_plus_da + months.basic_plus_da,
+            hra=base.hra + months.hra,
+            employer_nps=base.employer_nps + months.employer_nps,
+            professional_tax=base.professional_tax + months.professional_tax,
+            months_from_structure=len(months.months),
+        )
+        counted.append((employee.employee_code, months))
+
+    if not counted:
+        return updated, []
+    notices: list[str] = []
+    by_span: dict[str, list[str]] = {}
+    for code, months in counted:
+        by_span.setdefault(month_span(months.months), []).append(code)
+    for span, codes in by_span.items():
+        notices.append(
+            f"{span} was paid on your previous payroll for {_codes(codes)}. TDS counts "
+            "those months at the salary structure and takes their tax as deducted at the "
+            "year's steady monthly rate, so each month deducts about a twelfth of the "
+            "year's tax. If the previous payroll deducted a different amount, the year's "
+            "TDS is off by the difference."
+        )
+    assumed = [(code, months) for code, months in counted if months.assumed]
+    for code, months in assumed:
+        notices.append(f"{code}: {' '.join(months.notes)}")
+    return updated, notices
+
+
+def _codes(codes: list[str], limit: int = 8) -> str:
+    """'A, B and C', or the first few and how many more."""
+    if len(codes) == 1:
+        return codes[0]
+    if len(codes) <= limit:
+        return ", ".join(codes[:-1]) + f" and {codes[-1]}"
+    return ", ".join(codes[:limit]) + f" and {len(codes) - limit} more"
+
+
 async def _agreed_last_days(
     session: AsyncSession, user: User, employee_ids: frozenset[uuid.UUID]
 ) -> dict[uuid.UUID, date]:
@@ -1684,6 +1949,48 @@ async def _agreed_last_days(
     ).all()
     # The latest exit wins, should there ever be more than one open.
     return {employee_id: last_day for employee_id, last_day in rows}
+
+
+async def paid_by_another_company(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    employee_ids: frozenset[uuid.UUID],
+    *,
+    whole_run: bool = False,
+) -> dict[uuid.UUID, str]:
+    """People another company's approved run already paid in full for this month.
+
+    A month is paid by the company somebody belongs to on its last day
+    (`companies.members_on`). This is the backstop for what that rule cannot
+    see coming: a move back-dated into a month another company has already
+    approved, or two companies' runs computed before either was approved.
+    Keyed by employee, valued by the paying company's name.
+
+    `whole_run` looks past a scoped approver's department/location scope: the
+    check is about everybody on the run, whoever signs it off.
+    """
+    if not employee_ids:
+        return {}
+    stmt = tenant_scoped(
+        select(Payslip.employee_id, LegalEntity.name)
+        .join(PayrollRun, Payslip.run_id == PayrollRun.id)
+        .join(LegalEntity, LegalEntity.id == PayrollRun.legal_entity_id)
+        .where(
+            PayrollRun.legal_entity_id != run.legal_entity_id,
+            PayrollRun.period_year == run.period_year,
+            PayrollRun.period_month == run.period_month,
+            PayrollRun.status.in_(CLOSED_STATUSES),
+            Payslip.is_supplementary.is_(False),
+            Payslip.employee_id.in_(employee_ids),
+        ),
+        Payslip,
+        user,
+    )
+    if whole_run:
+        stmt = stmt.execution_options(hr_scope_bypass=True)
+    rows = (await session.execute(stmt)).all()
+    return {employee_id: name for employee_id, name in rows}
 
 
 async def _month_paid_so_far(

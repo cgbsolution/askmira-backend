@@ -6,6 +6,7 @@ anybody has signed in. They reveal what the company's own website does.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -27,6 +28,17 @@ async def workspace_page(slug: str, session: DbSession, request: Request) -> dic
     if not tenant.is_active:
         raise directory.suspended()
     return (await directory.branding(session, tenant)).as_dict()
+
+
+@router.get("/entities/{entity_id}/logo", response_model=None)
+async def entity_logo(entity_id: uuid.UUID, session: DbSession) -> Response:
+    """One company's logo (a legal entity of a workspace), shown after sign-in."""
+    data, media_type = await branding.read_entity_logo(session, entity_id)
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/{slug}/logo", response_model=None)

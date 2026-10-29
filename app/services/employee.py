@@ -36,6 +36,9 @@ from app.schemas.employee import (
     EmployeeRead,
     EmployeeSelfUpdate,
     EmployeeUpdate,
+    EntityMoveRequest,
+    EntityMoveResult,
+    EntityMoveSkip,
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
@@ -136,6 +139,8 @@ async def list_employees(
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = False,
     status_filter: str | None = None,
     current_only: bool = False,
     include_deleted: bool = False,
@@ -160,6 +165,10 @@ async def list_employees(
         stmt = stmt.where(Employee.location_id == location_id)
     if manager_id:
         stmt = stmt.where(Employee.manager_id == manager_id)
+    if legal_entity_id:
+        stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
+    if without_legal_entity:
+        stmt = stmt.where(Employee.legal_entity_id.is_(None))
     if status_filter:
         stmt = stmt.where(Employee.status == status_filter)
     if search and search.strip():
@@ -208,6 +217,8 @@ async def directory_csv(
     department_id: uuid.UUID | None = None,
     location_id: uuid.UUID | None = None,
     manager_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = False,
     status_filter: str | None = None,
     current_only: bool = False,
     request: Request | None = None,
@@ -226,9 +237,18 @@ async def directory_csv(
         department_id=department_id,
         location_id=location_id,
         manager_id=manager_id,
+        legal_entity_id=legal_entity_id,
+        without_legal_entity=without_legal_entity,
         status_filter=status_filter,
         current_only=current_only,
         limit=EXPORT_LIMIT,
+    )
+    companies = dict(
+        (
+            await session.execute(
+                tenant_scoped(select(LegalEntity.id, LegalEntity.name), LegalEntity, user)
+            )
+        ).all()
     )
     departments = dict(
         (
@@ -263,6 +283,7 @@ async def directory_csv(
             "Employee code",
             "Name",
             "Designation",
+            "Company",
             "Department",
             "Location",
             "Work email",
@@ -283,6 +304,7 @@ async def directory_csv(
                     row.employee_code,
                     row.full_name,
                     row.designation,
+                    companies.get(row.legal_entity_id),
                     departments.get(row.department_id),
                     locations.get(row.location_id),
                     row.work_email,
@@ -304,6 +326,8 @@ async def directory_csv(
         changes={
             "rows": len(rows),
             "search": search,
+            "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
+            "without_legal_entity": without_legal_entity,
             "department_id": str(department_id) if department_id else None,
             "location_id": str(location_id) if location_id else None,
             "manager_id": str(manager_id) if manager_id else None,
@@ -681,4 +705,115 @@ async def celebrations(session: AsyncSession, user: User, *, days: int) -> Celeb
         items=items,
         note=calendar.get("note")
         or "Only people who chose to share their birthday or work anniversary appear here.",
+    )
+
+
+async def move_to_legal_entity(
+    session: AsyncSession,
+    user: User,
+    payload: EntityMoveRequest,
+    *,
+    request: Request | None = None,
+) -> EntityMoveResult:
+    """HR moves several people into one company (legal entity) at once.
+
+    The company decides which payroll run pays them (from this month: a month
+    is paid by the company somebody belongs to on its last day), whose
+    registration numbers their PF/ESI/TDS are filed under, and the logo they
+    see after signing in. Each move is filed in the person's history as a
+    transfer, effective today, with its own audit row; all of it is one
+    transaction. Somebody's own record is never moved by themselves (the same
+    rule as a single edit), and people who have left are not moved: their past
+    payroll and returns stay with the company that paid them.
+    """
+    entity = await session.scalar(
+        tenant_scoped(
+            select(LegalEntity).where(LegalEntity.id == payload.legal_entity_id), LegalEntity, user
+        )
+    )
+    if entity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    if not entity.is_active:
+        raise _unprocessable(
+            f"{entity.name} is inactive. Make it active under Settings → Organisation first."
+        )
+
+    wanted = list(dict.fromkeys(payload.employee_ids))
+    found = {
+        row.id: row
+        for row in (
+            await session.scalars(
+                tenant_scoped(
+                    select(Employee).where(
+                        Employee.id.in_(wanted), Employee.deleted_at.is_(None)
+                    ),
+                    Employee,
+                    user,
+                )
+            )
+        ).all()
+    }
+
+    from app.services.lifecycle import service as lifecycle
+
+    moved = 0
+    already = 0
+    skipped: list[EntityMoveSkip] = []
+    for employee_id in wanted:
+        employee = found.get(employee_id)
+        if employee is None:
+            skipped.append(
+                EntityMoveSkip(employee_id=employee_id, reason="Not found in this workspace.")
+            )
+            continue
+        if employee.status is EmploymentStatus.EXITED:
+            skipped.append(
+                EntityMoveSkip(
+                    employee_id=employee.id,
+                    employee_code=employee.employee_code,
+                    name=employee.full_name,
+                    reason=(
+                        "Has left: their company is not changed, so their past payroll and "
+                        "returns stay with the company that paid them."
+                    ),
+                )
+            )
+            continue
+        if user.employee_id is not None and employee.id == user.employee_id:
+            skipped.append(
+                EntityMoveSkip(
+                    employee_id=employee.id,
+                    employee_code=employee.employee_code,
+                    name=employee.full_name,
+                    reason="Your own record is changed by somebody else in HR.",
+                )
+            )
+            continue
+        if employee.legal_entity_id == entity.id:
+            already += 1
+            continue
+        previous = employee.legal_entity_id
+        changes = {"legal_entity_id": entity.id}
+        lifecycle.record_direct_edit(session, user, employee, changes)
+        employee.legal_entity_id = entity.id
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="employee",
+            entity_id=employee.id,
+            actor=user,
+            changes={"legal_entity_id": {"from": str(previous), "to": str(entity.id)}},
+            summary=f"Moved {employee.employee_code} to company {entity.code}",
+            request=request,
+        )
+        moved += 1
+
+    await session.commit()
+    return EntityMoveResult(
+        legal_entity_id=entity.id,
+        legal_entity_name=entity.name,
+        moved=moved,
+        already_there=already,
+        skipped=skipped,
     )
