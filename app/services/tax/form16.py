@@ -36,13 +36,14 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.org import LegalEntity
 from app.models.payroll import (
+    RUN_ORIGIN_COMPUTED,
     RUN_ORIGIN_IMPORTED,
     PayrollRuleSet,
     PayrollRun,
@@ -386,6 +387,43 @@ def _imported_system(runs: list[PayrollRun]) -> str | None:
     return str((runs[0].import_details or {}).get("system") or "factoHR")
 
 
+async def _issued_elsewhere(
+    session: AsyncSession, user: User, runs: list[PayrollRun], financial_year: str
+) -> str | None:
+    """The previous payroll's name when it, not AskMira, issues this year's Form 16.
+
+    Only for a year that has ended, in which the company ran no payroll of its own
+    in AskMira, and whose locked payslips for this person were all imported. A year
+    the company finished in AskMira (it moved mid-year) is AskMira's to issue, on
+    the imported months plus its own, even for someone paid only in the imported
+    months; so is the year still running.
+    """
+    from app.services.attendance.service import local_today
+    from app.services.tax import service as tax_service
+
+    system = _imported_system(runs)
+    if system is None:
+        return None
+    fy_start, fy_end = tax_service.financial_year_bounds(financial_year)
+    if fy_end >= await local_today(session, user):
+        return None
+    computed = await session.scalar(
+        tenant_scoped(
+            select(func.count())
+            .select_from(PayrollRun)
+            .where(
+                PayrollRun.origin == RUN_ORIGIN_COMPUTED,
+                PayrollRun.status.in_(_CLOSED),
+                PayrollRun.effective_date >= fy_start,
+                PayrollRun.effective_date <= fy_end,
+            ),
+            PayrollRun,
+            user,
+        )
+    )
+    return None if computed else system
+
+
 def issued_elsewhere_reason(system: str) -> str:
     return f"Issued by your previous payroll ({system})."
 
@@ -407,7 +445,7 @@ async def list_form16_years(
         years.setdefault(label, []).append((payslip, run))
     out = []
     for label in sorted(years, reverse=True):
-        system = _imported_system([run for _, run in years[label]])
+        system = await _issued_elsewhere(session, user, [run for _, run in years[label]], label)
         if system is not None:
             out.append(
                 {
@@ -474,8 +512,11 @@ async def form16_statement(
 
     fy_start, fy_end = tax_service.financial_year_bounds(financial_year)
     closed = await _closed_slips(session, user, employee_id)
-    system = _imported_system(
-        [run for _, run in closed if fy_start <= run.effective_date <= fy_end]
+    system = await _issued_elsewhere(
+        session,
+        user,
+        [run for _, run in closed if fy_start <= run.effective_date <= fy_end],
+        financial_year,
     )
     if system is not None:
         raise Form16UnavailableError(

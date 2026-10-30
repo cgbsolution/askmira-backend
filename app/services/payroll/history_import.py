@@ -327,6 +327,8 @@ class Segment:
     notes: list[str] = field(default_factory=list)
     end: date | None = None
     salary_id: uuid.UUID | None = None
+    #: The CTC of every month it covers, as typed (they may differ by paise).
+    ctcs: list[Decimal] = field(default_factory=list)
     #: "new" — inserted from the registers; "live" — the existing revision.
     record: str = "new"
 
@@ -360,6 +362,8 @@ class PersonSalary:
     )
     live_before: dict[str, Any] | None = None
     live_after: dict[str, Any] | None = None
+    #: The kept revision's reason once its date comes from the registers.
+    live_new_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -944,7 +948,9 @@ def _rate(row: RegisterRow) -> Rate | None:
         _q(parts.get("bonus")),
         _q(parts.get("gross")),
     )
-    if all(value == _ZERO for value in rate):
+    # No salary parts (a row kept for a person paid nothing, with only the CTC
+    # beside it) is no rate: a revision of a CTC alone would be invented.
+    if all(value == _ZERO for value in rate[1:]):
         return None
     return rate
 
@@ -1050,6 +1056,36 @@ def _observations(
     return found
 
 
+#: The 2023 registers' CTC columns are worked out from the month's figures
+#: (Sep-23 "Sep CTC" = CTC Earned / days x 30), so the same pay shows a CTC a few
+#: paise apart from one month to the next. That is not a revision.
+_CTC_NOISE = Decimal("1.00")
+
+
+def _same_pay(a: Rate, b: Rate) -> bool:
+    """The same salary: every part and the gross equal, the CTC within a rupee."""
+    return a[1:] == b[1:] and abs(a[0] - b[0]) <= _CTC_NOISE
+
+
+def _settle_ctc(segment: Segment) -> None:
+    """One CTC for a run of months whose CTC differed only by paise: the one most
+    months show, the latest of those on a tie. The others are named in the
+    reason; each payslip keeps its own month's CTC as typed."""
+    if len(set(segment.ctcs)) < 2:
+        return
+    counts: dict[Decimal, int] = {}
+    last_seen: dict[Decimal, int] = {}
+    for i, ctc in enumerate(segment.ctcs):
+        counts[ctc] = counts.get(ctc, 0) + 1
+        last_seen[ctc] = i
+    best = max(counts, key=lambda c: (counts[c], last_seen[c]))
+    segment.rate = (best, *segment.rate[1:])
+    segment.notes.append(
+        f"CTC as typed varied by under {_CTC_NOISE} a month between these registers "
+        f"({min(counts)} to {max(counts)}); {best} kept"
+    )
+
+
 def _segments(
     person: Person,
     observations: list[tuple[tuple[int, int], date, Rate, RegisterRow, bool]],
@@ -1060,14 +1096,17 @@ def _segments(
     for (year, month), start, rate, row, mid in observations:
         key = _month_key(year, month)
         ref = f"{row.file} {row.sheet} row {row.row}"
-        if segments and segments[-1].rate == rate:
+        if segments and _same_pay(segments[-1].rate, rate):
             if key not in segments[-1].months:
                 segments[-1].months.append(key)
+            segments[-1].ctcs.append(rate[0])
             segments[-1].refs.append(ref)
             if row.file not in segments[-1].files:
                 segments[-1].files.append(row.file)
             continue
-        segment = Segment(rate=rate, start=start, months=[key], refs=[ref], files=[row.file])
+        segment = Segment(
+            rate=rate, start=start, months=[key], refs=[ref], files=[row.file], ctcs=[rate[0]]
+        )
         if mid:
             segment.notes.append(
                 f"from day {start.day} of {_label(year, month)} (a second rate in that month's "
@@ -1082,6 +1121,8 @@ def _segments(
         segments.append(segment)
     if not segments:
         return segments
+    for segment in segments:
+        _settle_ctc(segment)
 
     # The first revision: from joining when that falls in the registers' span,
     # else from the first register the person is in.
@@ -1127,6 +1168,17 @@ def _reason(segment: Segment) -> str:
     if segment.notes:
         text_ += ". " + "; ".join(segment.notes)
     return text_[:255]
+
+
+_WEF_NOTE = "Start date is the sheet's WEF"
+
+
+def _redated_reason(old: str | None, note: str) -> str:
+    """The kept revision's reason, with its start date's source replaced."""
+    base = (old or "").strip()
+    if _WEF_NOTE in base:
+        base = base[: base.index(_WEF_NOTE)].rstrip()
+    return f"{base} {note}".strip()[:255]
 
 
 def _active(person: Person, last_month: tuple[int, int]) -> bool:
@@ -1315,14 +1367,32 @@ async def _plan_salaries(
             assert live is not None
             last.record = "live"
             last.salary_id = live.id
+            first_paid = last.months[0]
+            first_label = _label(int(first_paid[:4]), int(first_paid[5:7]))
             if len(segments) == 1 and live.effective_from < last.start:
                 last.start = live.effective_from
                 last.notes = [n for n in last.notes if not n.startswith("In force at least")]
+                result.live_new_reason = _redated_reason(
+                    live.reason,
+                    "Start date as in the Employee Detail; paid at this rate in every factoHR "
+                    f"payroll register from {first_label}.",
+                )
+            else:
+                result.live_new_reason = _redated_reason(
+                    live.reason,
+                    "Start date from the factoHR payroll registers: first paid at this rate in "
+                    f"{first_label}.",
+                )
             result.live_new_from = last.start
         elif result.action == "increment":
             assert live is not None
             after_last = date(*_next_month(*ctx.last_month), 1)
             result.live_new_from = max(live.effective_from, after_last)
+            result.live_new_reason = _redated_reason(
+                live.reason,
+                f"Not in the factoHR payroll registers (last: {_label(*ctx.last_month)}); dated "
+                "after them until the real date is set.",
+            )
             issues.append(
                 Issue(
                     "warning",
@@ -1432,15 +1502,28 @@ async def _plan_salaries(
         result.timeline = timeline
 
         if live_obj is not None and result.live_new_from is not None:
-            if result.live_new_from != live_obj.effective_from or live_obj.effective_to is not None:
+            reason_changes = (
+                result.live_new_reason is not None
+                and result.live_new_reason != live_obj.revision_reason
+            )
+            if (
+                result.live_new_from != live_obj.effective_from
+                or live_obj.effective_to is not None
+                or reason_changes
+            ):
                 name = live_obj.structure.name if live_obj.structure else None
                 result.live_before = revision_snapshot(live_obj, name)
                 result.live_after = {
                     **result.live_before,
                     "effective_from": result.live_new_from.isoformat(),
                 }
+                if reason_changes:
+                    result.live_after["reason"] = result.live_new_reason
+                else:
+                    result.live_new_reason = None
             else:
                 result.live_new_from = None  # already right
+                result.live_new_reason = None
         if result.delete_live and live_obj is not None:
             name = live_obj.structure.name if live_obj.structure else None
             result.live_before = revision_snapshot(live_obj, name)
@@ -1887,6 +1970,8 @@ async def apply(
             old_from = live_obj.effective_from
             live_obj.effective_from = person_salary.live_new_from
             live_obj.effective_to = None
+            if person_salary.live_new_reason is not None:
+                live_obj.revision_reason = person_salary.live_new_reason
             await audit.record(
                 session,
                 tenant_id=tenant_id,

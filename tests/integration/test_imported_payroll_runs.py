@@ -34,7 +34,7 @@ from app.models.disbursement import (
     DisbursementBatch,
     EmployeeBankAccount,
 )
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import Employee, EmploymentStatus, EmploymentType
 from app.models.org import LegalEntity
 from app.models.payroll import (
     RUN_ORIGIN_IMPORTED,
@@ -928,3 +928,55 @@ async def test_form16_for_a_year_paid_on_factohr_says_it_was_issued_there(
 
     with pytest.raises(form16.Form16UnavailableError, match="Issued by your previous payroll"):
         await form16.form16_statement(session, hr_user, employee.id, "2025-26")
+
+
+async def test_a_year_still_running_or_finished_in_askmira_is_not_issued_elsewhere(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    legal_entity: LegalEntity,
+    employee: Employee,
+) -> None:
+    """factoHR issued Form 16 only for years that ended before AskMira ran payroll.
+
+    A year still running, or one the company finished in AskMira after moving
+    mid-year, is AskMira's to issue on the imported months plus its own.
+    """
+    from app.services.attendance.service import local_today
+
+    today = await local_today(session, hr_user)
+    fy_start_year = today.year if today.month >= 4 else today.year - 1
+    running = f"{fy_start_year}-{str(fy_start_year + 1)[-2:]}"
+    # The running year: only imported months so far.
+    await _imported_run(
+        session, tenant, legal_entity, hr_user, [employee], year=fy_start_year, month=4
+    )
+    # The year before: imported for this person, but the company ran its own
+    # payroll in it (another person's computed run), so it moved mid-year.
+    other = Employee(
+        tenant_id=tenant.id,
+        employee_code="EMP-MOVED",
+        first_name="Moved",
+        work_email="moved@example.com",
+        status=EmploymentStatus.ACTIVE,
+        employment_type=EmploymentType.FULL_TIME,
+        date_of_joining=date(2020, 1, 1),
+        legal_entity_id=legal_entity.id,
+    )
+    session.add(other)
+    await session.commit()
+    previous_start = fy_start_year - 1
+    await _imported_run(
+        session, tenant, legal_entity, hr_user, [employee], year=previous_start, month=5
+    )
+    await _computed_run(session, tenant, legal_entity, other, year=previous_start + 1, month=2)
+
+    years = {
+        year["financial_year"]: year
+        for year in await form16.list_form16_years(session, hr_user, employee.id)
+    }
+    previous = f"{previous_start}-{str(previous_start + 1)[-2:]}"
+    for label in (running, previous):
+        assert years[label]["status"] != "issued_elsewhere", label
+        assert years[label]["issued_by"] is None, label
+        assert "Issued by your previous payroll" not in (years[label]["reason"] or ""), label

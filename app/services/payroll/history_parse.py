@@ -752,7 +752,8 @@ def _read_sheet(
         earned: dict[str, Decimal | None] = {}
         actual: dict[str, Decimal | None] | None = {} if layout.has_actual else None
         texts: dict[int, str] = {}
-        for col, value in enumerate(values, start=1):
+        for col in layout.cell_columns:  # identifier columns are never read at all
+            value = values[col - 1] if col <= len(values) else None
             if isinstance(value, str) and value.strip():
                 text, changed = _scrub(value.strip())
                 texts[col] = text
