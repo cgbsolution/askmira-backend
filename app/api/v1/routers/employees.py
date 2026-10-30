@@ -220,6 +220,23 @@ async def import_rejected(
     )
 
 
+@router.post("/import/issues", dependencies=HR_ONLY)
+async def import_issues(
+    user: CurrentUser, session: DbSession, file: UploadFile = File(...)
+) -> Response:
+    """Everybody the file has something to look at for, one line per point. Nothing is saved."""
+    data = await file.read(IMPORT_MAX_BYTES + 1)
+    content = await import_service.issues(session, user, data, file.filename or "employees.xlsx")
+    return Response(
+        content=content,
+        media_type=XLSX,
+        headers={
+            "Content-Disposition": 'attachment; filename="employee-import-issues.xlsx"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post(
     "/import",
     response_model=ImportResult,

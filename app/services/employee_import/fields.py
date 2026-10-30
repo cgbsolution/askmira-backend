@@ -384,6 +384,8 @@ _STATUS = {
     "terminated": "left", "absconded": "left", "absconding": "left", "left": "left",
     "exited": "left", "exit": "left", "relieved": "left", "retired": "left", "deceased": "left",
     "separated": "left", "suspended": "left", "dismissed": "left", "inactive employee": "left",
+    # factoHR's "TemporaryDeactive": recorded as having left (decided for CGB, 2026-10-30).
+    "temporarydeactive": "left", "temporary deactive": "left",
 }
 
 
@@ -491,7 +493,29 @@ CITY_STATES: dict[str, str] = {
     "ranchi": "JH", "jamshedpur": "JH", "raipur": "CG", "durg": "CG", "bhilai": "CG",
     "dehradun": "UK", "guwahati": "AS", "panaji": "GA", "shimla": "HP", "srinagar": "JK",
     "jammu": "JK", "puducherry": "PY", "delhi": "DL", "new delhi": "DL",
+    "ajmer": "RJ", "kota": "RJ", "bikaner": "RJ", "gorakhpur": "UP", "meerut": "UP",
+    "prayagraj": "UP", "allahabad": "UP", "manesar": "HR", "panipat": "HR", "sonipat": "HR",
+    "bhuvneshwar": "OD", "dombivli": "MH", "dombivili": "MH",
+    "kalyan": "MH", "aurangabad": "MH", "gajraula": "UP", "gajrula": "UP", "rajkot": "GJ",
+    "gandhinagar": "GJ", "nellore": "AP", "kurnool": "AP", "kakinada": "AP", "salem": "TN",
+    "trichy": "TN", "tiruchirappalli": "TN", "belgaum": "KA", "belagavi": "KA",
+    "siliguri": "WB", "durgapur": "WB", "asansol": "WB", "jalandhar": "PB", "patiala": "PB",
 }
+
+#: Places abroad an export names as a work location, to their country code.
+COUNTRY_PLACES: dict[str, str] = {
+    "dubai": "AE", "abu dhabi": "AE", "sharjah": "AE", "uae": "AE",
+    "united arab emirates": "AE", "kuwait": "KW", "doha": "QA", "qatar": "QA",
+    "riyadh": "SA", "saudi arabia": "SA", "muscat": "OM", "oman": "OM", "bahrain": "BH",
+    "singapore": "SG", "london": "GB", "united kingdom": "GB", "usa": "US",
+    "united states": "US", "malaysia": "MY", "sri lanka": "LK", "nepal": "NP",
+}
+
+
+def country_of_place(name: str) -> str | None:
+    """The country code of a work location abroad ("Dubai", "KUWAIT"); None in India."""
+    key = re.sub(r"\s+", " ", _OFFICE_WORDS.sub(" ", name.lower())).strip(" -,.")
+    return COUNTRY_PLACES.get(key)
 
 
 def state_code(raw: Any) -> str | None:

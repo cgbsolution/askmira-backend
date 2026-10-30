@@ -64,6 +64,10 @@ class Table:
     mapping: dict[str, int] = field(default_factory=dict)
     unused: list[Column] = field(default_factory=list)
 
+    @property
+    def columns_by_index(self) -> dict[int, Column]:
+        return {column.index: column for column in self.columns}
+
 
 def _cells_from_xlsx(data: bytes) -> list[list[Any]]:
     """The cells of the first sheet that has an employee-code column."""
@@ -218,8 +222,9 @@ def claim_custom(table: Table, labels: dict[str, str]) -> dict[str, int]:
     """Columns named after a custom field (its label or key): field key -> column."""
     found: dict[str, int] = {}
     for key, label in labels.items():
+        wanted = {norm(label), norm(key)}
         for column in list(table.unused):
-            if norm(column.name) in {norm(label), norm(key)}:
+            if norm(column.header) in wanted or norm(column.name) in wanted:
                 found[key] = column.index
                 table.unused.remove(column)
                 break

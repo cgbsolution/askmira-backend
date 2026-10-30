@@ -86,35 +86,55 @@ COLUMNS: list[tuple[str, str | None]] = [
 TOP_GROUPS = {"PF Eligibility": "PF / ESIC / EPS Detail", "Aadhaar No": "Employee Identity Detail"}
 
 
-def build(people: list[dict[str, Any]], *, dates_as_serials: bool = True) -> bytes:
+def build(
+    people: list[dict[str, Any]],
+    *,
+    dates_as_serials: bool = True,
+    columns: list[tuple[str, str | None]] | None = None,
+) -> bytes:
     """An .xlsx with one row per person; keys are header names (the first of a
-    repeated name, or "Group > Name" for a grouped one)."""
+    repeated name, or "Group > Name" for a grouped one). A group heading that
+    repeats (factoHR's second emergency contact) is written each time it is
+    given in `columns`; its second block's keys end in "#2"."""
+    layout = columns or COLUMNS
     book = Workbook()
     sheet = book.active
     sheet.title = "Sheet1"
     sheet.cell(row=2, column=1, value="Employee Detail Report")
     group_start: dict[str, int] = {}
-    for index, (name, group) in enumerate(COLUMNS, start=1):
+    previous = None
+    for index, (name, group) in enumerate(layout, start=1):
         sheet.cell(row=6, column=index, value=name)
-        if group and group not in group_start:
-            group_start[group] = index
+        if group and (group not in group_start or (columns is not None and group != previous)):
+            group_start.setdefault(group, index)
             sheet.cell(row=5, column=index, value=group)
+        previous = group or previous
         if name in TOP_GROUPS:
             sheet.cell(row=4, column=index, value=TOP_GROUPS[name])
     # The uneven merge: "Permanent Address" spans only Address to Country.
-    start = group_start["Permanent Address"]
-    sheet.merge_cells(start_row=5, start_column=start, end_row=5, end_column=start + 2)
+    if "Permanent Address" in group_start and columns is None:
+        start = group_start["Permanent Address"]
+        sheet.merge_cells(start_row=5, start_column=start, end_row=5, end_column=start + 2)
 
     keys = []
     current_group = None
-    for name, group in COLUMNS:
+    for name, group in layout:
         current_group = group or current_group
         keys.append((name, current_group))
     for row_number, person in enumerate(people, start=7):
         sheet.cell(row=row_number, column=1, value=row_number - 6)
         seen: set[str] = set()
+        repeats: dict[str, int] = {}
         for index, (name, group) in enumerate(keys, start=1):
             qualified = f"{group} > {name}" if group else name
+            repeats[qualified] = repeats.get(qualified, 0) + 1
+            if repeats[qualified] > 1:
+                value = person.get(f"{qualified}#{repeats[qualified]}")
+                if value is not None and isinstance(value, datetime) and dates_as_serials:
+                    value = (value - datetime(1899, 12, 30)).days
+                if value is not None:
+                    sheet.cell(row=row_number, column=index, value=value)
+                continue
             value = person.get(qualified)
             if value is None and name not in seen:
                 value = person.get(name)

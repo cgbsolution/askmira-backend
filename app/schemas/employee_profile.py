@@ -125,25 +125,44 @@ class PersonalDetails(_Section):
 
 
 class Address(_Section):
+    """An address. City, state and PIN code are required when HR or the person
+    enters one (`AddressesWrite`); an address brought in from another HR system
+    is kept as that system had it, so one of them may be missing there."""
+
     line1: str = Field(min_length=1, max_length=255)
     line2: str | None = Field(default=None, max_length=255)
-    city: str = Field(min_length=1, max_length=128)
+    city: str | None = Field(default=None, max_length=128)
     district: str | None = Field(default=None, max_length=128)
     #: The state decides Professional Tax and appears on Form 16 and PF KYC, so
     #: it is a code the payroll engine knows, not free text.
-    state_code: str = Field(min_length=2, max_length=2)
-    pincode: str = Field(pattern=PINCODE)
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    pincode: str | None = Field(default=None, pattern=PINCODE)
     country_code: Literal["IN"] = "IN"
 
-    _blank = field_validator("line2", "district", mode="before")(_strip)
+    _blank = field_validator("line2", "city", "district", "pincode", mode="before")(_strip)
 
     @field_validator("state_code", mode="before")
     @classmethod
     def _state(cls, value: object) -> object:
-        code = str(value or "").strip().upper()
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        code = str(value).strip().upper()
         if code not in INDIAN_STATE_CODES:
             raise ValueError(f"'{value}' is not an Indian state or union territory code")
         return code
+
+    @property
+    def incomplete(self) -> list[str]:
+        """What a complete address would also have."""
+        return [
+            name
+            for name, value in (
+                ("city", self.city),
+                ("state", self.state_code),
+                ("PIN code", self.pincode),
+            )
+            if not value
+        ]
 
 
 class Addresses(_Section):
@@ -177,26 +196,52 @@ class Relationship(str, enum.Enum):
 
 
 class EmergencyContact(_Section):
+    """A phone number is required when entered here (`EmergencyContactsWrite`);
+    one brought in from another HR system without a number is kept as it was."""
+
     name: str = Field(min_length=1, max_length=255)
     relationship: Relationship
-    phone: str = Field(pattern=PHONE)
+    #: The relationship in the source system's words, when it is none of ours
+    #: ("Home") and so is recorded as Other.
+    relationship_text: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, pattern=PHONE)
     alternate_phone: str | None = Field(default=None, pattern=PHONE)
+    landline: str | None = Field(default=None, pattern=PHONE)
     email: EmailStr | None = None
+    address: str | None = Field(default=None, max_length=512)
     is_primary: bool = False
 
-    _blank = field_validator("alternate_phone", "email", mode="before")(_strip)
+    _blank = field_validator(
+        "relationship_text", "phone", "alternate_phone", "landline", "email", "address",
+        mode="before",
+    )(_strip)
 
 
 class FamilyMember(_Section):
     name: str = Field(min_length=1, max_length=255)
     relationship: Relationship
+    relationship_text: str | None = Field(default=None, max_length=64)
+    title: str | None = Field(default=None, max_length=32)
     date_of_birth: date | None = None
     gender: Literal["female", "male", "non_binary", "undisclosed"] | None = None
     occupation: str | None = Field(default=None, max_length=128)
+    phone: str | None = Field(default=None, max_length=32)
+    blood_group: str | None = Field(default=None, max_length=16)
+    nationality: str | None = Field(default=None, max_length=64)
+    marital_status: str | None = Field(default=None, max_length=32)
+    marriage_date: date | None = None
     #: Dependants are who insurance and some reimbursements cover.
     is_dependent: bool = False
+    #: Covered by the company's health insurance.
+    health_insurance: bool | None = None
+    insurance_number: str | None = Field(default=None, max_length=64)
+    remarks: str | None = Field(default=None, max_length=500)
 
-    _blank = field_validator("occupation", mode="before")(_strip)
+    _blank = field_validator(
+        "relationship_text", "title", "occupation", "phone", "blood_group", "nationality",
+        "marital_status", "insurance_number", "remarks",
+        mode="before",
+    )(_strip)
 
 
 class NomineePurpose(str, enum.Enum):
@@ -204,6 +249,7 @@ class NomineePurpose(str, enum.Enum):
     EPS = "eps"
     GRATUITY = "gratuity"
     INSURANCE = "insurance"
+    SUPERANNUATION = "superannuation"
 
 
 class Nominee(_Section):
@@ -212,15 +258,30 @@ class Nominee(_Section):
 
     name: str = Field(min_length=1, max_length=255)
     relationship: Relationship
+    relationship_text: str | None = Field(default=None, max_length=64)
     date_of_birth: date | None = None
     address: str | None = Field(default=None, max_length=512)
+    city: str | None = Field(default=None, max_length=128)
+    country: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, max_length=32)
     purpose: NomineePurpose
-    share_percent: Decimal = Field(gt=0, le=100, max_digits=5, decimal_places=2)
+    #: The purpose in the source system's words when it differs ("Pension" for EPS).
+    purpose_text: str | None = Field(default=None, max_length=64)
+    #: Required when entered here (`NomineesWrite`); a nomination brought in
+    #: from another HR system without a share is kept without one.
+    share_percent: Decimal | None = Field(
+        default=None, gt=0, le=100, max_digits=5, decimal_places=2
+    )
     #: Required for a minor nominee (checked against the workspace's today in
     #: the service, not the server's clock).
     guardian_name: str | None = Field(default=None, max_length=255)
+    remarks: str | None = Field(default=None, max_length=500)
 
-    _blank = field_validator("address", "guardian_name", mode="before")(_strip)
+    _blank = field_validator(
+        "relationship_text", "address", "city", "country", "phone", "purpose_text",
+        "guardian_name", "remarks",
+        mode="before",
+    )(_strip)
 
 
 # ── Education and previous employment ──────────────────────────────────────
@@ -240,16 +301,33 @@ class EducationLevel(str, enum.Enum):
 class Education(_Section):
     level: EducationLevel
     qualification: str = Field(min_length=1, max_length=255)
+    #: The course as the source system named it ("Post Graduate", "Others").
+    course: str | None = Field(default=None, max_length=128)
+    stream: str | None = Field(default=None, max_length=255)
     specialisation: str | None = Field(default=None, max_length=255)
-    institution: str = Field(min_length=1, max_length=255)
+    #: Required when entered here (`EducationWrite`).
+    institution: str | None = Field(default=None, max_length=255)
     board_or_university: str | None = Field(default=None, max_length=255)
-    start_year: int | None = Field(default=None, ge=1950, le=2100)
-    end_year: int | None = Field(default=None, ge=1950, le=2100)
+    nature_of_course: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, max_length=64)
+    start_year: int | None = Field(default=None, ge=1900, le=2100)
+    end_year: int | None = Field(default=None, ge=1900, le=2100)
+    from_date: date | None = None
+    to_date: date | None = None
+    #: The year as the source system gives it ("2013", "2020-2022").
+    year: str | None = Field(default=None, max_length=32)
+    date_of_passing: date | None = None
+    percentage: str | None = Field(default=None, max_length=16)
     grade: str | None = Field(default=None, max_length=32)
+    duration: str | None = Field(default=None, max_length=64)
+    is_highest: bool | None = None
+    remarks: str | None = Field(default=None, max_length=500)
 
-    _blank = field_validator("specialisation", "board_or_university", "grade", mode="before")(
-        _strip
-    )
+    _blank = field_validator(
+        "course", "stream", "specialisation", "institution", "board_or_university",
+        "year", "nature_of_course", "status", "percentage", "grade", "duration", "remarks",
+        mode="before",
+    )(_strip)
 
     @model_validator(mode="after")
     def _years(self) -> Education:
@@ -353,6 +431,13 @@ class AddressesWrite(BaseModel):
     section: Literal["addresses"]
     data: Addresses
 
+    @model_validator(mode="after")
+    def _complete(self) -> AddressesWrite:
+        for label, address in (("current", self.data.current), ("permanent", self.data.permanent)):
+            if address is not None and address.incomplete:
+                raise ValueError(f"Enter the {label} address's {' and '.join(address.incomplete)}.")
+        return self
+
 
 class EmergencyContactsWrite(BaseModel):
     section: Literal["emergency_contacts"]
@@ -362,6 +447,9 @@ class EmergencyContactsWrite(BaseModel):
     def _one_primary(self) -> EmergencyContactsWrite:
         if sum(1 for c in self.data if c.is_primary) > 1:
             raise ValueError("Mark one emergency contact as primary, not several.")
+        for contact in self.data:
+            if not contact.phone:
+                raise ValueError(f"Enter a phone number for {contact.name}.")
         return self
 
 
@@ -378,6 +466,8 @@ class NomineesWrite(BaseModel):
     def _shares(self) -> NomineesWrite:
         totals: dict[NomineePurpose, Decimal] = {}
         for nominee in self.data:
+            if nominee.share_percent is None:
+                raise ValueError(f"Enter {nominee.name}'s share.")
             totals[nominee.purpose] = totals.get(nominee.purpose, Decimal(0)) + (
                 nominee.share_percent
             )
@@ -393,6 +483,13 @@ class NomineesWrite(BaseModel):
 class EducationWrite(BaseModel):
     section: Literal["education"]
     data: list[Education] = Field(max_length=20)
+
+    @model_validator(mode="after")
+    def _institution(self) -> EducationWrite:
+        for entry in self.data:
+            if not entry.institution:
+                raise ValueError(f"Enter where {entry.qualification} was studied.")
+        return self
 
 
 class PreviousEmploymentWrite(BaseModel):

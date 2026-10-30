@@ -212,7 +212,7 @@ def _nominee_table(purpose: str, label: str):
                 f"computed.{purpose}_nominees_table needs at least one {label} nominee. Add "
                 "them under Profile → Family & nominees first."
             )
-        total = sum((Decimal(str(n.get("share_percent", 0))) for n in rows), start=Decimal(0))
+        total = sum((Decimal(str(n.get("share_percent") or 0)) for n in rows), start=Decimal(0))
         if total != Decimal(100):
             raise LetterMergeError(
                 f"The {label} nominees' shares add up to {total}%, not 100%. Correct them "
@@ -224,7 +224,7 @@ def _nominee_table(purpose: str, label: str):
             + _cell(str(n.get("relationship", "")).replace("_", " ").capitalize())
             + _cell(n.get("date_of_birth"))
             + _cell(n.get("address"))
-            + _cell(f"{n.get('share_percent')}%")
+            + _cell(f"{n['share_percent']}%" if n.get("share_percent") else None)
             + _cell(n.get("guardian_name"))
             + "</tr>"
             for n in rows

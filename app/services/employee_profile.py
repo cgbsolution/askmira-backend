@@ -496,6 +496,46 @@ async def apply_section(
     )
 
 
+def add_imported_profile(
+    session: AsyncSession, user: User, employee: Employee, sections: dict[ProfileSection, Any]
+) -> list[str]:
+    """The extended profile of a record just made by the employee import, as
+    the old HR system had it.
+
+    Each section's own model has already checked shapes and lengths. The rules
+    for entering a section here — a complete address, a nominee's share, an
+    emergency contact's phone — are not applied: the import lists what is
+    missing for HR instead of dropping what the old system held. Identifiers
+    and the salary account are written by the import itself, not here.
+
+    No flush, no commit, no audit row: the import writes one per person, in
+    the same transaction. Returns the sections written.
+    """
+    permissions.require_hr(user, detail="Only HR can change somebody else's profile.")
+    profile = EmployeeProfile(
+        tenant_id=user.tenant_id,
+        employee_id=employee.id,
+        personal={},
+        addresses={},
+        emergency_contacts=[],
+        family_members=[],
+        nominees=[],
+        education=[],
+        previous_employment=[],
+        hiring_snapshot={},
+    )
+    written: list[str] = []
+    for section, data in sections.items():
+        if section in _LIST_SECTIONS:
+            stored: Any = [item.model_dump(mode="json") for item in data]
+        else:
+            stored = data.model_dump(mode="json")
+        setattr(profile, section.value, stored)
+        written.append(section.value)
+    session.add(profile)
+    return written
+
+
 async def _apply(
     session: AsyncSession,
     user: User,

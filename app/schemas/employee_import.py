@@ -28,7 +28,13 @@ class ImportColumn(BaseModel):
 
 class ImportNewLocation(BaseModel):
     name: str
+    #: Empty for a place abroad.
     state_code: str
+
+
+class ImportColumnNotKept(BaseModel):
+    header: str
+    why: str
 
 
 class ImportRow(BaseModel):
@@ -48,6 +54,9 @@ class ImportRow(BaseModel):
     errors: list[str]
     #: Values left out of an imported row, each with its reason.
     warnings: list[str]
+    #: Values imported as typed that are not as AskMira would have them (a PAN
+    #: that fails its check, an address with no PIN code), for HR to correct.
+    issues: list[str] = []
     #: Set once imported.
     employee_id: uuid.UUID | None = None
 
@@ -65,6 +74,15 @@ class ImportPreview(BaseModel):
     skipped: int
     errors: int
     with_warnings: int
+    with_issues: int = 0
+    #: Rows that only continue the person above (a second qualification), folded in.
+    continuation_rows: int = 0
+    #: Points about the whole file, said once ("Company: … recorded under …").
+    notes: list[str] = []
+    #: Columns AskMira has no field for, kept as custom fields on the "factoHR" tab.
+    new_custom_fields: list[str] = []
+    #: Columns with data that are not kept, and why.
+    columns_not_kept: list[ImportColumnNotKept] = []
     #: Created by the import (an admin's import only; otherwise left blank and listed).
     new_departments: list[str]
     #: Projects the file names that are not here yet; created on import (admin).
@@ -94,6 +112,8 @@ class ImportResult(BaseModel):
     departments_created: list[str]
     projects_created: list[str] = []
     locations_created: list[str]
+    custom_fields_created: list[str] = []
+    with_issues: int = 0
     rows: list[ImportRow]
     #: People already here whose full Aadhaar number was filled in.
     aadhaar_filled: int = 0

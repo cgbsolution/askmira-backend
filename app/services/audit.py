@@ -60,11 +60,15 @@ async def record(
     summary: str | None = None,
     request: Request | None = None,
     ai_context: dict[str, Any] | None = None,
+    flush: bool = True,
 ) -> AuditLog:
     """Append one audit entry to the caller's open transaction.
 
     Flushed but not committed — the caller's commit is what makes both the
-    change and its audit record durable, together.
+    change and its audit record durable, together. `flush=False` leaves the
+    flush to the caller: a bulk job (an import of hundreds of people) writes
+    its entries together, in one round trip to the database, rather than one
+    each; they still go in its one transaction with what they record.
     """
     # An operator working in a client's workspace is recorded as one, with the
     # grant they came in on — the client can tell their own staff from the bureau.
@@ -95,7 +99,8 @@ async def record(
         ai_context=ai_context,
     )
     session.add(entry)
-    await session.flush()
+    if flush:
+        await session.flush()
     return entry
 
 

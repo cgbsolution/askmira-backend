@@ -15,6 +15,10 @@ How a row is read:
   and admin charges, which payroll adds on top, so the wage types need not add
   up to it; the difference is shown on the row.
 * A row with only CTC TOTAL is split by the salary structure.
+* For somebody who has left, the row is a record of what they were paid and is
+  kept exactly as typed: a negative amount, or wage types in the CTC adding up
+  to more than CTC TOTAL, is noted on the row rather than refused. For
+  everybody else those stop the row, as in the Salary master's editor.
 * The statutory MANUAL columns (TDS, PROF. TAX, MPF, ESIC, LWF) are deducted
   instead of what payroll would work out, for that person; empty, payroll works
   them out as usual.
@@ -71,6 +75,7 @@ from app.services import audit
 from app.services.employee_import.fields import read_date, text
 from app.services.payroll.salary_master import revision_locks, revision_snapshot
 from app.services.payroll.service import (
+    assign_salaries,
     assign_salary,
     get_structure,
     resolve_amounts,
@@ -593,7 +598,7 @@ def _rows(data: bytes, filename: str) -> list[tuple[int, list[Any]]]:
     raise _unprocessable(f"No sheet has an '{CODE}' column. Start from the template.")
 
 
-def _money(raw: Any, what: str) -> Decimal | None:
+def _money(raw: Any, what: str, *, allow_negative: bool = False) -> Decimal | None:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
     if isinstance(raw, bool):
@@ -603,7 +608,7 @@ def _money(raw: Any, what: str) -> Decimal | None:
         amount = Decimal(cleaned)
     except InvalidOperation as exc:
         raise ValueError(f"{what}: '{raw}' is not an amount") from exc
-    if amount < 0:
+    if amount < 0 and not allow_negative:
         raise ValueError(f"{what} cannot be negative")
     if amount != amount.quantize(Decimal("0.01")):
         raise ValueError(f"{what}: {cleaned} has more than two decimals")
@@ -654,6 +659,8 @@ class _Plan:
     employee: Employee
     payload: EmployeeSalaryCreate
     replace: bool
+    #: False for somebody who has left: their record is kept as typed.
+    strict: bool = True
 
 
 @dataclass
@@ -775,11 +782,13 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
         )
         outcome.rows.append(row)
         notes: list[str] = []
+        # Somebody who has left: a record of what they were paid, kept as typed.
+        record_only = employee is not None and employee.status is EmploymentStatus.EXITED
         try:
             ctc = _money(cell(values, CTC), CTC)
             given: dict[str, tuple[str, Decimal]] = {}
             for index, header, wage_code in wage_columns:
-                amount = _money(at(values, index), header)
+                amount = _money(at(values, index), header, allow_negative=record_only)
                 if amount is None:
                     continue
                 if wage_code in given and given[wage_code][1] != amount:
@@ -891,6 +900,19 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                     ],
                     **ctc_fields,
                 )
+            elif record_only:
+                # Only a CTC, for somebody who has left: kept as the sheet has it.
+                # Payroll never pays them, so no breakdown is worked out for them.
+                assert ctc is not None
+                payload = EmployeeSalaryCreate(
+                    entry="manual",
+                    structure_id=structure.id,
+                    effective_from=on,
+                    revision_reason=reason,
+                    ctc_amount=ctc,
+                    ctc_basis=basis,
+                )
+                notes.append("Only CTC TOTAL is given: kept without a breakdown (they have left).")
             else:
                 # Only a CTC: the structure splits it.
                 assert ctc is not None
@@ -901,7 +923,14 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
                     ctc_amount=ctc,
                     ctc_basis=basis,
                 )
-            resolved = await resolve_amounts(session, user, structure, payload)
+            resolved = await resolve_amounts(
+                session, user, structure, payload, strict=not record_only, components=by_code
+            )
+            if resolved.warnings:
+                notes.extend(
+                    f"{warning} Kept as typed: they have left, so payroll does not use it."
+                    for warning in resolved.warnings
+                )
         except ValidationError as exc:
             row.message = exc.errors()[0].get("msg", "Invalid row").removeprefix("Value error, ")
             continue
@@ -953,7 +982,9 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
             dates[employee.id] = [d for d in dates[employee.id] if d < on] + [on]
         else:
             dates[employee.id].append(on)
-        outcome.plans.append(_Plan(employee=employee, payload=payload, replace=replace))
+        outcome.plans.append(
+            _Plan(employee=employee, payload=payload, replace=replace, strict=not record_only)
+        )
     return outcome
 
 
@@ -1050,13 +1081,29 @@ async def upload(
         raise _unprocessable("No row has a CTC or an amount, so there is nothing to save.")
 
     stale: list[str] = []
-    for plan in outcome.plans:
-        if plan.replace:
-            stale += await _replace_from(
-                session, user, plan.employee, plan.payload.effective_from, request
+    if any(plan.replace for plan in outcome.plans):
+        # Revisions removed and replaced one person at a time, in file order.
+        for plan in outcome.plans:
+            if plan.replace:
+                stale += await _replace_from(
+                    session, user, plan.employee, plan.payload.effective_from, request
+                )
+            await assign_salary(
+                session,
+                user,
+                plan.employee.id,
+                plan.payload,
+                request=request,
+                commit=False,
+                strict=plan.strict,
             )
-        await assign_salary(
-            session, user, plan.employee.id, plan.payload, request=request, commit=False
+    else:
+        # The usual upload: everybody at once, in a handful of round trips.
+        await assign_salaries(
+            session,
+            user,
+            [(plan.employee, plan.payload, plan.strict) for plan in outcome.plans],
+            request=request,
         )
     await audit.record(
         session,

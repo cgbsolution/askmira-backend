@@ -17,17 +17,26 @@ What it will not do:
   under another code — the admin made when the workspace was, say — or that
   two rows share stops the row, naming who has it. `rejected` hands back
   every row left out, with its own cells and why.
-- Invent. A value that fails its check is left out and listed against its
-  row; only a missing employee code, first name, work email or joining date
-  (or a status that cannot be squared with the dates) stops a row.
+- Invent, or drop what the old system held. A value that fails AskMira's
+  check (a PAN that is not a PAN, an address with no PIN code) is imported as
+  typed and listed as an issue against its person, for HR to correct; only a
+  missing employee code, first name or joining date stops a row, and a
+  missing or shared work email stops it only for somebody still working here.
 - Keep an Aadhaar number in the clear. It is stored encrypted, as everywhere else.
 - Give anybody a login. That stays an admin's decision, person by person.
+
+A factoHR export's lists (qualifications, family, nominees, emergency
+contacts, past employers' tax) and its continuation rows are read by
+`groups`; its columns AskMira has no field for become custom fields on a
+"factoHR" profile tab, created by an admin's import.
 """
 
 from __future__ import annotations
 
+import io
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -38,16 +47,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
+from app.core.crypto import encrypt_secret
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.disbursement import EmployeeBankAccount, VerificationMethod
 from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
 from app.models.org import Department, LegalEntity, Location
 from app.models.pay_grades import PayGrade
+from app.models.tax import PreviousEmployerIncome, ProofStatus
 from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import (
     ImportColumn,
+    ImportColumnNotKept,
     ImportNewLocation,
     ImportPreview,
     ImportResult,
@@ -56,21 +69,19 @@ from app.schemas.employee_import import (
 from app.schemas.employee_profile import (
     Address,
     Addresses,
-    AddressesWrite,
     BankAccountDetails,
-    BankAccountWrite,
+    Education,
     EmergencyContact,
-    EmergencyContactsWrite,
     FamilyMember,
-    FamilyMembersWrite,
+    Nominee,
     PersonalDetails,
-    PersonalWrite,
+    ProfileSection,
     StatutoryDetails,
-    StatutoryWrite,
 )
 from app.services import audit, custom_fields
 from app.services import employee_profile as profile_service
 from app.services.employee_import import fields as f
+from app.services.employee_import import groups as g
 from app.services.employee_import.sheet import (
     SheetError,
     Table,
@@ -81,10 +92,15 @@ from app.services.employee_import.sheet import (
 from app.services.employee_import.template import build_template
 from app.services.onboarding import rules as onboarding_rules
 
-__all__ = ["preview", "rejected", "run", "template"]
+__all__ = ["issues", "preview", "rejected", "run", "template"]
 
 _EMAIL = TypeAdapter(EmailStr)
 _CODE = re.compile(r"^[A-Za-z0-9_\-/]{1,32}$")
+#: As the old system had it: words of those characters with single spaces between.
+_CODE_TYPED = re.compile(r"^(?=.{1,32}$)[A-Za-z0-9_\-/]+( [A-Za-z0-9_\-/]+)*$")
+#: Stands in for a leaver's missing email, or a code with a space, only while
+#: the rest of the record is checked; never stored.
+_CHECK_EMAIL = "checking@example.com"
 _PINCODE = re.compile(r"^[1-9][0-9]{5}$")
 
 
@@ -116,11 +132,15 @@ class _Workspace:
     departments: dict[str, tuple[uuid.UUID, str]]
     locations: dict[str, tuple[uuid.UUID, str]]
     entities: dict[str, uuid.UUID]
+    #: Each company's name -> id.
+    entity_names: dict[str, uuid.UUID]
     only_entity: uuid.UUID | None
     #: Upper-cased employee code -> id, for skipping and for managers.
     codes: dict[str, uuid.UUID]
     #: Lower-cased work email -> (code, name) of who has it here.
     emails: dict[str, tuple[str, str]]
+    #: The emails of people here who have not left.
+    current_emails: set[str]
     department_codes: set[str]
     location_codes: set[str]
     #: Project name or code -> (id, name); and every project code, for new ones.
@@ -129,6 +149,7 @@ class _Workspace:
     #: Active grade codes; None while the workspace keeps no grade list.
     grades: set[str] | None
     custom: dict[str, CustomFieldDefinition]
+    all_custom_keys: set[str] = field(default_factory=set)
 
 
 async def _workspace(session: AsyncSession, user: User) -> _Workspace:
@@ -155,19 +176,26 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
     entity_rows = (await session.execute(scoped(LegalEntity, LegalEntity.id, LegalEntity.name,
                                                 LegalEntity.code))).all()
     entities: dict[str, uuid.UUID] = {}
+    entity_names: dict[str, uuid.UUID] = {}
     for row in entity_rows:
         entities.setdefault(_key(row.name), row.id)
         entities.setdefault(_key(row.code), row.id)
+        entity_names[row.name] = row.id
 
     codes: dict[str, uuid.UUID] = {}
     emails: dict[str, tuple[str, str]] = {}
+    current_emails: set[str] = set()
     for row in (await session.execute(scoped(
         Employee, Employee.id, Employee.employee_code, Employee.work_email, Employee.display_name,
-        Employee.first_name, Employee.last_name,
+        Employee.first_name, Employee.last_name, Employee.status,
     ))).all():
         codes[row.employee_code.upper()] = row.id
+        if not row.work_email:
+            continue
         name = row.display_name or " ".join(filter(None, [row.first_name, row.last_name]))
         emails.setdefault(row.work_email.lower(), (row.employee_code, name))
+        if row.status is not EmploymentStatus.EXITED:
+            current_emails.add(row.work_email.lower())
     projects: dict[str, tuple[uuid.UUID, str]] = {}
     project_codes: set[str] = set()
     for row in (await session.execute(scoped(Project, Project.id, Project.name,
@@ -181,15 +209,18 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
         departments=departments,
         locations=locations,
         entities=entities,
+        entity_names=entity_names,
         only_entity=entity_rows[0].id if len(entity_rows) == 1 else None,
         codes=codes,
         emails=emails,
+        current_emails=current_emails,
         department_codes=department_codes,
         location_codes=location_codes,
         projects=projects,
         project_codes=project_codes,
         grades={row.code for row in grade_rows if row.active} if grade_rows else None,
         custom={key: d for key, d in definitions.items() if d.is_active},
+        all_custom_keys=set(definitions),
     )
 
 
@@ -213,7 +244,19 @@ class _Row:
     project: str | None = None
     entity: str | None = None
     manager_code: str | None = None
-    sections: list[Any] = field(default_factory=list)
+    #: Profile sections to write, each already in its model.
+    sections: dict[ProfileSection, Any] = field(default_factory=dict)
+    #: Identifiers as typed (Employee columns), and which of them pass their check.
+    statutory: dict[str, str] = field(default_factory=dict)
+    statutory_valid: dict[str, str] = field(default_factory=dict)
+    #: The salary account as typed: number, IFSC, holder, bank.
+    bank: dict[str, Any] | None = None
+    #: Previous employers' income, one entry per financial year.
+    prior_income: list[dict[str, Any]] = field(default_factory=list)
+    #: Years the sheet lists with every amount 0: nothing to record.
+    prior_zero_years: int = 0
+    #: Imported as typed, but not as AskMira would have it: for HR to look at.
+    issues: list[str] = field(default_factory=list)
     employee_id: uuid.UUID | None = None
 
     @property
@@ -275,8 +318,10 @@ def _status(read: _Reader, joining: date | None, today: date) -> tuple[Employmen
         return None, None
     if stated == "left" or (stated is None and exit_on is not None and exit_on <= today):
         if exit_on is None:
-            row.errors.append("Status says they have left, but there is no Leaving Date.")
-            return None, None
+            row.issues.append(
+                "Status says they have left, but there is no Leaving Date — recorded as left "
+                "with no leaving date. Payroll does not pay them."
+            )
         return EmploymentStatus.EXITED, exit_on
     if stated == "on_leave":
         return EmploymentStatus.ON_LEAVE, None
@@ -341,29 +386,53 @@ def _address(read: _Reader, prefix: str, label: str) -> Address | None:
     state = (
         f.state_code(read.raw(f"{prefix}_state")) or f.state_in(whole) or f.state_of_pin(pincode)
     )
-    city = read.get(f"{prefix}_city") or f.city_in(whole, state)
-    missing = [
-        name
-        for name, value in (("city", city), ("state", state), ("PIN code", pincode))
-        if not value
-    ]
-    if missing:
-        read.row.warnings.append(
-            f"{label} left out: no {' or '.join(missing)} could be found in it. Fill in its "
-            "City, State and Pincode columns to bring it in."
+    typed_pin = f.digits(read.raw(f"{prefix}_pincode"))
+    if typed_pin and not _PINCODE.match(typed_pin):
+        read.row.issues.append(
+            f"{label}: Pincode '{typed_pin}' is not a six-digit PIN code — not used."
         )
-        return None
+    city = (read.get(f"{prefix}_city") or f.city_in(whole, state) or "")[:128] or None
     try:
-        return Address(line1=line1, line2=line2, city=city, state_code=state, pincode=pincode)
+        address = Address(line1=line1, line2=line2, city=city, state_code=state, pincode=pincode)
     except ValidationError as exc:
         read.row.warnings.append(f"{label} left out: {_first_error(exc)}.")
         return None
+    if address.incomplete:
+        read.row.issues.append(
+            f"{label} imported as typed, without its {' and '.join(address.incomplete)} — "
+            "the sheet does not say. Add it on the profile."
+        )
+    return address
 
 
-def _sections(read: _Reader, name: str) -> list[Any]:
-    """The profile sections a row fills, each already checked."""
+_STATUTORY_LABELS = {
+    "pan": "Pan No",
+    "aadhaar": "Aadhaar No",
+    "uan": "UA No",
+    "pf_number": "PF No",
+    "esi_number": "ESIC No",
+}
+#: Longest each identifier column holds.
+_STATUTORY_WIDTH = {"uan": 12, "pf_number": 32, "esi_number": 20}
+
+
+def _entries(model: Any, items: list[dict[str, Any]], what: str, row: _Row) -> list[Any]:
+    kept = []
+    for item in items:
+        try:
+            kept.append(model(**item))
+        except ValidationError as exc:
+            row.warnings.append(f"{what} {item.get('name') or item.get('qualification')} left "
+                                f"out: {_first_error(exc)}.")
+    return kept
+
+
+def _sections(read: _Reader, name: str, more: list[list[Any]]) -> None:
+    """Fill the row's profile sections, identifiers and salary account, each as
+    the sheet has it. `more` are the person's continuation rows."""
     row = read.row
-    sections: list[Any] = []
+    table = read.table
+    every = [read.cells, *more]
 
     personal = {
         "father_name": read.limited("father_name", 255),
@@ -376,7 +445,7 @@ def _sections(read: _Reader, name: str) -> list[Any]:
     personal = {key: value for key, value in personal.items() if value is not None}
     if personal:
         try:
-            sections.append(PersonalWrite(section="personal", data=PersonalDetails(**personal)))
+            row.sections[ProfileSection.PERSONAL] = PersonalDetails(**personal)
         except ValidationError as exc:
             row.warnings.append(f"Personal details left out: {_first_error(exc)}.")
 
@@ -384,67 +453,88 @@ def _sections(read: _Reader, name: str) -> list[Any]:
     same = read.get("permanent_same", f.read_yes)
     permanent = None if same and current else _address(read, "permanent", "Permanent address")
     if current or permanent:
-        sections.append(
-            AddressesWrite(
-                section="addresses",
-                data=Addresses(
-                    current=current,
-                    permanent=permanent,
-                    permanent_same_as_current=bool(same and current),
-                ),
-            )
+        row.sections[ProfileSection.ADDRESSES] = Addresses(
+            current=current,
+            permanent=permanent,
+            permanent_same_as_current=bool(same and current),
         )
 
+    # Family: the sheet's family list, and the Mother Name column unless the
+    # list already has her.
+    family = g.family(table, every)
+    row.warnings.extend(family.notes)
     mother = read.limited("mother_name", 255)
-    if mother:
-        sections.append(
-            FamilyMembersWrite(
-                section="family_members",
-                data=[FamilyMember(name=mother, relationship="mother")],
-            )
-        )
-
-    contact = read.limited("emergency_name", 255)
-    contact_phone = read.get("emergency_phone", f.read_phone)
-    if contact and contact_phone:
-        sections.append(
-            EmergencyContactsWrite(
-                section="emergency_contacts",
-                data=[
-                    EmergencyContact(
-                        name=contact,
-                        relationship=read.get("emergency_relationship", f.read_relationship)
-                        or "other",
-                        phone=contact_phone,
-                        is_primary=True,
-                    )
-                ],
-            )
-        )
-    elif contact:
-        row.warnings.append("Emergency contact left out: it has no mobile number.")
-
-    statutory: dict[str, str] = {}
-    for key, label, reader in (
-        ("pan", "Pan No", f.text),
-        ("aadhaar", "Aadhaar No", f.digits),
-        ("uan", "UA No", f.digits),
-        ("pf_number", "PF No", f.text),
-        ("esi_number", "ESIC No", f.digits),
+    if mother and not any(
+        item["relationship"] == "mother" and item["name"].lower() == mother.lower()
+        for item in family.items
     ):
-        value = reader(read.raw(key))
+        family.items.insert(0, {"name": mother, "relationship": "mother"})
+    members = _entries(FamilyMember, family.items, "Family member", row)
+    if members:
+        row.sections[ProfileSection.FAMILY_MEMBERS] = members
+
+    if g.blocks(table, "Emergency Contact Detail"):
+        contacts = g.emergency_contacts(table, every)
+        row.issues.extend(contacts.notes)
+        items = contacts.items
+    else:
+        contact = read.limited("emergency_name", 255)
+        items = (
+            [{
+                "name": contact,
+                "relationship": read.get("emergency_relationship", f.read_relationship) or "other",
+                "phone": read.get("emergency_phone", f.read_phone),
+                "is_primary": True,
+            }]
+            if contact
+            else []
+        )
+        if contact and not items[0]["phone"]:
+            row.issues.append(f"Emergency contact {contact} has no mobile number.")
+    contacts_kept = _entries(EmergencyContact, items, "Emergency contact", row)
+    if contacts_kept:
+        row.sections[ProfileSection.EMERGENCY_CONTACTS] = contacts_kept
+
+    schooling = g.education(table, every)
+    row.warnings.extend(schooling.notes)
+    for item in schooling.items:
+        if not item["institution"]:
+            row.issues.append(f"Qualification {item['qualification']}: no institute in the sheet.")
+    studied = _entries(Education, schooling.items, "Qualification", row)
+    if studied:
+        row.sections[ProfileSection.EDUCATION] = studied
+
+    nominations = g.nominees(table, every)
+    row.issues.extend(nominations.notes)
+    named = _entries(Nominee, nominations.items, "Nominee", row)
+    if named:
+        row.sections[ProfileSection.NOMINEES] = named
+
+    income = g.prior_income(table, every)
+    row.prior_income = income.items
+    row.prior_zero_years = sum(
+        int(note.split(" ", 1)[0]) for note in income.notes if note[:1].isdigit()
+    )
+
+    # Identifiers: kept as typed; one that fails its check is listed.
+    for key, label in _STATUTORY_LABELS.items():
+        value = (f.digits if key in {"aadhaar", "uan", "esi_number"} else f.text)(read.raw(key))
         if key == "pf_number" and value is not None and value.strip("0") == "":
             value = None
         if value is None:
             continue
+        if key == "pan":
+            value = value.upper()
+        width = _STATUTORY_WIDTH.get(key)
+        if width and len(value) > width:
+            row.warnings.append(f"{label} '{value}' is longer than {width} characters — left out.")
+            continue
         try:
             StatutoryDetails(**{key: value})
+            row.statutory_valid[key] = value
         except ValidationError as exc:
-            row.warnings.append(f"{label}: {_first_error(exc)} — left out.")
-            continue
-        statutory[key] = value
-    if statutory:
-        sections.append(StatutoryWrite(section="statutory", data=StatutoryDetails(**statutory)))
+            row.issues.append(f"{label} '{value}': {_first_error(exc)} Imported as typed.")
+        row.statutory[key] = value
 
     account = f.digits(read.raw("account_number"))
     ifsc = f.text(read.raw("ifsc"))
@@ -452,22 +542,25 @@ def _sections(read: _Reader, name: str) -> list[Any]:
         holder = read.limited("account_holder_name", 255)
         if not holder:
             holder = name
-            row.warnings.append("Bank account holder name taken from the employee's name.")
-        try:
-            sections.append(
-                BankAccountWrite(
-                    section="bank_account",
-                    data=BankAccountDetails(
-                        account_number=account or "",
-                        ifsc=(ifsc or "").upper(),
-                        account_holder_name=holder,
-                        bank_name=read.limited("bank_name", 128),
-                    ),
-                )
+            row.issues.append(
+                "Name As Per Bank Records is empty — the employee's name is used as the account "
+                "holder."
             )
-        except ValidationError as exc:
-            row.warnings.append(f"Bank account left out: {_first_error(exc)}.")
-    return sections
+        bank = {
+            "account_number": account or "",
+            "ifsc": (ifsc or "").upper(),
+            "account_holder_name": holder,
+            "bank_name": read.limited("bank_name", 128),
+        }
+        if len(bank["ifsc"]) > 11:
+            row.warnings.append(f"IFSC Code '{bank['ifsc']}' is longer than 11 characters — "
+                                "bank account left out.")
+        else:
+            try:
+                BankAccountDetails(**bank)
+            except ValidationError as exc:
+                row.issues.append(f"Bank account: {_first_error(exc)} Imported as typed.")
+            row.bank = bank
 
 
 def _custom(read: _Reader, columns: dict[str, int], ws: _Workspace) -> dict[str, Any]:
@@ -515,15 +608,28 @@ def _custom(read: _Reader, columns: dict[str, int], ws: _Workspace) -> dict[str,
 
 
 def _read_row(
-    table: Table, line: int, cells: list[Any], ws: _Workspace, custom: dict[str, int], today: date
+    table: Table,
+    line: int,
+    cells: list[Any],
+    ws: _Workspace,
+    custom: dict[str, int],
+    today: date,
+    more: list[list[Any]],
+    extras: list[g.ExtraColumn],
 ) -> _Row:
     row = _Row(line=line)
     read = _Reader(table, cells, row)
 
     code = read.get("employee_code", required=True)
     if code is not None and not _CODE.match(code):
-        row.errors.append("Emp Code may hold letters, digits, - _ and / only, up to 32.")
-        code = None
+        if _CODE_TYPED.match(code):
+            row.issues.append(
+                f"Emp Code '{code}' has a space in it — imported as typed. Correct it on the "
+                "record before editing the record."
+            )
+        else:
+            row.errors.append("Emp Code may hold letters, digits, - _ and / only, up to 32.")
+            code = None
     row.code = code
 
     first = read.get("first_name", required=True)
@@ -532,6 +638,10 @@ def _read_row(
     full = read.get("full_name")
     plain = " ".join(p for p in (first, surname) if p)
     row.name = full or plain or None
+
+    joining = read.get("date_of_joining", f.read_date, required=True)
+    employment_status, exit_on = _status(read, joining, today)
+    leaver = employment_status is EmploymentStatus.EXITED
 
     work_email = read.get("work_email")
     personal_email = read.get("personal_email")
@@ -543,23 +653,26 @@ def _read_row(
             personal_email = None
     if work_email is None and personal_email is not None:
         work_email = personal_email
-        row.warnings.append("No work Email, so the personal email is used as the work email.")
+        row.issues.append("No work Email, so the personal email is used as the work email.")
     if work_email is None:
-        row.errors.append("No Email (work email) or Personal Email.")
+        if leaver:
+            work_email = ""
+            row.issues.append(
+                "No Email or Personal Email in the sheet — imported without one. They have "
+                "left, so they never need a login."
+            )
+        else:
+            row.errors.append("No Email (work email) or Personal Email.")
     else:
         try:
             work_email = _EMAIL.validate_python(work_email.lower())
         except ValidationError:
             row.errors.append("Email is not a valid email address.")
             work_email = None
-
-    joining = read.get("date_of_joining", f.read_date, required=True)
     born = read.get("date_of_birth", f.read_date)
     if born is not None and not (date(1900, 1, 1) <= born < today):
         row.warnings.append("Birth Date is not a plausible date of birth — left out.")
         born = None
-
-    employment_status, exit_on = _status(read, joining, today)
 
     try:
         kind = f.read_employment_type(read.raw("employment_type"))
@@ -606,13 +719,29 @@ def _read_row(
         "notice_period_days": notice or None,
     }
     if not row.errors:
+        # Checked as AskMira would enter it; a leaver's missing email and a code
+        # kept as typed are already listed, so they do not stop the row here.
+        checked = dict(record)
+        if not checked["work_email"]:
+            checked["work_email"] = _CHECK_EMAIL
+        if code and not _CODE.match(code):
+            checked["employee_code"] = "CHECKING"
         try:
-            EmployeeCreate(**record)
+            EmployeeCreate(**checked)
         except ValidationError as exc:
             row.errors.append(_first_error(exc))
     record["status"] = employment_status
     record["date_of_exit"] = exit_on
-    record["custom_fields"] = _custom(read, custom, ws)
+    values = _custom(read, custom, ws)
+    for column in extras:
+        value = g.extra_value(column, cells[column.index] if column.index < len(cells) else None)
+        if value is not None and column.differs_from is not None:
+            other = g.extra_value(column, cells[column.differs_from])
+            if other is None or other == value:
+                value = None
+        if value is not None:
+            values[column.key] = value
+    record["custom_fields"] = values
     row.record = record
 
     row.department = read.limited("department", 255)
@@ -621,7 +750,7 @@ def _read_row(
     row.entity = read.get("legal_entity")
     row.manager_code = read.get("manager", f.manager_code)
     if not row.errors:
-        row.sections = _sections(read, row.name or "")
+        _sections(read, row.name or "", more)
     return row
 
 
@@ -640,6 +769,13 @@ class _Plan:
     new_locations: dict[str, tuple[str, str]]
     new_projects: dict[str, str]
     columns_used: list[ImportColumn]
+    #: Columns kept as new custom fields, and columns with data not kept (with why).
+    extras: list[g.ExtraColumn] = field(default_factory=list)
+    not_kept: list[g.NotKept] = field(default_factory=list)
+    #: Points about the whole file, said once rather than on every row.
+    notes: list[str] = field(default_factory=list)
+    #: Continuation rows folded into their person.
+    continuation_rows: int = 0
 
 
 def _unique_code(name: str, taken: set[str]) -> str:
@@ -658,7 +794,113 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
     today = onboarding_rules.india_today()
     can_create = permissions.is_admin(user)
 
-    rows = [_read_row(table, line, cells, ws, custom, today) for line, cells in table.rows]
+    people, more = g.continuations(table)
+    extras, not_kept = g.extra_columns(table, people, set(ws.all_custom_keys))
+    notes: list[str] = []
+    not_kept.extend(g.section_leftovers(table, [c for _, c in table.rows]))
+    for key, over in (("leaving_date", "last_working_date"),
+                      ("expected_confirmation_date", "confirmation_date")):
+        index, other = table.mapping.get(key), table.mapping.get(over)
+        if index is None or other is None or not can_create:
+            continue
+        differ = 0
+        for _, cells in people:
+            try:
+                mine, theirs = f.read_date(cells[index]), f.read_date(cells[other])
+            except ValueError:
+                continue
+            if mine and theirs and mine != theirs:
+                differ += 1
+        if differ:
+            header = table.columns_by_index[index].header
+            extras.append(
+                g.ExtraColumn(
+                    index=index,
+                    header=header,
+                    key=g.unused_key(f"fh_{key}_as_typed", ws.all_custom_keys, extras),
+                    label=f"{header} (where it differs)",
+                    field_type="date",
+                    sensitive=False,
+                    filled=differ,
+                    differs_from=other,
+                )
+            )
+            other_header = table.columns_by_index[other].header
+            who = "1 person" if differ == 1 else f"{differ} people"
+            notes.append(
+                f"{header}: differs from {other_header} for {who}. The record uses "
+                f"{other_header}; {header} is kept on the {g.EXTRA_TAB} tab."
+            )
+    # A '0' in an identifier column is the old system's way of saying "none".
+    for key in ("esi_number", "pf_number", "uan"):
+        index = table.mapping.get(key)
+        if index is None:
+            continue
+        zeros = sum(
+            1
+            for _, cells in people
+            if (value := f.text(cells[index])) is not None and value.strip("0") == ""
+        )
+        if zeros:
+            header = table.columns_by_index[index].header
+            notes.append(f"{header}: '0' for {zeros} people means no number — recorded as none.")
+    for key in ("notice_period_days", "probation_days"):
+        index = table.mapping.get(key)
+        if index is None:
+            continue
+        zeros = sum(1 for _, cells in people if f.text(cells[index]) == "0")
+        if zeros:
+            header = table.columns_by_index[index].header
+            notes.append(f"{header}: 0 for {zeros} people — recorded as not set.")
+    # With one company, everybody is recorded under it whatever the file calls
+    # it; a name it does not go by is said once, and kept as typed.
+    company = table.mapping.get("legal_entity")
+    if company is not None and ws.only_entity is not None:
+        named: Counter[str] = Counter()
+        for _, cells in people:
+            name = f.text(cells[company])
+            if name and _key(name) not in ws.entities:
+                named[name] += 1
+        if named:
+            only = next(n for n, i in ws.entity_names.items() if i == ws.only_entity)
+            listed = ", ".join(f"'{name}' ({count})" for name, count in named.most_common())
+            notes.append(
+                f"Company: {listed} recorded under {only}, the only company here. The name as "
+                f"typed is kept on the {g.EXTRA_TAB} tab."
+            )
+            if can_create:
+                extras.append(
+                    g.ExtraColumn(
+                        index=company,
+                        header=table.columns_by_index[company].header,
+                        key=g.unused_key("fh_company_as_typed", ws.all_custom_keys, extras),
+                        label="Company (as in the file)",
+                        field_type="text",
+                        sensitive=False,
+                        filled=sum(named.values()),
+                    )
+                )
+    if not can_create:
+        not_kept = not_kept + [
+            g.NotKept(column.header, "Only an admin's import adds custom fields.")
+            for column in extras
+        ]
+        extras = []
+    for group, where in sorted(g.SECTION_GROUPS.items()):
+        if g.blocks(table, group) and where.startswith("Salary"):
+            not_kept.append(g.NotKept(group.title(), f"Not employee details: {where}."))
+
+    rows = [
+        _read_row(table, line, cells, ws, custom, today, more.get(line, []), extras)
+        for line, cells in people
+    ]
+
+    zero_years = sum(row.prior_zero_years for row in rows)
+    if zero_years:
+        notes.append(
+            f"Past Employee History: {zero_years} financial year(s) with every amount 0 — "
+            "nothing to record. Years with an amount are kept as previous-employer income."
+        )
 
     # Codes: one row per person, and nobody already here twice.
     seen: dict[str, int] = {}
@@ -676,21 +918,45 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
     # Emails: one person per address, here and in the file. Somebody already here
     # under another code is not added again; who has it is said, so HR can tell
     # whether it is the same person (the admin made with the workspace, say).
-    emails: dict[str, int] = {}
+    # A leaver may share an address with their later record (a re-hire, a
+    # consultant under their contact's email): only somebody still working
+    # here signs in with it, so only they need it to themselves.
+    emails: dict[str, _Row] = {}
+    current_in_file: dict[str, _Row] = {}
+    # A row already here is not added, so it is never stopped here; what is
+    # said about it still goes on the issues list, which describes the file.
     for row in rows:
         email = row.record.get("work_email")
-        if email is None or row.skip:
+        if not email or row.errors:
             continue
         held = ws.emails.get(email)
-        if held is not None and (row.code is None or held[0].upper() != row.code.upper()):
-            row.errors.append(
-                f"Email {email} is already used by {held[0]} ({held[1]}) in AskMira. If that is "
-                "the same person, it was not added again; otherwise give this row its own email."
-            )
-        elif email in emails:
-            row.errors.append(f"Email {email} is also on row {emails[email]}.")
+        mine = row.code is not None and held is not None and held[0].upper() == row.code.upper()
+        # A row already here shares the address with others from this file, said
+        # below; who else holds it in AskMira would only say it twice.
+        if held is not None and not mine and not row.skip:
+            if row.leaver or email not in ws.current_emails:
+                row.issues.append(f"Email {email} is also {held[0]} ({held[1]})'s in AskMira.")
+            else:
+                row.errors.append(
+                    f"Email {email} is already used by {held[0]} ({held[1]}) in AskMira. If that "
+                    "is the same person, it was not added again; otherwise give this row its own "
+                    "email."
+                )
+                continue
+        first = emails.get(email)
+        if first is not None:
+            other = current_in_file.get(email)
+            if not row.leaver and not row.skip and other is not None:
+                row.errors.append(f"Email {email} is also on row {other.line}, and both are "
+                                  "still working here.")
+                continue
+            row.issues.append(f"Email {email} is also {first.code}'s (row {first.line}).")
+            if not any(email in issue for issue in first.issues):
+                first.issues.append(f"Email {email} is also {row.code}'s (row {row.line}).")
         else:
-            emails[email] = row.line
+            emails[email] = row
+        if not row.leaver:
+            current_in_file[email] = row
 
     ready = [row for row in rows if row.outcome == "ready"]
 
@@ -716,7 +982,9 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
                     "An admin can import this file to create it."
                 )
         if row.location and _key(row.location) not in ws.locations:
-            state = f.state_of_place(row.location)
+            state = f.state_of_place(row.location) or f.state_in(row.location)
+            if state is None and f.country_of_place(row.location):
+                state = ""  # abroad: no Indian state, so no Professional Tax there
             entity = _entity_for(row, ws)
             if not can_create:
                 row.warnings.append(
@@ -794,6 +1062,10 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         new_locations=new_locations,
         new_projects=new_projects,
         columns_used=columns_used,
+        extras=extras,
+        not_kept=not_kept,
+        notes=notes,
+        continuation_rows=len(table.rows) - len(people),
     )
 
 
@@ -819,6 +1091,7 @@ def _row_read(row: _Row) -> ImportRow:
         outcome=row.outcome,  # type: ignore[arg-type]
         errors=row.errors,
         warnings=row.warnings if row.outcome == "ready" else [],
+        issues=row.issues if row.outcome == "ready" else [],
         employee_id=row.employee_id,
     )
 
@@ -849,9 +1122,8 @@ async def _aadhaar_fills(session: AsyncSession, user: User, plan: _Plan) -> _Aad
     for row in plan.rows:
         if row.outcome != "skip" or not row.code:
             continue
-        for change in row.sections:
-            if change.section == "statutory" and getattr(change.data, "aadhaar", None):
-                wanted[row.code.upper()] = change.data.aadhaar
+        if row.statutory_valid.get("aadhaar"):
+            wanted[row.code.upper()] = row.statutory_valid["aadhaar"]
     if not wanted:
         return _AadhaarFills([], [])
     people = (
@@ -899,6 +1171,13 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
         skipped=sum(1 for row in plan.rows if row.outcome == "skip"),
         errors=sum(1 for row in plan.rows if row.outcome == "error"),
         with_warnings=sum(1 for row in ready if row.warnings),
+        with_issues=sum(1 for row in ready if row.issues),
+        continuation_rows=plan.continuation_rows,
+        notes=plan.notes,
+        new_custom_fields=[column.label for column in plan.extras],
+        columns_not_kept=[
+            ImportColumnNotKept(header=item.header, why=item.why) for item in plan.not_kept
+        ],
         new_departments=sorted(plan.new_departments.values(), key=str.lower),
         new_projects=sorted(plan.new_projects.values(), key=str.lower),
         new_locations=[
@@ -906,7 +1185,11 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
             for name, state in sorted(plan.new_locations.values(), key=lambda v: v[0].lower())
         ],
         columns_used=plan.columns_used,
-        columns_ignored=[column.header for column in plan.table.unused],
+        columns_ignored=[
+            column.header
+            for column in plan.table.unused
+            if column.index not in {extra.index for extra in plan.extras}
+        ],
         can_create_org=plan.can_create_org,
         rows=[_row_read(row) for row in plan.rows],
         aadhaar_fills=len(aadhaar.fills),
@@ -969,15 +1252,55 @@ async def run(
             request=request,
         )
 
+    custom_fields_created: list[str] = []
+    order = max((d.display_order for d in ws.custom.values()), default=0)
+    for column in plan.extras:
+        if not any(column.key in row.record.get("custom_fields", {}) for row in chosen):
+            continue
+        order += 1
+        definition = CustomFieldDefinition(
+            tenant_id=user.tenant_id,
+            entity="employee",
+            key=column.key,
+            label=column.label,
+            field_type=column.field_type,
+            is_required=False,
+            is_sensitive=column.sensitive,
+            display_order=order,
+            is_active=True,
+            tab=g.EXTRA_TAB,
+        )
+        session.add(definition)
+        custom_fields_created.append(column.label)
+    if custom_fields_created:
+        await session.flush()
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.CREATE,
+            entity_type="custom_field_definition",
+            actor=user,
+            changes={"fields": custom_fields_created, "tab": g.EXTRA_TAB, "source": filename},
+            summary=(
+                f"Added {len(custom_fields_created)} custom fields on the {g.EXTRA_TAB} tab for "
+                f"the columns of {filename} that AskMira has no field for"
+            ),
+            request=request,
+        )
+    else:
+        # Not made, so their values are not written either.
+        for row in chosen:
+            for column in plan.extras:
+                row.record.get("custom_fields", {}).pop(column.key, None)
+
     departments_created: list[str] = []
     taken = set(ws.department_codes)
     for key, name in sorted(plan.new_departments.items()):
         if not any(row.department and _key(row.department) == key for row in chosen):
             continue
-        department = Department(tenant_id=user.tenant_id, name=name[:255],
+        department = Department(id=uuid.uuid4(), tenant_id=user.tenant_id, name=name[:255],
                                 code=_unique_code(name, taken))
         session.add(department)
-        await session.flush()
         ws.departments[key] = (department.id, department.name)
         departments_created.append(department.name)
         await audit.record(
@@ -990,6 +1313,7 @@ async def run(
             changes={"name": department.name, "code": department.code, "source": filename},
             summary=f"Created department {department.code} while importing employees",
             request=request,
+            flush=False,
         )
 
     projects_created: list[str] = []
@@ -998,6 +1322,7 @@ async def run(
         if not any(row.project and _key(row.project) == key for row in chosen):
             continue
         project = Project(
+            id=uuid.uuid4(),
             tenant_id=user.tenant_id,
             name=name[:160],
             code=_unique_code(name, taken),
@@ -1006,7 +1331,6 @@ async def run(
             legal_entity_id=ws.only_entity,
         )
         session.add(project)
-        await session.flush()
         ws.projects[key] = (project.id, project.name)
         projects_created.append(project.name)
         await audit.record(
@@ -1019,6 +1343,7 @@ async def run(
             changes={"name": project.name, "code": project.code, "source": filename},
             summary=f"Created project {project.code} while importing employees",
             request=request,
+            flush=False,
         )
 
     locations_created: list[str] = []
@@ -1029,15 +1354,16 @@ async def run(
         if not users_of or entity is None:
             continue
         location = Location(
+            id=uuid.uuid4(),
             tenant_id=user.tenant_id,
             legal_entity_id=entity,
             name=name[:255],
             code=_unique_code(name, taken),
             city=name[:128] if f.CITY_STATES.get(name.lower().strip()) else None,
             state_code=state,
+            country_code=(f.country_of_place(name) or "IN") if not state else "IN",
         )
         session.add(location)
-        await session.flush()
         ws.locations[key] = (location.id, location.name)
         locations_created.append(location.name)
         await audit.record(
@@ -1051,7 +1377,12 @@ async def run(
                      "source": filename},
             summary=f"Created location {location.code} in state {state} while importing employees",
             request=request,
+            flush=False,
         )
+
+    # The departments, projects and locations made above, in one round trip,
+    # before the people that point at them.
+    await session.flush()
 
     employees: dict[str, Employee] = {}
     for row in chosen:
@@ -1059,6 +1390,8 @@ async def run(
         department = ws.departments.get(_key(row.department)) if row.department else None
         location = ws.locations.get(_key(row.location)) if row.location else None
         project = ws.projects.get(_key(row.project)) if row.project else None
+        typed = row.statutory
+        aadhaar_full = typed.get("aadhaar")
         employee = Employee(
             id=uuid.uuid4(),
             tenant_id=user.tenant_id,
@@ -1067,6 +1400,12 @@ async def run(
             project_id=project[0] if project else None,
             location_id=location[0] if location else None,
             is_active=record["status"] is not EmploymentStatus.EXITED,
+            pan=typed.get("pan"),
+            uan=typed.get("uan"),
+            pf_number=typed.get("pf_number"),
+            esi_number=typed.get("esi_number"),
+            aadhaar_number=aadhaar_full,
+            aadhaar_last4=aadhaar_full[-4:] if aadhaar_full else None,
             **record,
         )
         session.add(employee)
@@ -1087,17 +1426,46 @@ async def run(
         employees[row.code.upper()].manager_id = manager_id  # type: ignore[union-attr]
     await session.flush()
 
+    prior_years = 0
     for row in chosen:
         employee = employees[row.code.upper()]  # type: ignore[union-attr]
-        written = []
-        for change in row.sections:
-            try:
-                await profile_service.apply_section(session, user, employee, change,
-                                                    request=request)
-                written.append(change.section)
-            except HTTPException as exc:
-                row.warnings.append(f"{change.section.replace('_', ' ').capitalize()} left out: "
-                                    f"{exc.detail}")
+        written = profile_service.add_imported_profile(session, user, employee, row.sections)
+        if row.statutory:
+            written.append("statutory")
+        if row.bank is not None:
+            session.add(
+                EmployeeBankAccount(
+                    tenant_id=user.tenant_id,
+                    employee_id=employee.id,
+                    account_number=encrypt_secret(row.bank["account_number"], user.tenant_id),
+                    ifsc=row.bank["ifsc"],
+                    account_holder_name=row.bank["account_holder_name"],
+                    bank_name=row.bank["bank_name"],
+                    is_primary=True,
+                    verification_method=VerificationMethod.NONE,
+                )
+            )
+            written.append("bank_account")
+        for entry in row.prior_income:
+            session.add(
+                PreviousEmployerIncome(
+                    tenant_id=user.tenant_id,
+                    employee_id=employee.id,
+                    financial_year=entry["financial_year"],
+                    employer_name=entry.get("employer_name"),
+                    gross_salary=entry.get("gross_salary") or 0,
+                    tds_deducted=entry.get("tds_deducted") or 0,
+                    pf_deducted=entry.get("pf_deducted") or 0,
+                    professional_tax=entry.get("professional_tax") or 0,
+                    # The old system's own figures, as it used them.
+                    status=ProofStatus.VERIFIED,
+                    verifier_user_id=user.id,
+                    verifier_remarks=entry.get("remarks") or f"From {filename}",
+                )
+            )
+            prior_years += 1
+        if row.prior_income:
+            written.append("previous_employer_income")
         await audit.record(
             session,
             tenant_id=user.tenant_id,
@@ -1110,10 +1478,17 @@ async def run(
                 "file": filename,
                 "line": row.line,
                 "status": employee.status.value,
+                # Which sections, never the values: identifiers and the
+                # account number are not written to the audit log.
                 "profile_sections": written,
+                "issues": len(row.issues),
             },
             summary=f"Imported employee {employee.employee_code} from {filename}",
             request=request,
+            # Written with everything else in one flush below: hundreds of
+            # people, a handful of round trips to the database rather than
+            # thousands (the live database is a network hop away).
+            flush=False,
         )
 
     leavers = sum(1 for row in chosen if row.leaver)
@@ -1132,6 +1507,9 @@ async def run(
             "failed": sum(1 for row in plan.rows if row.outcome == "error"),
             "departments_created": departments_created,
             "locations_created": locations_created,
+            "custom_fields_created": custom_fields_created,
+            "previous_employer_years": prior_years,
+            "with_issues": sum(1 for row in chosen if row.issues),
             "aadhaar_filled": len(aadhaar.fills),
         },
         summary=f"Imported {len(chosen)} employees from {filename}"
@@ -1149,5 +1527,57 @@ async def run(
         departments_created=departments_created,
         projects_created=projects_created,
         locations_created=locations_created,
+        custom_fields_created=custom_fields_created,
+        with_issues=sum(1 for row in chosen if row.issues),
         rows=[_row_read(row) for row in plan.rows],
     )
+
+
+async def issues(session: AsyncSession, user: User, data: bytes, filename: str) -> bytes:
+    """Everybody the file has something to look at for, one line per point, as a
+    workbook: values imported as typed that are not as AskMira would have them,
+    values left out, and rows not added. Writes nothing."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    permissions.require_hr(user, detail="Only HR imports employees.")
+    plan = await _plan(session, user, _read(data, filename))
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Issues"
+    sheet.append(["Emp Code", "Name", "Row", "Status", "Kind", "Issue"])
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    # About the file's own values, before the import or after it (when every
+    # row is already here): a row already in AskMira lists its points too.
+    kinds = (("errors", "Not added"), ("issues", "Imported as typed"), ("warnings", "Left out"))
+    for row in plan.rows:
+        status = row.record.get("status")
+        for attribute, kind in kinds:
+            points = getattr(row, attribute)
+            if attribute != "errors" and row.outcome == "error":
+                points = []
+            for point in points:
+                sheet.append([
+                    row.code, row.name, row.line,
+                    status.value.replace("_", " ").capitalize() if status else None,
+                    kind, point,
+                ])
+    if plan.notes:
+        about = book.create_sheet("About the file")
+        for note in plan.notes:
+            about.append([note])
+        about.column_dimensions["A"].width = 160
+    columns = book.create_sheet("Columns not kept")
+    columns.append(["Column", "Why"])
+    for cell in columns[1]:
+        cell.font = Font(bold=True)
+    for item in plan.not_kept:
+        columns.append([item.header, item.why])
+    for target, widths in ((sheet, (14, 30, 7, 10, 18, 110)), (columns, (40, 90))):
+        for index, width in enumerate(widths):
+            target.column_dimensions[chr(65 + index)].width = width
+    sheet.freeze_panes = "A2"
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()

@@ -235,7 +235,10 @@ class SalaryComponentAmountInput(BaseModel):
     """
 
     component_code: str = Field(min_length=1, max_length=32)
-    amount: Decimal | None = Field(default=None, ge=0, le=MAX_TYPED)
+    #: Negative only on a record of what a person who has left was paid, brought
+    #: in as the old system had it (Salary master bulk upload); every other
+    #: save refuses it (`resolve_amounts`, strict).
+    amount: Decimal | None = Field(default=None, ge=-MAX_TYPED, le=MAX_TYPED)
     #: What period `amount` is for.
     basis: PayBasis = "monthly"
     remarks: str | None = Field(default=None, max_length=255)

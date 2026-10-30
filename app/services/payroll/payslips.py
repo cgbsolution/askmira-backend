@@ -54,6 +54,7 @@ from app.schemas.payroll_run import (
 )
 from app.services import audit
 from app.services.documents.pdf import PdfRenderError
+from app.services.employee_identifiers import PAN_PATTERN
 from app.services.payroll import payslip_pdf
 from app.services.payroll.run import CLOSED_STATUSES, get_run, other_earnings_of
 from app.services.payroll.service import salary_record
@@ -784,9 +785,15 @@ PASSWORD_RULE = (
 
 
 def payslip_password(employee: Employee) -> str:
-    """The password a protected payslip opens with, by the rule above."""
-    if employee.pan:
-        return employee.pan.strip().upper()
+    """The password a protected payslip opens with, by the rule above.
+
+    A record can hold what the old HR system had in place of a PAN
+    ("PANNOTAVBL", kept as typed for the TDS return): that is not a PAN the
+    person could know, so the date of birth is used instead.
+    """
+    pan = (employee.pan or "").strip().upper()
+    if PAN_PATTERN.match(pan):
+        return pan
     if employee.date_of_birth:
         return employee.date_of_birth.strftime("%d%m%Y")
     return employee.employee_code

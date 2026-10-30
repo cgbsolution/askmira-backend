@@ -413,6 +413,7 @@ async def resolve_typed(
     payload: SalaryAmountsInput,
     *,
     strict: bool = True,
+    components: dict[str, SalaryComponent] | None = None,
 ) -> ResolvedSalary:
     """A manual entry: every amount exactly as typed, nothing worked out.
 
@@ -428,7 +429,10 @@ async def resolve_typed(
     items = [item for item in payload.components if item.amount is not None]
     codes = {item.component_code for item in items}
     found: dict[str, SalaryComponent] = {}
-    if codes:
+    if codes and components is not None:
+        # The workspace's wage types, loaded once by a caller resolving many rows.
+        found = {code: components[code] for code in codes if code in components}
+    elif codes:
         found = {
             component.code: component
             for component in (
@@ -508,13 +512,28 @@ async def resolve_amounts(
     payload: SalaryAmountsInput,
     *,
     strict: bool = True,
+    components: dict[str, SalaryComponent] | None = None,
 ) -> ResolvedSalary:
     """Resolve what the Salary master sent: a CTC, typed amounts and remarks.
+
+    `components`, the workspace's wage types by code, saves a query per call
+    for a caller resolving hundreds of rows (the bulk upload).
 
     Figures in any Pay Basis become monthly and yearly ones here, on the
     server, so a browser never multiplies money.
     """
     manual_entry = payload.entry == "manual"
+    negative = sorted(
+        item.component_code
+        for item in payload.components
+        if item.amount is not None and item.amount < 0
+    )
+    flagged: list[str] = []
+    if negative:
+        message = f"{', '.join(negative)}: an amount cannot be negative."
+        if strict:
+            raise _unprocessable(message)
+        flagged.append(message)
     if payload.ctc_annual is not None:
         ctc = payload.ctc_annual
     else:
@@ -526,7 +545,11 @@ async def resolve_amounts(
         if not manual_entry:
             ctc = round_to_structure(structure, ctc)
     if manual_entry:
-        return await resolve_typed(session, user, ctc, payload, strict=strict)
+        resolved = await resolve_typed(
+            session, user, ctc, payload, strict=strict, components=components
+        )
+        resolved.warnings[:0] = flagged
+        return resolved
 
     in_structure = {link.component.code for link in structure.components}
     manual: dict[str, Decimal] = {}
@@ -547,7 +570,9 @@ async def resolve_amounts(
             )
         manual[item.component_code], _ = to_period_amounts(item.amount, item.basis)
         bases[item.component_code] = item.basis
-    return await resolve_manual(session, user, structure, ctc, manual, remarks, bases)
+    resolved = await resolve_manual(session, user, structure, ctc, manual, remarks, bases)
+    resolved.warnings[:0] = flagged
+    return resolved
 
 
 def materialise(salary: EmployeeSalary, resolved: ResolvedSalary, tenant_id: uuid.UUID) -> None:
@@ -646,12 +671,17 @@ async def assign_salary(
     payload: EmployeeSalaryCreate,
     request: Request | None = None,
     commit: bool = True,
+    strict: bool = True,
 ) -> EmployeeSalary:
     """Assign or revise an employee's salary, effective-dated.
 
     Materialises the resolved component amounts onto `EmployeeSalaryComponent`
     rows. Those rows are the payroll engine's input and are never rewritten, so
     a later edit to the structure leaves this assignment untouched.
+
+    `strict=False` only for a record of what somebody who has left was paid,
+    kept as the old system had it (the Salary master bulk upload): the rules
+    that guard future pay are then not applied.
     """
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
@@ -670,8 +700,7 @@ async def assign_salary(
             ),
         )
 
-    resolved = await resolve_amounts(session, user, structure, payload)
-    ctc = resolved.ctc_annual
+    resolved = await resolve_amounts(session, user, structure, payload, strict=strict)
 
     # ── Close the previous revision ─────────────────────────────────────────
     current = await session.scalar(
@@ -700,11 +729,37 @@ async def assign_salary(
         previous_ctc = Decimal(str(current.ctc_annual))
         current.effective_to = payload.effective_from - timedelta(days=1)
 
+    salary = _new_salary(user, employee_id, structure, payload, resolved)
+    session.add(salary)
+    await session.flush()
+
+    await _salary_audit(
+        session, user, employee, salary, structure, payload, resolved, previous_ctc,
+        request=request,
+    )
+    # `commit=False` for a caller that owns the transaction — a lifecycle
+    # cascade runs inside a savepoint, and committing here would close it out
+    # from under the caller, taking the atomicity guarantee with it.
+    if commit:
+        await session.commit()
+        await session.refresh(salary)
+    return salary
+
+
+def _new_salary(
+    user: User,
+    employee_id: uuid.UUID,
+    structure: SalaryStructure,
+    payload: EmployeeSalaryCreate,
+    resolved: ResolvedSalary,
+) -> EmployeeSalary:
+    """A salary revision with its resolved amounts on it, not yet added."""
     salary = EmployeeSalary(
+        id=uuid.uuid4(),
         tenant_id=user.tenant_id,
         employee_id=employee_id,
         structure_id=structure.id,
-        ctc_annual=ctc,
+        ctc_annual=resolved.ctc_annual,
         effective_from=payload.effective_from,
         revision_reason=payload.revision_reason,
         approved_by_user_id=user.id,
@@ -712,19 +767,32 @@ async def assign_salary(
         gross_basis=resolved.gross[1] if resolved.gross else None,
     )
     materialise(salary, resolved, user.tenant_id)
+    return salary
 
-    session.add(salary)
-    await session.flush()
 
+async def _salary_audit(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    salary: EmployeeSalary,
+    structure: SalaryStructure,
+    payload: EmployeeSalaryCreate,
+    resolved: ResolvedSalary,
+    previous_ctc: Decimal | None,
+    *,
+    request: Request | None,
+    flush: bool = True,
+) -> None:
+    ctc = resolved.ctc_annual
     await audit.record(
         session,
         tenant_id=user.tenant_id,
-        action=AuditAction.UPDATE if current is not None else AuditAction.CREATE,
+        action=AuditAction.UPDATE if previous_ctc is not None else AuditAction.CREATE,
         entity_type="employee_salary",
         entity_id=salary.id,
         actor=user,
         changes={
-            "employee_id": str(employee_id),
+            "employee_id": str(employee.id),
             # Both normalised to paise. The old value comes back from a
             # Numeric(14,2) column and the new one from the request body; left
             # alone they serialise as "1200000.00" and "1500000", which reads
@@ -742,14 +810,93 @@ async def assign_salary(
             else f"Salary assigned to {employee.employee_code}: {_money(ctc)}"
         ),
         request=request,
+        flush=flush,
     )
-    # `commit=False` for a caller that owns the transaction — a lifecycle
-    # cascade runs inside a savepoint, and committing here would close it out
-    # from under the caller, taking the atomicity guarantee with it.
-    if commit:
-        await session.commit()
-        await session.refresh(salary)
-    return salary
+
+
+async def assign_salaries(
+    session: AsyncSession,
+    user: User,
+    items: list[tuple[Employee, EmployeeSalaryCreate, bool]],
+    *,
+    request: Request | None = None,
+) -> list[EmployeeSalary]:
+    """`assign_salary` for many people at once — the Salary master bulk upload.
+
+    The same checks, revisions and audit entries, row for row, in the caller's
+    transaction (no commit). What a row needs is loaded once for all of them
+    (the structures, the wage types, everybody's revision in force) and the
+    rows are written in one flush: hundreds of salaries cost a handful of
+    round trips to the database instead of ten each. `items` are (employee,
+    payload, strict); a later row for the same person follows the earlier one.
+    """
+    if not items:
+        return []
+    components = {
+        c.code: c
+        for c in (
+            await session.scalars(tenant_scoped(select(SalaryComponent), SalaryComponent, user))
+        ).all()
+    }
+    structures: dict[uuid.UUID, SalaryStructure] = {}
+    for structure_id in {payload.structure_id for _, payload, _ in items}:
+        structures[structure_id] = await get_structure(session, user, structure_id)
+    current: dict[uuid.UUID, EmployeeSalary] = {}
+    for row in (
+        await session.scalars(
+            tenant_scoped(
+                select(EmployeeSalary)
+                .where(
+                    EmployeeSalary.employee_id.in_({employee.id for employee, _, _ in items}),
+                    EmployeeSalary.effective_to.is_(None),
+                )
+                .order_by(EmployeeSalary.effective_from),
+                EmployeeSalary,
+                user,
+            )
+        )
+    ).all():
+        current[row.employee_id] = row  # the latest open one wins, as in assign_salary
+
+    saved: list[EmployeeSalary] = []
+    with session.no_autoflush:
+        for employee, payload, strict in items:
+            structure = structures[payload.structure_id]
+            if payload.effective_from < structure.effective_from:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Salary is effective {payload.effective_from} but the structure "
+                        f"'{structure.name}' only starts on {structure.effective_from}"
+                    ),
+                )
+            resolved = await resolve_amounts(
+                session, user, structure, payload, strict=strict, components=components
+            )
+            before = current.get(employee.id)
+            previous_ctc: Decimal | None = None
+            if before is not None:
+                if before.effective_from >= payload.effective_from:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"{employee.employee_code} already has a salary effective "
+                            f"{before.effective_from}. A revision must start after it — "
+                            "backdated corrections are an arrears run, not an edit."
+                        ),
+                    )
+                previous_ctc = Decimal(str(before.ctc_annual))
+                before.effective_to = payload.effective_from - timedelta(days=1)
+            salary = _new_salary(user, employee.id, structure, payload, resolved)
+            session.add(salary)
+            await _salary_audit(
+                session, user, employee, salary, structure, payload, resolved, previous_ctc,
+                request=request, flush=False,
+            )
+            current[employee.id] = salary
+            saved.append(salary)
+    await session.flush()
+    return saved
 
 
 async def salary_history(

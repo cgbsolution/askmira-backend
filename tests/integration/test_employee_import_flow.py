@@ -176,20 +176,23 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     preview = checked.json()
     assert preview["source"] == "factoHR Employee Detail report"
     assert preview["total_rows"] == 7
-    assert (preview["ready_current"], preview["ready_leavers"]) == (3, 1)
-    assert (preview["skipped"], preview["errors"]) == (1, 2)
+    # A leaver with no leaving date comes in as having left, listed to look at.
+    assert (preview["ready_current"], preview["ready_leavers"]) == (3, 2)
+    assert (preview["skipped"], preview["errors"]) == (1, 1)
     assert preview["new_departments"] == ["Talent"]
     assert {(loc["name"], loc["state_code"]) for loc in preview["new_locations"]} == {
         ("Delhi", "DL"),
         ("Bangalore office", "KA"),
+        ("Dubai", ""),  # abroad: no Indian state
     }
     assert preview["can_create_org"] is True
     rows = {row["employee_code"]: row for row in preview["rows"]}
     assert rows["OLD-001"]["outcome"] == "skip"
     assert rows["CAP23-099"]["errors"] == ["No Email (work email) or Personal Email."]
-    assert "no Leaving Date" in rows["CAP23-100"]["errors"][0]
-    assert any(w.startswith("Pan No:") for w in rows["CAP22-002"]["warnings"])
-    assert any("Dubai" in w for w in rows["CAP23-101"]["warnings"])
+    assert rows["CAP23-100"]["outcome"] == "ready"
+    assert any("no Leaving Date" in issue for issue in rows["CAP23-100"]["issues"])
+    # A placeholder PAN is kept as typed and listed, not dropped.
+    assert any(i.startswith("Pan No 'PANNOTAVBL'") for i in rows["CAP22-002"]["issues"])
     assert rows["CAP21-010"]["status"] == "exited"
     used = {column["field"] for column in preview["columns_used"]}
     assert {"Emp Code", "Aadhaar No", "Local Pincode", "PF No"} <= used
@@ -200,10 +203,10 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     imported = await client.post(API, headers=headers, **_upload(data))
     assert imported.status_code == 201, imported.text
     result = imported.json()
-    assert (result["created"], result["created_leavers"]) == (4, 1)
-    assert (result["skipped"], result["failed"]) == (1, 2)
+    assert (result["created"], result["created_leavers"]) == (5, 2)
+    assert (result["skipped"], result["failed"]) == (1, 1)
     assert result["departments_created"] == ["Talent"]
-    assert sorted(result["locations_created"]) == ["Bangalore office", "Delhi"]
+    assert sorted(result["locations_created"]) == ["Bangalore office", "Delhi", "Dubai"]
 
     asha = await _employee(session, "CAP22-001")
     rahul = await _employee(session, "CAP22-002")
@@ -224,7 +227,11 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
         False,
     )
     assert lata.employment_type.value == "consultant"
-    assert zara.location_id is None
+    dubai = await session.scalar(select(Location).where(Location.name == "Dubai"))
+    assert (dubai.country_code, dubai.state_code) == ("AE", "")
+    assert zara.location_id == dubai.id
+    gone = await _employee(session, "CAP23-100")
+    assert (gone.status, gone.date_of_exit) == (EmploymentStatus.EXITED, None)
 
     engineering = await session.scalar(select(Department).where(Department.code == "ENG"))
     assert asha.department_id == engineering.id
@@ -239,7 +246,7 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     assert asha.pf_number == "KRBNG00123450000012345"
     assert asha.aadhaar_last4 == AADHAAR[-4:]
     assert asha.aadhaar_number == AADHAAR
-    assert rahul.pan is None
+    assert rahul.pan == "PANNOTAVBL"  # as typed: the TDS return's own word for "no PAN"
     account = await session.scalar(
         select(EmployeeBankAccount).where(EmployeeBankAccount.employee_id == asha.id)
     )
@@ -258,15 +265,8 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     assert profile.personal["father_name"] == "Ramesh Verma"
     assert profile.addresses["current"]["state_code"] == "KA"
     assert profile.addresses["permanent_same_as_current"] is True
-    assert profile.family_members == [
-        {
-            "name": "Sunita Verma",
-            "relationship": "mother",
-            "date_of_birth": None,
-            "gender": None,
-            "occupation": None,
-            "is_dependent": False,
-        }
+    assert [(m["name"], m["relationship"]) for m in profile.family_members] == [
+        ("Sunita Verma", "mother")
     ]
 
     # Audited: one row per person and one for the import; never an identifier.
@@ -274,7 +274,7 @@ async def test_an_admin_checks_then_imports_a_factohr_export(client, session, te
     imported_rows = [
         a for a in audits if a.entity_type == "employee" and a.action.value == "create"
     ]
-    assert len(imported_rows) == 4
+    assert len(imported_rows) == 5
     assert any(a.entity_type == "employee_import" for a in audits)
     trail = json.dumps([a.changes for a in audits], default=str)
     for secret in ("ABCPV1234F", AADHAAR, "123456789012", "100234223910"):
@@ -360,7 +360,9 @@ async def test_an_email_already_here_is_not_added_twice(client, session, tenant)
     assert f"already used by {mine.employee_code} (Priya Hr)" in rows["CGB-007"]["errors"][0]
     assert rows["CGB-008"]["outcome"] == "ready"
     line = rows["CGB-008"]["line"]
-    assert rows["CGB-009"]["errors"] == [f"Email ravi@example.com is also on row {line}."]
+    assert rows["CGB-009"]["errors"] == [
+        f"Email ravi@example.com is also on row {line}, and both are still working here."
+    ]
 
     # The rows left out, with their own cells and why.
     sheet = await client.post(f"{API}/rejected", headers=headers, **_upload(data))
