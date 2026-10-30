@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
@@ -161,6 +162,30 @@ async def _validate_references(
     raise _unprocessable("The reporting chain above that manager is too long, or loops.")
 
 
+#: What the directory, its export and its pickers read. Never the encrypted
+#: identifiers (PAN, Aadhaar, bank account): a list has no use for them, and
+#: decrypting every row's for nothing costs time and fails outright on a copy
+#: of the data whose key differs.
+_DIRECTORY_COLUMNS = (
+    Employee.id,
+    Employee.employee_code,
+    Employee.first_name,
+    Employee.last_name,
+    Employee.display_name,
+    Employee.work_email,
+    Employee.designation,
+    Employee.legal_entity_id,
+    Employee.department_id,
+    Employee.project_id,
+    Employee.location_id,
+    Employee.manager_id,
+    Employee.dotted_line_manager_id,
+    Employee.photo_url,
+    Employee.status,
+    Employee.deleted_at,
+)
+
+
 async def list_employees(
     session: AsyncSession,
     user: User,
@@ -185,7 +210,9 @@ async def list_employees(
     or about to join. An org chart drawn from `status=active` alone loses
     everyone on notice or on leave, and their reports float to the top.
     """
-    stmt = tenant_scoped(select(Employee), Employee, user)
+    stmt = tenant_scoped(select(Employee), Employee, user).options(
+        load_only(*_DIRECTORY_COLUMNS)
+    )
 
     if not include_deleted:
         stmt = stmt.where(Employee.deleted_at.is_(None))
@@ -309,10 +336,10 @@ async def directory_csv(
             await session.execute(tenant_scoped(select(Location.id, Location.name), Location, user))
         ).all()
     )
-    people = {
-        e.id: e
-        for e in (await session.scalars(tenant_scoped(select(Employee), Employee, user))).all()
-    }
+    everyone = tenant_scoped(select(Employee), Employee, user).options(
+        load_only(*_DIRECTORY_COLUMNS)
+    )
+    people = {e.id: e for e in (await session.scalars(everyone)).all()}
 
     def who(employee_id: uuid.UUID | None) -> tuple[str | None, str | None]:
         person = people.get(employee_id) if employee_id else None
