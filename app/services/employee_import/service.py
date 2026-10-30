@@ -852,6 +852,41 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         if zeros:
             header = table.columns_by_index[index].header
             notes.append(f"{header}: 0 for {zeros} people — recorded as not set.")
+    # The status word as the old system typed it: AskMira keeps fewer statuses
+    # ("Withdrawn", "Suspended" and "Inactive" are all "left"), so the word
+    # itself is kept on the factoHR tab and the mapping said once.
+    status = table.mapping.get("status")
+    if status is not None and can_create:
+        words: Counter[str] = Counter()
+        for _, cells in people:
+            word = f.text(cells[status])
+            if word:
+                words[word] += 1
+        if words:
+            extras.append(
+                g.ExtraColumn(
+                    index=status,
+                    header=table.columns_by_index[status].header,
+                    key=g.unused_key("fh_status_as_typed", ws.all_custom_keys, extras),
+                    label="Status (as in the file)",
+                    field_type="text",
+                    sensitive=False,
+                    filled=sum(words.values()),
+                )
+            )
+            def _left(word: str) -> bool:
+                try:
+                    return f.read_status(word) == "left"
+                except ValueError:
+                    return False
+
+            left = sorted((w for w in words if _left(w)), key=lambda w: -words[w])
+            if left:
+                listed = ", ".join(f"'{w}' ({words[w]})" for w in left)
+                notes.append(
+                    f"Status: {listed} recorded as left. The word as typed is kept on the "
+                    f"{g.EXTRA_TAB} tab (Status (as in the file))."
+                )
     # With one company, everybody is recorded under it whatever the file calls
     # it; a name it does not go by is said once, and kept as typed.
     company = table.mapping.get("legal_entity")

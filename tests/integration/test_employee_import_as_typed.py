@@ -378,6 +378,11 @@ async def test_an_export_comes_in_as_typed_with_every_difference_listed(client, 
     assert differs.key not in (await _employee(session, "EMP-4")).custom_fields
     dev = await _employee(session, "EMP-5")
     assert (dev.status, dev.date_of_exit) == (EmploymentStatus.EXITED, None)
+    # The status word as typed survives the mapping to "left".
+    typed_status = definitions["Status (as in the file)"].key
+    assert dev.custom_fields[typed_status] == "TemporaryDeactive"
+    assert (await _employee(session, "EMP-4")).custom_fields[typed_status] == "Withdrawn"
+    assert "'Withdrawn' (1)" in notes and "recorded as left" in notes
     old = await _employee(session, "EMP-4")
     assert (old.work_email, old.status) == ("shared@example.com", EmploymentStatus.EXITED)
     assert await _employee(session, "EMP-6") is None
