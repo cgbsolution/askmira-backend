@@ -20,7 +20,15 @@ from datetime import date, datetime
 
 from sqlalchemy import func, select
 
-from app.models import AuditLog, Department, Employee, EmploymentStatus, LegalEntity, Location
+from app.models import (
+    AuditLog,
+    Department,
+    Employee,
+    EmploymentStatus,
+    EmploymentType,
+    LegalEntity,
+    Location,
+)
 from app.models.disbursement import EmployeeBankAccount
 from app.models.employee import EmployeeProfile
 from app.models.user import UserRole
@@ -317,6 +325,35 @@ async def test_employees_cannot_import(client, session, tenant):
         f"{API}/preview", headers=bearer(staff), **_upload(factohr_sheet.build(_people()))
     )
     assert refused.status_code == 403
+
+
+async def test_a_deactivated_record_does_not_hold_its_email(client, session, tenant):
+    hr, _ = await _setup(session, tenant, role=UserRole.ADMIN)
+    headers = bearer(hr)
+    trial = Employee(
+        tenant_id=tenant.id, employee_code="DEMO029", first_name="[TEST]Shravani",
+        work_email="shravani.sangle@example.com", status=EmploymentStatus.PRE_JOINING,
+        employment_type=EmploymentType.FULL_TIME, date_of_joining=date(2026, 10, 30),
+    )
+    session.add(trial)
+    await session.commit()
+    data = factohr_sheet.build([{
+        "Emp Code": "CMU26-790", "First Name": "Shravani", "Last Name": "Sangle",
+        "Joining Date": datetime(2026, 7, 16), "Status": "Active",
+        "Email": "Shravani.Sangle@example.com",
+    }])
+    # Still in the directory: the real person is not added over the trial record.
+    rows = (await client.post(f"{API}/preview", headers=headers, **_upload(data))).json()["rows"]
+    assert rows[0]["outcome"] == "error"
+    assert "already used by DEMO029" in rows[0]["errors"][0]
+    # Deactivated: the email is free; the overlap is still noted.
+    gone = await client.delete(f"/api/v1/employees/{trial.id}", headers=headers)
+    assert gone.status_code == 204, gone.text
+    rows = (await client.post(f"{API}/preview", headers=headers, **_upload(data))).json()["rows"]
+    assert rows[0]["outcome"] == "ready", rows[0]
+    assert rows[0]["issues"] == [
+        "Email shravani.sangle@example.com is also DEMO029 ([TEST]Shravani)'s in AskMira."
+    ]
 
 
 async def test_an_email_already_here_is_not_added_twice(client, session, tenant):

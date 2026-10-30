@@ -187,14 +187,16 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
     current_emails: set[str] = set()
     for row in (await session.execute(scoped(
         Employee, Employee.id, Employee.employee_code, Employee.work_email, Employee.display_name,
-        Employee.first_name, Employee.last_name, Employee.status,
+        Employee.first_name, Employee.last_name, Employee.status, Employee.deleted_at,
     ))).all():
         codes[row.employee_code.upper()] = row.id
         if not row.work_email:
             continue
         name = row.display_name or " ".join(filter(None, [row.first_name, row.last_name]))
         emails.setdefault(row.work_email.lower(), (row.employee_code, name))
-        if row.status is not EmploymentStatus.EXITED:
+        # A record taken out of the directory (deactivated) no longer holds its
+        # email for somebody still working here; the clash is only noted.
+        if row.status is not EmploymentStatus.EXITED and row.deleted_at is None:
             current_emails.add(row.work_email.lower())
     projects: dict[str, tuple[uuid.UUID, str]] = {}
     project_codes: set[str] = set()
