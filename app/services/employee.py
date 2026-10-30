@@ -15,8 +15,6 @@ Two further rules live here:
 
 from __future__ import annotations
 
-import csv
-import io
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -213,7 +211,48 @@ async def list_employees(
     stmt = tenant_scoped(select(Employee), Employee, user).options(
         load_only(*_DIRECTORY_COLUMNS)
     )
+    stmt = filter_directory(
+        stmt,
+        search=search,
+        department_id=department_id,
+        location_id=location_id,
+        manager_id=manager_id,
+        legal_entity_id=legal_entity_id,
+        without_legal_entity=without_legal_entity,
+        project_id=project_id,
+        without_project=without_project,
+        status_filter=status_filter,
+        current_only=current_only,
+        include_deleted=include_deleted,
+    )
 
+    total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = (
+        await session.scalars(
+            stmt.order_by(Employee.first_name, Employee.last_name, Employee.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return list(rows), total
+
+
+def filter_directory(
+    stmt: Any,
+    *,
+    search: str | None = None,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    manager_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = False,
+    project_id: uuid.UUID | None = None,
+    without_project: bool = False,
+    status_filter: str | None = None,
+    current_only: bool = False,
+    include_deleted: bool = False,
+) -> Any:
+    """The directory's filters on an already tenant-scoped employee query."""
     if not include_deleted:
         stmt = stmt.where(Employee.deleted_at.is_(None))
     if current_only:
@@ -248,28 +287,7 @@ async def list_employees(
                 Employee.designation.ilike(term),
             )
         )
-
-    total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = (
-        await session.scalars(
-            stmt.order_by(Employee.first_name, Employee.last_name, Employee.id)
-            .offset(offset)
-            .limit(limit)
-        )
-    ).all()
-    return list(rows), total
-
-
-#: The most rows one directory export carries; the screen pages, a file does not.
-EXPORT_LIMIT = 20_000
-
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _cell(value: Any) -> str:
-    """A cell a spreadsheet shows rather than runs."""
-    text = "" if value is None else str(value)
-    return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
+    return stmt
 
 
 async def directory_csv(
@@ -288,133 +306,32 @@ async def directory_csv(
     current_only: bool = False,
     request: Request | None = None,
 ) -> str:
-    """The directory as CSV, filtered as on screen, with reporting lines named.
+    """The directory as CSV with every column, filtered as on screen.
 
-    HR only, and recorded as an export: a file of everyone's name, title and
-    manager is the org chart leaving the building.
+    Kept for callers of the old CSV; `employee_export.export_employees` is the
+    export itself, with the column choice and Excel.
     """
-    if not permissions.is_hr(user):
-        raise permissions.forbidden("Only HR can export the directory.")
-    rows, total = await list_employees(
+    from app.services import employee_export
+
+    exported = await employee_export.export_employees(
         session,
         user,
-        search=search,
-        department_id=department_id,
-        location_id=location_id,
-        manager_id=manager_id,
-        legal_entity_id=legal_entity_id,
-        without_legal_entity=without_legal_entity,
-        project_id=project_id,
-        without_project=without_project,
-        status_filter=status_filter,
-        current_only=current_only,
-        limit=EXPORT_LIMIT,
-    )
-    projects = dict(
-        (
-            await session.execute(
-                tenant_scoped(select(Project.id, Project.name), Project, user)
-            )
-        ).all()
-    )
-    companies = dict(
-        (
-            await session.execute(
-                tenant_scoped(select(LegalEntity.id, LegalEntity.name), LegalEntity, user)
-            )
-        ).all()
-    )
-    departments = dict(
-        (
-            await session.execute(
-                tenant_scoped(select(Department.id, Department.name), Department, user)
-            )
-        ).all()
-    )
-    locations = dict(
-        (
-            await session.execute(tenant_scoped(select(Location.id, Location.name), Location, user))
-        ).all()
-    )
-    everyone = tenant_scoped(select(Employee), Employee, user).options(
-        load_only(*_DIRECTORY_COLUMNS)
-    )
-    people = {e.id: e for e in (await session.scalars(everyone)).all()}
-
-    def who(employee_id: uuid.UUID | None) -> tuple[str | None, str | None]:
-        person = people.get(employee_id) if employee_id else None
-        return (person.full_name, person.employee_code) if person else (None, None)
-
-    reports: dict[uuid.UUID, int] = {}
-    for person in people.values():
-        if person.manager_id and person.deleted_at is None:
-            reports[person.manager_id] = reports.get(person.manager_id, 0) + 1
-
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\r\n")
-    writer.writerow(
-        [
-            "Employee code",
-            "Name",
-            "Designation",
-            "Company",
-            "Project",
-            "Department",
-            "Location",
-            "Work email",
-            "Status",
-            "Manager",
-            "Manager code",
-            "Dotted-line manager",
-            "Direct reports",
-        ]
-    )
-    for row in rows:
-        manager_name, manager_code = who(row.manager_id)
-        dotted_name, _ = who(row.dotted_line_manager_id)
-        writer.writerow(
-            [
-                _cell(value)
-                for value in (
-                    row.employee_code,
-                    row.full_name,
-                    row.designation,
-                    companies.get(row.legal_entity_id),
-                    projects.get(row.project_id),
-                    departments.get(row.department_id),
-                    locations.get(row.location_id),
-                    row.work_email,
-                    row.status.value,
-                    manager_name,
-                    manager_code,
-                    dotted_name,
-                    reports.get(row.id, 0),
-                )
-            ]
-        )
-    await audit.record(
-        session,
-        tenant_id=user.tenant_id,
-        actor=user,
-        action=AuditAction.EXPORT,
-        entity_type="employee_directory",
-        summary=f"Exported the directory ({len(rows)} of {total} people) as CSV",
-        changes={
-            "rows": len(rows),
-            "search": search,
-            "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
-            "without_legal_entity": without_legal_entity,
-            "project_id": str(project_id) if project_id else None,
-            "without_project": without_project,
-            "department_id": str(department_id) if department_id else None,
-            "location_id": str(location_id) if location_id else None,
-            "manager_id": str(manager_id) if manager_id else None,
-            "status": status_filter,
-            "current": current_only,
-        },
+        employee_export.ExportFilters(
+            search=search,
+            department_id=department_id,
+            location_id=location_id,
+            manager_id=manager_id,
+            legal_entity_id=legal_entity_id,
+            without_legal_entity=without_legal_entity,
+            project_id=project_id,
+            without_project=without_project,
+            status_filter=status_filter,
+            current_only=current_only,
+        ),
+        file_type="csv",
         request=request,
     )
-    return buffer.getvalue()
+    return exported.content.decode("utf-8-sig")
 
 
 async def get_employee(session: AsyncSession, user: User, employee_id: uuid.UUID) -> Employee:

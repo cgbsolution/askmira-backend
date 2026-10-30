@@ -144,6 +144,10 @@ def required_right(method: str, path: str) -> str:
         return "can_approve"
     if method.upper() in ("GET", "HEAD") and any(word in lowered for word in _EXPORT_WORDS):
         return "can_export"
+    # A file built from a list too long for a URL (the people ticked on screen)
+    # is still a download: it writes nothing but the audit log.
+    if method.upper() == "POST" and lowered.split("?", 1)[0].rstrip("/").endswith("/export"):
+        return "can_export"
     return {
         "GET": "can_view",
         "HEAD": "can_view",

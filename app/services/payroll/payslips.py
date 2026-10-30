@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -41,6 +42,7 @@ from app.schemas.payroll_run import (
     InputNoticeRead,
     InputSourceRead,
     PayrollRunRead,
+    PayslipImportSummaryRead,
     PayslipInputLineRead,
     PayslipLineRead,
     PayslipRead,
@@ -49,6 +51,7 @@ from app.schemas.payroll_run import (
     RegisterRead,
     RegisterRowRead,
     RuleSetUsedRead,
+    RunImportSummaryRead,
     SalaryRecordRead,
     VarianceFlagRead,
 )
@@ -56,7 +59,13 @@ from app.services import audit
 from app.services.documents.pdf import PdfRenderError
 from app.services.employee_identifiers import PAN_PATTERN
 from app.services.payroll import payslip_pdf
-from app.services.payroll.run import CLOSED_STATUSES, get_run, other_earnings_of
+from app.services.payroll.run import (
+    CLOSED_STATUSES,
+    get_run,
+    imported_from,
+    is_imported,
+    other_earnings_of,
+)
 from app.services.payroll.service import salary_record
 
 _ZERO = Decimal(0)
@@ -64,6 +73,99 @@ _ZERO = Decimal(0)
 
 def _dec(value: Any) -> Decimal:
     return Decimal(str(value)) if value is not None else _ZERO
+
+
+# ── Imported runs ───────────────────────────────────────────────────────────
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+def _text_or_none(value: Any) -> str | None:
+    """A register value as text: a list (combined rows) joined, blanks as None."""
+    if value is None:
+        return None
+    if isinstance(value, list | tuple):
+        parts = [str(item).strip() for item in value if item is not None and str(item).strip()]
+        return ", ".join(dict.fromkeys(parts)) or None
+    text = str(value).strip()
+    return text or None
+
+
+def _row_numbers(value: Any) -> list[int]:
+    items = value if isinstance(value, list | tuple) else [value]
+    rows: list[int] = []
+    for item in items:
+        try:
+            rows.append(int(str(item)))
+        except ValueError:
+            continue
+    return rows
+
+
+def run_import_summary(run: PayrollRun, names: dict[uuid.UUID, str]) -> RunImportSummaryRead | None:
+    """Which register files an imported run came from, when and by whom. None if computed."""
+    if not is_imported(run):
+        return None
+    details = run.import_details or {}
+    files = [
+        _text_or_none(item.get("name") if isinstance(item, dict) else item)
+        for item in details.get("files") or []
+    ]
+    try:
+        imported_at = datetime.fromisoformat(str(details.get("imported_at")))
+    except ValueError:
+        imported_at = run.approved_at
+    by = _uuid_or_none(details.get("imported_by_user_id"))
+    return RunImportSummaryRead(
+        system=imported_from(run),
+        files=[name for name in files if name],
+        imported_at=imported_at,
+        imported_by_name=names.get(by) if by else None,
+    )
+
+
+def register_client_text(payslip: Payslip) -> str | None:
+    """The account an imported payslip's register row named, as typed there.
+
+    The register's Client column; from Feb 2025 the account moved to Project (and
+    Domain took the old project values), so a row with a Domain value names its
+    account in Project. An explicit `account` written by the importer wins.
+    """
+    details = payslip.import_details or {}
+    if details.get("account"):
+        return _text_or_none(details.get("account"))
+    project = _text_or_none(details.get("project"))
+    if "domain" in details and details.get("domain") is not None and project:
+        return project
+    return _text_or_none(details.get("client")) or project
+
+
+def payslip_import_summary(
+    payslip: Payslip, run: PayrollRun, *, with_cells: bool
+) -> PayslipImportSummaryRead | None:
+    """The register file, sheet and row(s) an imported payslip was read from. None if computed."""
+    if not is_imported(run) and payslip.import_details is None:
+        return None
+    details = payslip.import_details or {}
+    cells = details.get("cells") if with_cells else None
+    return PayslipImportSummaryRead(
+        system=str(details.get("system") or imported_from(run)),
+        file=_text_or_none(details.get("file")),
+        sheet=_text_or_none(details.get("sheet")),
+        rows=_row_numbers(details.get("rows") or []),
+        status=_text_or_none(details.get("status")),
+        client=register_client_text(payslip),
+        cells=(
+            {str(key): "" if value is None else str(value) for key, value in cells.items()}
+            if isinstance(cells, dict)
+            else None
+        ),
+    )
 
 
 async def _user_names(
@@ -111,6 +213,7 @@ async def run_reads(
             run.published_by_user_id,
             run.paid_by_user_id,
             run.cancelled_by_user_id,
+            _uuid_or_none((run.import_details or {}).get("imported_by_user_id")),
         }
         for flag in run.variance_flags or []:
             if flag.get("acknowledged_by_user_id"):
@@ -195,7 +298,10 @@ async def run_reads(
                 employee_scope=[uuid.UUID(e) for e in (run.employee_scope or [])],
                 included_sources=run.included_sources,
                 reason=run.reason,
-                caller_may_approve=run.computed_by_user_id != user.id,
+                # Nobody approves an imported month: it was locked on import.
+                caller_may_approve=run.computed_by_user_id != user.id and not is_imported(run),
+                origin=run.origin,
+                import_summary=run_import_summary(run, names),
             )
         )
     return reads
@@ -279,8 +385,16 @@ _TOTAL_FIELDS = (
 )
 
 
-def payslip_project_id(payslip: Payslip, employee: Employee) -> uuid.UUID | None:
-    """The project a payslip was for: kept on it since projects began, else the person's."""
+def payslip_project_id(
+    payslip: Payslip, employee: Employee, *, imported: bool = False
+) -> uuid.UUID | None:
+    """The project a payslip was for: kept on it since projects began, else the person's.
+
+    An imported payslip never falls back: the person's project today says nothing
+    about which account they were on in a month paid by the previous payroll.
+    """
+    if imported or payslip.import_details is not None:
+        return payslip.project_id
     return payslip.project_id or employee.project_id
 
 
@@ -298,17 +412,22 @@ async def project_names(
 
 async def register(session: AsyncSession, user: User, run_id: uuid.UUID) -> RegisterRead:
     run = await get_run(session, user, run_id)
+    imported = is_imported(run)
     variance_ids = {flag.get("employee_id") for flag in run.variance_flags or []}
     people = await _payslips_with_people(session, user, run.id)
     names = await project_names(
-        session, user, {payslip_project_id(payslip, employee) for payslip, employee in people}
+        session,
+        user,
+        {payslip_project_id(payslip, employee, imported=imported) for payslip, employee in people},
     )
     rows = []
     for payslip, employee in people:
         row = _register_row(payslip, employee, variance_ids)
-        project_id = payslip_project_id(payslip, employee)
+        project_id = payslip_project_id(payslip, employee, imported=imported)
         row.project_id = project_id
         row.project_name = names.get(project_id) if project_id else None
+        if imported and project_id is None:
+            row.register_client = register_client_text(payslip)
         rows.append(row)
     totals = {
         name: sum((getattr(row, name) for row in rows), start=_ZERO) for name in _TOTAL_FIELDS
@@ -458,7 +577,10 @@ async def _payslip_read(
 
     entity_names = await _entity_names(session, user, {run.legal_entity_id})
 
-    if working:
+    if is_imported(run):
+        system = imported_from(run)
+        tds_note = f"TDS as deducted on {system} (imported). No income-tax working was imported."
+    elif working:
         tds_note = (
             f"Projected under the {working.get('regime')} regime for "
             f"{working.get('financial_year')}, re-levelled over "
@@ -551,6 +673,10 @@ async def _payslip_read(
             for rs in sorted(rule_sets, key=lambda r: (r.rule_type, r.jurisdiction))
         ],
         salary=salary_read,
+        origin=run.origin,
+        # The register's own cells for this person's row(s): their own pay
+        # figures, never an identifier, so HR and the employee both see them.
+        import_summary=payslip_import_summary(payslip, run, with_cells=True),
     )
 
 
@@ -620,6 +746,8 @@ async def my_payslips(session: AsyncSession, user: User) -> list[PayslipSummaryR
             net_pay=_dec(payslip.net_pay),
             is_published=payslip.is_published,
             published_at=payslip.published_at,
+            origin=run.origin,
+            import_summary=payslip_import_summary(payslip, run, with_cells=False),
         )
         for payslip, run, employee in rows
     ]

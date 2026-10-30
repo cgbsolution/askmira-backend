@@ -50,7 +50,7 @@ from app.models.disbursement import (
     LineStatus,
 )
 from app.models.employee import Employee
-from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
+from app.models.payroll import RUN_ORIGIN_IMPORTED, PayrollRun, PayrollRunStatus, Payslip
 from app.models.user import User, UserRole
 from app.services import audit
 from app.services.attendance.service import local_today
@@ -178,6 +178,18 @@ async def prepare_batch(
     )
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
+    if run.origin == RUN_ORIGIN_IMPORTED:
+        # The salaries were paid by the previous payroll, which made its own bank
+        # file. A second file from AskMira would pay everybody that month again.
+        system = (run.import_details or {}).get("system") or "factoHR"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This month was imported from {system} as paid; its salaries were paid from "
+                f"{system}. AskMira makes no bank file for it: a second file would pay "
+                "everyone again."
+            ),
+        )
     if run.status not in (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

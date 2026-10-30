@@ -38,8 +38,20 @@ from app.models.org import Department, LegalEntity, Location
 from app.models.payroll import Payslip
 from app.models.user import User
 from app.services import audit
-from app.services.payroll.payslips import payslip_project_id, project_names, run_read
-from app.services.payroll.run import CLOSED_STATUSES, get_run, other_earnings_of, period_label
+from app.services.payroll.payslips import (
+    payslip_project_id,
+    project_names,
+    register_client_text,
+    run_read,
+)
+from app.services.payroll.run import (
+    CLOSED_STATUSES,
+    get_run,
+    imported_from,
+    is_imported,
+    other_earnings_of,
+    period_label,
+)
 
 _ZERO = Decimal(0)
 _MONEY = "#,##0.00"
@@ -159,6 +171,7 @@ async def register_xlsx(
         )
 
     summary = await run_read(session, user, run)
+    imported = is_imported(run)
     entity = await session.scalar(
         tenant_scoped(
             select(LegalEntity).where(LegalEntity.id == run.legal_entity_id), LegalEntity, user
@@ -170,8 +183,19 @@ async def register_xlsx(
     )
     locations = await _names_by_id(session, user, Location, {e.location_id for e in employees})
     projects = await project_names(
-        session, user, {payslip_project_id(payslip, employee) for payslip, employee in rows}
+        session,
+        user,
+        {payslip_project_id(payslip, employee, imported=imported) for payslip, employee in rows},
     )
+
+    def project_of(payslip: Payslip, employee: Employee) -> str | None:
+        # An imported payslip names only the project its register row named; when
+        # that matched no AskMira project, the register's own text is shown.
+        project_id = payslip_project_id(payslip, employee, imported=imported)
+        if project_id is not None:
+            return projects.get(project_id)
+        return register_client_text(payslip) if imported else None
+
     payslips = [payslip for payslip, _ in rows]
 
     earnings = _ordered_lines(payslips, "earning", frozenset())
@@ -191,7 +215,19 @@ async def register_xlsx(
     sheet["A1"].font = _TITLE_FONT
     _text(sheet["A2"], entity_name)
     sheet["A2"].font = Font(bold=True)
-    if run.status in CLOSED_STATUSES:
+    if imported:
+        # The import time is not when the month was approved or paid: say what it is.
+        source = summary.import_summary
+        files = ", ".join(source.files) if source and source.files else ""
+        when = f" on {source.imported_at:%d %b %Y}" if source and source.imported_at else ""
+        who = f" by {source.imported_by_name}" if source and source.imported_by_name else ""
+        sheet["A3"] = (
+            f"Imported from {imported_from(run)} as paid there"
+            f"{' (' + files + ')' if files else ''}; figures as in its register, never "
+            f"recomputed. Locked on import{when}{who}."
+        )
+        sheet["A3"].font = _LOCKED_FONT
+    elif run.status in CLOSED_STATUSES:
         when = f"{summary.approved_at:%d %b %Y}" if summary.approved_at else ""
         who = f" by {summary.approved_by_name}" if summary.approved_by_name else ""
         state = f"Locked: approved {when}{who}".strip()
@@ -293,7 +329,7 @@ async def register_xlsx(
             employee.employee_code,
             employee.full_name,
             departments.get(employee.department_id) if employee.department_id else None,
-            projects.get(payslip_project_id(payslip, employee)),
+            project_of(payslip, employee),
             employee.designation,
             locations.get(employee.location_id) if employee.location_id else None,
             employee.date_of_joining,
@@ -357,7 +393,11 @@ async def register_xlsx(
     items["A1"] = f"Other pay and deductions — {label}"
     items["A1"].font = _TITLE_FONT
     items["A2"] = (
-        "What other modules put on the payslips: claims, overtime, adjustments, bonus, "
+        f"What the {imported_from(run)} register paid between gross, deductions and the "
+        "bank transfer: net-salary differences, adjustments and rounding. Their sums are "
+        "the Other earnings and Other deductions columns on the register."
+        if imported
+        else "What other modules put on the payslips: claims, overtime, adjustments, bonus, "
         "loan and advance recoveries. Their sums are the Other earnings and Other "
         "deductions columns on the register."
     )

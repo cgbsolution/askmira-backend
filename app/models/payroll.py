@@ -28,6 +28,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     ARRAY,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -145,6 +146,12 @@ class RoundingMode(str, enum.Enum):
     HALF_EVEN = "half_even"
     CEILING = "ceiling"
     FLOOR = "floor"
+
+
+#: `PayrollRun.origin`: worked out by AskMira, or loaded as paid elsewhere.
+RUN_ORIGIN_COMPUTED = "computed"
+RUN_ORIGIN_IMPORTED = "imported"
+RUN_ORIGINS = (RUN_ORIGIN_COMPUTED, RUN_ORIGIN_IMPORTED)
 
 
 class PayrollRunStatus(str, enum.Enum):
@@ -492,6 +499,7 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("run_type = 'REGULAR' AND status <> 'CANCELLED'"),
         ),
+        CheckConstraint("origin IN ('computed', 'imported')", name="ck_payroll_runs_origin"),
     )
 
     legal_entity_id: Mapped[uuid.UUID] = mapped_column(
@@ -586,6 +594,15 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     included_sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     #: Why a supplementary run was opened — shown on the run and in the audit.
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: "computed" — AskMira worked it out. "imported" — a month paid on the
+    #: previous payroll system, loaded as it was paid (figures as typed, never
+    #: recomputed): no rule set, attendance or inputs were applied to it.
+    origin: Mapped[str] = mapped_column(
+        String(16), default=RUN_ORIGIN_COMPUTED, server_default=RUN_ORIGIN_COMPUTED, nullable=False
+    )
+    #: For an imported run: the source system, the files (name, sha256, sheet,
+    #: rows) and the register's own totals. Null for a computed run.
+    import_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     payslips: Mapped[list[Payslip]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -682,6 +699,10 @@ class Payslip(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # The income tax projection behind `tds`: regime, projected income, slabs,
     # deductions, months remaining, what was already deducted.
     tds_working: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: For a payslip of an imported run: where each figure came from — file,
+    #: sheet, row(s), and the register's own cells as typed (never PAN, Aadhaar,
+    #: UAN, ESIC or bank details). Null for a computed payslip.
+    import_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     #: An off-cycle payslip for somebody the month's regular run already paid:
     #: input lines only, no structure, no days. Registers and returns merge it
     #: into the month rather than counting the person twice.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 
@@ -13,12 +13,14 @@ from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.employee import (
     EmployeeCreate,
+    EmployeeExportRequest,
     EmployeeRead,
     EmployeeSelfUpdate,
     EmployeeSummary,
     EmployeeUpdate,
     EntityMoveRequest,
     EntityMoveResult,
+    ExportCatalogueRead,
     ProjectMoveRequest,
     ProjectMoveResult,
 )
@@ -32,7 +34,7 @@ from app.schemas.employee_profile import (
     EmployeeProfileRead,
     ProfileUpdate,
 )
-from app.services import custom_tables, employee_timeline
+from app.services import custom_tables, employee_export, employee_timeline
 from app.services import employee as employee_service
 from app.services import employee_profile as profile_service
 from app.services.dpdp.gates import strip_hidden_photos
@@ -93,6 +95,23 @@ async def list_employees(
     )
 
 
+@router.get("/export/columns", response_model=ExportCatalogueRead, dependencies=HR_ONLY)
+async def export_columns(user: CurrentUser, session: DbSession) -> ExportCatalogueRead:
+    """Every column the employee export can write, by section, custom fields included."""
+    return ExportCatalogueRead.model_validate(await employee_export.catalogue(session, user))
+
+
+def _file(exported: employee_export.ExportFile) -> Response:
+    return Response(
+        content=exported.content,
+        media_type=exported.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{exported.filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/export", dependencies=HR_ONLY)
 async def export_directory(
     user: CurrentUser,
@@ -108,32 +127,69 @@ async def export_directory(
     without_project: bool = False,
     employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
     current: bool = False,
+    file_type: Literal["xlsx", "csv"] = Query(default="csv", alias="format"),
+    columns: str | None = Query(
+        default=None,
+        max_length=8000,
+        description="Comma-separated column keys; every column when left out.",
+    ),
 ) -> Response:
-    """The directory as CSV, filtered like the screen, with each manager named."""
-    content = await employee_service.directory_csv(
+    """The directory filtered like the screen, every column unless `columns` names some."""
+    exported = await employee_export.export_employees(
         session,
         user,
-        search=search,
-        department_id=department_id,
-        location_id=location_id,
-        manager_id=manager_id,
-        legal_entity_id=legal_entity_id,
-        without_legal_entity=without_legal_entity,
-        project_id=project_id,
-        without_project=without_project,
-        status_filter=employment_status.value if employment_status else None,
-        current_only=current,
+        employee_export.ExportFilters(
+            search=search,
+            department_id=department_id,
+            location_id=location_id,
+            manager_id=manager_id,
+            legal_entity_id=legal_entity_id,
+            without_legal_entity=without_legal_entity,
+            project_id=project_id,
+            without_project=without_project,
+            status_filter=employment_status.value if employment_status else None,
+            current_only=current,
+        ),
+        columns=[c.strip() for c in columns.split(",") if c.strip()] if columns else None,
+        file_type=file_type,
         request=request,
     )
     await session.commit()
-    return Response(
-        content=content,
-        media_type="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": 'attachment; filename="directory.csv"',
-            "X-Content-Type-Options": "nosniff",
-        },
+    return _file(exported)
+
+
+@router.post("/export", dependencies=HR_ONLY)
+async def export_employees(
+    payload: EmployeeExportRequest, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """Employee data as Excel or CSV: the chosen columns, for the filtered or ticked people.
+
+    A POST because a list of ticked people does not fit in a URL. It changes
+    nothing but the audit log, so a sub-admin needs the Export right on People,
+    as for the GET.
+    """
+    exported = await employee_export.export_employees(
+        session,
+        user,
+        employee_export.ExportFilters(
+            search=payload.search,
+            department_id=payload.department_id,
+            location_id=payload.location_id,
+            manager_id=payload.manager_id,
+            legal_entity_id=payload.legal_entity_id,
+            without_legal_entity=payload.without_legal_entity,
+            project_id=payload.project_id,
+            without_project=payload.without_project,
+            status_filter=payload.status.value if payload.status else None,
+            current_only=payload.current,
+        ),
+        columns=payload.columns,
+        employee_ids=payload.employee_ids,
+        file_type=payload.file_type,
+        request=request,
     )
+    await session.commit()
+    return _file(exported)
 
 
 @router.post(

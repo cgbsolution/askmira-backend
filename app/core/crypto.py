@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
+from collections.abc import Callable
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -33,7 +34,9 @@ __all__ = [
     "decrypt_secret",
     "encrypt_field",
     "encrypt_secret",
+    "field_reader",
     "is_encrypted",
+    "secret_reader",
 ]
 
 # Marks a value as produced by this module, so a plaintext value written before
@@ -123,17 +126,33 @@ def decrypt_secret(value: str | None, tenant_id: uuid.UUID) -> str | None:
         # should re-save to migrate it.
         return value
 
+    return _open_secret(Fernet(_tenant_key(tenant_id)), value)
+
+
+def _open_secret(fernet: Fernet, value: str) -> str:
     try:
-        return (
-            Fernet(_tenant_key(tenant_id))
-            .decrypt(value[len(_PREFIX) :].encode("ascii"))
-            .decode("utf-8")
-        )
+        return fernet.decrypt(value[len(_PREFIX) :].encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError) as exc:
         raise EncryptionError(
             "A stored secret could not be decrypted. Either it belongs to a different "
             "tenant, or SECRET_ENCRYPTION_KEY has changed since it was written."
         ) from exc
+
+
+def secret_reader(tenant_id: uuid.UUID) -> Callable[[str | None], str | None]:
+    """`decrypt_secret` for many values of one tenant, deriving its key once.
+
+    Deriving the key is most of the cost of one decryption; an export of a
+    thousand bank accounts should not pay it a thousand times.
+    """
+    fernet = Fernet(_tenant_key(tenant_id))
+
+    def read(value: str | None) -> str | None:
+        if value is None or value == "" or not is_encrypted(value):
+            return value
+        return _open_secret(fernet, value)
+
+    return read
 
 
 # ── Personal identifiers in ordinary columns ─────────────────────────────────
@@ -166,11 +185,26 @@ def decrypt_field(value: str | None) -> str | None:
     """The identifier as written. A value stored before encryption comes back unchanged."""
     if not value or not value.startswith(_FIELD_PREFIX):
         return value
+    return _open_field(Fernet(_field_key()), value)
+
+
+def _open_field(fernet: Fernet, value: str) -> str:
     try:
-        token = value[len(_FIELD_PREFIX) :].encode("ascii")
-        return Fernet(_field_key()).decrypt(token).decode("utf-8")
+        return fernet.decrypt(value[len(_FIELD_PREFIX) :].encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError) as exc:
         raise EncryptionError(
             "A stored identifier could not be decrypted: SECRET_ENCRYPTION_KEY has changed "
             "since it was written."
         ) from exc
+
+
+def field_reader() -> Callable[[str | None], str | None]:
+    """`decrypt_field` for many values, deriving the field key once (see `secret_reader`)."""
+    fernet = Fernet(_field_key())
+
+    def read(value: str | None) -> str | None:
+        if not value or not value.startswith(_FIELD_PREFIX):
+            return value
+        return _open_field(fernet, value)
+
+    return read

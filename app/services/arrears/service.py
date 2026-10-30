@@ -37,6 +37,7 @@ from app.models.attendance import AttendancePeriodLock
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.payroll import (
+    RUN_ORIGIN_IMPORTED,
     EmployeeSalary,
     PayrollRuleSet,
     PayrollRun,
@@ -51,9 +52,12 @@ from app.services.payroll import statutory_service
 __all__ = [
     "approve_batch",
     "cancel_batch",
+    "imported_periods",
     "preview_arrears",
     "revise_salary",
 ]
+
+_CLOSED_RUN_STATUSES = (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID)
 
 ZERO = Decimal(0)
 
@@ -130,6 +134,11 @@ async def _closed_runs(
     history the moment it is approved, whatever today's date. Bounding this by
     today would skip a month whose run was approved before it ended — a
     revision entered on 22 October would lose October's difference.
+
+    A month imported as paid by the previous payroll is never among them: its
+    payslips are what factoHR paid, worked out by factoHR's rules, and diffing
+    them against AskMira's recomputation would invent a difference (see
+    `imported_periods`, which names those months instead).
     """
     return list(
         (
@@ -138,8 +147,9 @@ async def _closed_runs(
                     select(PayrollRun)
                     .where(
                         PayrollRun.legal_entity_id == legal_entity_id,
-                        PayrollRun.status.in_([PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+                        PayrollRun.status.in_(_CLOSED_RUN_STATUSES),
                         PayrollRun.effective_date >= from_date,
+                        PayrollRun.origin != RUN_ORIGIN_IMPORTED,
                     )
                     .order_by(PayrollRun.period_year, PayrollRun.period_month),
                     PayrollRun,
@@ -150,13 +160,93 @@ async def _closed_runs(
     )
 
 
+async def imported_periods(
+    session: AsyncSession,
+    user: User,
+    *,
+    legal_entity_id: uuid.UUID,
+    from_date: date,
+) -> list[dict]:
+    """Months the revision reaches back into that were imported as paid elsewhere.
+
+    They are not recomputed and produce no arrears: the preview lists them so
+    nobody reads their absence as "nothing was owed".
+    """
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(
+                    PayrollRun.id,
+                    PayrollRun.period_year,
+                    PayrollRun.period_month,
+                    PayrollRun.import_details,
+                )
+                .where(
+                    PayrollRun.legal_entity_id == legal_entity_id,
+                    PayrollRun.status.in_(_CLOSED_RUN_STATUSES),
+                    PayrollRun.effective_date >= from_date,
+                    PayrollRun.origin == RUN_ORIGIN_IMPORTED,
+                )
+                .order_by(PayrollRun.period_year, PayrollRun.period_month),
+                PayrollRun,
+                user,
+            )
+        )
+    ).all()
+    out: list[dict] = []
+    for run_id, year, month, details in rows:
+        system = (details or {}).get("system") or "factoHR"
+        out.append(
+            {
+                "period": _period(year, month),
+                "run_id": str(run_id),
+                "message": f"Paid on {system}, not recomputed.",
+            }
+        )
+    return out
+
+
+async def _months_paid_elsewhere(
+    session: AsyncSession, user: User, legal_entity_id: uuid.UUID | None, from_date: date
+) -> set[tuple[int, int]]:
+    """(year, month) the entity's payroll for which exists only as imported runs.
+
+    Nothing in such a month is recomputed, so its attendance need not be locked
+    (history imported from factoHR has no AskMira attendance at all).
+    """
+    if legal_entity_id is None:
+        return set()
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(PayrollRun.period_year, PayrollRun.period_month, PayrollRun.origin).where(
+                    PayrollRun.legal_entity_id == legal_entity_id,
+                    PayrollRun.status.in_(_CLOSED_RUN_STATUSES),
+                    PayrollRun.effective_date >= from_date,
+                ),
+                PayrollRun,
+                user,
+            )
+        )
+    ).all()
+    imported = {(year, month) for year, month, origin in rows if origin == RUN_ORIGIN_IMPORTED}
+    computed = {(year, month) for year, month, origin in rows if origin != RUN_ORIGIN_IMPORTED}
+    return imported - computed
+
+
 async def _guard_revision(
     session: AsyncSession,
     user: User,
     employee: Employee,
     effective_from: date,
+    *,
+    legal_entity_id: uuid.UUID | None = None,
 ) -> None:
-    """The three refusals, checked before anything is computed."""
+    """The three refusals, checked before anything is computed.
+
+    A month the company paid on the previous payroll (imported as paid, with no
+    AskMira run of its own) is not recomputed, so it needs no attendance lock.
+    """
     if employee.date_of_joining and effective_from < employee.date_of_joining:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -176,9 +266,15 @@ async def _guard_revision(
     # the recomputation runs against loss-of-pay days that are still moving.
     cursor = date(effective_from.year, effective_from.month, 1)
     today = date.today()
+    paid_elsewhere = await _months_paid_elsewhere(
+        session, user, legal_entity_id or employee.legal_entity_id, cursor
+    )
     while cursor <= today:
         last = calendar.monthrange(cursor.year, cursor.month)[1]
         month_end = date(cursor.year, cursor.month, last)
+        if (cursor.year, cursor.month) in paid_elsewhere:
+            cursor = date(cursor.year + (cursor.month // 12), (cursor.month % 12) + 1, 1)
+            continue
         lock = await session.scalar(
             tenant_scoped(
                 select(AttendancePeriodLock).where(
@@ -438,7 +534,9 @@ async def revise_salary(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Employee {employee_id} not found",
             )
-        await _guard_revision(session, user, employee, effective_from)
+        await _guard_revision(
+            session, user, employee, effective_from, legal_entity_id=legal_entity_id
+        )
 
         salary = await session.scalar(
             tenant_scoped(
@@ -466,6 +564,9 @@ async def revise_salary(
     )
 
     periods = sorted({arrear.period for arrears in per_employee.values() for arrear in arrears})
+    not_recomputed = await imported_periods(
+        session, user, legal_entity_id=legal_entity_id, from_date=effective_from
+    )
     limit = threshold or DEFAULT_ADDITIONAL_APPROVAL_THRESHOLD
 
     batch = ArrearBatch(
@@ -558,6 +659,8 @@ async def revise_salary(
             "net_payable": str(batch.total_net_payable),
             "employer_contributions": str(batch.total_employer_contribution_arrear),
             "affected_filings": batch.affected_filings,
+            # Months paid on the previous payroll: never recomputed, no arrears.
+            "not_recomputed": [item["period"] for item in not_recomputed],
         },
         request=request,
     )
@@ -748,6 +851,7 @@ async def preview_guardrails(
     *,
     employee_ids: list[uuid.UUID],
     effective_from: date,
+    legal_entity_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """The refusals a commit would raise, collected rather than raised.
 
@@ -768,7 +872,9 @@ async def preview_guardrails(
             )
             continue
         try:
-            await _guard_revision(session, user, employee, effective_from)
+            await _guard_revision(
+                session, user, employee, effective_from, legal_entity_id=legal_entity_id
+            )
         except HTTPException as exc:
             problems.append(
                 {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
@@ -209,3 +209,46 @@ class ProjectMoveResult(BaseModel):
     moved: int
     already_there: int
     skipped: list[EntityMoveSkip]
+
+
+class EmployeeExportRequest(BaseModel):
+    """What to export: the directory's filters, or the people ticked on screen.
+
+    `columns` are keys from `GET /employees/export/columns`; left out, every
+    column is written. `employee_ids` narrows to the ticked people.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_type: Literal["xlsx", "csv"] = "xlsx"
+    columns: list[str] | None = Field(default=None, min_length=1, max_length=2000)
+    employee_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=20_000)
+    search: str | None = Field(default=None, max_length=128)
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    manager_id: uuid.UUID | None = None
+    legal_entity_id: uuid.UUID | None = None
+    without_legal_entity: bool = False
+    project_id: uuid.UUID | None = None
+    without_project: bool = False
+    status: EmploymentStatus | None = None
+    current: bool = False
+
+
+class ExportColumnRead(BaseModel):
+    key: str
+    label: str
+
+
+class ExportSectionRead(BaseModel):
+    key: str
+    label: str
+    #: A list (family, education…): its columns repeat once per entry.
+    repeats: bool
+    #: What one entry is called in a header ("Family member 1 - Name").
+    entry: str | None
+    columns: list[ExportColumnRead]
+
+
+class ExportCatalogueRead(BaseModel):
+    sections: list[ExportSectionRead]

@@ -213,13 +213,19 @@ async def preview(
         user,
         employee_ids=[item.employee_id for item in payload.revisions],
         effective_from=payload.effective_from,
+        legal_entity_id=payload.legal_entity_id,
     )
     labels = await arrears_service.employee_labels(
         session, user, {item.employee_id for item in payload.revisions}
     )
+    # Months paid on the previous payroll (imported as paid): never recomputed.
+    not_recomputed = await arrears_service.imported_periods(
+        session, user, legal_entity_id=payload.legal_entity_id, from_date=payload.effective_from
+    )
 
     return {
         "guardrails": guardrails,
+        "not_recomputed": not_recomputed,
         "employees": {
             str(employee_id): {"employee_code": code, "employee_name": name}
             for employee_id, (code, name) in labels.items()

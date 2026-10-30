@@ -36,6 +36,10 @@ def test_the_right_follows_the_method_and_the_path() -> None:
     assert required_right("POST", "/api/v1/disbursement/batches/1/release") == "can_approve"
     assert required_right("GET", "/api/v1/payroll/runs/1/register.csv") == "can_export"
     assert required_right("GET", "/api/v1/disbursement/batches/1/file") == "can_export"
+    # A POST that only builds a file (ticked people in the body) is an export.
+    assert required_right("POST", "/api/v1/employees/export") == "can_export"
+    assert required_right("POST", "/api/v1/salaries/export") == "can_export"
+    assert required_right("POST", "/api/v1/employees/import") == "can_create"
     assert required_right("GET", "/api/v1/filings/pf-ecr/1/download") == "can_export"
 
 

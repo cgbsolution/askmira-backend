@@ -42,7 +42,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.org import LegalEntity
-from app.models.payroll import PayrollRuleSet, PayrollRun, PayrollRunStatus, Payslip
+from app.models.payroll import (
+    RUN_ORIGIN_IMPORTED,
+    PayrollRuleSet,
+    PayrollRun,
+    PayrollRunStatus,
+    Payslip,
+)
 from app.models.tax import WindowType
 from app.models.user import User
 from app.services.documents.indian_numbers import amount_in_words, group_indian
@@ -56,6 +62,7 @@ __all__ = [
     "YearPay",
     "aggregate_year_pay",
     "form16_statement",
+    "issued_elsewhere_reason",
     "list_form16_years",
     "part_b",
     "render_form16_pdf",
@@ -368,18 +375,57 @@ def _fy_of(run: PayrollRun) -> str:
     return f"{start_year}-{str(start_year + 1)[-2:]}"
 
 
+def _imported_system(runs: list[PayrollRun]) -> str | None:
+    """The previous payroll's name when every run is one imported from it, else None.
+
+    A year paid wholly by the previous payroll had its Form 16 issued there, on
+    its own computation. AskMira does not recompute one that may not match.
+    """
+    if not runs or any(run.origin != RUN_ORIGIN_IMPORTED for run in runs):
+        return None
+    return str((runs[0].import_details or {}).get("system") or "factoHR")
+
+
+def issued_elsewhere_reason(system: str) -> str:
+    return f"Issued by your previous payroll ({system})."
+
+
 async def list_form16_years(
     session: AsyncSession, user: User, employee_id: uuid.UUID
 ) -> list[dict[str, Any]]:
     """Every financial year with approved payroll for this person, newest first,
-    each with whether Part B can be produced and, if not, why."""
+    each with whether Part B can be produced and, if not, why.
+
+    `status` is "available", "not_ready", or "issued_elsewhere" for a year whose
+    locked payslips were all imported from the previous payroll (`issued_by`
+    names it); such a year is never recomputed here.
+    """
     rows = await _closed_slips(session, user, employee_id)
-    years: dict[str, None] = {}
+    years: dict[str, list[tuple[Payslip, PayrollRun]]] = {}
     for payslip, run in rows:
         label = (payslip.tds_working or {}).get("financial_year") or _fy_of(run)
-        years[label] = None
+        years.setdefault(label, []).append((payslip, run))
     out = []
     for label in sorted(years, reverse=True):
+        system = _imported_system([run for _, run in years[label]])
+        if system is not None:
+            out.append(
+                {
+                    "financial_year": label,
+                    "assessment_year": _assessment_year(label),
+                    "available": False,
+                    "status": "issued_elsewhere",
+                    "issued_by": system,
+                    "reason": issued_elsewhere_reason(system),
+                    "taxable_income": None,
+                    "tax_payable": None,
+                    # The TDS factoHR deducted, as imported: a figure on record.
+                    "tds_deducted": str(
+                        _money(sum((_d(payslip.tds) for payslip, _ in years[label]), ZERO))
+                    ),
+                }
+            )
+            continue
         try:
             statement = await form16_statement(session, user, employee_id, label)
             out.append(
@@ -387,6 +433,8 @@ async def list_form16_years(
                     "financial_year": label,
                     "assessment_year": statement["assessment_year"],
                     "available": True,
+                    "status": "available",
+                    "issued_by": None,
                     "reason": None,
                     "taxable_income": next(
                         line["amount"] for line in statement["lines"] if line["key"] == "12"
@@ -401,6 +449,8 @@ async def list_form16_years(
                     "financial_year": label,
                     "assessment_year": _assessment_year(label),
                     "available": False,
+                    "status": "not_ready",
+                    "issued_by": None,
                     "reason": str(exc),
                     "taxable_income": None,
                     "tax_payable": None,
@@ -423,6 +473,15 @@ async def form16_statement(
         raise Form16UnavailableError(f"'{financial_year}' is not a financial year.") from exc
 
     fy_start, fy_end = tax_service.financial_year_bounds(financial_year)
+    closed = await _closed_slips(session, user, employee_id)
+    system = _imported_system(
+        [run for _, run in closed if fy_start <= run.effective_date <= fy_end]
+    )
+    if system is not None:
+        raise Form16UnavailableError(
+            f"{issued_elsewhere_reason(system)} Every payslip of {financial_year} was paid "
+            f"there, so its Form 16 comes from {system}; AskMira does not recompute it."
+        )
     rule_set = await _tds_rules_at(session, user, fy_end)
     if rule_set is None or not rule_set.is_approved:
         raise Form16UnavailableError(
@@ -440,11 +499,7 @@ async def form16_statement(
             f"{fy_end:%d %b %Y}. Until then your payslips carry the projected tax."
         )
 
-    rows = [
-        (payslip, run)
-        for payslip, run in await _closed_slips(session, user, employee_id)
-        if fy_start <= run.effective_date <= fy_end
-    ]
+    rows = [(payslip, run) for payslip, run in closed if fy_start <= run.effective_date <= fy_end]
     if not rows:
         raise Form16UnavailableError(f"There is no approved payroll for {financial_year}.")
 

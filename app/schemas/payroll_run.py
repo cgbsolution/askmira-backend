@@ -111,6 +111,36 @@ class InputNoticeRead(BaseModel):
     message: str
 
 
+#: `computed`: AskMira worked the run out. `imported`: loaded as paid by the
+#: previous payroll (factoHR), figures as paid there and never recomputed.
+RunOrigin = Literal["computed", "imported"]
+
+
+class RunImportSummaryRead(BaseModel):
+    """Where an imported run came from. Null on a run AskMira computed."""
+
+    system: str
+    files: list[str] = Field(default_factory=list)
+    imported_at: datetime | None = None
+    imported_by_name: str | None = None
+
+
+class PayslipImportSummaryRead(BaseModel):
+    """Where an imported payslip came from: the register file, sheet and row(s)."""
+
+    system: str
+    file: str | None = None
+    sheet: str | None = None
+    rows: list[int] = Field(default_factory=list)
+    #: The register's STATUS for the person that month (Active, Hold, F&F Paid…).
+    status: str | None = None
+    #: The register's Client (or, from Feb 2025, Project) text, as typed there.
+    client: str | None = None
+    #: Every pay cell of the register row(s), header → value as typed. On the
+    #: full payslip read only; never an identifier (PAN, UAN, bank…).
+    cells: dict[str, str] | None = None
+
+
 class PayrollRunRead(BaseModel):
     id: uuid.UUID
     legal_entity_id: uuid.UUID
@@ -158,6 +188,9 @@ class PayrollRunRead(BaseModel):
 
     # False when the caller computed this run: maker-checker.
     caller_may_approve: bool
+
+    origin: RunOrigin = "computed"
+    import_summary: RunImportSummaryRead | None = None
 
 
 # ── Payslips ────────────────────────────────────────────────────────────────
@@ -257,6 +290,10 @@ class PayslipRead(BaseModel):
     rule_sets: list[RuleSetUsedRead]
     salary: PayslipSalaryRead | None
 
+    #: The run's origin: an imported payslip shows figures as paid on factoHR.
+    origin: RunOrigin = "computed"
+    import_summary: PayslipImportSummaryRead | None = None
+
 
 class PayslipSummaryRead(BaseModel):
     id: uuid.UUID
@@ -276,6 +313,9 @@ class PayslipSummaryRead(BaseModel):
     is_published: bool
     published_at: datetime | None
 
+    origin: RunOrigin = "computed"
+    import_summary: PayslipImportSummaryRead | None = None
+
 
 class RegisterRowRead(BaseModel):
     payslip_id: uuid.UUID
@@ -283,8 +323,12 @@ class RegisterRowRead(BaseModel):
     employee_code: str
     employee_name: str
     #: The project they were on when the run was computed (a client's, or Internal).
+    #: On an imported payslip, only the project the register named: never today's.
     project_id: uuid.UUID | None = None
     project_name: str | None = None
+    #: Imported payslips whose register account matched no AskMira project: the
+    #: Client/Project text as the register had it. Null otherwise.
+    register_client: str | None = None
     working_days: Money
     paid_days: Money
     lop_days: Money
@@ -433,6 +477,7 @@ __all__ = [
     "InputSourceRead",
     "PayrollRunCreate",
     "PayrollRunRead",
+    "PayslipImportSummaryRead",
     "PayslipInputLineRead",
     "PayslipLineRead",
     "PayslipRead",
@@ -444,7 +489,9 @@ __all__ = [
     "RuleSetCreate",
     "RuleSetRead",
     "RuleSetUsedRead",
+    "RunImportSummaryRead",
     "RunMarkPaid",
+    "RunOrigin",
     "SalaryOverviewRead",
     "SalaryRecordRead",
     "SalaryStructureDetailRead",

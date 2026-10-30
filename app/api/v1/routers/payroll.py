@@ -31,6 +31,7 @@ from app.schemas.payroll_run import (
     RuleSetRead,
     RunCancel,
     RunMarkPaid,
+    RunOrigin,
     VarianceAcknowledge,
 )
 from app.services.payroll import journal as journal_service
@@ -118,11 +119,19 @@ async def list_runs(
     session: DbSession,
     year: int | None = Query(default=None, ge=2000, le=2100),
     run_status: PayrollRunStatus | None = Query(default=None, alias="status"),
+    # `computed` leaves out months imported as paid (a bank-file picker's list).
+    origin: RunOrigin | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[PayrollRunRead]:
     rows, total = await run_service.list_runs(
-        session, user, year=year, run_status=run_status, page=page, page_size=page_size
+        session,
+        user,
+        year=year,
+        run_status=run_status,
+        origin=origin,
+        page=page,
+        page_size=page_size,
     )
     return Page[PayrollRunRead](
         items=await payslip_service.run_reads(session, user, rows),

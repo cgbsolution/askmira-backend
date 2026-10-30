@@ -50,7 +50,7 @@ from app.models.accounting import LedgerMapping, LedgerNature
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.org import Department, LegalEntity
-from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
+from app.models.payroll import RUN_ORIGIN_IMPORTED, PayrollRun, PayrollRunStatus, Payslip
 from app.models.user import User
 from app.services import audit
 
@@ -511,6 +511,16 @@ async def export_journal(
             detail=f"Unknown format '{fmt}'. Choose csv, tally or zoho.",
         )
     run = await _approved_run(session, user, run_id)
+    if run.origin == RUN_ORIGIN_IMPORTED:
+        system = (run.import_details or {}).get("system") or "factoHR"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This month was imported from {system} as paid; its journal was already "
+                f"posted from {system}. Exporting it again would post the month's salary to "
+                "the books twice."
+            ),
+        )
     postings = await _run_postings(session, user, run, by_department=by_department)
     if not postings:
         raise HTTPException(

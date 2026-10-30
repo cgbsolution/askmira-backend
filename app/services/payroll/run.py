@@ -61,6 +61,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.org import LegalEntity
 from app.models.payroll import (
+    RUN_ORIGIN_IMPORTED,
     EmployeeSalary,
     PayrollRuleSet,
     PayrollRun,
@@ -173,6 +174,33 @@ def days_outside(period_start: date, period_end: date, window: tuple[date, date]
 
 def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
+
+
+def is_imported(run: PayrollRun) -> bool:
+    """Loaded as paid by the previous payroll, not worked out by AskMira."""
+    return run.origin == RUN_ORIGIN_IMPORTED
+
+
+def imported_from(run: PayrollRun) -> str:
+    """The payroll an imported run came from, by name ("factoHR")."""
+    return str((run.import_details or {}).get("system") or "factoHR")
+
+
+def refuse_if_imported(run: PayrollRun, *, cannot_be: str, why: str) -> None:
+    """A 409 for any lifecycle step on a month imported as paid.
+
+    An imported run carries the figures the previous payroll paid, locked on
+    import. Recomputing, re-approving, re-publishing or deleting it would either
+    rewrite what was paid or tell everybody about it a second time.
+    """
+    if is_imported(run):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This month was imported from {imported_from(run)} as paid; it cannot be "
+                f"{cannot_be}. {why}"
+            ),
+        )
 
 
 async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> PayrollRun:
@@ -365,7 +393,11 @@ async def create_run(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"The {run_type.value} run for {month} is already locked. A correction "
+                    f"The {run_type.value} run for {month} was imported from "
+                    f"{imported_from(existing)} as paid. A correction is an off-cycle run, "
+                    "not a re-run."
+                    if is_imported(existing)
+                    else f"The {run_type.value} run for {month} is already locked. A correction "
                     "is a new off-cycle or arrears run, not a re-run."
                     if existing.status in CLOSED_STATUSES
                     else f"A {run_type.value} run for {month} is already open "
@@ -420,9 +452,12 @@ async def list_runs(
     *,
     year: int | None = None,
     run_status: PayrollRunStatus | None = None,
+    origin: str | None = None,
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list[PayrollRun], int]:
+    """Runs newest month first. `origin="computed"` leaves out months imported as
+    paid — what a picker that builds payments (a bank file) asks for."""
     stmt = tenant_scoped(select(PayrollRun), PayrollRun, user)
     count_stmt = tenant_scoped(select(func.count(PayrollRun.id)), PayrollRun, user)
     if year:
@@ -431,6 +466,9 @@ async def list_runs(
     if run_status is not None:
         stmt = stmt.where(PayrollRun.status == run_status)
         count_stmt = count_stmt.where(PayrollRun.status == run_status)
+    if origin is not None:
+        stmt = stmt.where(PayrollRun.origin == origin)
+        count_stmt = count_stmt.where(PayrollRun.origin == origin)
 
     total = int(await session.scalar(count_stmt) or 0)
     rows = (
@@ -468,6 +506,14 @@ async def compute_run(
     once their salary is added, or an off-cycle run pays them after approval.
     """
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="recomputed",
+        why=(
+            "Its payslips carry the figures paid there and are never worked out again; "
+            "a correction is an off-cycle run."
+        ),
+    )
     if run.status in CLOSED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1329,6 +1375,11 @@ async def acknowledge_variance(
 ) -> PayrollRun:
     """Record that a flagged swing in someone's net pay was looked at, and why it is right."""
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="reviewed",
+        why="Its figures are the ones paid there; AskMira checked no variances on it.",
+    )
     if run.status is not PayrollRunStatus.PENDING_REVIEW:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1412,6 +1463,11 @@ async def approve_run(
     The person who computed the run cannot approve it.
     """
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="approved again",
+        why="It was locked when it was imported, with the figures paid there.",
+    )
     if run.status is not PayrollRunStatus.PENDING_REVIEW:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1631,6 +1687,11 @@ async def cancel_run(
     regular month it held can then be opened again.
     """
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="cancelled",
+        why="If it was imported in error, an admin can undo the import instead.",
+    )
     if run.status not in CANCELLABLE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1716,6 +1777,14 @@ async def delete_run(
     kept in the audit log, which is where a deleted row's history lives.
     """
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="deleted",
+        why=(
+            "If it was imported in error, an admin can undo the import, which removes the "
+            "month and its payslips with an audit record."
+        ),
+    )
     if run.status in CLOSED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1793,6 +1862,14 @@ async def publish_run(
 ) -> PayrollRun:
     """Release an approved run's payslips to the employees, and tell them."""
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="published again",
+        why=(
+            "Its payslips became visible to employees when it was imported; publishing "
+            "would notify everybody about a month they were paid long ago."
+        ),
+    )
     if run.status not in CLOSED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1870,6 +1947,11 @@ async def mark_paid(
 ) -> PayrollRun:
     """Record that the money moved. A paid run is locked for good."""
     run = await get_run(session, user, run_id)
+    refuse_if_imported(
+        run,
+        cannot_be="marked paid",
+        why="It is already recorded as paid, by the previous payroll.",
+    )
     if run.status is not PayrollRunStatus.APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
