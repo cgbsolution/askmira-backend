@@ -12,7 +12,8 @@ What these hold:
   leave module's own `decide`;
 - the model reads a tool's result only when the DPDP register lets the model
   provider receive every category in it, and the workspace has not switched
-  reading off; otherwise it is only told the result is on screen;
+  reading off; otherwise it is only told the result is on screen. A trend's
+  figures are read only for months (and groups) covering five or more people;
 - payroll and headcount trends add up to the payslips and the employee records.
 """
 
@@ -413,7 +414,7 @@ async def _hr(session: AsyncSession, hr_user: User) -> User:
     return await as_caller(session, hr_user)
 
 
-async def test_payroll_trend_adds_up_and_is_not_read_unless_registered(
+async def test_payroll_trend_adds_up_and_small_groups_are_never_read(
     session: AsyncSession,
     tenant: Tenant,
     hr_user: User,
@@ -440,9 +441,11 @@ async def test_payroll_trend_adds_up_and_is_not_read_unless_registered(
     figures = {f["label"]: f["value"] for f in record["figures"]}
     assert figures["Total cost"] == "₹3,35,000.00"
     assert record["table"]["rows"][2][-1] == "+3.6%"
-    # Pay is a category the model provider is not registered for: on screen only.
+    # One or two people a month: a total that could be one person's pay is on
+    # screen only, and the model is told why rather than shown it.
     tool_result = model.calls[1]["messages"][-1]["content"][0]["content"]
-    assert "140000" not in tool_result and "You may not read" in tool_result
+    assert "140000" not in tool_result and "145000" not in tool_result
+    assert "fewer than 5 people" in tool_result
     sent = (await session.scalars(select(CrossBorderTransfer))).all()
     assert all("compensation" not in t.data_categories for t in sent)
 
@@ -451,16 +454,36 @@ async def test_payroll_trend_adds_up_and_is_not_read_unless_registered(
     assert "payroll_trend" not in {t["key"] for t in status["tools"]}
 
 
-async def test_with_the_register_widened_the_model_reads_the_figures(
+async def _staff(session: AsyncSession, tenant: Tenant, count: int) -> list[Employee]:
+    people = [
+        Employee(
+            tenant_id=tenant.id,
+            employee_code=f"ACM{500 + i}",
+            first_name=f"Person{i}",
+            last_name="Test",
+            work_email=f"person{i}@acme.test",
+        )
+        for i in range(count)
+    ]
+    session.add_all(people)
+    await session.commit()
+    return people
+
+
+async def test_totals_over_five_people_are_read_as_organisational_figures(
     session: AsyncSession,
     tenant: Tenant,
     hr_user: User,
     employee: Employee,
     legal_entity: Any,
-    widened: None,
 ) -> None:
-    await _run_payroll(session, tenant, legal_entity.id, date(2026, 8, 1), [(employee, 50000)])
-    await _run_payroll(session, tenant, legal_entity.id, date(2026, 9, 1), [(employee, 61000)])
+    staff = [employee, *await _staff(session, tenant, 5)]
+    await _run_payroll(
+        session, tenant, legal_entity.id, date(2026, 8, 1), [(p, 50000) for p in staff]
+    )
+    await _run_payroll(
+        session, tenant, legal_entity.id, date(2026, 9, 1), [(p, 61000) for p in staff]
+    )
     hr = await _hr(session, hr_user)
     model = FakeModel(
         [tool_call("payroll_trend", **{"from": "2026-08-01", "to": "2026-09-30"})],
@@ -469,13 +492,18 @@ async def test_with_the_register_widened_the_model_reads_the_figures(
     with use_backend(model):
         await _say(session, hr, "why did payroll go up in september")
     seen = model.calls[1]["messages"][-1]["content"][0]["content"]
-    assert "Aug 2026 50000.00, Sep 2026 61000.00" in seen
+    assert "Aug 2026 | 6 |" in seen and "₹3,00,000.00" in seen
+    assert "Sep 2026 | 6 |" in seen and "₹3,66,000.00" in seen
+    assert "+22.0%" in seen
+    # Nobody's name or own pay went with it: a total over six people is organisational.
+    assert "Anita" not in seen and "Person1" not in seen
     transfer = (
         await session.scalars(
             select(CrossBorderTransfer).order_by(CrossBorderTransfer.created_at.desc())
         )
     ).first()
-    assert "compensation" in transfer.data_categories
+    assert "compensation" not in transfer.data_categories
+    assert "organisational" in transfer.data_categories
 
 
 async def test_headcount_trend_is_read_and_reading_can_be_switched_off(

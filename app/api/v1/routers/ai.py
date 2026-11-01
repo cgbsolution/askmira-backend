@@ -69,6 +69,38 @@ async def set_ai_settings(
     return await governance.set_settings(session, user, payload, request=request)
 
 
+class AiKeyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str = Field(min_length=8, max_length=400)
+
+
+@router.put("/admin/ai-keys/{provider}", dependencies=ADMIN_ONLY)
+async def save_ai_key(
+    provider: str, payload: AiKeyIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Keep the workspace's own key for a provider. It is stored encrypted and never shown."""
+    return await governance.save_key(session, user, provider, payload.api_key, request=request)
+
+
+@router.delete(
+    "/admin/ai-keys/{provider}",
+    dependencies=ADMIN_ONLY,
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def remove_ai_key(
+    provider: str, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await governance.remove_key(session, user, provider, request=request)
+
+
+@router.post("/admin/ai-test", dependencies=ADMIN_ONLY)
+async def test_ai_connection(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """One fixed question to the workspace's provider; no personal data is sent."""
+    return await governance.test_connection(session, user)
+
+
 # ── The assistant ───────────────────────────────────────────────────────────
 
 

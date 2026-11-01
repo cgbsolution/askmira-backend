@@ -38,6 +38,7 @@ from app.services.ai import analytics, assistant, governance
 from app.services.companion import (
     actions,
     analysis_tools,
+    data_tools,
     hr_tools,
     people_tools,
     product_tools,
@@ -45,6 +46,8 @@ from app.services.companion import (
 from app.services.companion.config import CompanionConfig, group_on
 from app.services.products import data as products_data
 from app.services.products.catalogue import PRODUCTS
+from app.services.reporting.compiler import BUCKETS
+from app.services.reporting.semantic import ENTITIES
 
 _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
@@ -387,6 +390,40 @@ TOOLS: dict[str, Tool] = {
             inputs=("scope", "status", "query"),
         ),
         Tool(
+            key="query_data",
+            group="data_questions",
+            title="Data",
+            description=(
+                "Any figure, trend, comparison or breakdown over AskMira's data, drawn as a chart "
+                "with its table: payroll cost by month, joiners by department, leave days by "
+                "type, exits by quarter, expenses by category, helpdesk tickets, assets, "
+                "timesheet hours, recognition, client billing... Choose `dataset`, the "
+                '`measures` ("field:aggregation", e.g. "employer_cost:sum"; empty = how many '
+                "people), `group_by` (up to two fields), `bucket` for a trend over time (month, "
+                "quarter, financial_year...; the dataset's date unless `time_field` says "
+                "otherwise), the period (`months` = the last N months including this one, or "
+                "`from`/`to`), `filters` ([{field, op, value}]; op one of equals, not_equals, in, "
+                "contains, gt, gte, lt, lte, between, relative_range) and `chart`: line or area "
+                "for a trend, bar or horizontal_bar to compare groups, stacked_bar for a "
+                "breakdown, pie or donut for shares of a whole, number for one figure, table "
+                "for a list. Rows are only what the person may see."
+            ),
+            inputs=(
+                "dataset",
+                "measures",
+                "group_by",
+                "bucket",
+                "time_field",
+                "months",
+                "from",
+                "to",
+                "filters",
+                "chart",
+                "top",
+            ),
+            reads=("organisational",),
+        ),
+        Tool(
             key="payroll_trend",
             hr_only=True,
             group="payroll_figures",
@@ -394,13 +431,15 @@ TOOLS: dict[str, Tool] = {
             description=(
                 "For admins and sub-admins who may view payroll: payroll cost month by month - "
                 "cost to company, gross, net pay and people paid - with the change each month, "
-                "from the payslips of every run. Set `from` and `to` to the months asked about "
-                "(both empty: the twelve months up to the latest payroll). Set `group` to split "
+                "from the payslips of every run. Set `months` for the last N payroll months (up "
+                "to the latest payroll), or `from` and `to` (all empty: the twelve months up to "
+                "the latest payroll). Set `group` to split "
                 "the cost by department, entity (company) or location, else none. Use it for "
                 "any trend, comparison or 'why did payroll go up' question."
             ),
-            inputs=("from", "to", "group"),
-            reads=("compensation", "organisational"),
+            inputs=("from", "to", "months", "group"),
+            # The model reads totals over five or more people only (model_view).
+            reads=("organisational",),
         ),
         Tool(
             key="headcount_trend",
@@ -409,10 +448,10 @@ TOOLS: dict[str, Tool] = {
             title="Headcount trend",
             description=(
                 "For admins and sub-admins: headcount at each month's end, who joined, who "
-                "left and the attrition rate, month by month. Set `from` and `to` (both "
-                "empty: the last twelve months)."
+                "left and the attrition rate, month by month. Set `months` for the last N "
+                "months, or `from` and `to` (all empty: the last twelve months)."
             ),
-            inputs=("from", "to"),
+            inputs=("from", "to", "months"),
             reads=("organisational",),
         ),
         Tool(
@@ -429,7 +468,8 @@ TOOLS: dict[str, Tool] = {
                 "account. Set `from` and `to` (empty: this financial year so far)."
             ),
             inputs=("query", "from", "to"),
-            reads=("compensation", "identity", "organisational"),
+            # Billing always; cost and margin only over five or more people (model_view).
+            reads=("organisational",),
         ),
         Tool(
             key="apply_leave",
@@ -602,6 +642,40 @@ INPUTS: dict[str, dict[str, Any]] = {
     "subject": {"type": "string"},
     "description": {"type": "string"},
     "action_id": {"type": "string", "description": "An offer's id, from earlier in this chat."},
+    "dataset": {"type": "string", "enum": list(ENTITIES)},
+    "measures": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": 'Figures as "field:aggregation": sum, avg, count, count_distinct, min, max.',
+    },
+    "group_by": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Up to two fields to group by. A date here is grouped by `bucket`.",
+    },
+    "bucket": {"type": "string", "enum": ["none", *BUCKETS]},
+    "time_field": {"type": "string", "description": "The date to run a trend along, or empty."},
+    "months": {
+        "type": "integer",
+        "description": (
+            "The last N months (for payroll and billing, up to the latest month with data); "
+            "0 when from/to are used."
+        ),
+    },
+    "filters": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "field": {"type": "string"},
+                "op": {"type": "string"},
+                "value": {"type": "string"},
+            },
+        },
+        "description": 'For example [{"field": "department", "op": "equals", "value": "Sales"}].',
+    },
+    "chart": {"type": "string", "enum": list(data_tools.CHARTS)},
+    "top": {"type": "integer", "description": "How many groups to draw before 'Others'."},
 }
 
 #: What each existing lookup lets the model read (views.py strips the rest).
@@ -634,12 +708,18 @@ TOOLS = {key: replace(tool, reads=_READS.get(key, tool.reads)) for key, tool in 
 _PICK_ONLY = frozenset({"employee_id"})
 
 
-def tool_schema(tool: Tool) -> dict[str, Any]:
-    """The tool as the model is shown it: name, what it does, and only the inputs it reads."""
+def tool_schema(tool: Tool, *, role: str | None = None) -> dict[str, Any]:
+    """The tool as the model is shown it: name, what it does, and only the inputs it reads.
+
+    The data tool also lists the datasets and fields `role` may query.
+    """
     names = [name for name in tool.inputs if name not in _PICK_ONLY]
+    description = tool.description
+    if tool.key == "query_data" and role:
+        description += "\n\nDatasets and their fields:\n" + data_tools.catalogue_text(role)
     return {
         "name": tool.key,
-        "description": tool.description,
+        "description": description,
         "input_schema": {
             "type": "object",
             "properties": {name: INPUTS[name] for name in names},
@@ -659,6 +739,25 @@ def coerce(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
         value = raw.get(name)
         if spec.get("type") == "boolean":
             out[name] = value is True or str(value).lower() == "true"
+            continue
+        if spec.get("type") == "integer":
+            try:
+                out[name] = (
+                    max(0, min(int(str(value).strip()), 1000)) if value not in (None, "") else 0
+                )
+            except ValueError:
+                out[name] = 0
+            continue
+        if spec.get("type") == "array":
+            items = value if isinstance(value, list) else ([] if value in (None, "") else [value])
+            if spec["items"].get("type") == "object":
+                out[name] = [
+                    {str(k)[:40]: str(v)[:200] for k, v in item.items()}
+                    for item in items[:10]
+                    if isinstance(item, dict)
+                ] + [str(item)[:200] for item in items[:10] if isinstance(item, str)]
+            else:
+                out[name] = [str(item).strip()[:100] for item in items[:10] if str(item).strip()]
             continue
         text = "" if value is None else str(value).strip()[:2000]
         if "enum" in spec and text not in spec["enum"]:
@@ -703,6 +802,9 @@ async def offered(
         if tool.needs_ai and not ai:
             continue
         out.append(tool)
+    # With a model, the data tool answers what the report question did, and more.
+    if ai and any(t.key == "query_data" for t in out):
+        out = [t for t in out if t.key != "report_question"]
     # Confirming and withdrawing offers come with any action that makes them.
     if not any(t.kind == "action" and t.group != "actions" for t in out):
         out = [t for t in out if t.group != "actions"]
@@ -782,6 +884,10 @@ async def _run(
 
     if tool.key == "my_approvals":
         return await hr_tools.approvals(session, user, inputs)
+
+    if tool.key == "query_data":
+        cards = await data_tools.query_data(session, user, inputs, today=today)
+        return cards, {k: v for k, v in inputs.items() if v not in ("", [], 0, "none", "auto")}
 
     if tool.key == "payroll_summary":
         return await hr_tools.payroll_summary(session, user, inputs, today=today)

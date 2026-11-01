@@ -60,9 +60,14 @@ def test_the_register_decides_what_the_model_reads() -> None:
     on = CompanionConfig()
     assert agent.readable(TOOLS["headcount_trend"], on)
     assert agent.readable(TOOLS["policy_question"], on)
-    # Pay, leave and names are not categories the model provider is registered for.
-    assert not agent.readable(TOOLS["payroll_trend"], on)
+    # Totals over five or more people are organisational: these tools write a
+    # view that keeps smaller groups out (tests/companion/test_data_tools.py).
+    assert agent.readable(TOOLS["payroll_trend"], on)
+    assert agent.readable(TOOLS["query_data"], on)
+    # A person's own pay, leave and name are not categories the provider may receive.
     assert not agent.readable(TOOLS["my_record"], on)
+    assert not agent.readable(TOOLS["employee_record"], on)
+    assert not agent.readable(TOOLS["who_is_out"], on)
     off = CompanionConfig(ai_reads_results=False)
     assert not agent.readable(TOOLS["headcount_trend"], off)
 
@@ -237,3 +242,65 @@ def test_months_and_margins() -> None:
     assert pnl.margin_pct(Decimal(200000), Decimal(110000)) == Decimal("55.0")
     assert pnl.margin_pct(Decimal(0), Decimal(-5)) is None
     assert pnl.rupees(Decimal("10.005")) == Decimal("10.01")
+
+
+# ── A short tool list for a local model ─────────────────────────────────────
+
+
+def test_a_local_model_sees_a_handful_of_tools_that_fit_the_message() -> None:
+    every = list(TOOLS.values())
+    short = agent.narrow(
+        every, "payroll cost trend for the last 6 months", previous=[], offers_open=False
+    )
+    keys = [tool.key for tool in short]
+    assert keys[0] == "query_data" and "payroll_trend" in keys
+    assert len(short) <= agent.LOCAL_TOOL_LIMIT
+    leave = [
+        t.key for t in agent.narrow(every, "I want leave on 5 Nov", previous=[], offers_open=False)
+    ]
+    assert "apply_leave" in leave
+    # A follow-up keeps the tool that answered last; a yes can confirm an offer.
+    follow = [
+        t.key
+        for t in agent.narrow(every, "as a pie chart", previous=["account_pnl"], offers_open=False)
+    ]
+    assert "account_pnl" in follow
+    yes = [
+        t.key for t in agent.narrow(every, "yes please", previous=["apply_leave"], offers_open=True)
+    ]
+    assert "confirm_action" in yes
+    # Never a tool that was not offered.
+    assert agent.narrow([TOOLS["my_record"]], "payroll trend", previous=[], offers_open=False) == [
+        TOOLS["my_record"]
+    ]
+
+
+# ── After the model ──────────────────────────────────────────────────────────
+
+
+def test_a_chart_asked_for_but_not_drawn_is_redrawn_from_what_is_on_screen() -> None:
+    line = {
+        "type": "chart",
+        "chart": "line",
+        "title": "Payroll cost",
+        "x": ["Apr 2026", "May 2026"],
+        "series": [{"name": "Cost", "values": ["1", "2"]}],
+        "model_view": "Data: ...",
+    }
+    redrawn = agent.redraw("now show it as a bar chart", [], [line])
+    assert redrawn is not None and redrawn["chart"] == "bar" and "model_view" not in redrawn
+    assert redrawn["series"] == line["series"]
+    # Nothing to redraw when the model drew one, or nothing was asked for, or the
+    # earlier chart is already that kind.
+    assert agent.redraw("as a bar chart", [line], [line]) is None
+    assert agent.redraw("thanks", [], [line]) is None
+    assert agent.redraw("as a line chart", [], [line]) is None
+    # A pie of several series makes no sense.
+    two = {**line, "series": [*line["series"], {"name": "Other", "values": ["3", "4"]}]}
+    assert agent.redraw("as a pie chart", [], [two]) is None
+
+
+def test_tool_result_lines_a_model_echoes_are_taken_out() -> None:
+    echoed = ".Chart:\nBar chart: Cost by month.\nApril: 1\n\nCost fell 3.2%."
+    assert agent.clean_reply(echoed) == "Bar chart: Cost by month.\nApril: 1\n\nCost fell 3.2%."
+    assert agent.clean_reply("Data: x | y\nPayroll rose.") == "Payroll rose."

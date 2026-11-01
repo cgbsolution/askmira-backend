@@ -50,13 +50,20 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    TIMESTAMP,
+    Date,
+    Integer,
     Select,
+    String,
     Table,
     and_,
+    cast,
     func,
+    literal,
     literal_column,
     select,
 )
+from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.deps import tenant_filter
@@ -72,6 +79,7 @@ from app.services.reporting.semantic import (
 )
 
 __all__ = [
+    "BUCKETS",
     "MAX_ROWS",
     "STATEMENT_TIMEOUT_MS",
     "CompileError",
@@ -101,6 +109,21 @@ MAX_PAGE_SIZE = 1_000
 
 class CompileError(ValueError):
     """A definition this compiler refuses to turn into SQL."""
+
+
+#: How a date can be grouped: one row per day, week, month, quarter, calendar
+#: year, or Indian financial year (April to March, labelled by its 1 April).
+BUCKETS: dict[str, str] = {
+    "day": "One row per day.",
+    "week": "One row per week, starting Monday.",
+    "month": "One row per month.",
+    "quarter": "One row per quarter (Jan-Mar, Apr-Jun, Jul-Sep, Oct-Dec).",
+    "year": "One row per calendar year.",
+    "financial_year": "One row per financial year, April to March.",
+}
+
+#: Timestamps are grouped by the day it was in India, not in UTC.
+_LOCAL_TIMEZONE = "Asia/Kolkata"
 
 
 class ScopeKind(str, enum.Enum):
@@ -237,6 +260,9 @@ class Definition:
     sort_by: tuple[tuple[str, str], ...] = ()
     limit: int = DEFAULT_PAGE_SIZE
     offset: int = 0
+    #: (date field key, bucket) pairs: that field is grouped by the bucket
+    #: (`BUCKETS`) wherever it is selected, grouped or sorted.
+    buckets: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +295,47 @@ def _table(name: str) -> Table:
             "This is a catalogue bug, not a user error."
         )
     return table
+
+
+def _const(value: Any) -> ColumnElement:
+    """A constant from this module (a bucket name, a day number), written into the SQL.
+
+    Never a user value: the bucket is checked against `BUCKETS` first. Written in
+    rather than bound so that the SELECT and the GROUP BY read as the same
+    expression to Postgres, which cannot tell two placeholders are equal.
+    """
+    return literal(value, type_=Integer if isinstance(value, int) else String, literal_execute=True)
+
+
+def _expression(alias_map: dict[str, Any], spec: Field) -> ColumnElement:
+    """The field's value: its column, or for a year-and-month pair, the 1st of that month."""
+    if spec.month_from is not None:
+        year, month = spec.month_from
+        return func.make_date(
+            _column(alias_map, spec.table, year), _column(alias_map, spec.table, month), _const(1)
+        )
+    return _column(alias_map, spec.table, spec.column)
+
+
+def _bucketed(expression: ColumnElement, spec: Field, bucket: str) -> ColumnElement:
+    """A date or timestamp, cut down to the start of its day, week, month, quarter or year."""
+    if bucket not in BUCKETS:
+        raise CompileError(f"'{bucket}' is not a way to group dates. Use one of {sorted(BUCKETS)}.")
+    if spec.data_type not in (DataType.DATE, DataType.DATETIME):
+        raise CompileError(
+            f"{spec.display_name} is not a date, so it cannot be grouped by {bucket}."
+        )
+    if spec.data_type is DataType.DATETIME:
+        local = func.timezone(_const(_LOCAL_TIMEZONE), expression)
+    else:
+        local = cast(expression, TIMESTAMP)
+    if bucket == "day":
+        return cast(local, Date)
+    if bucket == "financial_year":
+        three_months = func.make_interval(_const(0), _const(3))
+        shifted = local - three_months
+        return cast(func.date_trunc(_const("year"), shifted) + three_months, Date)
+    return cast(func.date_trunc(_const(bucket), local), Date)
 
 
 def _column(alias_map: dict[str, Any], table_name: str, column_name: str) -> ColumnElement:
@@ -398,6 +465,8 @@ def _filter_expression(
     if f.operator is Operator.IS_NOT_NULL:
         return expression.is_not(None)
 
+    f = _enum_values(f, spec, expression)
+
     if f.operator in (Operator.IN, Operator.NOT_IN):
         values = list(f.values) or ([f.value] if f.value is not None else [])
         if not values:
@@ -449,6 +518,33 @@ def _filter_expression(
         Operator.LESS_OR_EQUAL: expression.__le__,
     }[f.operator]
     return comparison(f.value)
+
+
+def _enum_values(f: Filter, spec: Field, expression: ColumnElement) -> Filter:
+    """An enum column compares against its members: "Approved", "approved" and
+    "APPROVED" all mean the one member, and anything else is refused by name."""
+    enum_class = getattr(getattr(expression, "type", None), "enum_class", None)
+    if not isinstance(getattr(expression, "type", None), SqlEnum) or enum_class is None:
+        return f
+
+    def member(value: Any) -> Any:
+        if isinstance(value, enum_class):
+            return value
+        wanted = str(value).strip().lower().replace(" ", "_")
+        for item in enum_class:
+            if wanted in (str(item.value).lower(), item.name.lower()):
+                return item
+        raise CompileError(
+            f"'{value}' is not a {spec.display_name.lower()} here. Choose from: "
+            f"{', '.join(str(item.value) for item in enum_class)}."
+        )
+
+    return Filter(
+        field_key=f.field_key,
+        operator=f.operator,
+        value=member(f.value) if f.value is not None else None,
+        values=tuple(member(v) for v in f.values),
+    )
 
 
 def _as_date(value: Any) -> date:
@@ -524,6 +620,8 @@ def compile_report(
     if not definition.selections:
         raise CompileError("A report needs at least one column.")
 
+    buckets = dict(definition.buckets)
+
     # ── Fields ──────────────────────────────────────────────────────────────
     try:
         selection_fields, denied = _resolve_fields(
@@ -557,7 +655,24 @@ def compile_report(
             f"(hidden: {sorted(set(denied))}). There is nothing to show."
         )
 
-    all_fields = selection_fields + filter_fields + group_fields + sort_fields
+    # The entity's own filters (a cancelled payroll run is not payroll) apply to
+    # everybody and only ever narrow, so they are not checked against the role.
+    try:
+        always = [
+            (ent.field(key), Filter(key, Operator(op), value)) for key, op, value in ent.always
+        ]
+    except (SemanticError, ValueError) as exc:
+        raise CompileError(f"{ent.display_name} has a broken built-in filter: {exc}") from exc
+
+    for key in buckets:
+        if key not in definition.group_by:
+            raise CompileError(
+                f"'{key}' is grouped by {buckets[key]} but is not in group_by. Group by it too."
+            )
+
+    all_fields = (
+        selection_fields + filter_fields + group_fields + sort_fields + [spec for spec, _ in always]
+    )
     from_clause, alias_map = _build_from(ent, all_fields)
     base = alias_map[ent.base_table]
 
@@ -586,7 +701,10 @@ def compile_report(
                 "an arbitrary row's value and nobody can tell which."
             )
 
-        expression = _column(alias_map, spec.table, spec.column)
+        expression = _expression(alias_map, spec)
+        bucket = buckets.get(selection.field_key) if selection.aggregation is None else None
+        if bucket:
+            expression = _bucketed(expression, spec, bucket)
         label = selection.label or spec.display_name
         columns.append(_aggregate(expression, selection.aggregation).label(label))
         metadata.append(
@@ -596,6 +714,8 @@ def compile_report(
                 "data_type": spec.data_type.value,
                 "aggregation": selection.aggregation,
                 "sensitivity": spec.sensitivity.value,
+                "bucket": bucket,
+                "unit": spec.unit,
             }
         )
 
@@ -615,25 +735,33 @@ def compile_report(
 
     for f in definition.filters:
         spec = ent.field(f.field_key)
-        expression = _column(alias_map, spec.table, spec.column)
+        expression = _expression(alias_map, spec)
         _refuse_encrypted(spec, expression, "filter on")
+        predicates.append(_filter_expression(f, spec, expression, today=resolution_day))
+
+    for spec, f in always:
+        expression = _expression(alias_map, spec)
         predicates.append(_filter_expression(f, spec, expression, today=resolution_day))
 
     statement = statement.where(and_(*predicates))
 
     # ── Grouping and sorting ────────────────────────────────────────────────
     if definition.group_by:
-        group_expressions = [
-            _column(alias_map, ent.field(key).table, ent.field(key).column)
-            for key in definition.group_by
-        ]
+        group_expressions = []
+        for key in definition.group_by:
+            grouped = _expression(alias_map, ent.field(key))
+            if key in buckets:
+                grouped = _bucketed(grouped, ent.field(key), buckets[key])
+            group_expressions.append(grouped)
         for key, grouped in zip(definition.group_by, group_expressions, strict=True):
             _refuse_encrypted(ent.field(key), grouped, "group by")
         statement = statement.group_by(*group_expressions)
 
     for key, direction in definition.sort_by:
         spec = ent.field(key)
-        expression = _column(alias_map, spec.table, spec.column)
+        expression = _expression(alias_map, spec)
+        if key in buckets:
+            expression = _bucketed(expression, spec, buckets[key])
         _refuse_encrypted(spec, expression, "sort by")
         # In a grouped report, sorting by a raw column the database is not
         # grouping on is an error in Postgres. Sort by the aggregate instead.

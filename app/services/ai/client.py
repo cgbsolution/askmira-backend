@@ -15,6 +15,10 @@ with tools, and runs each tool the model asks for itself (companion/agent.py).
 A step's content goes back to the model unchanged on the next step of the same
 turn — that is what keeps the model's reasoning valid across tool calls.
 
+Which provider answers is the workspace's choice (providers.py): Anthropic
+here, OpenAI, Gemini or Ollama in openai_compat.py, all behind the same two
+calls. `governance.require` sets the route for the request being served.
+
 Tests never reach the network: `use_backend` swaps in a deterministic backend
 for the length of a `with` block.
 """
@@ -23,12 +27,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.core.config import settings
+from app.core.config import settings  # noqa: F401  (patched through here by tests)
+from app.services.ai import providers
 
 __all__ = [
     "AiDeclinedError",
@@ -38,10 +44,14 @@ __all__ = [
     "Step",
     "ToolCall",
     "configured",
+    "current_route",
     "model_name",
+    "set_route",
     "step",
     "structured",
+    "sub_processor",
     "use_backend",
+    "use_route",
 ]
 
 T = TypeVar("T", bound=BaseModel)
@@ -254,29 +264,72 @@ class AnthropicBackend:
 
 
 _override: Backend | None = None
-_default: AnthropicBackend | None = None
+#: The route of the request being served: the workspace's provider, model and
+#: key, set by `governance.require` (or `use_route`). Unset, the server's own.
+_route: ContextVar[providers.Route | None] = ContextVar("ai_route", default=None)
+_backends: dict[tuple[str, str, str, str], Backend] = {}
+
+
+def current_route() -> providers.Route:
+    return _route.get() or providers.server_route()
 
 
 def configured() -> bool:
-    """Whether this server can call a model at all."""
-    return _override is not None or bool(settings.ANTHROPIC_API_KEY)
+    """Whether a model can be called for the request being served."""
+    return _override is not None or current_route().available
 
 
 def model_name() -> str:
-    return settings.AI_MODEL
+    return current_route().model
+
+
+def sub_processor() -> str:
+    """The registered sub-processor a prompt goes to (dpdp/transfers.py)."""
+    return current_route().sub_processor
+
+
+def _build(route: providers.Route) -> Backend:
+    if route.spec.protocol == "anthropic":
+        return AnthropicBackend(api_key=route.api_key or "", model=route.model)
+    from app.services.ai import openai_compat
+
+    if route.provider == "ollama":
+        return openai_compat.OllamaBackend(route)
+    return openai_compat.OpenAIBackend(route)
 
 
 def _backend() -> Backend:
-    global _default
     if _override is not None:
         return _override
-    if not settings.ANTHROPIC_API_KEY:
+    route = current_route()
+    if not route.available:
+        label = route.spec.label
         raise AiUnavailableError(
-            "No AI provider is configured on this server, so AI features are off."
+            f"{label} is not set up on this server or for this workspace, so AI features are "
+            "off. An admin can add a key in Settings → AI."
         )
-    if _default is None:
-        _default = AnthropicBackend(api_key=settings.ANTHROPIC_API_KEY, model=settings.AI_MODEL)
-    return _default
+    key = route.cache_key()
+    backend = _backends.get(key)
+    if backend is None:
+        if len(_backends) > 64:
+            _backends.clear()
+        backend = _backends[key] = _build(route)
+    return backend
+
+
+@contextmanager
+def use_route(route: providers.Route | None) -> Iterator[providers.Route | None]:
+    """Answer with `route` for the length of the block."""
+    token = _route.set(route)
+    try:
+        yield route
+    finally:
+        _route.reset(token)
+
+
+def set_route(route: providers.Route | None) -> None:
+    """Answer with `route` for the rest of this request."""
+    _route.set(route)
 
 
 @contextmanager

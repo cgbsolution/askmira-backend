@@ -30,7 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.companion import CompanionConversation, CompanionMessage
+from app.models.companion import (
+    CompanionActionStatus,
+    CompanionConversation,
+    CompanionMessage,
+)
 from app.models.grounding import AgentInvocation, InvocationOutcome
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -436,6 +440,20 @@ async def _send_ai(
     system = agent.system_prompt(config, company, user)
     today = _today()
     offers = await actions.recent_offers(session, user, conversation.id, owner_id=user.id)
+    if client.current_route().provider == "ollama":
+        # A model on the workspace's own server reads a short list, fast.
+        previous = [
+            str(step.get("tool"))
+            for row in history[-4:]
+            for step in (row.steps or [])
+            if step.get("tool")
+        ]
+        tools = agent.narrow(
+            tools,
+            payload.text,
+            previous=previous[::-1],
+            offers_open=any(offer.status is CompanionActionStatus.PROPOSED for offer in offers),
+        )
     sent = agent.user_content(payload.text, today=today, offers=offers)
     mine.transcript = sent
     await session.flush()
@@ -504,6 +522,10 @@ async def _send_ai(
         )
 
     cards = list(outcome.cards)
+    earlier = [card for row in history if row.role == "assistant" for card in (row.cards or [])]
+    redrawn = agent.redraw(payload.text, cards, earlier)
+    if redrawn is not None:
+        cards.insert(0, redrawn)
     if outcome.failure is not None:
         cards.append(
             {
@@ -518,7 +540,7 @@ async def _send_ai(
         conversation_id=conversation.id,
         user_id=user.id,
         role="assistant",
-        text=outcome.text.strip(),
+        text=agent.clean_reply(outcome.text) or "Here it is.",
         tool=last["tool"] if last else None,
         arguments=last["inputs"] or None if last else None,
         cards=cards,
@@ -600,8 +622,32 @@ async def _send_direct(
             readable = {k: v for k, v in pick.inputs.items() if k in tool.inputs}
             plan = direct.DirectPlan(reply="", tool=tool.key, inputs=readable)
     else:
+        # The tool that answered last, so "for the last 6 months" or "as a pie chart"
+        # changes that answer rather than starting over.
+        last = await session.scalar(
+            tenant_scoped(
+                select(CompanionMessage)
+                .where(
+                    CompanionMessage.conversation_id == conversation.id,
+                    CompanionMessage.user_id == user.id,
+                    CompanionMessage.role == "assistant",
+                    CompanionMessage.tool.is_not(None),
+                    CompanionMessage.id != mine.id,
+                )
+                .order_by(CompanionMessage.created_at.desc())
+                .limit(1),
+                CompanionMessage,
+                user,
+            )
+        )
+        previous = (last.tool, dict(last.arguments or {})) if last and last.tool else None
         plan = direct.plan(
-            text, tools, today=_today(), name=config.name, hr=permissions.is_hr(user)
+            text,
+            tools,
+            today=_today(),
+            name=config.name,
+            hr=permissions.is_hr(user),
+            previous=previous,
         )
     # The plan only ever names an offered tool; checked again all the same.
     chosen = {tool.key: tool for tool in tools}.get(plan.tool or "")

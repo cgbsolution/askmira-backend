@@ -952,6 +952,80 @@ EMPLOYEE_REFUSED = (
 )
 
 
+# ── Trends, charts and P&L ───────────────────────────────────────────────────
+
+#: Payroll cost over time: payroll_trend, with the months and split asked for.
+PAYROLL_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("payroll cost trend for the last 6 months", {"months": 6, "group": "none"}),
+    ("show the payroll cost trend", {"months": 0, "group": "none"}),
+    ("payroll trend for the last 12 months", {"months": 12}),
+    ("salary cost month by month", {"months": 0}),
+    ("how has payroll cost changed over the past three months", {"months": 3}),
+    ("ctc trend by department", {"group": "department"}),
+    ("payroll cost graph for the last 9 months", {"months": 9}),
+    ("plot payroll cost over time", {"months": 0}),
+    ("payroll month on month", {"months": 0}),
+    ("payroll cost trend by location over the last 6 months", {"months": 6, "group": "location"}),
+    ("employee cost trend for the past 18 months", {"months": 18}),
+    ("wage bill chart for the last six months", {"months": 6}),
+)
+HEADCOUNT_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("headcount trend", {"months": 0}),
+    ("attrition trend for the last 12 months", {"months": 12}),
+    ("joiners and exits month by month", {}),
+    ("headcount growth over the past 6 months", {"months": 6}),
+    ("show the attrition graph", {}),
+    ("workforce trend", {}),
+    ("how has headcount changed over the last 3 months", {"months": 3}),
+    ("resignations trend this year", {"from": "2026-01-01", "to": "2026-12-31"}),
+)
+#: Figures over other data: query_data, on the right dataset.
+DATA_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("leave trend this year", {"dataset": "leave_request", "bucket": "month"}),
+    ("leave days by month for the last 6 months", {"dataset": "leave_request", "months": 6}),
+    ("leave trend by type", {"dataset": "leave_request", "group_by": ["leave_type"]}),
+    (
+        "leave days by type as a pie chart",
+        {"dataset": "leave_request", "group_by": ["leave_type"], "chart": "pie", "bucket": "none"},
+    ),
+    ("expense claims trend", {"dataset": "expense_claim", "measures": ["claim_amount:sum"]}),
+    ("expense trend for the last 3 months", {"dataset": "expense_claim", "months": 3}),
+    ("helpdesk tickets trend", {"dataset": "helpdesk_ticket"}),
+    ("hr tickets by month", {"dataset": "helpdesk_ticket", "bucket": "month"}),
+    ("overtime trend this quarter", {"dataset": "overtime_entry"}),
+    ("timesheet hours trend", {"dataset": "timesheet_entry"}),
+    ("shoutouts over time", {"dataset": "shoutout"}),
+    ("attendance trend for the last 6 months", {"dataset": "attendance_day", "months": 6}),
+    ("late coming trend", {"dataset": "attendance_day"}),
+    (
+        "payroll cost by department as a pie chart",
+        {"dataset": "payslip", "group_by": ["department"], "chart": "pie"},
+    ),
+    (
+        "salary cost by location as a donut chart",
+        {"dataset": "payslip", "group_by": ["location"], "chart": "donut"},
+    ),
+)
+PNL: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("what is the p&l of each account", {"query": ""}),
+    ("p&l of acme bank", {"query": "acme bank"}),
+    ("show the margin for acme account last quarter", {"query": "acme"}),
+    ("account profitability", {"query": ""}),
+    ("billed vs cost for globex", {"query": "globex"}),
+    ("pnl of all accounts", {"query": ""}),
+    ("profit and loss for initech", {"query": "initech"}),
+    ("account p&l this financial year", {"query": ""}),
+    ("which account has the best margin", {"query": ""}),
+    ("billing vs cost of each client account", {"query": ""}),
+)
+#: An employee asks these about themselves: their own figures, as a chart.
+OWN_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("my leave trend this year", {"dataset": "leave_request"}),
+    ("my leaves by month", {"dataset": "leave_request"}),
+    ("my expense claims trend", {"dataset": "expense_claim"}),
+)
+
+
 # ── Building the bank ────────────────────────────────────────────────────────
 
 
@@ -1085,6 +1159,25 @@ def build() -> list[Case]:
     for question in EMPLOYEE_REFUSED:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, REFUSED, hr=False))
+
+    for question, inputs in PAYROLL_TRENDS:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "payroll_trend", inputs))
+        cases.append(Case(question, REFUSED, hr=False))
+    for question, inputs in HEADCOUNT_TRENDS:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "headcount_trend", inputs))
+        cases.append(Case(question, REFUSED, hr=False))
+    for question, inputs in DATA_TRENDS:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "query_data", inputs))
+    for question, inputs in PNL:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "account_pnl", inputs))
+        cases.append(Case(question, REFUSED, hr=False))
+    for question, inputs in OWN_TRENDS:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "query_data", inputs, hr=False))
 
     cases.extend(HAND)
     # One case per (text, asker, switched-off groups): the first expectation wins.

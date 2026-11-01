@@ -1021,6 +1021,9 @@ _HR_TOOLS = frozenset(
         "salary_totals",
         "people_changes",
         "people_dates",
+        "payroll_trend",
+        "headcount_trend",
+        "account_pnl",
     }
 )
 
@@ -1136,11 +1139,14 @@ def examples(tools: list[Tool]) -> list[str]:
         ("employee_record", "What is Rohan's salary?"),
         ("headcount", "How many employees are on payroll?"),
         ("my_approvals", "What is waiting for my approval?"),
+        ("payroll_trend", "Payroll cost trend for the last 6 months"),
         ("payroll_summary", "Payroll cost last month"),
         ("people_changes", "Who joined this month?"),
         ("my_record", "What is my salary?"),
         ("who_is_out", "Who is on leave this week?"),
         ("people_dates", "Birthdays this week"),
+        ("query_data", "Leave days by month this year"),
+        ("account_pnl", "P&L of each account"),
         ("my_record", "How many leaves do I have left?"),
         ("salary_totals", "Total salary bill"),
         ("search_people", "Find Rohan"),
@@ -1430,7 +1436,378 @@ _ATTENDANCE = (
 )
 
 
+#: Words that ask for a trend or a picture rather than one month's figures.
+_TREND = (
+    r"trends?\b",
+    r"over (the )?time",
+    r"month[ -]?(by|on|over|to)[ -]?month",
+    # "Monthly salary" is pay per month, not a trend: only these phrasings are.
+    r"\bby (month|quarter|week)\b",
+    r"month ?wise",
+    r"quarter ?wise",
+    r"year ?wise",
+    r"graphs?\b",
+    r"charts?\b",
+    r"\bplot",
+    r"growth\b",
+    r"\bmom\b",
+    r"visuali[sz]",
+    r"\bpie\b",
+    r"\bdonut\b",
+    r"\bdoughnut\b",
+    r"how (has|have|did) [a-z ]{0,30}(changed|moved|grown|gone up|gone down)",
+    r"compare[ds]? [a-z ]{0,20}months",
+)
+_COUNTS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "eighteen": 18,
+}
+_PAYROLL_COST = (
+    r"payroll\b",
+    r"salar(y|ies)\b",
+    r"\bctc\b",
+    r"cost to company",
+    r"wages?\b",
+    r"pay ?outs?\b",
+    r"employee cost",
+    r"people cost",
+    r"staff cost",
+    r"manpower cost",
+)
+_PNL = (
+    r"p ?& ?l\b",
+    r"\bpnl\b",
+    r"profit",
+    r"\bmargins?\b",
+    r"billed? (vs|versus|against|and) ",
+    r"billing (vs|versus|against|and) ",
+    r"account (cost|costs|profitability)",
+)
+
+
+#: Dates a follow-up's pie chart drops from the grouping.
+_DATE_FIELDS = frozenset(
+    {
+        "pay_month",
+        "leave_start",
+        "leave_end",
+        "attendance_date",
+        "incurred_on",
+        "raised_on",
+        "work_date",
+        "last_working_day",
+        "given_on",
+        "entry_month",
+        "date_of_joining",
+        "date_of_exit",
+        "overtime_date",
+        "corrected_date",
+        "bill_date",
+    }
+)
+
+
+def months_back(words: str) -> int:
+    """N from "the last N months" (or "past six months"), else 0."""
+    found = re.search(
+        r"\b(last|past|previous|recent|trailing|over the last|over the past)\s+"
+        r"(\d{1,2}|" + "|".join(_COUNTS) + r")\s+months?\b",
+        words,
+    )
+    if not found:
+        return 0
+    raw = found.group(2)
+    count = int(raw) if raw.isdigit() else _COUNTS[raw]
+    return max(1, min(count, 36))
+
+
+def trending(words: str) -> bool:
+    return _has(words, *_TREND) or months_back(words) > 1
+
+
+def chart_kind(words: str) -> str:
+    for pattern, kind in (
+        (r"\bpie\b", "pie"),
+        (r"\bdo(ugh)?nut\b", "donut"),
+        (r"stacked", "stacked_bar"),
+        (r"horizontal", "horizontal_bar"),
+        (r"\bbars?\b|column chart", "bar"),
+        (r"\barea\b", "area"),
+        (r"\bline\b", "line"),
+        (r"\btable\b|\blist\b", "table"),
+    ):
+        if re.search(pattern, words):
+            return kind
+    return "auto"
+
+
+def _split_by(words: str) -> str:
+    """The group a trend is split by: department, location, entity or none."""
+    if _has(words, r"(by|per|each|every|across|wise) department", r"department ?wise"):
+        return "department"
+    if _has(words, r"(by|per|each|every|across) (location|office|city|branch)", r"location ?wise"):
+        return "location"
+    if _has(words, r"(by|per|each|every|across) (entity|company|companies|legal entit)"):
+        return "entity"
+    return "none"
+
+
+def _bucket(words: str) -> str:
+    if _has(words, r"quarter"):
+        return "quarter"
+    if _has(words, r"year ?wise", r"\byearly\b", r"by year", r"each year", r"per year"):
+        return "financial_year"
+    if _has(words, r"week"):
+        return "week"
+    return "month"
+
+
+def _period(words: str, when: dict[str, str]) -> dict[str, Any]:
+    count = months_back(words)
+    if count:
+        return {"months": count, "from": "", "to": ""}
+    if when.get("from"):
+        return {"months": 0, **when}
+    return {"months": 0, "from": "", "to": ""}
+
+
+def _data(
+    reply: str,
+    dataset: str,
+    measures: list[str],
+    words: str,
+    when: dict[str, str],
+    *,
+    group_by: list[str] | None = None,
+    filters: list[dict[str, str]] | None = None,
+) -> DirectPlan:
+    period = _period(words, when)
+    if not period["months"] and not period["from"]:
+        period["months"] = 12
+    chart = chart_kind(words)
+    bucket = _bucket(words)
+    if chart in ("pie", "donut") and group_by:
+        # Shares of a whole: one slice per group, no time axis.
+        bucket = "none"
+    return DirectPlan(
+        reply=reply,
+        tool="query_data",
+        inputs={
+            "dataset": dataset,
+            "measures": measures,
+            "group_by": group_by or [],
+            "bucket": bucket,
+            "filters": filters or [],
+            "chart": chart,
+            **period,
+        },
+    )
+
+
+def _trend(
+    words: str, offered: set[str], *, today: date, when: dict[str, str], hr: bool
+) -> DirectPlan | None:
+    """A trend or chart question about a subject this planner knows, or None."""
+    period = _period(words, when)
+    count = period["months"]
+    span = f"over the last {count} months" if count else "month by month"
+    split = _split_by(words)
+
+    if _has(words, *_PNL):
+        return DirectPlan(
+            reply="Here is the P&L of each client account.",
+            tool="account_pnl",
+            inputs={"query": "", "from": when.get("from", ""), "to": when.get("to", "")},
+        )
+    if _has(words, *_PAYROLL_COST) and not _has(words, r"\bmy\b"):
+        if chart_kind(words) in ("pie", "donut") and split != "none" and hr:
+            # Shares of the whole: one slice per department, not a line per month.
+            return DirectPlan(
+                reply=f"Here is payroll cost by {split}.",
+                tool="query_data",
+                inputs={
+                    "dataset": "payslip",
+                    "measures": ["employer_cost:sum"],
+                    "group_by": [{"entity": "paid_by_company"}.get(split, split)],
+                    "bucket": "none",
+                    "chart": chart_kind(words),
+                    "filters": [],
+                    **_period(words, when),
+                },
+            )
+        if "payroll_trend" in offered or "query_data" not in offered or not hr:
+            return DirectPlan(
+                reply=f"Here is payroll cost {span}.",
+                tool="payroll_trend",
+                inputs={**period, "group": split},
+            )
+        return _data(
+            f"Here is payroll cost {span}.",
+            "payslip",
+            ["employer_cost:sum"],
+            words,
+            when,
+            group_by=[] if split == "none" else [{"entity": "paid_by_company"}.get(split, split)],
+        )
+    if _has(words, *_HEADCOUNT, *_JOINERS, *_LEAVERS, r"head ?count", r"strength", r"workforce"):
+        inputs: dict[str, Any] = {"from": period["from"], "to": period["to"], "months": count}
+        return DirectPlan(reply=f"Here is headcount {span}.", tool="headcount_trend", inputs=inputs)
+    if _has(words, r"leaves?\b", r"time off", r"\bpto\b", r"absen"):
+        by_type = _has(words, r"(by|per|each|wise) (leave )?type", r"type ?wise", r"which leave")
+        return _data(
+            f"Here are approved leave days {span}.",
+            "leave_request",
+            ["total_days:sum"],
+            words,
+            when,
+            group_by=["leave_type"]
+            if by_type
+            else ([split] if split in ("department", "location") else []),
+            filters=[{"field": "leave_status", "op": "equals", "value": "approved"}],
+        )
+    if _has(words, r"expenses?\b", r"claims?\b", r"reimburse"):
+        return _data(
+            f"Here are expense claims {span}.", "expense_claim", ["claim_amount:sum"], words, when
+        )
+    if _has(words, r"tickets?\b", r"helpdesk", r"queries", r"grievance"):
+        return _data(
+            f"Here are HR helpdesk tickets {span}.",
+            "helpdesk_ticket",
+            ["ticket_count:count"],
+            words,
+            when,
+        )
+    if _has(words, r"late", r"attendance", r"present", r"absent"):
+        return _data(
+            f"Here is attendance {span}.",
+            "attendance_day",
+            ["day_count:count"],
+            words,
+            when,
+            group_by=["attendance_status"],
+        )
+    if _has(words, r"overtime", r"\bot\b"):
+        return _data(
+            f"Here is overtime {span}.", "overtime_entry", ["approved_minutes:sum"], words, when
+        )
+    if _has(words, r"timesheet", r"hours"):
+        return _data(
+            f"Here are timesheet hours {span}.", "timesheet_entry", ["hours:sum"], words, when
+        )
+    if _has(words, r"shout ?outs?", r"recognition", r"kudos"):
+        return _data(
+            f"Here is recognition {span}.", "shoutout", ["shoutout_count:count"], words, when
+        )
+    return None
+
+
+#: What a follow-up ("for the last 6 months", "as a pie chart") changes, by the
+#: tool that answered before.
+_FOLLOW_TREND = {
+    "payroll_summary": "payroll_trend",
+    "payroll_trend": "payroll_trend",
+    "salary_totals": "payroll_trend",
+    "headcount": "headcount_trend",
+    "people_changes": "headcount_trend",
+    "headcount_trend": "headcount_trend",
+    "account_pnl": "account_pnl",
+    "query_data": "query_data",
+}
+
+
+def _follow_up(
+    text: str,
+    tools: list[Tool],
+    *,
+    today: date,
+    previous: tuple[str, dict[str, Any]],
+) -> DirectPlan | None:
+    """A message that only changes the period, the chart or the split of the last answer."""
+    words = _asked(normalise(text))
+    start, end = dates(words, today)
+    when = {"from": start, "to": end}
+    count = months_back(words)
+    chart = chart_kind(words)
+    split = _split_by(words)
+    if not (trending(words) or start or count or chart != "auto" or split != "none"):
+        return None
+    offered = {tool.key for tool in tools}
+    tool, args = previous
+    target = _FOLLOW_TREND.get(tool)
+    if target is None or target not in offered:
+        return None
+    period = _period(words, when)
+    span = f"over the last {count} months" if count else (_span(when, "") or "month by month")
+    if target == "payroll_trend":
+        group = split if split != "none" else str(args.get("group") or "none")
+        return DirectPlan(
+            reply=f"Here is payroll cost {span}.",
+            tool=target,
+            inputs={**period, "group": group},
+        )
+    if target == "headcount_trend":
+        return DirectPlan(reply=f"Here is headcount {span}.", tool=target, inputs=period)
+    if target == "account_pnl":
+        return DirectPlan(
+            reply="Here is the P&L again.",
+            tool=target,
+            inputs={"query": str(args.get("query") or ""), "from": start, "to": end},
+        )
+    inputs = {k: v for k, v in args.items() if k not in ("months", "from", "to")}
+    if count or start:
+        inputs.update(period)
+    else:
+        inputs.update({k: args[k] for k in ("months", "from", "to") if k in args})
+    if chart != "auto":
+        inputs["chart"] = chart
+    if split in ("department", "location"):
+        inputs["group_by"] = [split]
+    if chart in ("pie", "donut"):
+        # A pie shows shares of a whole: drop the time axis, keep what it was split by.
+        time_fields = {inputs.get("time_field"), *_DATE_FIELDS}
+        dims = [g for g in inputs.get("group_by") or [] if g not in time_fields]
+        if dims:
+            inputs["bucket"] = "none"
+            inputs["group_by"] = dims
+        else:
+            inputs["chart"] = "bar"
+    elif trending(words) and not inputs.get("bucket"):
+        inputs["bucket"] = _bucket(words)
+    return DirectPlan(reply="Here it is again, changed as you asked.", tool=target, inputs=inputs)
+
+
 def plan(
+    text: str,
+    tools: list[Tool],
+    *,
+    today: date,
+    name: str = "Mira",
+    hr: bool = False,
+    previous: tuple[str, dict[str, Any]] | None = None,
+) -> DirectPlan:
+    """Match the person's message to one of `tools`, or reply with what can be asked.
+
+    `previous` is the tool (and its inputs) that answered the last message, so a
+    follow-up such as "for the last 6 months" or "as a pie chart" changes that answer.
+    """
+    result = _plan(text, tools, today=today, name=name, hr=hr)
+    if result.tool or previous is None:
+        return result
+    return _follow_up(text, tools, today=today, previous=previous) or result
+
+
+def _plan(
     text: str, tools: list[Tool], *, today: date, name: str = "Mira", hr: bool = False
 ) -> DirectPlan:
     """Match the person's message to one of `tools`, or reply with what can be asked.
@@ -1605,6 +1982,36 @@ def plan(
     if self_words and not relation and _has(words, statutory) and not _has(words, r"we\b"):
         chosen = pick("my_record", "Here is your latest payslip.", lookup="latest_payslip")
         if chosen:
+            return chosen
+
+    # A client account's P&L: billed against the cost mapped to it.
+    if _has(words, *_PNL):
+        account = re.search(
+            r"\b(?:of|for|on) (?:the )?(?!each\b|every\b|all\b|our\b|my\b)"
+            r"([a-z0-9][a-z0-9 .&-]{1,40}?)(?: account| client)?"
+            r"(?: (?:this|last|previous|in) [a-z0-9 ]+)?$",
+            words,
+        )
+        query = account.group(1).strip() if account else ""
+        if query in ("account", "accounts", "client", "clients", "company", "the company"):
+            query = ""
+        chosen = pick(
+            "account_pnl",
+            f"Here is the P&L of {query}." if query else "Here is the P&L of each client account.",
+            query=query,
+            **when,
+        )
+        if chosen:
+            return chosen
+
+    # Trends and charts: "payroll cost for the last 6 months", "leave by month as a bar chart".
+    if trending(words):
+        chosen = _trend(words, offered, today=today, when=when, hr=hr)
+        if chosen is not None:
+            if chosen.tool and chosen.tool not in offered:
+                return pick(chosen.tool, chosen.reply, **chosen.inputs) or _help(
+                    tools, name, prefix="That is not switched on for Ask Mira here."
+                )
             return chosen
 
     # Payroll figures: a month's runs, and the salary bill.

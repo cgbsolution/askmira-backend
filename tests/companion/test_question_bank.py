@@ -19,7 +19,7 @@ from tests.companion.fresh_questions import FRESH, FRESH_2
 from tests.companion.question_bank import BANK, HELP, NEEDS_AI, REFUSED, TODAY, Case
 
 #: Everything direct mode can offer: the tools that need no model.
-ALL = [tool for tool in TOOLS.values() if not tool.feature]
+ALL = [tool for tool in TOOLS.values() if not tool.feature and not tool.needs_ai]
 
 
 def _tools(case: Case):
@@ -42,7 +42,7 @@ def test_the_bank_is_big_and_covers_every_tool() -> None:
     assert len(BANK) >= 5000, len(BANK)
     expected = Counter(case.expect for case in BANK)
     for key in TOOLS:
-        if TOOLS[key].feature:
+        if TOOLS[key].feature or TOOLS[key].needs_ai:
             continue  # answered by a model, never in direct mode
         assert expected[key] >= 10, f"only {expected[key]} questions for {key}"
     assert expected[REFUSED] >= 500
@@ -99,9 +99,14 @@ def test_every_plan_reads_only_the_inputs_its_tool_takes() -> None:
             continue
         assert set(plan.inputs) <= set(TOOLS[plan.tool].inputs), (case, plan.inputs)
         for value in plan.inputs.values():
-            assert isinstance(value, str | bool)
+            # Text, a switch, a count of months, or the data tool's short lists.
+            assert isinstance(value, str | bool | int | list)
             if isinstance(value, str):
                 assert len(value) <= 100
+            if isinstance(value, int) and not isinstance(value, bool):
+                assert 0 <= value <= 36
+            if isinstance(value, list):
+                assert len(value) <= 4
 
 
 @pytest.mark.parametrize("case", [*FRESH, *FRESH_2], ids=_id)

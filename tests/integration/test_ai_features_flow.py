@@ -141,8 +141,17 @@ async def test_nothing_is_sent_until_the_tenant_turns_it_on_and_the_person_agree
 
 
 async def test_without_a_configured_provider_the_feature_says_so(
-    session: AsyncSession, tenant: Tenant, hr_user: User, employee: Employee
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Whatever the machine running the tests has in its .env: no key here.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
+    monkeypatch.setattr(settings, "AI_PROVIDER", "anthropic")
     me = await _employee_user(session, tenant, employee)
     await _ai_on(session, hr_user)
     with pytest.raises(HTTPException) as unconfigured:

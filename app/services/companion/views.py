@@ -79,6 +79,10 @@ def _table(columns: list[Any], rows: list[list[Any]], refs: list[Any] | None = N
 
 
 def _card(card: dict[str, Any]) -> list[str]:
+    # A tool that wrote its own view (the data tool keeps out groups of fewer
+    # than five people) is read as it wrote it, never from its full figures.
+    if "model_view" in card:
+        return [scrub(card["model_view"])] if card["model_view"] else []
     kind = card.get("type")
     if kind == "notice":
         return [f"Notice: {scrub(card.get('text'))}"]

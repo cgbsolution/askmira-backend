@@ -42,6 +42,11 @@ TOOL_GROUPS: dict[str, str] = {
     "attendance": "Show attendance summaries (HR only).",
     "org": "List departments and office locations (admins and sub-admins).",
     "reports": "Answer counting and reporting questions with the report builder.",
+    "data_questions": "Answer any figure, trend or breakdown over AskMira's data - payroll cost "
+    "by month, leave by type, exits by department, expenses, helpdesk tickets, assets, "
+    "timesheets and more - as line, bar, pie or donut charts with the table beside them. Each "
+    "person sees only what their role may see; the AI reads figures only for groups of five or "
+    "more people.",
     "products": "Say whether the interview, expense and helpdesk tools are connected, and open "
     "the ones this workspace has linked.",
     "hiring_data": "Read jobs, candidates and interviews from the linked interview tool "

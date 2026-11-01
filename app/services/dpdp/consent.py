@@ -47,6 +47,11 @@ from typing import Any
 
 from app.services.dpdp.categories import LawfulBasis
 
+#: The model providers a workspace admin may choose between (Settings → AI).
+#: A purpose that uses AI names them all: the person agrees to AI processing by
+#: whichever of these their organisation picks.
+AI_PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "google_ai", "ollama")
+
 __all__ = [
     "CAPABILITIES",
     "PURPOSES",
@@ -331,7 +336,7 @@ PURPOSES: dict[str, Purpose] = {
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("culture_response",),
             stops=("culture_survey_invitations", "culture_sentiment_analysis"),
-            sub_processors=("anthropic",),
+            sub_processors=AI_PROVIDERS,
             withdrawal_erases=("Survey invitations you have not answered yet",),
             withdrawal_keeps=(
                 "Answers you already gave. They were stored without your name, so they "
@@ -352,7 +357,7 @@ PURPOSES: dict[str, Purpose] = {
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("ai_interaction",),
             stops=("ai_companion_queries", "ai_context_retrieval"),
-            sub_processors=("anthropic",),
+            sub_processors=AI_PROVIDERS,
             withdrawal_erases=(
                 "Your Ask Mira conversations",
                 "Feedback you gave on AI answers",
@@ -388,7 +393,7 @@ PURPOSES: dict[str, Purpose] = {
             lawful_basis=LawfulBasis.CONSENT,
             data_categories=("recruitment",),
             stops=("ai_resume_screening",),
-            sub_processors=("anthropic",),
+            sub_processors=AI_PROVIDERS,
             audience="candidate",
             withdrawal_erases=("AI summaries of your résumé",),
         ),

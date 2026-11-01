@@ -104,8 +104,32 @@ class Settings(BaseSettings):
     # app/services/identity/social.py, the one module that knows them.
 
     # ── AI (V2+) ────────────────────────────────────────────────────────────
+    # Four providers can answer: Anthropic, OpenAI, Google Gemini and an Ollama
+    # server. A workspace admin picks one in Settings → AI (and may bring their
+    # own key); a workspace that has not chosen uses AI_PROVIDER. A provider is
+    # available when this server holds its key (or, for Ollama, its address) or
+    # the workspace saved one. See app/services/ai/providers.py.
+    AI_PROVIDER: str = "anthropic"
     ANTHROPIC_API_KEY: str | None = None
+    #: The Anthropic model.
     AI_MODEL: str = "claude-opus-5-5"
+    OPENAI_API_KEY: str | None = None
+    OPENAI_MODEL: str = "gpt-5-mini"
+    #: Only for an OpenAI-compatible gateway; empty means api.openai.com.
+    OPENAI_BASE_URL: str | None = None
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    #: An Ollama server's OpenAI-compatible address, e.g. http://localhost:11434/v1.
+    #: Set here, it may be a private address; a workspace may only name a public https one.
+    OLLAMA_BASE_URL: str | None = None
+    OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
+    #: Only when the Ollama server sits behind a key (a gateway, Ollama's cloud).
+    OLLAMA_API_KEY: str | None = None
+    #: The context window asked of Ollama. Its own default is a few thousand
+    #: tokens, which would silently cut Ask Mira's tools and history short.
+    OLLAMA_NUM_CTX: int = 32768
+    #: A model on a CPU can take minutes over a long prompt.
+    OLLAMA_TIMEOUT_SECONDS: float = 600.0
     #: How hard Ask Mira thinks on each step of a conversation (low, medium,
     #: high). Low keeps a chat quick; raise it if answers to trend and P&L
     #: questions need more care than speed.

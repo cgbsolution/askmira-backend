@@ -28,7 +28,12 @@ from app.services.accounts import service as accounts
 from app.services.companion.people_tools import may_view
 from app.services.documents.indian_numbers import format_inr
 
-__all__ = ["GROUPS", "account_pnl", "headcount_trend", "payroll_trend"]
+__all__ = ["GROUPS", "MIN_GROUP", "account_pnl", "headcount_trend", "payroll_trend"]
+
+#: The fewest people a figure may cover for the model to read it. A total over
+#: fewer could be one person's pay, which the model provider may not receive;
+#: the person still sees it on screen (companion/views.py reads `model_view`).
+MIN_GROUP = 5
 
 #: How a series may be split.
 GROUPS = ("none", "department", "entity", "location")
@@ -69,9 +74,14 @@ def _months(
     """The months asked about; by default the twelve up to the latest month with data."""
     start, end = _parse(inputs.get("from")), _parse(inputs.get("to"))
     end_month = (end.year, end.month) if end else (latest or (today.year, today.month))
+    try:
+        count = int(str(inputs.get("months") or 0))
+    except ValueError:
+        count = 0
+    span = max(1, min(count, 24)) if count > 0 else 12
     if start is None:
         year, month = end_month
-        month -= 11
+        month -= span - 1
         while month < 1:
             month += 12
             year -= 1
@@ -130,11 +140,22 @@ async def payroll_trend(
     group = str(inputs.get("group") or "none")
     if group not in GROUPS:
         group = "none"
+    # The latest month with payslips: a run opened for this month but not yet
+    # computed has none, and "the last 6 months" must not count it.
     latest = (
         await session.execute(
             tenant_scoped(
                 select(PayrollRun.period_year, PayrollRun.period_month)
-                .where(PayrollRun.status.notin_(_NOT_A_COST))
+                .where(
+                    PayrollRun.status.notin_(_NOT_A_COST),
+                    PayrollRun.id.in_(
+                        tenant_scoped(
+                            select(Payslip.run_id).where(Payslip.employer_cost > 0),
+                            Payslip,
+                            user,
+                        )
+                    ),
+                )
                 .order_by(PayrollRun.period_year.desc(), PayrollRun.period_month.desc())
                 .limit(1),
                 PayrollRun,
@@ -202,6 +223,7 @@ async def payroll_trend(
     by_group: dict[Any, dict[tuple[int, int], Decimal]] = defaultdict(
         lambda: defaultdict(lambda: _ZERO)
     )
+    group_people: dict[Any, dict[tuple[int, int], int]] = defaultdict(lambda: defaultdict(int))
     for row in rows:
         key = (row[0], row[1])
         figures = totals[key]
@@ -212,6 +234,7 @@ async def payroll_trend(
         figures["employer"] += Decimal(row[6])
         if group_column is not None:
             by_group[row[7]][key] += Decimal(row[3])
+            group_people[row[7]][key] += int(row[2])
 
     with_data = [m for m in months if totals.get(m, {}).get("cost")]
     if not with_data:
@@ -291,15 +314,57 @@ async def payroll_trend(
     if group == "department":
         notes.append("Split by each person's department today.")
     notes += _scoped_note()
+
+    # What the model reads: months and groups paying at least MIN_GROUP people.
+    view = [f"Data: payroll cost month by month, {span}."]
+    view.append("Month | People paid | Gross | Net pay | Cost to company | Change")
+    hidden = 0
+    for month, row in zip(months, table_rows, strict=True):
+        figures = totals.get(month)
+        if not figures or not figures["cost"]:
+            continue
+        if figures["people"] < MIN_GROUP:
+            hidden += 1
+            continue
+        view.append(" | ".join(str(cell) for cell in row))
+    readable_months = [m for m in with_data if totals[m]["people"] >= MIN_GROUP]
+    if len(readable_months) >= 2:
+        a, b = readable_months[0], readable_months[-1]
+        view.append(
+            f"Cost to company {_label(*a)} → {_label(*b)}: "
+            f"{_pct(totals[b]['cost'], totals[a]['cost'])}. Average a month: {format_inr(average)}."
+        )
+    if group_column is not None:
+        names = await _group_names(session, user, group, set(by_group))
+        view.append(f"Cost to company by {group} (only groups of {MIN_GROUP}+ people):")
+        for g in sorted(by_group, key=lambda g: -sum(by_group[g].values(), _ZERO)):
+            cells = [
+                f"{_label(*m)} {pnl_math.rupees(by_group[g][m])}"
+                for m in months
+                if group_people[g].get(m, 0) >= MIN_GROUP
+            ]
+            small = sum(1 for m in months if 0 < group_people[g].get(m, 0) < MIN_GROUP)
+            hidden += small
+            if cells:
+                view.append(f"- {names.get(g, 'Not set')}: " + ", ".join(cells))
+    if hidden:
+        view.append(
+            f"{hidden} figure(s) cover fewer than {MIN_GROUP} people: they are on the person's "
+            "screen, not shown to you. Do not guess or work them out."
+        )
+    view.append(" ".join(notes))
+    chart = _chart(
+        "Payroll cost" + ("" if group == "none" else f" by {group}"),
+        months,
+        series,
+        # A split adds up to the month's total, so it stacks.
+        kind="line" if group == "none" else "stacked_bar",
+        unit="inr",
+        caption=span,
+    )
+    chart["model_view"] = "\n".join(view)
     return [
-        _chart(
-            "Payroll cost" + ("" if group == "none" else f" by {group}"),
-            months,
-            series,
-            kind="line" if group == "none" else "bar",
-            unit="inr",
-            caption=span,
-        ),
+        chart,
         {
             "type": "record",
             "title": "Payroll cost, month by month",
@@ -331,6 +396,7 @@ async def payroll_trend(
             "note": " ".join(notes),
             "open": "/payroll/runs",
             "open_label": "Open payroll runs",
+            "model_view": "",
         },
     ], used
 
@@ -549,10 +615,35 @@ async def account_pnl(
                 "open_label": "Open the account",
             },
         ]
+        enough = s.people >= MIN_GROUP
+        view = [
+            f"Data: P&L of account {detail.account.name} ({detail.account.code}), {span}. "
+            f"{s.people} people mapped."
+        ]
+        if enough:
+            view.append("Month | Billed | People cost | Other cost | Margin | Margin %")
+            view += [" | ".join(row) for row in rows]
+            view.append(
+                f"Totals: billed {_inr(s.billed)}, people cost {_inr(s.people_cost)}, other "
+                f"cost {_inr(s.other_cost)}, margin {_inr(s.margin)}"
+                + (f" ({s.margin_pct}%)" if s.margin_pct is not None else "")
+                + "."
+            )
+        else:
+            view.append("Month | Billed")
+            view += [f"{row[0]} | {row[1]}" for row in rows]
+            view.append(
+                f"Billed in all: {_inr(s.billed)}. Fewer than {MIN_GROUP} people are mapped to "
+                "this account, so its cost and margin could show their pay: they are on the "
+                "person's screen, not shown to you. Do not guess or work them out."
+            )
+        cards[0]["model_view"] = "\n".join(view)
+        cards[1]["model_view"] = ""
         if detail.people:
             cards.append(
                 {
                     "type": "table",
+                    "model_view": "",
                     "title": "People cost on this account",
                     "caption": f"{len(detail.people)} person(s) · {span}",
                     "columns": ["Name", "Code", "Average share", "Cost"],
@@ -588,9 +679,29 @@ async def account_pnl(
             {"label": "Margin %", "value": f"{t.margin_pct}%" if t.margin_pct is not None else "—"},
             {"label": "Payroll cost on no account", "value": _inr(overview.unmapped_cost)},
         ]
+    view = [f"Data: every client account's P&L, {span}."]
+    view.append("Account | Billed | People cost | Other cost | Margin | Margin % | People")
+    small = 0
+    for r, row in zip(overview.accounts, rows, strict=True):
+        if r.people >= MIN_GROUP or (r.people == 0 and r.people_cost == 0):
+            view.append(" | ".join([*row, str(r.people)]))
+        else:
+            small += 1
+            view.append(f"{row[0]} | {row[1]} | (cost and margin not shown to you) | {r.people}")
+    if small:
+        view.append(
+            f"{small} account(s) have fewer than {MIN_GROUP} people mapped, so their cost and "
+            "margin could show their pay: they are on the person's screen only. Do not guess "
+            "or work them out, including from the totals."
+        )
+    if t is not None and sum(r.people for r in overview.accounts) >= MIN_GROUP and not small:
+        view.append(
+            f"Totals: billed {_inr(t.billed)}, cost {_inr(t.total_cost)}, margin {_inr(t.margin)}."
+        )
     return [
         {
             "type": "record",
+            "model_view": "\n".join(view),
             "title": "Account P&L",
             "subtitle": "",
             "heading": span,

@@ -187,6 +187,89 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "AI to read, and résumés with name, email and phone removed."
             ),
         ),
+        # The other model providers a workspace admin can choose instead of
+        # Anthropic (Settings → AI). Each may receive exactly what Anthropic may:
+        # a workspace switching provider changes who receives a prompt, never
+        # what a prompt may carry.
+        _s(
+            key="openai",
+            name="OpenAI",
+            service=(
+                "The model behind the AI features when a workspace admin chooses "
+                "OpenAI (ChatGPT) in Settings → AI."
+            ),
+            location=ProcessingLocation.OUTSIDE_INDIA,
+            country="United States",
+            categories_permitted=(
+                "ai_interaction",
+                "culture_response",
+                "recruitment",
+                "organisational",
+            ),
+            is_ai_model_provider=True,
+            is_optional=True,
+            safeguards=(
+                "Used only when the workspace chooses it",
+                "OpenAI's API data processing addendum; API data is not used for training",
+                "Prompts carry no statutory identifier, bank detail or health "
+                "category — enforced by assert_transfer_allowed, not by policy",
+            ),
+            what_is_sent=(
+                "The same as for Anthropic: the question asked, policy text, survey "
+                "comments people allowed AI to read, figures for groups of five or more "
+                "people, and résumés with name, email and phone removed."
+            ),
+        ),
+        _s(
+            key="google_ai",
+            name="Google (Gemini API)",
+            service=(
+                "The model behind the AI features when a workspace admin chooses "
+                "Google Gemini in Settings → AI."
+            ),
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Google does not pin a region for the Gemini API",
+            categories_permitted=(
+                "ai_interaction",
+                "culture_response",
+                "recruitment",
+                "organisational",
+            ),
+            is_ai_model_provider=True,
+            is_optional=True,
+            safeguards=(
+                "Used only when the workspace chooses it",
+                "Paid Gemini API terms: prompts are not used to improve Google's products",
+                "Prompts carry no statutory identifier, bank detail or health "
+                "category — enforced by assert_transfer_allowed, not by policy",
+            ),
+            what_is_sent="The same as for Anthropic.",
+        ),
+        _s(
+            key="ollama",
+            name="Ollama (a model server you run)",
+            service=(
+                "An open model running on a server the workspace or the AskMira operator "
+                "runs, when a workspace admin chooses Ollama in Settings → AI."
+            ),
+            location=ProcessingLocation.UNSPECIFIED,
+            country="Wherever that server is hosted",
+            categories_permitted=(
+                "ai_interaction",
+                "culture_response",
+                "recruitment",
+                "organisational",
+            ),
+            is_ai_model_provider=True,
+            is_optional=True,
+            safeguards=(
+                "Used only when the workspace chooses it",
+                "No third party sees the prompt unless the server's host does",
+                "A workspace may name only a public https address; private addresses are refused",
+            ),
+            what_is_sent="The same as for Anthropic.",
+            contract_status="Your own server",
+        ),
         _s(
             key="google_email",
             name="Google (Gmail SMTP relay)",

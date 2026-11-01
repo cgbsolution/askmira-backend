@@ -462,7 +462,7 @@ async def ask(session: AsyncSession, user: User, question: str) -> dict[str, Any
         return await _present(session, user, prepared)
 
     transfer = {
-        "sub_processor_key": governance.SUB_PROCESSOR,
+        "sub_processor_key": client.sub_processor(),
         "purpose_key": "ai_assistance",
         "category_keys": ("ai_interaction", "organisational"),
         "principal_count": 1,
@@ -500,7 +500,7 @@ async def ask(session: AsyncSession, user: User, question: str) -> dict[str, Any
         "system_rules": SYSTEM,
         "model": completion.model,
         "tokens": completion.tokens,
-        "sub_processor_key": governance.SUB_PROCESSOR,
+        "sub_processor_key": client.sub_processor(),
     }
 
     if reply.kind == "personal_lookup" and reply.lookup != "none":
