@@ -460,7 +460,9 @@ async def test_a_deleted_workspace_is_exported_then_purged(
     deleted = await platform.delete(
         session, root, tenant.id, confirm=tenant.slug, reason="Contract ended", request=None
     )
-    assert date.fromisoformat(deleted["purge_after"]) == date.today() + timedelta(
+    # The server dates the deletion in UTC; between midnight and 05:30 in India
+    # the machine's own date is already the next day.
+    assert date.fromisoformat(deleted["purge_after"]) == datetime.now(UTC).date() + timedelta(
         days=tenant_purge.PURGE_GRACE_DAYS
     )
     listed = await tenant_purge.deleted_workspaces(session, root)

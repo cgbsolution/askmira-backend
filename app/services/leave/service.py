@@ -77,6 +77,12 @@ OPTIONAL_HOLIDAY_QUOTA_KEY = "optional_holiday_quota"
 DEFAULT_OPTIONAL_HOLIDAY_QUOTA = 2
 COMP_OFF_EXPIRY_KEY = "comp_off_expiry_days"
 DEFAULT_COMP_OFF_EXPIRY_DAYS = 60
+#: Unused comp-off at the end of the leave year: "carry_forward" into the new year
+#: (where it lapses on its own expiry date) or "lapse" on 31 December. Carrying
+#: forward is how it always worked, so it stays the default.
+COMP_OFF_YEAR_END_KEY = "comp_off_year_end"
+COMP_OFF_CARRY = "carry_forward"
+COMP_OFF_LAPSE = "lapse"
 
 dispatch.register_event(
     "leave.request.cancelled",
@@ -184,6 +190,16 @@ async def comp_off_expiry_days(session: AsyncSession, user: User) -> int:
     return _setting(await _tenant(session, user), COMP_OFF_EXPIRY_KEY, DEFAULT_COMP_OFF_EXPIRY_DAYS)
 
 
+def _year_end_rule(tenant: Tenant) -> str:
+    value = (tenant.settings or {}).get(COMP_OFF_YEAR_END_KEY)
+    return value if value in (COMP_OFF_CARRY, COMP_OFF_LAPSE) else COMP_OFF_CARRY
+
+
+async def comp_off_lapses_at_year_end(session: AsyncSession, user: User) -> bool:
+    """Whether this workspace lapses unused comp-off on 31 December."""
+    return _year_end_rule(await _tenant(session, user)) == COMP_OFF_LAPSE
+
+
 async def comp_off_type(session: AsyncSession, user: User) -> LeaveType | None:
     return await session.scalar(
         tenant_scoped(
@@ -204,6 +220,7 @@ async def get_settings(session: AsyncSession, user: User) -> LeaveSettingsRead:
             tenant, OPTIONAL_HOLIDAY_QUOTA_KEY, DEFAULT_OPTIONAL_HOLIDAY_QUOTA
         ),
         comp_off_expiry_days=_setting(tenant, COMP_OFF_EXPIRY_KEY, DEFAULT_COMP_OFF_EXPIRY_DAYS),
+        comp_off_year_end=_year_end_rule(tenant),
         comp_off_leave_type_id=comp_off.id if comp_off else None,
         comp_off_leave_type_name=comp_off.name if comp_off else None,
     )
@@ -223,12 +240,24 @@ async def update_settings(
             tenant, OPTIONAL_HOLIDAY_QUOTA_KEY, DEFAULT_OPTIONAL_HOLIDAY_QUOTA
         ),
         COMP_OFF_EXPIRY_KEY: _setting(tenant, COMP_OFF_EXPIRY_KEY, DEFAULT_COMP_OFF_EXPIRY_DAYS),
+        COMP_OFF_YEAR_END_KEY: _year_end_rule(tenant),
     }
     changes: dict[str, Any] = {}
     if payload.optional_holiday_quota is not None:
         changes[OPTIONAL_HOLIDAY_QUOTA_KEY] = payload.optional_holiday_quota
     if payload.comp_off_expiry_days is not None:
         changes[COMP_OFF_EXPIRY_KEY] = payload.comp_off_expiry_days
+    if (
+        payload.comp_off_year_end is not None
+        and payload.comp_off_year_end != before[COMP_OFF_YEAR_END_KEY]
+    ):
+        # Whether people keep or lose days they earned is the workspace's call,
+        # made by its admin, not by every HR user.
+        if not permissions.is_admin(user):
+            raise permissions.forbidden(
+                "Only an admin decides whether unused comp-off lapses or carries forward."
+            )
+        changes[COMP_OFF_YEAR_END_KEY] = payload.comp_off_year_end
     if changes:
         # A new dict, not an in-place edit: JSONB change tracking sees assignment only.
         tenant.settings = {**(tenant.settings or {}), **changes}
@@ -504,16 +533,26 @@ async def _projected_carry_in(
         _accrual(policy, employee, previous, year_end),
         await _pending_days(session, user, employee.id, leave_type.id, previous),
     )
-    cap = carry_cap(leave_type, policy)
+    cap = carry_cap(
+        leave_type,
+        policy,
+        comp_off_lapses=leave_type.is_comp_off and await comp_off_lapses_at_year_end(session, user),
+    )
     carried, _ = engine.year_end_split(balance.available_after_pending, cap)
     return carried
 
 
-def carry_cap(leave_type: LeaveType, policy: LeavePolicy | None) -> Decimal | None:
-    """How much may carry into a new year. Uncapped for comp-off, whose credits
-    lapse on their own expiry date instead."""
+def carry_cap(
+    leave_type: LeaveType, policy: LeavePolicy | None, *, comp_off_lapses: bool = False
+) -> Decimal | None:
+    """How much may carry into a new year.
+
+    Comp-off follows the workspace's rule: uncapped when it carries forward (its
+    credits then lapse on their own expiry date), nothing when it lapses on
+    31 December.
+    """
     if leave_type.is_comp_off:
-        return None
+        return engine.ZERO if comp_off_lapses else None
     return engine.days(policy.max_carry_forward_days) if policy else engine.ZERO
 
 

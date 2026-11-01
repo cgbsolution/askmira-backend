@@ -179,9 +179,16 @@ class OptionalHolidaysRead(BaseModel):
     holidays: list[HolidayRead]
 
 
+#: What happens to comp-off nobody used by the end of the leave year: carried
+#: into the new year (it still lapses on its own expiry date), or lapsed on
+#: 31 December. The workspace's admin decides.
+CompOffYearEnd = Literal["carry_forward", "lapse"]
+
+
 class LeaveSettingsRead(BaseModel):
     optional_holiday_quota: int
     comp_off_expiry_days: int
+    comp_off_year_end: CompOffYearEnd
     comp_off_leave_type_id: uuid.UUID | None
     comp_off_leave_type_name: str | None
 
@@ -189,6 +196,8 @@ class LeaveSettingsRead(BaseModel):
 class LeaveSettingsUpdate(BaseModel):
     optional_holiday_quota: int | None = Field(default=None, ge=0, le=30)
     comp_off_expiry_days: int | None = Field(default=None, ge=1, le=365)
+    #: Admins only (leave.service.update_settings).
+    comp_off_year_end: CompOffYearEnd | None = None
 
 
 # ── Requests ────────────────────────────────────────────────────────────────

@@ -689,7 +689,8 @@ _READS: dict[str, tuple[str, ...]] = {
     "my_approvals": ("identity", "leave", "attendance", "organisational"),
     "payroll_summary": ("compensation", "organisational"),
     "salary_totals": ("compensation", "organisational"),
-    "people_changes": ("identity", "organisational"),
+    # Counts only (hr_tools.people_changes writes its own view); names stay on screen.
+    "people_changes": ("organisational",),
     "people_dates": ("identity", "organisational"),
     "hr_tickets": ("identity", "organisational"),
     "hiring_overview": ("recruitment",),

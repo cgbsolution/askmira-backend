@@ -330,6 +330,9 @@ async def decide(
         expiry = await core.comp_off_expiry_days(session, user)
         claim.leave_type_id = leave_type.id
         claim.expires_on = today + timedelta(days=expiry)
+        if await core.comp_off_lapses_at_year_end(session, user):
+            # Where unused comp-off lapses at year end, that is its real last day.
+            claim.expires_on = min(claim.expires_on, date(today.year, 12, 31))
         await ledger.post(
             session,
             user,

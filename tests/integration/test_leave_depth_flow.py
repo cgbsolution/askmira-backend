@@ -33,6 +33,7 @@ from app.schemas.leave import (
     CompOffCreate,
     LeavePolicyCreate,
     LeaveRequestCreate,
+    LeaveSettingsUpdate,
     LeaveTypeCreate,
 )
 from app.services.leave import comp_off, holiday_calendar, ledger
@@ -196,7 +197,7 @@ async def test_approving_past_leave_recomputes_attendance_and_cancelling_reverts
 
 
 async def test_comp_off_is_credited_on_approval_and_can_then_be_taken(
-    session: AsyncSession, org
+    session: AsyncSession, org, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worked = _saturday_before(TODAY)
 
@@ -251,10 +252,120 @@ async def test_comp_off_is_credited_on_approval_and_can_then_be_taken(
     assert preview.allowed, preview.problems
     assert preview.available_after == Decimal(0)
 
-    # Lapses once the expiry has passed and it has not been used.
-    result = await ledger.expire_comp_offs(session, org["hr"], today=TODAY + timedelta(days=61))
+    # Lapses once the expiry has passed and it has not been used. From November
+    # that day is in the next leave year: the daily job then closes this year
+    # first (carrying the comp-off forward, the default) and lapses it there.
+    lapse_day = TODAY + timedelta(days=61)
+    if lapse_day.year > TODAY.year:
+        await _close_year_as_on(session, org, monkeypatch, lapse_day)
+    result = await ledger.expire_comp_offs(session, org["hr"], today=lapse_day)
     assert result["credits_expired"] == 1
+    assert await _available(session, org, "CO", year=lapse_day.year) == Decimal(0)
+
+
+async def _close_year_as_on(
+    session: AsyncSession, org, monkeypatch: pytest.MonkeyPatch, day: date
+) -> None:
+    """Close TODAY's leave year as the daily job does on `day` in the next one."""
+    monkeypatch.setattr(leave_service, "local_today", lambda: day)
+    await ledger.close_year(session, org["hr"], year=TODAY.year)
+
+
+async def _approved_comp_off(session: AsyncSession, org) -> LeaveType:
+    """A comp-off type, and one day of comp-off for Meera, approved today."""
+    comp_type = await leave_service.create_type(
+        session, org["hr"], LeaveTypeCreate(name="Comp Off", code="CO", is_comp_off=True)
+    )
+    claim = await comp_off.create(
+        session,
+        org["meera"],
+        CompOffCreate(worked_date=_saturday_before(TODAY), reason="Release weekend"),
+    )
+    await comp_off.decide(session, org["boss"], claim.id, approve=True, note=None)
+    return comp_type
+
+
+async def _ledger(session: AsyncSession, org, kind: str, year: int) -> list[LeaveBalanceAdjustment]:
+    return list(
+        (
+            await session.scalars(
+                select(LeaveBalanceAdjustment).where(
+                    LeaveBalanceAdjustment.employee_id == org["meera_emp"].id,
+                    LeaveBalanceAdjustment.kind == kind,
+                    LeaveBalanceAdjustment.year == year,
+                )
+            )
+        ).all()
+    )
+
+
+async def test_by_default_unused_comp_off_carries_into_the_new_year(
+    session: AsyncSession, org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = await leave_service.get_settings(session, org["hr"])
+    assert settings.comp_off_year_end == "carry_forward"
+    await _approved_comp_off(session, org)
+    new_year = date(TODAY.year + 1, 1, 1)
+    await _close_year_as_on(session, org, monkeypatch, new_year)
+
+    [carried] = await _ledger(session, org, "carry_forward_in", new_year.year)
+    assert Decimal(str(carried.days)) == Decimal(1)
     assert await _available(session, org, "CO") == Decimal(0)
+    assert await _available(session, org, "CO", year=new_year.year) == Decimal(1)
+    assert await _ledger(session, org, "lapse", TODAY.year) == []
+
+
+async def test_an_admin_can_make_unused_comp_off_lapse_at_year_end(
+    session: AsyncSession, org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await leave_service.update_settings(
+        session, org["hr"], LeaveSettingsUpdate(comp_off_year_end="lapse")
+    )
+    assert (await leave_service.get_settings(session, org["hr"])).comp_off_year_end == "lapse"
+    await _approved_comp_off(session, org)
+
+    # The employee sees the real last day: never past 31 December.
+    [credit] = await _ledger(session, org, "comp_off", TODAY.year)
+    assert credit.expires_on == min(TODAY + timedelta(days=60), date(TODAY.year, 12, 31))
+
+    new_year = date(TODAY.year + 1, 1, 1)
+    await _close_year_as_on(session, org, monkeypatch, new_year)
+    [lapsed] = await _ledger(session, org, "lapse", TODAY.year)
+    assert Decimal(str(lapsed.days)) == Decimal(-1)
+    assert lapsed.reason == "Unused comp-off lapses at year end (workspace setting)"
+    assert await _available(session, org, "CO") == Decimal(0)
+    assert await _ledger(session, org, "carry_forward_in", new_year.year) == []
+
+    # The expiry job does not lapse the same day a second time.
+    await ledger.expire_comp_offs(session, org["hr"], today=new_year + timedelta(days=90))
+    assert await _ledger(session, org, "comp_off_expiry", new_year.year) == []
+
+
+async def test_only_an_admin_decides_whether_comp_off_lapses(
+    session: AsyncSession, org, tenant: Tenant, legal_entity: LegalEntity, location: Location
+) -> None:
+    _, hr_exec = await _person(
+        session,
+        tenant,
+        legal_entity,
+        location,
+        code="HR2",
+        name="Asha Menon",
+        role=UserRole.SUB_ADMIN,
+    )
+    with pytest.raises(HTTPException) as refused:
+        await leave_service.update_settings(
+            session, hr_exec, LeaveSettingsUpdate(comp_off_year_end="lapse")
+        )
+    assert refused.value.status_code == 403
+    assert "Only an admin" in refused.value.detail
+    # The rest of the leave settings stay HR's, and sending today's rule back is no change.
+    updated = await leave_service.update_settings(
+        session,
+        hr_exec,
+        LeaveSettingsUpdate(comp_off_expiry_days=45, comp_off_year_end="carry_forward"),
+    )
+    assert updated.comp_off_expiry_days == 45 and updated.comp_off_year_end == "carry_forward"
 
 
 async def test_hr_adjustments_move_the_balance_and_the_history_adds_up(

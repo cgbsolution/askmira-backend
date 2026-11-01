@@ -523,6 +523,29 @@ def _inr(value: Decimal) -> str:
     return format_inr(value) if value >= 0 else f"-{format_inr(-value)}"
 
 
+async def _people_paid(session: AsyncSession, user: User, start: str, end: str) -> int:
+    """How many people payroll paid between two months ("2026-04" to "2026-09")."""
+    try:
+        first = (int(start[:4]), int(start[5:7]))
+        last = (int(end[:4]), int(end[5:7]))
+    except ValueError:
+        return 0
+    period = PayrollRun.period_year * 100 + PayrollRun.period_month
+    count = await session.scalar(
+        tenant_scoped(
+            select(func.count(func.distinct(Payslip.employee_id)))
+            .join(PayrollRun, PayrollRun.id == Payslip.run_id)
+            .where(
+                period.between(first[0] * 100 + first[1], last[0] * 100 + last[1]),
+                PayrollRun.status.notin_(_NOT_A_COST),
+            ),
+            Payslip,
+            user,
+        )
+    )
+    return int(count or 0)
+
+
 async def account_pnl(
     session: AsyncSession, user: User, inputs: dict[str, Any], *, today: date
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -697,6 +720,14 @@ async def account_pnl(
     if t is not None and sum(r.people for r in overview.accounts) >= MIN_GROUP and not small:
         view.append(
             f"Totals: billed {_inr(t.billed)}, cost {_inr(t.total_cost)}, margin {_inr(t.margin)}."
+        )
+    # The whole payroll, and the part on no account: company totals, read when the
+    # period's payroll pays at least MIN_GROUP people.
+    paid = await _people_paid(session, user, overview.start, overview.end)
+    if paid >= MIN_GROUP:
+        view.append(
+            f"Payroll cost in the period: {_inr(overview.payroll_cost)} ({paid} people paid), of "
+            f"which {_inr(overview.unmapped_cost)} is mapped to no account."
         )
     return [
         {

@@ -484,3 +484,56 @@ async def test_how_many_employees_counts_people_employed_now(
         **{"from": "2026-04-01", "to": "2026-06-30"},
     )
     assert trend["x"] == ["Apr-Jun 2026"] and trend["series"][0]["values"] == ["1"]
+
+
+async def test_joiners_and_exits_are_read_as_counts_never_names(
+    session: AsyncSession, tenant: Tenant, hr_user: User, company: dict[str, Any]
+) -> None:
+    from app.services.companion import hr_tools
+
+    for index, person in enumerate(company["engineers"]):
+        person.date_of_joining = date(2026, 5, 4 + index)
+    left = company["engineers"][0]
+    left.status = EmploymentStatus.EXITED
+    left.date_of_exit = date(2026, 9, 30)
+    await session.commit()
+    hr = await as_caller(session, hr_user)
+    cards, _ = await hr_tools.people_changes(
+        session, hr, {"from": "2026-04-01", "to": "2026-10-31"}, today=TODAY
+    )
+    seen = views.view_of(cards, allowed=True)
+    assert "Joined: 6, of whom 5 are still employed and 1 have left or are leaving." in seen
+    assert "Left: 1." in seen and "Engineering 6, 1" in seen
+    # Nobody's name reaches the model; the person sees the lists.
+    assert "ENG0" not in seen and "Test" not in seen
+    assert any(card.get("title") == "Joiners" for card in cards)
+
+
+async def test_the_payroll_on_no_account_is_read_as_a_company_total(
+    session: AsyncSession, tenant: Tenant, hr_user: User, company: dict[str, Any]
+) -> None:
+    from app.models.accounts import AccountEntry, ClientAccount
+    from app.services.companion import analysis_tools
+
+    account = ClientAccount(tenant_id=tenant.id, code="ACME-01", name="Acme Bank")
+    session.add(account)
+    await session.flush()
+    session.add(
+        AccountEntry(
+            tenant_id=tenant.id,
+            account_id=account.id,
+            kind="billing",
+            period_year=2026,
+            period_month=9,
+            amount=Decimal("450000"),
+        )
+    )
+    await session.commit()
+    hr = await as_caller(session, hr_user)
+    cards, _ = await analysis_tools.account_pnl(
+        session, hr, {"from": "2026-08-01", "to": "2026-09-30"}, today=TODAY
+    )
+    seen = views.view_of(cards, allowed=True)
+    assert "Acme Bank (ACME-01) | ₹4,50,000.00" in seen
+    assert "Payroll cost in the period: ₹7,70,000.00 (7 people paid)" in seen
+    assert "₹7,70,000.00 is mapped to no account" in seen

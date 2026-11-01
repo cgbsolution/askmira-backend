@@ -457,6 +457,7 @@ async def close_year(
         )
     ).all()
     policies = await core._policies(session, user)
+    comp_off_lapses = await core.comp_off_lapses_at_year_end(session, user)
     rows = {
         (row.employee_id, row.leave_type_id): row
         for row in (
@@ -512,9 +513,8 @@ async def close_year(
             balance = core._balance_from(
                 row, core._accrual(policy, employee, year, year_end), engine.ZERO
             )
-            carried, lapsed = engine.year_end_split(
-                balance.available, core.carry_cap(leave_type, policy)
-            )
+            cap = core.carry_cap(leave_type, policy, comp_off_lapses=comp_off_lapses)
+            carried, lapsed = engine.year_end_split(balance.available, cap)
             if row is not None:
                 row.accrued = balance.accrued
             if carried > engine.ZERO:
@@ -541,7 +541,6 @@ async def close_year(
                     effective_on=date(year + 1, 1, 1),
                 )
             if lapsed > engine.ZERO:
-                limit = core.carry_cap(leave_type, policy)
                 await post(
                     session,
                     user,
@@ -550,9 +549,16 @@ async def close_year(
                     year=year,
                     kind="lapse",
                     days=-lapsed,
-                    reason=f"Beyond the {limit}-day carry-forward limit",
+                    reason=(
+                        "Unused comp-off lapses at year end (workspace setting)"
+                        if leave_type.is_comp_off
+                        else f"Beyond the {cap}-day carry-forward limit"
+                    ),
                     effective_on=year_end,
                 )
+                if leave_type.is_comp_off:
+                    # Its credits are spent: the expiry job must not lapse them again.
+                    await _mark_comp_offs_expired(session, user, employee.id, leave_type.id, year)
             if carried or lapsed:
                 closed += 1
                 carried_total += carried
@@ -586,6 +592,33 @@ async def close_year(
         days_lapsed=lapsed_total,
         already_closed=already,
     )
+
+
+async def _mark_comp_offs_expired(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+    year: int,
+) -> None:
+    now = datetime.now(UTC)
+    credits = (
+        await session.scalars(
+            tenant_scoped(
+                select(LeaveBalanceAdjustment).where(
+                    LeaveBalanceAdjustment.employee_id == employee_id,
+                    LeaveBalanceAdjustment.leave_type_id == leave_type_id,
+                    LeaveBalanceAdjustment.year == year,
+                    LeaveBalanceAdjustment.kind == "comp_off",
+                    LeaveBalanceAdjustment.expired_at.is_(None),
+                ),
+                LeaveBalanceAdjustment,
+                user,
+            )
+        )
+    ).all()
+    for credit in credits:
+        credit.expired_at = now
 
 
 async def expire_comp_offs(session: AsyncSession, user: User, *, today: date) -> dict[str, int]:

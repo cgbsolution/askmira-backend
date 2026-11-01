@@ -612,6 +612,39 @@ async def people_changes(
             open_label="Open Employees",
         )
     ]
+    # What the model reads: how many, never who. A count of joiners or exits
+    # is the company's shape; the names below stay on the person's screen.
+    joined = [p for p in joiners if p.date_of_joining <= today]
+    staying = [
+        p
+        for p in joined
+        if p.status not in (EmploymentStatus.EXITED, EmploymentStatus.PRE_JOINING)
+        and not (p.date_of_exit and p.date_of_exit <= today)
+    ]
+    by_department: dict[str, list[int]] = {}
+    for p in joined:
+        by_department.setdefault(dept(p), [0, 0])[0] += 1
+    for p in gone:
+        by_department.setdefault(dept(p), [0, 0])[1] += 1
+    view = [
+        f"Data: joiners and exits, {_span_text(start, end)}.",
+        f"Joined: {len(joined)}, of whom {len(staying)} are still employed and "
+        f"{len(joined) - len(staying)} have left or are leaving.",
+        f"Joining later in the period: {len(joiners) - len(joined)}.",
+        f"Left: {len(gone)}. Leaving later in the period: {len(leavers) - len(gone)}.",
+        f"On notice now: {len(notice)}. Headcount at the start: {at_start}; now or at the "
+        f"end: {at_end}. Attrition: {attrition}.",
+    ]
+    if by_department:
+        view.append(
+            "By department (joined, left): "
+            + "; ".join(
+                f"{name} {counts[0]}, {counts[1]}" for name, counts in sorted(by_department.items())
+            )
+            + "."
+        )
+    view.append("The names are on the person's screen only.")
+    cards[0]["model_view"] = "\n".join(view)
     if joiners:
         cards.append(
             _table(
@@ -657,6 +690,8 @@ async def people_changes(
                 open_href="/people/exits",
             )
         )
+    for card in cards[1:]:
+        card["model_view"] = ""
     return cards, used
 
 
