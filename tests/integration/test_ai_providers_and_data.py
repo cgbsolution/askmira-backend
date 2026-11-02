@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -537,3 +537,38 @@ async def test_the_payroll_on_no_account_is_read_as_a_company_total(
     assert "Acme Bank (ACME-01) | ₹4,50,000.00" in seen
     assert "Payroll cost in the period: ₹7,70,000.00 (7 people paid)" in seen
     assert "₹7,70,000.00 is mapped to no account" in seen
+
+
+async def test_timestamps_group_by_the_day_it_was_in_india(
+    session: AsyncSession, tenant: Tenant, hr_user: User, company: dict[str, Any]
+) -> None:
+    from app.models.culture import Shoutout, ShoutoutVisibility
+
+    to = company["engineers"][1]
+    # 20:00 UTC on 30 Sep is 01:30 on 1 Oct in India: an October shoutout.
+    for moment in (
+        datetime(2026, 9, 30, 20, 0, tzinfo=UTC),
+        datetime(2026, 9, 15, 6, 0, tzinfo=UTC),
+    ):
+        session.add(
+            Shoutout(
+                tenant_id=tenant.id,
+                from_employee_id=company["engineers"][2].id,
+                to_employee_id=to.id,
+                message="Great release",
+                visibility=ShoutoutVisibility.COMPANY,
+                created_at=moment,
+            )
+        )
+    await session.commit()
+    hr = await as_caller(session, hr_user)
+    chart, _ = await _ask(
+        session,
+        hr,
+        dataset="shoutout",
+        measures=["shoutout_count:count"],
+        bucket="month",
+        **{"from": "2026-09-01", "to": "2026-10-31"},
+    )
+    assert chart["x"] == ["Sep 2026", "Oct 2026"]
+    assert chart["series"][0]["values"] == ["1", "1"]

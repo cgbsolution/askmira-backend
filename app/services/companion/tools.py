@@ -334,8 +334,9 @@ TOOLS: dict[str, Tool] = {
                 f"Expense claims in {_EXPENSE}, the company's expense tool. Set `scope`: mine "
                 "(the asker's own claims), approvals (claims waiting for the asker's approval) "
                 "or company (everyone's; HR only). Optionally set `status` (pending, approved, "
-                "rejected or draft), `from` and `to` (submission dates) and `query` (a title, "
-                "category or person)."
+                "rejected or draft), `from` and `to` (submission dates, up to a year) and `query` "
+                "(a title, category or person). Lists the latest claims; for totals, who "
+                "submitted how much, or month by month, use expense_summary."
             ),
             inputs=("scope", "status", "from", "to", "query"),
         ),
@@ -345,9 +346,12 @@ TOOLS: dict[str, Tool] = {
             product="expense",
             title="Expense totals",
             description=(
-                f"Expense totals in {_EXPENSE} by status and category, and approved claims not "
-                "yet paid. Set `scope` (mine, approvals, or company for HR only), optionally "
-                "`status`, and `from` and `to`; both empty means this month so far."
+                f"Expense totals in {_EXPENSE}: by status and category, who submitted how much, "
+                "month by month (as charts), and approved claims not yet paid. This is where the "
+                "company's expense claims are: use it for any expense question. Set `scope` "
+                "(mine, approvals, or company for HR only), optionally `status`, and `from` and "
+                "`to` - any period up to a year (the last 12 months is fine); both empty means "
+                "this month so far."
             ),
             inputs=("scope", "status", "from", "to"),
         ),
@@ -698,7 +702,8 @@ _READS: dict[str, tuple[str, ...]] = {
     "hiring_candidates": ("recruitment",),
     "hiring_interviews": ("recruitment",),
     "expense_claims": ("compensation", "identity"),
-    "expense_summary": ("compensation",),
+    # Monthly totals over five or more claimants only (product_tools._expense_view).
+    "expense_summary": ("organisational",),
     "helpdesk_tickets": ("identity", "organisational"),
     "helpdesk_overview": ("organisational",),
     "helpdesk_assets": ("identity", "organisational"),
@@ -709,7 +714,9 @@ TOOLS = {key: replace(tool, reads=_READS.get(key, tool.reads)) for key, tool in 
 _PICK_ONLY = frozenset({"employee_id"})
 
 
-def tool_schema(tool: Tool, *, role: str | None = None) -> dict[str, Any]:
+def tool_schema(
+    tool: Tool, *, role: str | None = None, hidden: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """The tool as the model is shown it: name, what it does, and only the inputs it reads.
 
     The data tool also lists the datasets and fields `role` may query.
@@ -717,7 +724,7 @@ def tool_schema(tool: Tool, *, role: str | None = None) -> dict[str, Any]:
     names = [name for name in tool.inputs if name not in _PICK_ONLY]
     description = tool.description
     if tool.key == "query_data" and role:
-        description += "\n\nDatasets and their fields:\n" + data_tools.catalogue_text(role)
+        description += "\n\nDatasets and their fields:\n" + data_tools.catalogue_text(role, hidden)
     return {
         "name": tool.key,
         "description": description,

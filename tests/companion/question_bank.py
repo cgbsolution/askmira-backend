@@ -988,8 +988,6 @@ DATA_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
         "leave days by type as a pie chart",
         {"dataset": "leave_request", "group_by": ["leave_type"], "chart": "pie", "bucket": "none"},
     ),
-    ("expense claims trend", {"dataset": "expense_claim", "measures": ["claim_amount:sum"]}),
-    ("expense trend for the last 3 months", {"dataset": "expense_claim", "months": 3}),
     ("helpdesk tickets trend", {"dataset": "helpdesk_ticket"}),
     ("hr tickets by month", {"dataset": "helpdesk_ticket", "bucket": "month"}),
     ("overtime trend this quarter", {"dataset": "overtime_entry"}),
@@ -1022,7 +1020,6 @@ PNL: tuple[tuple[str, dict[str, Any]], ...] = (
 OWN_TRENDS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("my leave trend this year", {"dataset": "leave_request"}),
     ("my leaves by month", {"dataset": "leave_request"}),
-    ("my expense claims trend", {"dataset": "expense_claim"}),
 )
 
 
@@ -1178,6 +1175,36 @@ def build() -> list[Case]:
     for question, inputs in OWN_TRENDS:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "query_data", inputs, hr=False))
+    # Expense claims are asked of ExpenseGenie when it is linked: the company's for
+    # HR, only their own for anybody else. Not linked, AskMira's own claims.
+    for question, scope, start in (
+        ("expense claims trend", "company", "2025-11-01"),
+        ("expense trend for the last 3 months", "company", "2026-08-01"),
+        ("who submitted expenses monthly over the last 12 months", "company", "2025-11-01"),
+    ):
+        for text in _wrapped(question, LIGHT):
+            cases.append(
+                Case(text, "expense_summary", {"scope": scope, "from": start, "to": "2026-10-21"})
+            )
+    for text in _wrapped("my expense claims trend", LIGHT):
+        cases.append(Case(text, "expense_summary", {"scope": "mine"}, hr=False))
+    cases.append(
+        Case(
+            "expense claims trend",
+            "query_data",
+            {"dataset": "expense_claim"},
+            without=("expense_data",),
+        )
+    )
+    cases.append(
+        Case(
+            "my expense claims trend",
+            "query_data",
+            {"dataset": "expense_claim"},
+            hr=False,
+            without=("expense_data",),
+        )
+    )
 
     cases.extend(HAND)
     # One case per (text, asker, switched-off groups): the first expectation wins.

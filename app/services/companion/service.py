@@ -534,6 +534,13 @@ async def _send_ai(
                 "text": f"{config.name} stopped part-way: {outcome.failure}",
             }
         )
+    # A leave that could not be applied is answered in AskMira's own words, with
+    # the person's balance: the model may not read the balance, so it cannot say
+    # "you have only 1 day" itself, and must never say "confirm" for nothing.
+    refusals = [str(c["refusal"]) for c in cards if c.get("refusal")]
+    open_offer = any(c.get("type") == "proposal" and c.get("status") == "proposed" for c in cards)
+    if refusals and not open_offer:
+        outcome.text = refusals[-1]
     last = outcome.steps[-1] if outcome.steps else None
     reply = CompanionMessage(
         tenant_id=user.tenant_id,

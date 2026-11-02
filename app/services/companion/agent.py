@@ -87,6 +87,10 @@ the figures you read. Say when something is your reading rather than a fact.
 - Only query_data, payroll_trend, headcount_trend and account_pnl draw charts. When the \
 person asks for a chart, use one of them. Never say a chart is on the screen unless a tool \
 result in this turn begins with "Chart:" or "Data:".
+- Expense claims, hiring and IT tickets live in the connected products: use the expense_*, \
+hiring_* and helpdesk_* tools for them, for any period up to a year, and never answer "none" \
+from somewhere else. An admin may ask about the whole company there; everybody else gets \
+their own records only, and the tools hold that line.
 - Follow-ups build on what came before. "And for last year", "by department instead", "as a \
 pie chart" or "only Sales" change one thing about your last lookup: ask again with that one \
 change.
@@ -483,7 +487,12 @@ async def run_turn(
     out = TurnOutcome(sent=sent)
     out.categories |= carried
     role = permissions.scope_role(user)
-    defs = [tool_schema(tool, role=role) for tool in tools]
+    # Records a linked product keeps (expense claims in ExpenseGenie) are asked of
+    # the product, never of AskMira's own empty copy.
+    from app.services.companion.data_tools import linked_elsewhere
+
+    hidden = await linked_elsewhere(session, user)
+    defs = [tool_schema(tool, role=role, hidden=hidden) for tool in tools]
     offered = {tool.key: tool for tool in tools}
     messages = [*history, {"role": "user", "content": sent}]
     started = clock.monotonic()

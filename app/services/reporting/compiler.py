@@ -123,7 +123,10 @@ BUCKETS: dict[str, str] = {
 }
 
 #: Timestamps are grouped by the day it was in India, not in UTC.
-_LOCAL_TIMEZONE = "Asia/Kolkata"
+#: India's offset from UTC, as (hours, minutes). A fixed offset rather than the
+#: zone name: India keeps no daylight saving, and not every Postgres ships the
+#: zone database (a test build without it refuses "Asia/Kolkata").
+_LOCAL_OFFSET = (5, 30)
 
 
 class ScopeKind(str, enum.Enum):
@@ -326,7 +329,11 @@ def _bucketed(expression: ColumnElement, spec: Field, bucket: str) -> ColumnElem
             f"{spec.display_name} is not a date, so it cannot be grouped by {bucket}."
         )
     if spec.data_type is DataType.DATETIME:
-        local = func.timezone(_const(_LOCAL_TIMEZONE), expression)
+        hours, minutes = _LOCAL_OFFSET
+        offset = func.make_interval(
+            _const(0), _const(0), _const(0), _const(0), _const(hours), _const(minutes)
+        )
+        local = func.timezone(offset, expression)
     else:
         local = cast(expression, TIMESTAMP)
     if bucket == "day":

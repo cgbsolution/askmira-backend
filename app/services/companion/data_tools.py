@@ -153,8 +153,12 @@ _NOT_OFFERED = frozenset({"pan", "uan", "bank_account_number", "work_email", "ca
 _DATES = (DataType.DATE, DataType.DATETIME)
 
 
-def catalogue_text(role: str) -> str:
-    """Every dataset this role may query, with its fields, for the tool's description."""
+def catalogue_text(role: str, hidden: frozenset[str] = frozenset()) -> str:
+    """Every dataset this role may query, with its fields, for the tool's description.
+
+    `hidden` leaves datasets out: AskMira's own expense claims when the workspace
+    keeps its claims in the linked expense product instead.
+    """
     shared = [
         f.key
         for f in ENTITIES["employee"].fields
@@ -164,6 +168,8 @@ def catalogue_text(role: str) -> str:
         "Datasets marked (people) also take the employee's own fields: " + ", ".join(shared) + "."
     ]
     for key, ent in ENTITIES.items():
+        if key in hidden:
+            continue
         visible = [
             f
             for f in ent.fields
@@ -449,6 +455,19 @@ def _organisation_counts(
     )
 
 
+#: AskMira's own datasets that a linked product replaces, by product.
+_REPLACED_BY = {"expense": "expense_claim"}
+
+
+async def linked_elsewhere(session: Any, user: User) -> frozenset[str]:
+    """Datasets whose records live in a product this workspace has linked."""
+    from app.models.tenant import Tenant
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    linked = (tenant.linked_products if tenant else None) or {}
+    return frozenset(dataset for product, dataset in _REPLACED_BY.items() if linked.get(product))
+
+
 def _scope_text(user: User) -> str:
     if permissions.is_hr(user):
         return (
@@ -477,6 +496,12 @@ async def _query(
     ent = ENTITIES.get(key)
     if ent is None:
         raise DataQueryError(f"Choose a dataset: {', '.join(ENTITIES)}.")
+    if key in await linked_elsewhere(session, user):
+        raise DataQueryError(
+            "This workspace keeps its expense claims in ExpenseGenie, not here. Ask with "
+            "expense_summary (totals, who submitted how much, month by month) or "
+            "expense_claims (the latest claims)."
+        )
 
     measures = _measure_specs(ent, _list(inputs.get("measures")))
     # Figures this role may not see are dropped here, by name, rather than refused

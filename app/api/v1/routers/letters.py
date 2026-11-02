@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
 
 from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
@@ -21,8 +21,12 @@ from app.schemas.letters import (
     IssueRequest,
     LetterAcknowledgeRequest,
     LetterContentRead,
+    LetterheadRead,
+    LetterPdfPreviewRequest,
     LetterRead,
     MergeFieldsRead,
+    PrefillRead,
+    PrefillRequest,
     PreviewRead,
     PreviewRequest,
     RevokeRequest,
@@ -36,7 +40,9 @@ from app.schemas.letters import (
     VerifyRead,
 )
 from app.services.documents import acknowledgement
+from app.services.documents import letterhead as letterhead_service
 from app.services.documents import service as letter_service
+from app.services.documents.letterhead import LetterheadSettings
 
 router = APIRouter(tags=["documents"])
 
@@ -91,6 +97,29 @@ async def preview_draft(
 ) -> PreviewRead:
     """Render unsaved template content. Nothing is issued or numbered."""
     return await letter_service.preview_draft(session, user, payload)
+
+
+@router.post("/letter-templates/preview-pdf", dependencies=HR_ONLY)
+async def preview_pdf(
+    payload: LetterPdfPreviewRequest, user: CurrentUser, session: DbSession
+) -> Response:
+    """The letter as it would print, on the letterhead. Nothing is issued or numbered."""
+    data = await letter_service.pdf_preview(session, user, payload)
+    return _pdf(data, "preview.pdf", inline=True)
+
+
+@router.post(
+    "/letter-templates/{template_id}/prefill",
+    response_model=PrefillRead,
+    dependencies=HR_ONLY,
+)
+async def prefill(
+    template_id: uuid.UUID, payload: PrefillRequest, user: CurrentUser, session: DbSession
+) -> PrefillRead:
+    """The issue form's starting values for one person (notice period and the like)."""
+    return await letter_service.prefill(
+        session, user, template_id, payload.employee_id, payload.as_of
+    )
 
 
 @router.post(
@@ -337,3 +366,82 @@ async def signature_webhook(
         raw_body=await request.body(),
         headers=dict(request.headers),
     )
+
+
+# ── Letterhead ──────────────────────────────────────────────────────────────
+
+
+def _pdf(data: bytes, filename: str, *, inline: bool = False) -> Response:
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+async def _letterhead_read(session, user) -> LetterheadRead:
+    from app.models.tenant import Tenant
+
+    chosen = await letterhead_service.get_settings(session, user)
+    tenant = await session.get(Tenant, user.tenant_id)
+    return LetterheadRead(
+        **LetterheadSettings.model_validate(chosen.model_dump()).model_dump(),
+        has_own_logo=bool(chosen.logo_key),
+        has_workspace_logo=bool(tenant and tenant.logo_key),
+        has_signature=bool(chosen.signature_key),
+    )
+
+
+@router.get("/letterhead", response_model=LetterheadRead, dependencies=HR_ONLY)
+async def get_letterhead(user: CurrentUser, session: DbSession) -> LetterheadRead:
+    """The design, colours and contact lines every letter is printed with."""
+    return await _letterhead_read(session, user)
+
+
+@router.put("/letterhead", response_model=LetterheadRead, dependencies=ADMIN_ONLY)
+async def save_letterhead(
+    payload: LetterheadSettings, user: CurrentUser, session: DbSession, request: Request
+) -> LetterheadRead:
+    await letterhead_service.save_settings(session, user, payload, request=request)
+    return await _letterhead_read(session, user)
+
+
+@router.post("/letterhead/preview", dependencies=HR_ONLY)
+async def preview_letterhead(
+    payload: LetterheadSettings, user: CurrentUser, session: DbSession
+) -> Response:
+    """A sample letter on unsaved choices."""
+    data = await letter_service.letterhead_preview(session, user, payload)
+    return _pdf(data, "letterhead-preview.pdf", inline=True)
+
+
+@router.get("/letterhead/{kind}", response_model=None, dependencies=HR_ONLY)
+async def letterhead_image(
+    kind: letterhead_service.ImageKind, user: CurrentUser, session: DbSession
+) -> Response:
+    data, media_type = await letterhead_service.image_bytes(session, user, kind)
+    return Response(content=data, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/letterhead/{kind}", response_model=LetterheadRead, dependencies=ADMIN_ONLY)
+async def upload_letterhead_image(
+    kind: letterhead_service.ImageKind,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    file: UploadFile = File(...),
+) -> LetterheadRead:
+    """The logo printed on letters (otherwise the workspace logo), or the signatory's
+    signature. PNG or JPEG, 1 MB."""
+    data = await file.read(letterhead_service.IMAGE_MAX_BYTES + 1)
+    await letterhead_service.save_image(session, user, kind, data, request=request)
+    return await _letterhead_read(session, user)
+
+
+@router.delete("/letterhead/{kind}", response_model=LetterheadRead, dependencies=ADMIN_ONLY)
+async def remove_letterhead_image(
+    kind: letterhead_service.ImageKind, user: CurrentUser, session: DbSession, request: Request
+) -> LetterheadRead:
+    await letterhead_service.remove_image(session, user, kind, request=request)
+    return await _letterhead_read(session, user)

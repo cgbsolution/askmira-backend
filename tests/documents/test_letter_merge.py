@@ -315,7 +315,8 @@ def test_money_is_grouped_indian_style_automatically() -> None:
 
 def test_dates_render_in_a_letter_friendly_format() -> None:
     result = render_template(body_html="{{manual.reporting_date}}", context=context())
-    assert result == "01 October 2026"
+    # The style HR letters use: 01st October 2026, the suffix raised.
+    assert result == "01<sup>st</sup> October 2026"
 
 
 def test_header_body_and_footer_are_concatenated_in_order() -> None:

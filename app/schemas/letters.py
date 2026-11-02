@@ -18,8 +18,18 @@ class TemplateFieldInput(BaseModel):
     token: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_.]*$")
     label: str = Field(min_length=1, max_length=255)
     source: FieldSource
+    #: For a manual field: a token whose value pre-fills it when a letter is
+    #: issued ("employee.notice_period"), which HR may overwrite. Blank: typed.
     source_path: str | None = Field(default=None, max_length=128)
     required: bool = True
+
+    @field_validator("source_path", mode="before")
+    @classmethod
+    def _blank_default(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip().removeprefix("{{").removesuffix("}}").strip()
+            return value or None
+        return value
 
 
 class TemplateContent(BaseModel):
@@ -34,6 +44,7 @@ class TemplateContent(BaseModel):
     approver_roles: list[str] = Field(default_factory=list)
     requires_signature: bool = False
     signatory_role: str | None = Field(default=None, max_length=64)
+    use_letterhead: bool = True
     fields: list[TemplateFieldInput] = Field(default_factory=list)
 
     @field_validator("approver_roles")
@@ -61,6 +72,7 @@ class TemplateFieldRead(BaseModel):
     token: str
     label: str
     source: FieldSource
+    source_path: str | None = None
     required: bool
 
 
@@ -76,6 +88,7 @@ class TemplateRead(BaseModel):
     requires_approval: bool
     requires_signature: bool
     is_seed: bool
+    use_letterhead: bool = True
     fields: list[TemplateFieldRead]
 
 
@@ -104,6 +117,8 @@ class MergeFieldsRead(BaseModel):
     sources: dict[str, list[str]]
     computed: list[str]
     manual_note: str
+    #: "employee.designation" -> "Designation", for the "Insert field" menu.
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class PreviewRequest(BaseModel):
@@ -116,6 +131,9 @@ class PreviewRequest(BaseModel):
 
 
 class DraftPreviewRequest(PreviewRequest):
+    #: Picks the date values resolve on when none is given (a promotion reads
+    #: the coming revision), so the check matches the PDF preview.
+    category: LetterCategory | None = None
     body_html: str = Field(min_length=1, max_length=200_000)
     header_html: str | None = Field(default=None, max_length=50_000)
     footer_html: str | None = Field(default=None, max_length=50_000)
@@ -230,3 +248,56 @@ class LetterAcknowledgeRequest(BaseModel):
 
     typed_name: str = Field(min_length=1, max_length=255)
     accept: bool
+
+
+# ── Letterhead ──────────────────────────────────────────────────────────────
+
+
+class LetterheadRead(BaseModel):
+    design: str
+    primary_colour: str
+    secondary_colour: str
+    accent_colour: str
+    highlight_colour: str
+    company_name: str
+    address: str
+    phone: str
+    email: str
+    website: str
+    signatory_name: str
+    signatory_title: str
+    show_logo: bool
+    show_reference: bool
+    #: A logo uploaded for letters; otherwise the workspace logo is used.
+    has_own_logo: bool
+    has_workspace_logo: bool
+    has_signature: bool
+
+
+class LetterPdfPreviewRequest(PreviewRequest):
+    """A PDF, exactly as it would print, of a saved template or unsaved content.
+
+    Nothing is issued or numbered. With `template_id` the saved version is
+    used; otherwise the draft fields below.
+    """
+
+    template_id: uuid.UUID | None = None
+    body_html: str | None = Field(default=None, max_length=200_000)
+    header_html: str | None = Field(default=None, max_length=50_000)
+    footer_html: str | None = Field(default=None, max_length=50_000)
+    fields: list[TemplateFieldInput] = Field(default_factory=list)
+    use_letterhead: bool = True
+    category: LetterCategory | None = None
+
+
+class PrefillRequest(BaseModel):
+    employee_id: uuid.UUID
+    as_of: date | None = None
+
+
+class PrefillRead(BaseModel):
+    """What the issue form starts with for one person: each manual field's
+    default value, and the as-of date the letter's values resolve on."""
+
+    values: dict[str, str]
+    as_of: date

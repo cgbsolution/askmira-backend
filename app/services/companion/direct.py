@@ -1677,6 +1677,21 @@ def _trend(
             filters=[{"field": "leave_status", "op": "equals", "value": "approved"}],
         )
     if _has(words, r"expenses?\b", r"claims?\b", r"reimburse"):
+        if "expense_summary" in offered:
+            # The workspace's claims are in ExpenseGenie: month by month and who claimed.
+            first = date(today.year, today.month, 1)
+            for _ in range((count or 12) - 1):
+                first = (first - timedelta(days=1)).replace(day=1)
+            return DirectPlan(
+                reply=f"Here are expense claims {span}.",
+                tool="expense_summary",
+                inputs={
+                    "scope": "company" if hr else "mine",
+                    "status": "none",
+                    "from": when.get("from") or first.isoformat(),
+                    "to": when.get("to") or today.isoformat(),
+                },
+            )
         return _data(
             f"Here are expense claims {span}.", "expense_claim", ["claim_amount:sum"], words, when
         )

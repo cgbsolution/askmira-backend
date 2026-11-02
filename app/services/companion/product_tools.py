@@ -19,6 +19,7 @@ becomes a float.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -45,6 +46,13 @@ __all__ = [
 
 IST = ZoneInfo("Asia/Kolkata")
 MAX_DAYS = 93
+#: Expense questions reach back a year ("who claimed in the last 12 months").
+EXPENSE_MAX_DAYS = 366
+#: The product is asked a calendar quarter at a time and the answers are added
+#: up: within any product's window, and a month never falls in two pieces.
+_PIECE_MONTHS = 3
+#: The fewest people a month's total may cover for the model to read it.
+MIN_GROUP = 5
 #: Rows asked for in a list. The caption says when there are more.
 LIMIT = 25
 #: Rows on one page of a portal list that pages (the helpdesk's tickets and assets).
@@ -84,6 +92,7 @@ _CANDIDATE_ROWS = (
     ("Rejected", "Candidates rejected"),
 )
 _CLAIM_ORDER = {"Pending": 0, "Approved": 1, "Rejected": 2, "Draft": 3}
+_EXPENSE_BRAND = PRODUCTS["expense"].brand
 _SCOPE_LABEL = {
     "mine": "Your claims",
     "approvals": "Claims for your approval",
@@ -115,7 +124,12 @@ def _day_of(text: str) -> date:
         raise ValueError("Dates must look like 2026-10-20.") from None
 
 
-def _days(inputs: dict[str, Any], default: tuple[date, date] | None) -> tuple[date, date] | None:
+def _days(
+    inputs: dict[str, Any],
+    default: tuple[date, date] | None,
+    *,
+    limit: int = MAX_DAYS,
+) -> tuple[date, date] | None:
     """The asked range of days; one end alone means that one day; none means `default`."""
     first = str(inputs.get("from") or "").strip()
     last = str(inputs.get("to") or "").strip()
@@ -125,9 +139,43 @@ def _days(inputs: dict[str, Any], default: tuple[date, date] | None) -> tuple[da
     end = _day_of(last or first)
     if end < start:
         raise ValueError("The last day of the range comes before the first.")
-    if (end - start).days >= MAX_DAYS:
-        raise ValueError(f"Ask about at most {MAX_DAYS} days at a time.")
+    if (end - start).days >= limit:
+        raise ValueError(
+            "Ask about at most a year at a time."
+            if limit >= 365
+            else f"Ask about at most {limit} days at a time."
+        )
     return start, end
+
+
+def _pieces(days: tuple[date, date]) -> list[tuple[date, date]]:
+    """The range cut at month boundaries into pieces of at most three months, oldest first."""
+    start, end = days
+    out: list[tuple[date, date]] = []
+    while start <= end:
+        year, month = start.year, start.month + _PIECE_MONTHS
+        while month > 12:
+            month -= 12
+            year += 1
+        stop = min(end, date(year, month, 1) - timedelta(days=1))
+        out.append((start, stop))
+        start = stop + timedelta(days=1)
+    return out
+
+
+def _add(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Rows from several pieces added up by `keys`: counts and amounts summed exactly."""
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = tuple(row.get(k) for k in keys)
+        into = merged.setdefault(
+            key, {**{k: row.get(k) for k in keys}, "count": 0, "people": 0, "amount": Decimal(0)}
+        )
+        into["count"] += _int(row.get("count"))
+        into["people"] += _int(row.get("people"))
+        with suppress(InvalidOperation):
+            into["amount"] += Decimal(str(row.get("amount") or 0))
+    return list(merged.values())
 
 
 def _instants(days: tuple[date, date]) -> tuple[str, str]:
@@ -450,14 +498,24 @@ async def _expense_claims(
         return [_notice(_COMPANY_REFUSED)], {"scope": scope}
     # "Waiting for your approval" means pending, unless another status was asked for.
     status = _status(inputs, CLAIM_STATUSES) or ("pending" if scope == "approvals" else None)
-    days = _days(inputs, None)
+    days = _days(inputs, None, limit=EXPENSE_MAX_DAYS)
     search = _search(inputs)
     used: dict[str, Any] = {"scope": scope, "status": status or "none", "query": search}
     params: dict[str, Any] = {"scope": scope, "status": status, "query": search, "limit": LIMIT}
     if days:
-        params["from"], params["to"] = _instants(days)
         used |= {"from": days[0].isoformat(), "to": days[1].isoformat()}
-    data = await products.ask(session, user, "expense", "claims", params)
+        # A long range is asked a quarter at a time; the newest claims come first.
+        claims: list[dict[str, Any]] = []
+        total = 0
+        for piece in reversed(_pieces(days)):
+            params["from"], params["to"] = _instants(piece)
+            part = await products.ask(session, user, "expense", "claims", params)
+            claims += _items(part, "claims")
+            total += _int(part.get("total"))
+        claims.sort(key=lambda c: str(c.get("submitted_at") or ""), reverse=True)
+        data: dict[str, Any] = {"claims": claims[:LIMIT], "total": total}
+    else:
+        data = await products.ask(session, user, "expense", "claims", params)
 
     mine = scope == "mine"
     rows = []
@@ -492,6 +550,12 @@ async def _expense_claims(
         caption=caption,
         empty="No expense claims match that in ExpenseGenie.",
     )
+    # The model learns how many, never whose or how much: claims name people.
+    card["model_note"] = (
+        f"{len(rows)} of {_int(data.get('total'))} matching claims from {_EXPENSE_BRAND} are "
+        "listed on the person's screen. You may not read them; for totals by month, use "
+        "expense_summary."
+    )
     return [card], used
 
 
@@ -501,7 +565,7 @@ async def _expense_summary(
     scope = _scope(inputs)
     if await _company_refused(session, user, scope):
         return [_notice(_COMPANY_REFUSED)], {"scope": scope}
-    days = _days(inputs, (today.replace(day=1), today))
+    days = _days(inputs, (today.replace(day=1), today), limit=EXPENSE_MAX_DAYS)
     assert days is not None
     status = _status(inputs, CLAIM_STATUSES)
     used = {
@@ -510,13 +574,41 @@ async def _expense_summary(
         "from": days[0].isoformat(),
         "to": days[1].isoformat(),
     }
-    start, end = _instants(days)
-    data = await products.ask(
-        session,
-        user,
-        "expense",
-        "summary",
-        {"scope": scope, "status": status, "from": start, "to": end},
+    # A quarter at a time, added up: within any version of the product's window.
+    parts = []
+    for piece in _pieces(days):
+        start, end = _instants(piece)
+        parts.append(
+            await products.ask(
+                session,
+                user,
+                "expense",
+                "summary",
+                {"scope": scope, "status": status, "from": start, "to": end},
+            )
+        )
+    data = {
+        "by_status": _add(
+            [r for p in parts for r in _items(p, "by_status")], ("status", "currency")
+        ),
+        "by_category": sorted(
+            _add([r for p in parts for r in _items(p, "by_category")], ("category", "currency")),
+            key=lambda r: -r["amount"],
+        )[:10],
+        "approved_unpaid": _add(
+            [r for p in parts for r in _items(p, "approved_unpaid")], ("currency",)
+        ),
+    }
+    # Who submitted, and month by month: from a version of the product that sends them.
+    has_people = any("by_submitter" in p for p in parts)
+    has_months = any("by_month" in p for p in parts)
+    by_person = sorted(
+        _add([r for p in parts for r in _items(p, "by_submitter")], ("submitter", "currency")),
+        key=lambda r: -r["amount"],
+    )
+    by_month = sorted(
+        _add([r for p in parts for r in _items(p, "by_month")], ("month", "currency")),
+        key=lambda r: str(r["month"]),
     )
 
     by_status = sorted(
@@ -568,7 +660,118 @@ async def _expense_summary(
             amounts = ", ".join(_money(row.get("amount"), row.get("currency")) for row in unpaid)
             plural = "claim" if count == 1 else "claims"
             cards.append(_notice(f"Approved but not yet paid: {count} {plural}, {amounts}."))
+    if status_rows and by_month:
+        months = [r for r in by_month if r.get("currency") in (None, "", "INR")] or by_month
+        labels = [_month_label(r["month"]) for r in months]
+        cards.append(
+            {
+                "type": "chart",
+                "title": "Expense claims month by month",
+                "caption": f"{_SCOPE_LABEL[scope]} · {span} · amounts in "
+                f"{months[0].get('currency') or 'INR'}",
+                "chart": "bar",
+                "unit": "inr",
+                "x": labels,
+                "series": [
+                    {"name": "Amount claimed", "values": [str(r["amount"]) for r in months]}
+                ],
+            }
+        )
+        cards.append(
+            _table(
+                "expense",
+                "Month by month",
+                ["Month", "Claims", "People", "Amount"],
+                [
+                    [
+                        _month_label(r["month"]),
+                        r["count"],
+                        r["people"],
+                        _money(r["amount"], r.get("currency")),
+                    ]
+                    for r in by_month
+                ],
+                caption=span,
+                empty="",
+            )
+        )
+    if status_rows and by_person and scope != "mine":
+        top = by_person[:15]
+        cards.append(
+            {
+                "type": "chart",
+                "title": "Who claimed the most",
+                "caption": f"{_SCOPE_LABEL[scope]} · {span} · top {len(top)}",
+                "chart": "horizontal_bar",
+                "unit": "inr",
+                "x": [_text(r["submitter"]) or "(no name)" for r in top],
+                "series": [{"name": "Amount claimed", "values": [str(r["amount"]) for r in top]}],
+            }
+        )
+        cards.append(
+            _table(
+                "expense",
+                "Who submitted",
+                ["Person", "Claims", "Amount"],
+                [
+                    [
+                        _text(r["submitter"]) or "(no name)",
+                        r["count"],
+                        _money(r["amount"], r.get("currency")),
+                    ]
+                    for r in by_person
+                ],
+                caption=f"{len(by_person)} people · {span}",
+                empty="",
+            )
+        )
+    elif status_rows and scope != "mine" and not has_people:
+        cards.append(
+            _notice(
+                f"{_EXPENSE_BRAND} needs its latest update to say who submitted how much and "
+                "to break the totals down by month."
+            )
+        )
+    _expense_view(cards, scope, span, by_month if has_months else [])
     return cards, used
+
+
+def _month_label(value: Any) -> str:
+    try:
+        year, month = str(value).split("-")[:2]
+        return f"{date(int(year), int(month), 1):%b %Y}"
+    except (ValueError, TypeError):
+        return _text(value)
+
+
+def _expense_view(
+    cards: list[dict[str, Any]], scope: str, span: str, by_month: list[dict[str, Any]]
+) -> None:
+    """What the model may read of expense totals: months with five or more claimants.
+
+    Names never: who claimed what stays on the person's screen. A person's own
+    claims are theirs, not the company's, so the model reads none of them.
+    """
+    lines = [f"Data: expense claims in {_EXPENSE_BRAND}, {span}."]
+    readable = [r for r in by_month if r["people"] >= MIN_GROUP] if scope != "mine" else []
+    if readable:
+        lines.append("Month | Claims | People | Amount | Currency")
+        lines += [
+            f"{_month_label(r['month'])} | {r['count']} | {r['people']} | {r['amount']:.2f} | "
+            f"{r.get('currency') or 'INR'}"
+            for r in readable
+        ]
+    hidden = len(by_month) - len(readable)
+    if scope == "mine":
+        lines.append("These are the person's own claims, on their screen; you may not read them.")
+    elif hidden:
+        lines.append(
+            f"{hidden} month(s) cover fewer than {MIN_GROUP} people and are on the person's "
+            "screen only."
+        )
+    lines.append("Who submitted how much is on the person's screen only; you may not read names.")
+    for index, card in enumerate(cards):
+        card["model_view"] = "\n".join(lines) if index == 0 else ""
 
 
 # ── IT tickets and assets (CGB Helpdesk) ────────────────────────────────────

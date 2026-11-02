@@ -33,6 +33,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -131,6 +132,12 @@ class LetterTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # legal teams must review them. This flag drives that banner in the UI.
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    #: Printed on the workspace's letterhead (Letters -> Letterhead). Off for a
+    #: form that has its own heading, or for pre-printed stationery.
+    use_letterhead: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+
     fields: Mapped[list[LetterTemplateField]] = relationship(
         back_populates="template", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -215,6 +222,10 @@ class IssuedLetter(Base, UUIDMixin, TenantMixin, TimestampMixin):
     # tampering with the stored document is detectable.
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     pdf_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: The letterhead this letter was printed on: colours, contact lines and the
+    #: logo's storage key, as they were. Null for a letter printed without one
+    #: (or before letterheads existed), which re-renders on the plain header.
+    letterhead: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # The MANUAL values supplied at issuance, kept so the letter is
     # reproducible from its inputs.

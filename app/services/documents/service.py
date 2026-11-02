@@ -12,7 +12,8 @@ import contextlib
 import json
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+from html import escape as html_escape
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -39,13 +40,16 @@ from app.models.employee import Employee
 from app.models.hiring import Candidate
 from app.models.letter_acknowledgement import LetterAcknowledgement
 from app.models.notifications import Channel, DigestMode
+from app.models.payroll import EmployeeSalary
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.letters import (
     DraftPreviewRequest,
     LetterContentRead,
+    LetterPdfPreviewRequest,
     LetterRead,
     MergeFieldsRead,
+    PrefillRead,
     PreviewRead,
     PreviewRequest,
     SignatureProviderRead,
@@ -54,13 +58,21 @@ from app.schemas.letters import (
     VerifyRead,
 )
 from app.services import audit
+from app.services.documents import letterhead as letterhead_service
+from app.services.documents.annexure import build_annexure
+from app.services.documents.default_templates import DEFAULT_TEMPLATES, DEFAULTS_VERSION
 from app.services.documents.letter_merge import (
     AVAILABLE_FIELDS,
     COMPUTED_HANDLERS,
+    FIELD_LABELS,
     LetterMergeError,
     MergeContext,
+    extract_tokens,
+    long_date,
+    period_in_words,
     preview_render,
     render_template,
+    resolve_plain,
     template_token_problems,
 )
 from app.services.documents.pdf import Letterhead, PdfRenderError, content_hash, render_pdf
@@ -203,9 +215,109 @@ async def allocate_reference_number(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+#: Employee fields worked out here or looked up by `_build_context`, not columns.
+_EMPLOYEE_DERIVED = (
+    "salutation",
+    "full_name",
+    "notice_period",
+    "probation_period",
+    "location",
+    "location_city",
+    "department",
+    "company",
+    "manager_name",
+)
+
+
+def _salutation(employee: Employee) -> str:
+    gender = getattr(getattr(employee, "gender", None), "value", None)
+    if gender == "male":
+        return "Mr."
+    if gender == "female":
+        return "Ms."
+    return "Mr. / Ms."
+
+
+def _months_between(start: date, end: date) -> int | None:
+    months = (end.year - start.year) * 12 + (end.month - start.month)
+    if end.day + 1 < start.day:
+        months -= 1
+    return months if months > 0 else None
+
+
 def _employee_values(employee: Employee) -> dict[str, Any]:
-    """Exactly the keys `AVAILABLE_FIELDS["employee"]` promises."""
-    return {key: getattr(employee, key) for key in AVAILABLE_FIELDS["employee"]}
+    """Exactly the keys `AVAILABLE_FIELDS["employee"]` promises.
+
+    The derived ones that need another table (location, department, company,
+    manager) start empty; `_build_context` fills them.
+    """
+    values = {
+        key: getattr(employee, key)
+        for key in AVAILABLE_FIELDS["employee"]
+        if key not in _EMPLOYEE_DERIVED
+    }
+    values.update(dict.fromkeys(_EMPLOYEE_DERIVED))
+    if values.get("first_name") is not None:
+        values["salutation"] = _salutation(employee)
+        values["full_name"] = " ".join(
+            part for part in (employee.first_name, employee.last_name) if part
+        )
+    notice = values.get("notice_period_days")
+    if isinstance(notice, int):
+        values["notice_period"] = period_in_words(notice) or None
+    joined, probation_end = values.get("date_of_joining"), values.get("probation_end_date")
+    if isinstance(joined, date) and isinstance(probation_end, date):
+        months = _months_between(joined, probation_end)
+        if months:
+            values["probation_period"] = period_in_words(months * 30)
+    return values
+
+
+#: Tokens that need the salary annexure worked out (a payroll computation).
+_ANNEXURE_TOKENS = frozenset(
+    {
+        "computed.salary_annexure",
+        "salary.gross_monthly",
+        "salary.gross_annual",
+        "salary.net_monthly",
+        "salary.net_annual",
+    }
+)
+
+_EFFECTIVE_LABELS = {
+    LetterCategory.PROMOTION: "Appraisal W.E.F.",
+    LetterCategory.OFFER: "Date of Joining",
+    LetterCategory.APPOINTMENT: "Date of Joining",
+}
+
+
+async def _lookups(session: AsyncSession, user: User, employee: Employee) -> dict[str, Any]:
+    """Location, department, company and manager: names, not ids."""
+    from app.models.org import Department, LegalEntity, Location
+
+    found: dict[str, Any] = {}
+
+    async def one(model, row_id):
+        if row_id is None:
+            return None
+        return await session.scalar(
+            tenant_scoped(select(model).where(model.id == row_id), model, user)
+        )
+
+    location = await one(Location, employee.location_id)
+    if location is not None:
+        found["location"] = location.city or location.name
+        found["location_city"] = location.city or location.name
+    department = await one(Department, employee.department_id)
+    if department is not None:
+        found["department"] = department.name
+    entity = await one(LegalEntity, employee.legal_entity_id)
+    if entity is not None:
+        found["company"] = entity.name
+    manager = await one(Employee, employee.manager_id)
+    if manager is not None:
+        found["manager_name"] = " ".join(p for p in (manager.first_name, manager.last_name) if p)
+    return found
 
 
 async def _build_context(
@@ -215,20 +327,31 @@ async def _build_context(
     *,
     as_of: date,
     manual: dict,
+    issued_on: date | None = None,
+    letterhead: dict[str, Any] | None = None,
+    tokens: set[str] | None = None,
+    category: LetterCategory | None = None,
 ) -> MergeContext:
     """Assemble merge sources, resolved as of a date.
 
     `as_of` matters: a relieving letter issued today for an exit last month must
-    show the salary that was in force at exit, not today's.
+    show the salary that was in force at exit, not today's. `issued_on` is the
+    day the letter is dated. `tokens`, when given, lets the salary annexure (a
+    payroll computation) be skipped for a letter that does not show it.
     """
     tenant = await session.get(Tenant, user.tenant_id)
     salary = await active_salary_on(session, user, employee.id, as_of)
+    if letterhead is None:
+        letterhead = await letterhead_service.current_snapshot(session, user)
 
     salary_dict: dict = {}
     components: list[dict] = []
     if salary is not None:
         salary_dict = {
-            "ctc_annual": Decimal(str(salary.ctc_annual)),
+            # Whole rupees, as a letter states a CTC: a typed 6,20,000.04 is 6,20,000.
+            "ctc_annual": Decimal(str(salary.ctc_annual)).quantize(
+                Decimal(1), rounding=ROUND_HALF_UP
+            ),
             "currency": salary.currency,
             "effective_from": salary.effective_from,
         }
@@ -244,9 +367,43 @@ async def _build_context(
         ]
 
     statutory, nominees, family = await _statutory_values(session, user, employee)
+    employee_values = _employee_values(employee)
+    employee_values.update(await _lookups(session, user, employee))
+    profile, previous_jobs = await _profile_values(session, user, employee)
+
+    annexure: dict[str, Any] | None = None
+    if salary is not None:
+        salary_dict["ctc_monthly"] = (salary_dict["ctc_annual"] / 12).quantize(Decimal("1"))
+        if tokens is None or tokens & _ANNEXURE_TOKENS:
+            annexure = await build_annexure(
+                session,
+                user,
+                employee,
+                salary,
+                as_of=as_of,
+                header={
+                    "name": employee_values.get("full_name"),
+                    "location": employee_values.get("location"),
+                    "designation": employee.designation,
+                    "effective_label": _EFFECTIVE_LABELS.get(category, "Effective from")
+                    if category
+                    else "Effective from",
+                    "effective_from": (
+                        employee.date_of_joining
+                        if category in (LetterCategory.OFFER, LetterCategory.APPOINTMENT)
+                        else salary.effective_from
+                    ),
+                },
+            )
+            if not annexure.get("error"):
+                salary_dict["gross_monthly"] = annexure["gross"][0]
+                salary_dict["gross_annual"] = annexure["gross"][1]
+                salary_dict["net_monthly"] = annexure["net"][0]
+                salary_dict["net_annual"] = annexure["net"][1]
+
     return MergeContext(
         as_of=as_of,
-        employee=_employee_values(employee),
+        employee=employee_values,
         salary=salary_dict,
         tenant={
             "name": tenant.name if tenant else "",
@@ -257,7 +414,146 @@ async def _build_context(
         statutory=statutory,
         nominees=nominees,
         family=family,
+        company=letterhead_service.company_values(letterhead),
+        profile=profile,
+        previous_employment=previous_jobs,
+        annexure=annexure,
+        signature_html=await letterhead_service.signature_html(letterhead),
+        issued_on=issued_on or date.today(),
     )
+
+
+_STATE_NAMES = {
+    "AN": "Andaman and Nicobar Islands", "AP": "Andhra Pradesh", "AR": "Arunachal Pradesh",
+    "AS": "Assam", "BR": "Bihar", "CH": "Chandigarh", "CG": "Chhattisgarh", "CT": "Chhattisgarh",
+    "DN": "Dadra and Nagar Haveli and Daman and Diu", "DD": "Daman and Diu", "DL": "Delhi",
+    "GA": "Goa", "GJ": "Gujarat", "HR": "Haryana", "HP": "Himachal Pradesh",
+    "JK": "Jammu and Kashmir", "JH": "Jharkhand", "KA": "Karnataka", "KL": "Kerala",
+    "LA": "Ladakh", "LD": "Lakshadweep", "MP": "Madhya Pradesh", "MH": "Maharashtra",
+    "MN": "Manipur", "ML": "Meghalaya", "MZ": "Mizoram", "NL": "Nagaland", "OR": "Odisha",
+    "OD": "Odisha", "PY": "Puducherry", "PB": "Punjab", "RJ": "Rajasthan", "SK": "Sikkim",
+    "TN": "Tamil Nadu", "TG": "Telangana", "TS": "Telangana", "TR": "Tripura",
+    "UP": "Uttar Pradesh", "UK": "Uttarakhand", "UT": "Uttarakhand", "WB": "West Bengal",
+}  # fmt: skip
+
+
+def _street(address: dict | None) -> str | None:
+    if not address:
+        return None
+    parts = [address.get("line1"), address.get("line2"), address.get("district")]
+    return ", ".join(str(p) for p in parts if p) or None
+
+
+async def _profile_values(
+    session: AsyncSession, user: User, employee: Employee
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Exactly `AVAILABLE_FIELDS["profile"]`, plus previous employers."""
+    from app.core.crypto import decrypt_secret
+    from app.models.disbursement import EmployeeBankAccount
+    from app.models.employee import EmployeeProfile
+
+    profile = await session.scalar(
+        tenant_scoped(
+            select(EmployeeProfile).where(EmployeeProfile.employee_id == employee.id),
+            EmployeeProfile,
+            user,
+        )
+    )
+    personal = (profile.personal if profile else None) or {}
+    addresses = (profile.addresses if profile else None) or {}
+    current = addresses.get("current") or {}
+    permanent = addresses.get("permanent") or (
+        current if addresses.get("permanent_same_as_current") else {}
+    )
+    family = (profile.family_members if profile else None) or []
+    mother = next((m for m in family if str(m.get("relationship", "")).lower() == "mother"), None)
+    contacts = (profile.emergency_contacts if profile else None) or []
+    contact = next((c for c in contacts if c.get("is_primary")), contacts[0] if contacts else None)
+    education = (profile.education if profile else None) or []
+    highest = next((e for e in education if e.get("is_highest")), None) or (
+        max(education, key=lambda e: e.get("end_year") or 0) if education else None
+    )
+    jobs = list((profile.previous_employment if profile else None) or [])
+
+    months = 0
+    for job in jobs:
+        with contextlib.suppress(TypeError, ValueError):
+            start = date.fromisoformat(str(job.get("from_date")))
+            end = date.fromisoformat(str(job.get("to_date")))
+            months += max(0, (end.year - start.year) * 12 + end.month - start.month)
+    experience = ""
+    if months:
+        years, rest = divmod(months, 12)
+        bits = [
+            f"{years} year{'s' if years != 1 else ''}" if years else "",
+            f"{rest} month{'s' if rest != 1 else ''}" if rest else "",
+        ]
+        experience = " ".join(b for b in bits if b)
+
+    bank = await session.scalar(
+        tenant_scoped(
+            select(EmployeeBankAccount)
+            .where(EmployeeBankAccount.employee_id == employee.id)
+            .order_by(desc(EmployeeBankAccount.created_at)),
+            EmployeeBankAccount,
+            user,
+        ).limit(1)
+    )
+
+    def state(address: dict) -> str | None:
+        code = address.get("state_code")
+        return _STATE_NAMES.get(str(code).upper(), code) if code else None
+
+    relation = None
+    if contact:
+        relation = (
+            contact.get("relationship_text")
+            or str(contact.get("relationship") or "").replace("_", " ").capitalize()
+            or None
+        )
+
+    values = {
+        "father_name": personal.get("father_name"),
+        "mother_name": mother.get("name") if mother else None,
+        "spouse_name": personal.get("spouse_name"),
+        "blood_group": personal.get("blood_group"),
+        "marital_status": str(personal.get("marital_status") or "").replace("_", " ").capitalize()
+        or None,
+        "nationality": personal.get("nationality"),
+        "personal_email": employee.personal_email,
+        "permanent_address": _street(permanent),
+        "permanent_city": permanent.get("city"),
+        "permanent_state": state(permanent),
+        "permanent_pincode": permanent.get("pincode"),
+        "current_address": _street(current),
+        "current_city": current.get("city"),
+        "current_state": state(current),
+        "current_pincode": current.get("pincode"),
+        "emergency_name": contact.get("name") if contact else None,
+        "emergency_relation": relation,
+        "emergency_phone": contact.get("phone") if contact else None,
+        "highest_education": (
+            highest.get("qualification") or highest.get("course") if highest else None
+        ),
+        "specialisation": (
+            highest.get("specialisation") or highest.get("stream") if highest else None
+        ),
+        "total_experience": experience or None,
+        "bank_name": bank.bank_name if bank else None,
+        "account_holder_name": bank.account_holder_name if bank else None,
+        "account_number": (decrypt_secret(bank.account_number, user.tenant_id) if bank else None)
+        or employee.bank_account_number,
+        "ifsc": (bank.ifsc if bank else None) or employee.bank_ifsc,
+    }
+
+    def parsed(job: dict) -> dict:
+        out = dict(job)
+        for key in ("from_date", "to_date"):
+            with contextlib.suppress(TypeError, ValueError):
+                out[key] = date.fromisoformat(str(job.get(key)))
+        return out
+
+    return values, [parsed(job) for job in jobs]
 
 
 def _address_line(address: dict | None) -> str | None:
@@ -323,7 +619,14 @@ async def _statutory_values(
     return values, nominees, family
 
 
-def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> MergeContext:
+def _sample_context(
+    tenant: Tenant | None,
+    *,
+    as_of: date,
+    manual: dict,
+    letterhead: dict[str, Any] | None = None,
+    signature: str = "",
+) -> MergeContext:
     """Placeholders for a preview with nobody chosen.
 
     Every employee value is its own label in brackets, so nothing in the preview
@@ -334,6 +637,7 @@ def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> Merg
     for key in ("date_of_joining", "date_of_exit", "probation_end_date", "notice_period_days"):
         employee[key] = None
     statutory = {key: f"[{key.replace('_', ' ')}]" for key in AVAILABLE_FIELDS["statutory"]}
+    profile = {key: f"[{key.replace('_', ' ')}]" for key in AVAILABLE_FIELDS["profile"]}
     return MergeContext(
         as_of=as_of,
         employee=employee,
@@ -341,6 +645,10 @@ def _sample_context(tenant: Tenant | None, *, as_of: date, manual: dict) -> Merg
         tenant={"name": tenant.name if tenant else "", "slug": tenant.slug if tenant else ""},
         manual=manual,
         statutory=statutory,
+        company=letterhead_service.company_values(letterhead or {}),
+        profile=profile,
+        signature_html=signature,
+        issued_on=date.today(),
     )
 
 
@@ -362,10 +670,73 @@ async def get_template(session: AsyncSession, user: User, template_id: uuid.UUID
     return template
 
 
+async def ensure_default_templates(session: AsyncSession, user: User) -> int:
+    """Install the default letters (offer, promotion, experience, joining form)
+    once per workspace. Returns how many were added.
+
+    Recorded in `tenant.settings["letter_defaults"]`, so a default HR later
+    switched off or replaced is not put back. A code already in use is skipped.
+    """
+    tenant = await session.get(Tenant, user.tenant_id)
+    if tenant is None:
+        return 0
+    installed = int((tenant.settings or {}).get("letter_defaults") or 0)
+    if installed >= DEFAULTS_VERSION:
+        return 0
+
+    added: list[str] = []
+    for spec in DEFAULT_TEMPLATES:
+        existing = await session.scalar(
+            tenant_scoped(
+                select(LetterTemplate.id).where(LetterTemplate.code == spec["code"]),
+                LetterTemplate,
+                user,
+            )
+        )
+        if existing is not None:
+            continue
+        template = LetterTemplate(
+            tenant_id=user.tenant_id,
+            code=spec["code"],
+            name=spec["name"],
+            category=spec["category"],
+            body_html=spec["body_html"].strip(),
+            version=1,
+            active=True,
+            is_seed=False,
+            use_letterhead=True,
+        )
+        for item in spec["fields"]:
+            template.fields.append(LetterTemplateField(tenant_id=user.tenant_id, **item))
+        session.add(template)
+        added.append(spec["code"])
+
+    stored = dict(tenant.settings or {})
+    stored["letter_defaults"] = DEFAULTS_VERSION
+    tenant.settings = stored
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="letter_template",
+        actor=user,
+        changes={"installed": added, "defaults_version": DEFAULTS_VERSION},
+        summary=f"Installed {len(added)} default letter template(s)",
+    )
+    await session.commit()
+    return len(added)
+
+
 async def list_templates(
     session: AsyncSession, user: User, *, include_inactive: bool = False
 ) -> list[LetterTemplate]:
-    """Active versions for everybody; every version for HR when asked."""
+    """Active versions for everybody; every version for HR when asked.
+
+    HR's first look installs the default letters (see `ensure_default_templates`).
+    """
+    if permissions.is_hr(user):
+        await ensure_default_templates(session, user)
     stmt = select(LetterTemplate).order_by(
         LetterTemplate.category, LetterTemplate.code, desc(LetterTemplate.version)
     )
@@ -388,12 +759,15 @@ async def template_versions(
     return list((await session.scalars(stmt)).all())
 
 
+#: The token prefixes a declared field of each source may use. The statutory
+#: and profile values are the employee's; the letterhead's company details
+#: are the workspace's.
 _SOURCE_PREFIX = {
-    FieldSource.EMPLOYEE: "employee",
-    FieldSource.SALARY: "salary",
-    FieldSource.TENANT: "tenant",
-    FieldSource.MANUAL: "manual",
-    FieldSource.COMPUTED: "computed",
+    FieldSource.EMPLOYEE: ("employee", "statutory", "profile"),
+    FieldSource.SALARY: ("salary",),
+    FieldSource.TENANT: ("tenant", "company"),
+    FieldSource.MANUAL: ("manual",),
+    FieldSource.COMPUTED: ("computed",),
 }
 
 
@@ -411,12 +785,24 @@ def _content_problems(
         if field.token in seen:
             problems.append(f"'{field.token}' is declared twice")
         seen.add(field.token)
-        if field.token.partition(".")[0] != _SOURCE_PREFIX[field.source]:
+        if field.token.partition(".")[0] not in _SOURCE_PREFIX[field.source]:
             problems.append(
                 f"'{field.token}' is declared as a {field.source.value} field but its token "
                 f"starts with '{field.token.partition('.')[0]}'"
             )
         problems.extend(template_token_problems("{{" + field.token + "}}"))
+        if field.source_path:
+            if field.source is not FieldSource.MANUAL:
+                problems.append(
+                    f"'{field.token}': only a manual field can be pre-filled from another field"
+                )
+            elif field.source_path.startswith(("manual.", "computed.")):
+                problems.append(
+                    f"'{field.token}' is pre-filled from '{field.source_path}', which is not a "
+                    "record field. Use an employee, salary, company or profile field."
+                )
+            else:
+                problems.extend(template_token_problems("{{" + field.source_path + "}}"))
     return problems
 
 
@@ -580,12 +966,76 @@ def merge_fields() -> MergeFieldsRead:
         computed=sorted(COMPUTED_HANDLERS),
         manual_note=(
             "manual.<anything> is typed by the person issuing the letter. Declare it as a "
-            "required manual field so issuance prompts for it."
+            "required manual field so issuance prompts for it, and give it a field to "
+            "start from (say employee.notice_period) to have it filled in for you."
         ),
+        labels=FIELD_LABELS,
     )
 
 
 # ── Preview ─────────────────────────────────────────────────────────────────
+
+
+def _fill_defaults(context: MergeContext, fields: list[Any]) -> dict[str, str]:
+    """Pre-fill each manual field left blank from the field it starts from.
+
+    "Notice period" on a promotion letter starts as the employee's notice
+    period in words; HR may type something else, and what they type wins.
+    """
+    filled: dict[str, str] = {}
+    for field in fields:
+        path = getattr(field, "source_path", None)
+        if field.source != FieldSource.MANUAL or not path:
+            continue
+        key = field.token.split(".")[-1]
+        if str(context.manual.get(key) or "").strip():
+            continue
+        try:
+            value = resolve_plain(path, context)
+        except LetterMergeError:
+            continue
+        if value:
+            context.manual[key] = value
+            filled[key] = value
+    # A promotion letter's annexure names the new designation, as typed.
+    designation = str(context.manual.get("designation") or "").strip()
+    if designation and context.annexure and not context.annexure.get("error"):
+        context.annexure["designation"] = designation
+    return filled
+
+
+async def default_as_of(
+    session: AsyncSession, user: User, employee: Employee, category: LetterCategory | None
+) -> date:
+    """The date a letter's values resolve on when HR does not choose one.
+
+    A promotion letter is written before the raise starts and must carry the
+    new salary, so it reads the latest revision when that is still ahead. An
+    offer or appointment letter reads the joining date; a relieving or
+    experience letter the last working day.
+    """
+    today = date.today()
+    if category is LetterCategory.PROMOTION:
+        latest = await session.scalar(
+            tenant_scoped(
+                select(EmployeeSalary.effective_from)
+                .where(EmployeeSalary.employee_id == employee.id)
+                .order_by(desc(EmployeeSalary.effective_from)),
+                EmployeeSalary,
+                user,
+            ).limit(1)
+        )
+        if latest is not None and latest > today:
+            return latest
+    if category in (LetterCategory.OFFER, LetterCategory.APPOINTMENT):
+        joined = employee.date_of_joining
+        if joined is not None and joined > today:
+            return joined
+    if category in (LetterCategory.RELIEVING, LetterCategory.EXPERIENCE):
+        left = employee.date_of_exit
+        if left is not None and left < today:
+            return left
+    return today
 
 
 async def _preview(
@@ -597,17 +1047,38 @@ async def _preview(
     footer_html: str | None,
     fields: list[Any],
     request: PreviewRequest,
+    category: LetterCategory | None = None,
 ) -> PreviewRead:
-    as_of = request.as_of or date.today()
     manual = dict(request.manual_values)
+    letterhead = await letterhead_service.current_snapshot(session, user)
+    tokens = extract_tokens(header_html, body_html, footer_html)
 
     if request.employee_id is not None:
         employee = await _employee(session, user, request.employee_id)
-        context = await _build_context(session, user, employee, as_of=as_of, manual=manual)
+        as_of = request.as_of or await default_as_of(session, user, employee, category)
+        context = await _build_context(
+            session,
+            user,
+            employee,
+            as_of=as_of,
+            manual=manual,
+            letterhead=letterhead,
+            tokens=tokens,
+            category=category,
+        )
+        _fill_defaults(context, fields)
         label: str | None = f"{employee.full_name} ({employee.employee_code})"
     else:
+        as_of = request.as_of or date.today()
         tenant = await session.get(Tenant, user.tenant_id)
-        context = _sample_context(tenant, as_of=as_of, manual=manual)
+        context = _sample_context(
+            tenant,
+            as_of=as_of,
+            manual=manual,
+            letterhead=letterhead,
+            signature=await letterhead_service.signature_html(letterhead),
+        )
+        _fill_defaults(context, fields)
         label = None
 
     required = {f.token for f in fields if f.required}
@@ -621,8 +1092,10 @@ async def _preview(
     for field in fields:
         if field.required and field.source == FieldSource.MANUAL:
             key = field.token.split(".")[-1]
-            if not manual.get(key):
-                problems.append(f"{field.token}: '{field.label}' must be typed in at issuance")
+            if not context.manual.get(key):
+                # One plain line instead of the merge engine's "could not be resolved".
+                problems = [p for p in problems if not p.startswith(f"{field.token}:")]
+                problems.append(f"'{field.label}' is typed in when the letter is issued")
 
     return PreviewRead(
         html=html_out,
@@ -646,6 +1119,7 @@ async def preview_template(
         footer_html=template.footer_html,
         fields=list(template.fields),
         request=request,
+        category=template.category,
     )
 
 
@@ -667,6 +1141,7 @@ async def preview_draft(
         footer_html=request.footer_html,
         fields=request.fields,
         request=request,
+        category=request.category,
     )
     result.problems = sorted(set(result.problems) | set(problems))
     return result
@@ -712,23 +1187,38 @@ async def issue_letter(
     employee = await _employee(session, user, employee_id)
 
     template = await get_template(session, user, template_id)
-    effective_as_of = as_of or date.today()
-    manual = manual_values or {}
+    effective_as_of = as_of or await default_as_of(session, user, employee, template.category)
+    manual = {k: v for k, v in (manual_values or {}).items() if str(v).strip()}
+    letterhead = await letterhead_service.current_snapshot(session, user)
+    if not template.use_letterhead:
+        letterhead = {**letterhead, "design": "none"}
+
+    context = await _build_context(
+        session,
+        user,
+        employee,
+        as_of=effective_as_of,
+        manual=manual,
+        letterhead=letterhead,
+        tokens=extract_tokens(template.header_html, template.body_html, template.footer_html),
+        category=template.category,
+    )
+    _fill_defaults(context, list(template.fields))
 
     # Required MANUAL fields the template declares must be supplied before we
     # bother merging — a clearer error than "token resolved to nothing".
     missing = [
         f.label
         for f in template.fields
-        if f.required and f.source.value == "manual" and not manual.get(f.token.split(".")[-1])
+        if f.required
+        and f.source.value == "manual"
+        and not context.manual.get(f.token.split(".")[-1])
     ]
     if missing:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"These fields are required for this letter: {', '.join(missing)}",
         )
-
-    context = await _build_context(session, user, employee, as_of=effective_as_of, manual=manual)
     required_tokens = {f.token for f in template.fields if f.required}
 
     try:
@@ -740,8 +1230,19 @@ async def issue_letter(
             required_tokens=required_tokens or None,
         )
     except LetterMergeError as exc:
+        detail = str(exc)
+        if exc.empty_tokens:
+            # Say it in words: "Last working day is empty on Deepak's record."
+            labels = {f.token: f.label for f in template.fields}
+            names = [labels.get(t) or FIELD_LABELS.get(t) or t for t in exc.empty_tokens]
+            person = " ".join(p for p in (employee.first_name, employee.last_name) if p)
+            detail = (
+                f"This letter needs {', '.join(names)}, which "
+                f"{'is' if len(names) == 1 else 'are'} empty on {person}'s record. "
+                "Fill it in on their profile, then issue the letter again."
+            )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
         ) from exc
 
     reference = await allocate_reference_number(session, user, template.category, effective_as_of)
@@ -755,7 +1256,8 @@ async def issue_letter(
         reference_number=reference,
         merged_html=merged,
         content_hash=content_hash(merged),
-        manual_values=_serialise(manual),
+        letterhead=letterhead,
+        manual_values=_serialise(context.manual),
         as_of_date=datetime.combine(effective_as_of, datetime.min.time(), tzinfo=UTC),
         status=(
             LetterStatus.PENDING_APPROVAL if template.requires_approval else LetterStatus.APPROVED
@@ -768,11 +1270,7 @@ async def issue_letter(
     if generate_pdf:
         tenant = await session.get(Tenant, user.tenant_id)
         try:
-            pdf_bytes = render_pdf(
-                merged_html=merged,
-                reference_number=reference,
-                letterhead=Letterhead(company_name=tenant.name if tenant else "AskMira"),
-            )
+            pdf_bytes = await render_letter_pdf(merged, reference, letterhead, tenant)
         except PdfRenderError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -820,6 +1318,29 @@ async def issue_letter(
     return letter
 
 
+async def render_letter_pdf(
+    merged_html: str, reference_number: str, letterhead: dict | None, tenant: Tenant | None
+) -> bytes:
+    """A letter as a PDF, on the letterhead it was issued with.
+
+    A letter issued before letterheads existed has none recorded and keeps
+    rendering on the plain header it went out with.
+    """
+    if letterhead is None:
+        return render_pdf(
+            merged_html=merged_html,
+            reference_number=reference_number,
+            letterhead=Letterhead(company_name=tenant.name if tenant else "AskMira"),
+        )
+    return render_pdf(
+        merged_html=merged_html,
+        reference_number=reference_number,
+        art=await letterhead_service.art_for(letterhead),
+        show_reference=bool(letterhead.get("show_reference", True)),
+        highlight_colour=str(letterhead.get("highlight_colour") or "#E00000"),
+    )
+
+
 async def stored_pdf(storage_key: str) -> bytes | None:
     """The stored bytes at a key, or None."""
     if not storage_key:
@@ -843,10 +1364,8 @@ async def _pdf_bytes(session: AsyncSession, letter: IssuedLetter) -> bytes:
 
     tenant = await session.get(Tenant, letter.tenant_id)
     try:
-        data = render_pdf(
-            merged_html=letter.merged_html,
-            reference_number=letter.reference_number,
-            letterhead=Letterhead(company_name=tenant.name if tenant else "AskMira"),
+        data = await render_letter_pdf(
+            letter.merged_html, letter.reference_number, letter.letterhead, tenant
         )
     except PdfRenderError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -867,6 +1386,97 @@ def _serialise(values: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+async def prefill(
+    session: AsyncSession,
+    user: User,
+    template_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    as_of: date | None = None,
+) -> PrefillRead:
+    """What the issue form starts with for one person.
+
+    Each manual field that starts from a record field gets that field's value,
+    so HR sees "two months" already in "Notice period" and may change it.
+    """
+    template = await get_template(session, user, template_id)
+    employee = await _employee(session, user, employee_id)
+    effective = as_of or await default_as_of(session, user, employee, template.category)
+    context = await _build_context(
+        session,
+        user,
+        employee,
+        as_of=effective,
+        manual={},
+        tokens={f.source_path for f in template.fields if f.source_path},
+        category=template.category,
+    )
+    return PrefillRead(values=_fill_defaults(context, list(template.fields)), as_of=effective)
+
+
+async def pdf_preview(session: AsyncSession, user: User, request: LetterPdfPreviewRequest) -> bytes:
+    """A letter as it would print, for a saved template or unsaved content.
+
+    Nothing is issued or numbered: the reference line reads PREVIEW, and a
+    value that is missing shows as a marked hole instead of blocking.
+    """
+    if request.template_id is not None:
+        template = await get_template(session, user, request.template_id)
+        body, header, footer = template.body_html, template.header_html, template.footer_html
+        fields: list[Any] = list(template.fields)
+        use_letterhead, category = template.use_letterhead, template.category
+    else:
+        if not (request.body_html or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Write the letter before previewing it.",
+            )
+        body, header, footer = request.body_html or "", request.header_html, request.footer_html
+        fields, use_letterhead, category = request.fields, request.use_letterhead, request.category
+
+    rendered = await _preview(
+        session,
+        user,
+        body_html=body,
+        header_html=header,
+        footer_html=footer,
+        fields=fields,
+        request=request,
+        category=category,
+    )
+    letterhead = await letterhead_service.current_snapshot(session, user)
+    if not use_letterhead:
+        letterhead = {**letterhead, "design": "none"}
+    tenant = await session.get(Tenant, user.tenant_id)
+    try:
+        return await render_letter_pdf(rendered.html, "PREVIEW", letterhead, tenant)
+    except PdfRenderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+async def letterhead_preview(session: AsyncSession, user: User, settings_in: Any) -> bytes:
+    """A sample letter on unsaved letterhead choices, for the settings screen."""
+    current = await letterhead_service.current_snapshot(session, user)
+    tenant = await session.get(Tenant, user.tenant_id)
+    chosen = {**current, **settings_in.model_dump(mode="json")}
+    chosen["company_name"] = chosen.get("company_name") or (tenant.name if tenant else "")
+    if not chosen.get("show_logo"):
+        chosen["logo_key"] = None
+    sample = letterhead_service.SAMPLE_LETTER.format(
+        company=html_escape(chosen["company_name"]),
+        title=html_escape(chosen.get("signatory_title") or ""),
+        signature=await letterhead_service.signature_html(chosen),
+        date=long_date(date.today()),
+    )
+    try:
+        return await render_letter_pdf(sample, "PREVIEW", chosen, tenant)
+    except PdfRenderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 async def issue_bulk(
@@ -1135,6 +1745,21 @@ async def letter_verify(session: AsyncSession, user: User, letter_id: uuid.UUID)
     )
 
 
+async def _download_stem(session: AsyncSession, letter: IssuedLetter) -> str:
+    """ "Promotion Letter - Deepak Rawat - CGB_PRO_2026-27_00001": what it is, whose, which."""
+    import re
+
+    template = await session.get(LetterTemplate, letter.template_id)
+    person = None
+    if letter.employee_id is not None:
+        employee = await session.get(Employee, letter.employee_id)
+        if employee is not None:
+            person = " ".join(p for p in (employee.first_name, employee.last_name) if p)
+    parts = [template.name if template else None, person, letter.reference_number]
+    stem = " - ".join(p for p in parts if p).replace("/", "_")
+    return re.sub(r"[^A-Za-z0-9 ._()-]+", "", stem).strip() or "letter"
+
+
 async def letter_pdf(
     session: AsyncSession, user: User, letter_id: uuid.UUID, *, signed: bool = False
 ) -> tuple[str, bytes]:
@@ -1149,7 +1774,7 @@ async def letter_pdf(
                 "It may have been tampered with; do not distribute it."
             ),
         )
-    stem = letter.reference_number.replace("/", "_")
+    stem = await _download_stem(session, letter)
     if signed:
         data = await stored_pdf(letter.signed_pdf_storage_key or "")
         if data is None:

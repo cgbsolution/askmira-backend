@@ -22,7 +22,7 @@ import html
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 
 from app.services.documents.indian_numbers import amount_in_words, group_indian
@@ -30,11 +30,15 @@ from app.services.documents.indian_numbers import amount_in_words, group_indian
 __all__ = [
     "AVAILABLE_FIELDS",
     "COMPUTED_HANDLERS",
+    "FIELD_LABELS",
     "LetterMergeError",
     "MergeContext",
     "extract_tokens",
+    "long_date",
+    "period_in_words",
     "preview_render",
     "render_template",
+    "resolve_plain",
     "template_token_problems",
 ]
 
@@ -55,9 +59,68 @@ AVAILABLE_FIELDS: dict[str, tuple[str, ...]] = {
         "date_of_exit",
         "probation_end_date",
         "notice_period_days",
+        # Worked out from the record, or looked up from what it points at.
+        "salutation",
+        "full_name",
+        "notice_period",
+        "probation_period",
+        "location",
+        "location_city",
+        "department",
+        "company",
+        "manager_name",
     ),
-    "salary": ("ctc_annual", "currency", "effective_from"),
+    "salary": (
+        "ctc_annual",
+        "ctc_monthly",
+        "currency",
+        "effective_from",
+        # From the salary annexure: the structure's earnings for a full month,
+        # and what is left after PF, ESI, PT and the other deductions.
+        "gross_monthly",
+        "gross_annual",
+        "net_monthly",
+        "net_annual",
+    ),
     "tenant": ("name", "slug"),
+    # The letterhead's company details (Documents -> Letterhead).
+    "company": (
+        "name",
+        "address",
+        "phone",
+        "email",
+        "website",
+        "signatory_name",
+        "signatory_title",
+    ),
+    # From the employee's profile, for the joining form and similar.
+    "profile": (
+        "father_name",
+        "mother_name",
+        "spouse_name",
+        "blood_group",
+        "marital_status",
+        "nationality",
+        "personal_email",
+        "permanent_address",
+        "permanent_city",
+        "permanent_state",
+        "permanent_pincode",
+        "current_address",
+        "current_city",
+        "current_state",
+        "current_pincode",
+        "emergency_name",
+        "emergency_relation",
+        "emergency_phone",
+        "highest_education",
+        "specialisation",
+        "total_experience",
+        "bank_name",
+        "account_holder_name",
+        "account_number",
+        "ifsc",
+    ),
     # What the statutory declarations (EPF Form 11, Form 2, gratuity Form F, the
     # ESI declaration) ask for, from the employee record and their profile.
     "statutory": (
@@ -81,7 +144,15 @@ TOKEN_PATTERN = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}")
 
 
 class LetterMergeError(ValueError):
-    """A token could not be resolved, or a required value is missing."""
+    """A token could not be resolved, or a required value is missing.
+
+    `empty_tokens` names the required fields that were blank, so the caller can
+    say which values to fill in, in words.
+    """
+
+    def __init__(self, message: str, *, empty_tokens: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.empty_tokens = empty_tokens or []
 
 
 class SalaryLike(Protocol):
@@ -109,6 +180,17 @@ class MergeContext:
     # Profile nominees, each with its `purpose` (pf, eps, gratuity, insurance).
     nominees: list[dict[str, Any]] = field(default_factory=list)
     family: list[dict[str, Any]] = field(default_factory=list)
+    company: dict[str, Any] = field(default_factory=dict)
+    profile: dict[str, Any] = field(default_factory=dict)
+    previous_employment: list[dict[str, Any]] = field(default_factory=list)
+    #: The salary annexure, worked out by the service (`annexure.py`).
+    #: `{"error": "..."}` when it could not be, so the token can say why.
+    annexure: dict[str, Any] | None = None
+    #: The signatory's signature, as markup the service built.
+    signature_html: str = ""
+    #: The day the letter is dated. Values resolve as of `as_of`, which can
+    #: differ: a promotion letter written today carries next month's salary.
+    issued_on: date | None = None
 
 
 def extract_tokens(*html_fragments: str | None) -> set[str]:
@@ -197,7 +279,136 @@ def _employee_full_name(context: MergeContext) -> str:
 
 
 def _today_long(context: MergeContext) -> str:
-    return html.escape(context.as_of.strftime("%d %B %Y"))
+    return long_date(context.issued_on or context.as_of)
+
+
+def _ordinal(day: int) -> str:
+    if 11 <= day % 100 <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
+def long_date(value: date, *, markup: bool = True) -> str:
+    """A date as letters write it: 09<sup>th</sup> March 2026."""
+    suffix = _ordinal(value.day)
+    if markup:
+        return f"{value.day:02d}<sup>{suffix}</sup> {value.strftime('%B %Y')}"
+    return f"{value.day:02d}{suffix} {value.strftime('%B %Y')}"
+
+
+_NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
+
+
+def period_in_words(days: int | None) -> str:
+    """60 -> "two months", 90 -> "three months", 45 -> "45 days"."""
+    if days is None or days <= 0:
+        return ""
+    if days % 30 == 0 and days // 30 <= 12:
+        months = days // 30
+        return f"{_NUMBER_WORDS[months]} month{'s' if months != 1 else ''}"
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def _money_whole(value: Any) -> str:
+    """Whole rupees, Indian grouping, and a dash for nothing, as annexures show."""
+    if value is None:
+        return "-"
+    amount = Decimal(str(value)).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    if amount == 0:
+        return "-"
+    return html.escape(group_indian(amount))
+
+
+def _annexure_row(label: str, monthly: Any, annual: Any, css: str = "") -> str:
+    klass = f' class="{css}"' if css else ""
+    return (
+        f"<tr{klass}><td>{html.escape(label)}</td>"
+        f'<td class="num">{_money_whole(monthly)}</td>'
+        f'<td class="num">{_money_whole(annual)}</td></tr>'
+    )
+
+
+def _salary_annexure(context: MergeContext) -> str:
+    """The salary annexure: earnings, gross, the employee's deductions, take-home,
+    the employer's contributions and the CTC, a month's and a year's.
+
+    Worked out by the service from the salary in force on the letter's as-of
+    date, with PF, ESI and PT from the same payroll rules a run would use.
+    """
+    data = context.annexure
+    if not data:
+        raise LetterMergeError(
+            "computed.salary_annexure needs a salary, but this employee has none "
+            "assigned as of the letter's as-of date"
+        )
+    if data.get("error"):
+        raise LetterMergeError(str(data["error"]))
+
+    def head(label: str, value: Any) -> str:
+        shown = long_date(value) if isinstance(value, date) else html.escape(str(value or "-"))
+        return f'<tr class="head"><td>{html.escape(label)}</td><td colspan="2">{shown}</td></tr>'
+
+    def section(label: str) -> str:
+        return f'<tr class="section"><td colspan="3">{html.escape(label)}</td></tr>'
+
+    rows = [
+        head("Name", data.get("name")),
+        head("Location", data.get("location")),
+        head("Designation", data.get("designation")),
+        head(str(data.get("effective_label") or "Effective from"), data.get("effective_from")),
+        '<tr class="head"><td>Particulars</td><td class="num">Monthly (INR)</td>'
+        '<td class="num">Annual (INR)</td></tr>',
+        section("Fixed Components"),
+        *(_annexure_row(*line) for line in data["earnings"]),
+        _annexure_row("Gross Salary", *data["gross"], css="total"),
+        section("Employee's Contributions"),
+        *(_annexure_row(*line) for line in data["employee"]),
+        _annexure_row("Total", *data["employee_total"], css="total"),
+        _annexure_row("Net Salary / Take Home", *data["net"], css="total"),
+        section("Employer's Contributions"),
+        *(_annexure_row(*line) for line in data["employer"]),
+        _annexure_row("Total", *data["employer_total"], css="total"),
+        _annexure_row("Cost to Company (CTC)", *data["ctc"], css="ctc"),
+    ]
+    return (
+        '<table class="annexure" cellspacing="0" cellpadding="0">'
+        '<col width="56%" /><col width="22%" /><col width="22%" />' + "".join(rows) + "</table>"
+    )
+
+
+def _signature(context: MergeContext) -> str:
+    return context.signature_html or '<div style="height:34pt"></div>'
+
+
+def _short_date(value: Any) -> str:
+    if isinstance(value, date):
+        return html.escape(value.strftime("%d/%m/%Y"))
+    return _format_scalar(value)
+
+
+def _previous_employment_table(context: MergeContext) -> str:
+    """Previous employers, with an empty row to write in when there are none."""
+    body = (
+        "".join(
+            "<tr>"
+            + _cell(job.get("employer"))
+            + _cell(job.get("location"))
+            + _cell(job.get("employee_id"))
+            + _cell(job.get("designation"))
+            + f"<td>{_short_date(job.get('from_date'))}</td>"
+            + f"<td>{_short_date(job.get('to_date'))}</td>"
+            + "</tr>"
+            for job in context.previous_employment
+        )
+        or "<tr>" + "<td>&nbsp;<br/>&nbsp;</td>" * 6 + "</tr>"
+    )
+    return (
+        '<table class="grid" cellspacing="0"><thead><tr>'
+        "<th>Name of the Organisation</th><th>Address &amp; Location</th>"
+        "<th>Employee ID</th><th>Designation</th><th>From (DD/MM/YYYY)</th>"
+        "<th>To (DD/MM/YYYY)</th>"
+        f"</tr></thead><tbody>{body}</tbody></table>"
+    )
 
 
 def _cell(value: Any) -> str:
@@ -271,6 +482,55 @@ COMPUTED_HANDLERS = {
     "eps_nominees_table": _nominee_table("eps", "pension (EPS)"),
     "gratuity_nominees_table": _nominee_table("gratuity", "gratuity"),
     "family_table": _family_table,
+    "salary_annexure": _salary_annexure,
+    "signature": _signature,
+    "previous_employment_table": _previous_employment_table,
+}
+
+#: Plain-language names for the editor's "Insert field" menu.
+FIELD_LABELS: dict[str, str] = {
+    "employee.salutation": "Mr. / Ms.",
+    "employee.full_name": "Full name",
+    "employee.first_name": "First name",
+    "employee.last_name": "Last name",
+    "employee.display_name": "Display name",
+    "employee.employee_code": "Employee ID",
+    "employee.work_email": "Work email",
+    "employee.designation": "Designation",
+    "employee.grade": "Grade",
+    "employee.department": "Department",
+    "employee.location": "Location",
+    "employee.location_city": "Location city",
+    "employee.company": "Company (legal entity)",
+    "employee.manager_name": "Reporting manager",
+    "employee.date_of_joining": "Date of joining",
+    "employee.date_of_exit": "Last working day",
+    "employee.probation_end_date": "Probation end date",
+    "employee.probation_period": "Probation period (in words)",
+    "employee.notice_period_days": "Notice period (days)",
+    "employee.notice_period": "Notice period (in words)",
+    "salary.ctc_annual": "CTC per year",
+    "salary.ctc_monthly": "CTC per month",
+    "salary.gross_monthly": "Gross per month",
+    "salary.gross_annual": "Gross per year",
+    "salary.net_monthly": "Take-home per month",
+    "salary.net_annual": "Take-home per year",
+    "salary.effective_from": "Salary effective from",
+    "salary.currency": "Currency",
+    "company.name": "Company name",
+    "company.address": "Company address",
+    "company.phone": "Company phone",
+    "company.email": "Company email",
+    "company.website": "Company website",
+    "company.signatory_name": "Signatory name",
+    "company.signatory_title": "Signatory title",
+    "computed.letter_date": "Letter date",
+    "computed.salary_annexure": "Salary annexure table",
+    "computed.ctc_table": "CTC table (simple)",
+    "computed.ctc_in_words": "CTC in words",
+    "computed.tenure": "Length of service",
+    "computed.signature": "Signature image",
+    "computed.previous_employment_table": "Previous employment table",
 }
 
 
@@ -286,9 +546,12 @@ def _format_scalar(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, Decimal):
+        # 6,20,000 rather than 6,20,000.00: paise only when there are some.
+        if value == value.to_integral_value():
+            value = value.quantize(Decimal(1))
         return html.escape(group_indian(value))
     if isinstance(value, date):
-        return html.escape(value.strftime("%d %B %Y"))
+        return long_date(value)
     if isinstance(value, bool):
         return "Yes" if value else "No"
     return html.escape(str(value))
@@ -315,6 +578,8 @@ def _resolve(token: str, context: MergeContext) -> str:
         "tenant": context.tenant,
         "manual": context.manual,
         "statutory": context.statutory,
+        "company": context.company,
+        "profile": context.profile,
     }
     if namespace not in sources:
         raise LetterMergeError(
@@ -336,6 +601,15 @@ def _resolve(token: str, context: MergeContext) -> str:
         value = value[part]
 
     return _format_scalar(value)
+
+
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def resolve_plain(token: str, context: MergeContext) -> str:
+    """A token's value as plain text, for pre-filling a form field with it."""
+    value = _resolve(token, context)
+    return html.unescape(_TAGS.sub("", value)).strip()
 
 
 def render_template(
@@ -379,7 +653,8 @@ def render_template(
         raise LetterMergeError(
             "This letter cannot be generated: required field(s) resolved to nothing — "
             + ", ".join(sorted(empty_required))
-            + ". A letter must never go out with a blank where a value should be."
+            + ". A letter must never go out with a blank where a value should be.",
+            empty_tokens=sorted(empty_required),
         )
 
     def substitute(fragment: str | None) -> str:

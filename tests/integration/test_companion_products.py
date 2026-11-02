@@ -303,7 +303,9 @@ async def test_the_whole_companys_claims_are_for_hr_only(
     today = datetime.now(IST).date()
     start = datetime.combine(today.replace(day=1), time.min, IST).astimezone(UTC)
     assert datetime.fromisoformat(body["params"]["from"]) == start
-    status_card, category_card, unpaid = reply["cards"]
+    status_card, category_card, unpaid, update = reply["cards"]
+    # This product does not yet send who submitted what: said, not hidden.
+    assert "needs its latest update" in update["text"]
     assert status_card["rows"] == [["Pending", 1, "₹1,250.50"], ["Approved", 2, "₹4,500.25"]]
     assert category_card["rows"] == [["Lodging", 1, "₹4,000.00"]]
     assert unpaid["text"] == "Approved but not yet paid: 1 claim, ₹500.25."

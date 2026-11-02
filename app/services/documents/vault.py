@@ -385,7 +385,7 @@ _ZIP_NOISE = re.compile(r"(^|/)(__MACOSX/|\._|\.DS_Store$|Thumbs\.db$|desktop\.i
 
 
 def _title_from(name: str) -> str:
-    """"PAN_card scan.pdf" → "PAN card scan": the file's name, without its extension."""
+    """ "PAN_card scan.pdf" → "PAN card scan": the file's name, without its extension."""
     stem = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     if "." in stem:
         stem = stem.rsplit(".", 1)[0]
@@ -393,9 +393,7 @@ def _title_from(name: str) -> str:
     return (title or "Document")[:255]
 
 
-def _unzip(
-    name: str, data: bytes, skipped: list[BulkDocumentSkipped]
-) -> list[tuple[str, bytes]]:
+def _unzip(name: str, data: bytes, skipped: list[BulkDocumentSkipped]) -> list[tuple[str, bytes]]:
     """The files inside a ZIP, each read no further than the upload limit.
 
     The sizes a ZIP declares are not trusted: every entry is read with a cap,

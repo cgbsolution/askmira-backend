@@ -171,6 +171,11 @@ def _card(card: dict[str, Any]) -> list[str]:
 def view_of(cards: list[dict[str, Any]], *, allowed: bool) -> str:
     """The text the model reads for one tool call's cards."""
     if not allowed:
+        # A tool may say what happened without the record itself (a leave that
+        # could not be applied): that much the model must know, or it guesses.
+        notes = [str(c["model_note"]) for c in cards if c.get("model_note")]
+        if notes:
+            return " ".join(notes)
         offers = [c for c in cards if c.get("type") == "proposal"]
         if offers:
             ids = ", ".join(str(c.get("action_id")) for c in offers)

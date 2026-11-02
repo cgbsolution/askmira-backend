@@ -30,6 +30,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -252,6 +253,42 @@ def _balances_card(balances: list[Any], title: str, note: str) -> dict[str, Any]
     }
 
 
+def _refusal(
+    name: str,
+    *,
+    available: Any,
+    asked: Any,
+    problems: list[str],
+    others: list[Any],
+) -> str:
+    """Why a leave cannot be applied, in one plain sentence, with the days it can be."""
+    have = Decimal(str(available)) if available is not None else None
+    want = Decimal(str(asked or 0))
+    if have is not None and have <= 0:
+        text = f"You have no {name} left ({_num(have)} days available), so you can't apply for it."
+    elif have is not None and want > have:
+        text = (
+            f"You have only {_num(have)} {_days_word(have)} of {name}, so you can apply for "
+            f"{_num(have)} {_days_word(have)} only, not {_num(want)}. Tell me which "
+            f"{'day' if have <= 1 else 'days'} and I'll prepare that instead."
+        )
+    else:
+        text = " ".join(problems) or f"This {name} request cannot be applied."
+        return text
+    spare = [
+        f"{_num(b.available)} {_days_word(Decimal(str(b.available)))} of {b.leave_type_name}"
+        for b in others
+        if b.available is not None and Decimal(str(b.available)) > 0
+    ]
+    if spare:
+        text += " You do have " + ", ".join(spare[:3]) + "."
+    return text
+
+
+def _days_word(value: Decimal) -> str:
+    return "day" if value == 1 else "days"
+
+
 async def propose_leave(
     session: AsyncSession, user: User, inputs: dict[str, Any], ctx: ToolContext
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -318,7 +355,7 @@ async def propose_leave(
                 + (f" ({_num(waiting)} waiting for approval)" if waiting else ""),
             }
         )
-    if preview.available_after is not None:
+    if preview.available_after is not None and (preview.allowed or preview.available_after >= 0):
         figures.append({"label": "Left after this", "value": _num(preview.available_after)})
     skipped = [f"{h.name} ({h.date:%d %b})" for h in preview.holidays]
     notes = list(preview.warnings)
@@ -327,16 +364,34 @@ async def propose_leave(
     if preview.weekly_offs:
         notes.append(f"{len(preview.weekly_offs)} weekly off day(s) not counted.")
     if not preview.allowed:
+        refusal = _refusal(
+            chosen.leave_type_name,
+            available=preview.available_before,
+            asked=preview.total_days,
+            problems=list(preview.problems),
+            others=[b for b in usable if b.leave_type_id != chosen.leave_type_id],
+        )
         return [
             {
                 "type": "record",
                 "title": "This leave cannot be applied",
-                "subtitle": "",
+                "subtitle": refusal,
                 "heading": chosen.leave_type_name,
                 "figures": figures,
                 "note": " ".join([*preview.problems, *notes]),
                 "open": "/time",
                 "open_label": "Open Time off",
+                # Said to the person as Mira's answer (service._send_ai), whatever
+                # the model wrote: it may not read the balance, so it cannot say it.
+                "refusal": refusal,
+                # What the model is told. No figure in it: the balance is the
+                # person's leave record, which the provider may not receive.
+                "model_note": (
+                    "NOT OFFERED. This leave could not be applied, so nothing was prepared and "
+                    "there is nothing to confirm. Do not ask the person to confirm. AskMira "
+                    "tells them why, with their balance, under your reply. If they want fewer "
+                    "days or another leave type, ask which and use apply_leave again."
+                ),
             }
         ], used
     approvers = ", ".join(preview.approvers) or "HR"

@@ -49,6 +49,7 @@ from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.payroll import EmployeeSalaryCreate
 from app.services.documents import service as document_service
+from app.services.documents.letter_merge import long_date
 from app.services.hiring import offers as offer_service
 from app.services.hiring import requisitions as requisition_service
 from app.services.payroll import service as payroll_service
@@ -689,10 +690,12 @@ async def test_the_standard_offer_template_releases_from_the_offers_own_terms(
     await session.commit()
 
     letter = await session.get(IssuedLetter, result["letter_id"])
-    assert "03 November 2026" in letter.merged_html
+    # Letters date things as HR's do: 03rd November 2026, the suffix raised.
+    assert "03<sup>rd</sup> November 2026" in letter.merged_html
     assert "Bengaluru" in letter.merged_html and "Bengaluru, Bengaluru" not in letter.merged_html
     deadline = VALID_UNTIL + timedelta(days=5)
-    assert deadline.strftime("%d %B %Y") in letter.merged_html, "the deadline set at release"
+    assert long_date(deadline) in letter.merged_html, "the deadline set at release"
+    assert letter.letterhead is not None, "printed on the workspace letterhead"
 
 
 async def test_an_unapproved_offer_cannot_be_released(

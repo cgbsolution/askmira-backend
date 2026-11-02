@@ -859,8 +859,18 @@ async def _offer_letter(
         else None
     )
 
+    # Printed on the workspace letterhead like every other letter, and kept with it.
+    from app.services.documents import letterhead as letterhead_service
+
+    letterhead = await letterhead_service.current_snapshot(session, user)
+    if not template.use_letterhead:
+        letterhead = {**letterhead, "design": "none"}
+
     context = letter_merge.MergeContext(
         as_of=date.today(),
+        issued_on=date.today(),
+        company=letterhead_service.company_values(letterhead),
+        signature_html=await letterhead_service.signature_html(letterhead),
         # The candidate stands in the employee slot: they are the recipient,
         # and every offer-letter token an HR admin writes reads naturally as
         # {{ employee.first_name }} because that is what the other templates use.
@@ -875,6 +885,10 @@ async def _offer_letter(
             "date_of_joining": offer.joining_date,
             "probation_end_date": None,
             "notice_period_days": offer.notice_period_days,
+            "full_name": candidate.full_name,
+            "salutation": "Mr. / Ms.",
+            "notice_period": letter_merge.period_in_words(offer.notice_period_days) or None,
+            "location": _place(location),
         },
         salary={
             "ctc_annual": Decimal(str(offer.ctc_annual)),
@@ -920,6 +934,7 @@ async def _offer_letter(
         reference_number=reference,
         merged_html=merged,
         content_hash=pdf.content_hash(merged),
+        letterhead=letterhead,
         manual_values={"offer_code": offer.code},
         status=LetterStatus.SENT,
         issued_by_user_id=user.id,

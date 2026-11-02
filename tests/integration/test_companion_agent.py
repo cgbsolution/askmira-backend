@@ -245,8 +245,57 @@ async def test_leave_beyond_the_balance_is_not_offered(
     )
     with use_backend(model):
         result = await _say(session, me, "four weeks of casual leave")
-    card = result["messages"][1]["cards"][0]
+    reply = result["messages"][1]
+    card = reply["cards"][0]
     assert card["type"] == "record" and card["title"] == "This leave cannot be applied"
+    assert (await session.scalars(select(CompanionAction))).all() == []
+    # Mira says how many days can be taken, in AskMira's words; never "confirm".
+    have = re.search(
+        r"You have only (\S+) days? of Casual Leave, so you can apply for", reply["text"]
+    )
+    assert have, reply["text"]
+    assert (
+        f"{have.group(1)} days only, not " in reply["text"] or "1 day only, not " in reply["text"]
+    )
+    assert "confirm" not in reply["text"].lower()
+    # The model was told nothing was offered, and no balance figure.
+    seen = model.calls[1]["messages"][-1]["content"][0]["content"]
+    assert "NOT OFFERED" in seen and have.group(1) not in seen
+
+
+async def test_leave_with_no_balance_says_it_cannot_be_applied(
+    session: AsyncSession, tenant: Tenant, me: User
+) -> None:
+    earned = LeaveType(tenant_id=tenant.id, name="Earned Leave", code="EL")
+    session.add(earned)
+    await session.flush()
+    session.add(
+        LeavePolicy(
+            tenant_id=tenant.id,
+            leave_type_id=earned.id,
+            name="Earned leave - none yet",
+            annual_quota_days=Decimal(0),
+            accrual_frequency="annual",
+            effective_from=date(2020, 1, 1),
+        )
+    )
+    await session.commit()
+    day = _weekday_ahead(9)
+    model = FakeModel(
+        [
+            tool_call(
+                "apply_leave", leave_type="EL", **{"from": day.isoformat(), "to": day.isoformat()}
+            )
+        ],
+        "I've prepared your request. Please confirm it below.",
+    )
+    with use_backend(model):
+        result = await _say(session, me, "earned leave next week")
+    reply = result["messages"][1]
+    assert reply["text"].startswith(
+        "You have no Earned Leave left (0 days available), so you can't apply"
+    )
+    assert "confirm" not in reply["text"].lower()
     assert (await session.scalars(select(CompanionAction))).all() == []
 
 

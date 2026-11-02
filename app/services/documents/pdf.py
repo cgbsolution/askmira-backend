@@ -26,8 +26,24 @@ from __future__ import annotations
 import hashlib
 import io
 from dataclasses import dataclass
+from html import escape as html_escape
 
-__all__ = ["DEFAULT_PAGE_CSS", "PdfRenderError", "content_hash", "render_pdf", "wrap_document"]
+from app.services.documents.letterhead_pdf import (
+    LetterheadArt,
+    body_area,
+    draw_letterhead,
+    mix,
+)
+
+__all__ = [
+    "DEFAULT_PAGE_CSS",
+    "PdfRenderError",
+    "content_hash",
+    "letter_css",
+    "render_pdf",
+    "wrap_document",
+    "wrap_letter",
+]
 
 
 class PdfRenderError(RuntimeError):
@@ -118,13 +134,119 @@ def wrap_document(
 </body></html>"""
 
 
+def letter_css(*, secondary_colour: str = "#4DAAF6", highlight_colour: str = "#E00000") -> str:
+    """Type and tables for letters printed on a drawn letterhead.
+
+    `.annexure` is the salary annexure (`computed.salary_annexure`); `.form` is
+    a fill-in form (label, then a ruled line); `.page-break` starts a new page.
+    """
+    section = mix(secondary_colour, "#FFFFFF", 0.82)
+    return f"""
+body {{ font-family: Helvetica, Arial, sans-serif; font-size: 10pt; line-height: 1.4;
+       color: #111111; }}
+p {{ margin: 0 0 7pt 0; }}
+h1, h2, h3 {{ color: #111111; margin: 0 0 8pt 0; }}
+h1 {{ font-size: 15pt; }} h2 {{ font-size: 13.5pt; }} h3 {{ font-size: 11pt; }}
+.page-break {{ page-break-before: always; }}
+table.keep {{ width: 100%; }}
+table.keep td {{ padding: 0; }}
+table.ctc-table {{ width: 100%; margin: 10pt 0; }}
+table.ctc-table th {{ background-color: {section}; text-align: left; padding: 4pt;
+                     border: 0.5pt solid #333333; font-size: 9.5pt; }}
+table.ctc-table td {{ padding: 4pt; border: 0.5pt solid #333333; font-size: 9.5pt; }}
+table.annexure {{ width: 100%; margin: 4pt 0 10pt 0; }}
+table.annexure td {{ border: 0.6pt solid #111111; padding: 2.5pt 5pt 0.5pt 5pt;
+                    font-size: 9.5pt; line-height: 1.2; }}
+table.annexure td.num {{ text-align: right; padding-right: 14pt; }}
+table.annexure tr.head td {{ font-weight: bold; }}
+table.annexure tr.head td.num {{ text-align: center; padding-right: 5pt; }}
+table.annexure tr.section td {{ background-color: {section}; font-weight: bold;
+                               text-align: center; }}
+table.annexure tr.total td {{ color: {highlight_colour}; font-weight: bold; }}
+table.annexure tr.ctc td {{ font-weight: bold; }}
+table.form {{ width: 100%; margin: 0 0 4pt 0; }}
+table.form td {{ padding: 3.5pt 2pt 1pt 2pt; vertical-align: bottom; font-weight: bold; }}
+table.form td.line {{ border-bottom: 0.6pt solid #111111; font-weight: normal; }}
+table.grid {{ width: 100%; margin: 6pt 0 10pt 0; }}
+table.grid th {{ background-color: {section}; border: 0.6pt solid #111111; padding: 4pt;
+                 font-size: 9.5pt; text-align: center; }}
+table.grid td {{ border: 0.6pt solid #111111; padding: 4pt; font-size: 9.5pt; }}
+#page-footer {{ font-size: 7pt; color: #8a8a8a; text-align: right; }}
+"""
+
+
+def wrap_letter(
+    *,
+    merged_html: str,
+    reference_number: str,
+    art: LetterheadArt,
+    show_reference: bool = True,
+    highlight_colour: str = "#E00000",
+) -> str:
+    """The HTML for a letter printed on a drawn letterhead.
+
+    Margins come from the design, so the content sits in the space between its
+    header and footer; the letterhead itself is laid underneath afterwards.
+    """
+    area = body_area(art.design)
+    width = 595.28 - area.left - area.right
+    footer = (
+        f'<div id="page-footer">Ref. {reference_number} &nbsp;|&nbsp; '
+        "Page <pdf:pagenumber> of <pdf:pagecount></div>"
+        if show_reference
+        else ""
+    )
+    frame = (
+        f"""@frame footer_frame {{ -pdf-frame-content: page-footer;
+        bottom: {area.footer_line}pt; left: {area.left}pt; width: {width}pt; height: 12pt; }}"""
+        if show_reference
+        else ""
+    )
+    css = letter_css(secondary_colour=art.secondary_colour, highlight_colour=highlight_colour)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8" />
+<title>{html_escape(art.company_name or "Letter")} {html_escape(reference_number)}</title>
+<style>
+@page {{ size: a4 portrait;
+    margin: {area.top}pt {area.right}pt {area.bottom}pt {area.left}pt;
+    {frame}
+}}
+{css}
+</style>
+</head><body>
+{footer}
+{merged_html}
+</body></html>"""
+
+
+def _underlay(document: bytes, letterhead: bytes) -> bytes:
+    """Every page of `document` with the letterhead page drawn beneath it."""
+    from pypdf import PdfReader, PdfWriter
+
+    background = PdfReader(io.BytesIO(letterhead)).pages[0]
+    writer = PdfWriter()
+    for page in PdfReader(io.BytesIO(document)).pages:
+        writer.add_page(page).merge_page(background, over=False)
+    # A fixed document id: the same letter is the same bytes.
+    writer._ID = None
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def render_pdf(
     *,
     merged_html: str,
     reference_number: str,
-    letterhead: Letterhead,
+    letterhead: Letterhead | None = None,
+    art: LetterheadArt | None = None,
+    show_reference: bool = True,
+    highlight_colour: str = "#E00000",
 ) -> bytes:
     """Render a letter to PDF bytes.
+
+    With `art`, the letter is printed on that drawn letterhead (letters). With
+    only `letterhead`, the plain header other documents use (payslips, Form 16).
 
     Raises:
         PdfRenderError: if the renderer is unavailable or the HTML cannot be
@@ -139,11 +261,22 @@ def render_pdf(
             "alternative renderer."
         ) from exc
 
-    document = wrap_document(
-        merged_html=merged_html,
-        reference_number=reference_number,
-        letterhead=letterhead,
-    )
+    if art is not None:
+        document = wrap_letter(
+            merged_html=merged_html,
+            reference_number=reference_number,
+            art=art,
+            show_reference=show_reference,
+            highlight_colour=highlight_colour,
+        )
+    elif letterhead is not None:
+        document = wrap_document(
+            merged_html=merged_html,
+            reference_number=reference_number,
+            letterhead=letterhead,
+        )
+    else:
+        raise PdfRenderError("A letter needs a letterhead to be printed on.")
 
     buffer = io.BytesIO()
     result = pisa.CreatePDF(
@@ -164,6 +297,13 @@ def render_pdf(
     data = buffer.getvalue()
     if not data:
         raise PdfRenderError(f"The PDF renderer produced no output for {reference_number}")
+    if art is not None and art.design != "none":
+        try:
+            data = _underlay(data, draw_letterhead(art))
+        except Exception as exc:
+            raise PdfRenderError(
+                f"Could not print letter {reference_number} on the letterhead: {exc}"
+            ) from exc
     return data
 
 
