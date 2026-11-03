@@ -38,6 +38,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import crypto
 from app.models.accounts import AccountForecast, AccountForecastLine, ClientAccount
 from app.models.audit import AuditLog
 from app.models.companion import CompanionAction, CompanionRun, CompanionRunStatus
@@ -48,6 +49,7 @@ from app.services.ai.client import use_backend
 from app.services.companion import service as companion
 from app.services.finance import list_forecasts
 from app.services.products import client as product_client
+from app.services.products import connectors
 from app.services.products import service as links
 from app.services.products import settings as product_settings
 from tests.integration.conftest import as_caller, requires_db
@@ -770,3 +772,38 @@ async def test_a_message_sent_twice_is_answered_once(
     assert second["repeat"] is True
     assert [m["id"] for m in second["messages"]] == [m["id"] for m in first["messages"]]
     assert len(model.calls) == 1
+
+
+# ── Where the products are ──────────────────────────────────────────────────
+
+
+async def test_connectors_find_saleinx_and_procureflow_at_their_own_domains(
+    session: AsyncSession, hr: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing set on this server: the products' production domains are built in.
+    for prefix in ("SALEINX_TOOL", "PROCUREMENT_TOOL"):
+        for suffix in ("API_URL", "APP_URL"):
+            monkeypatch.setenv(f"{prefix}_{suffix}", "")
+    product_settings.reset_cache()
+    monkeypatch.setattr(connectors, "can_encrypt", lambda: True)
+    monkeypatch.setattr(connectors, "encrypt_field", lambda text: f"encf:{text}")
+    monkeypatch.setattr(crypto, "can_encrypt", lambda: True)
+    try:
+        listed = {c["key"]: c for c in await connectors.overview(session, hr)}
+        sales, procure = listed["saleinx"], listed["procurement"]
+        assert sales["available"] is True and procure["available"] is True
+        assert (sales["app_url"], sales["api_url"]) == (
+            "https://crm.artboxsolutions.ai",
+            "https://crm.artboxsolutions.ai/api",
+        )
+        assert (procure["app_url"], procure["api_url"]) == (
+            "https://vendor.artboxsolutions.ai",
+            "https://vendor.artboxsolutions.ai/api/v1",
+        )
+        for key, host in (("saleinx", "crm"), ("procurement", "vendor")):
+            started = await connectors.start(session, hr, key)
+            assert started["authorize_url"].startswith(
+                f"https://{host}.artboxsolutions.ai/connect/askmira?"
+            )
+    finally:
+        product_settings.reset_cache()

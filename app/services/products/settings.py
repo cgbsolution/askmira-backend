@@ -92,12 +92,12 @@ DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
         "https://standalone-expenses-ginie-dashboard.vercel.app",
     ),
     "helpdesk": ("https://cgb-helpdesk.vercel.app/api", "https://cgb-helpdesk.vercel.app"),
+    # ProcureFlow's web app forwards /api/v1 to its API, body unchanged (the signature holds).
     "procurement": (
-        "https://procure-to-pay-blue.vercel.app/api/v1",
-        "https://procure-to-pay-blue.vercel.app",
+        "https://vendor.artboxsolutions.ai/api/v1",
+        "https://vendor.artboxsolutions.ai",
     ),
-    # Saleinx has no fixed production address yet: set SALEINX_TOOL_API_URL and
-    # SALEINX_TOOL_APP_URL, or the workspace's admin sets it in Connectors.
+    "saleinx": ("https://crm.artboxsolutions.ai/api", "https://crm.artboxsolutions.ai"),
 }
 
 
