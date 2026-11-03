@@ -66,6 +66,7 @@ from app.api.v1.routers import (
     payroll,
     payroll_adjustments,
     payroll_history,
+    payslip_batches,
     payslips,
     performance_flow,
     platform,
@@ -105,6 +106,7 @@ api_router.include_router(leave.router, dependencies=_module("leave"))
 api_router.include_router(overtime.router, dependencies=_module("leave"))
 api_router.include_router(attendance.router, dependencies=_module("leave"))
 api_router.include_router(bi.router, dependencies=_module("analytics"))
+api_router.include_router(payslip_batches.router, dependencies=_module("payroll"))
 api_router.include_router(payroll.router, dependencies=_module("payroll"))
 api_router.include_router(payroll_adjustments.router, dependencies=_module("payroll"))
 api_router.include_router(payroll_history.router, dependencies=_module("payroll"))

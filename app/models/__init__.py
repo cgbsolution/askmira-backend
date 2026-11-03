@@ -528,6 +528,7 @@ from app.models.payroll_inputs import (
     PayrollAdjustmentApplication,
     ShiftAllowancePayment,
 )
+from app.models.payslip_batch import PayslipBatch
 from app.models.performance_flow import (
     EmployeeInputStateEnum,
     IncrementCycle,
@@ -1018,6 +1019,7 @@ __all__ = [
     "PayrollRunStatus",
     "PayrollRunType",
     "Payslip",
+    "PayslipBatch",
     "PenTestFinding",
     "PerDiemRate",
     "Pip",

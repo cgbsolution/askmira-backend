@@ -18,21 +18,49 @@ from app.services.payroll.payslip_pdf import (
 LINES = [
     {"code": "BASIC", "name": "Basic", "type": "earning", "amount": "40000.00"},
     {"code": "SPECIAL", "name": "Special allowance", "type": "earning", "amount": "60000.00"},
-    {"code": "PF_EMPLOYEE", "name": "Provident Fund (employee)", "type": "deduction",
-     "amount": "1800.00"},
-    {"code": "PF_EMPLOYER", "name": "Provident Fund (employer)",
-     "type": "employer_contribution", "amount": "1800.00"},
+    {
+        "code": "PF_EMPLOYEE",
+        "name": "Provident Fund (employee)",
+        "type": "deduction",
+        "amount": "1800.00",
+    },
+    {
+        "code": "PF_EMPLOYER",
+        "name": "Provident Fund (employer)",
+        "type": "employer_contribution",
+        "amount": "1800.00",
+    },
     {"code": "PT", "name": "Professional Tax", "type": "deduction", "amount": "200.00"},
 ]
 INPUTS = [
-    {"code": "EXPENSE_REIMB", "name": "Expense reimbursement: Taxi", "kind": "reimbursement",
-     "amount": "1250.00", "skipped": False},
-    {"code": "LOAN_EMI", "name": "Salary advance instalment", "kind": "recovery",
-     "amount": "1000.00", "skipped": False},
-    {"code": "ADVANCE_RECOVERY", "name": "Travel advance recovery", "kind": "recovery",
-     "amount": "0.00", "skipped": True},
-    {"code": "REWARD_PERQUISITE", "name": "Reward perquisite (non-cash)", "kind": "perquisite",
-     "amount": "500.00", "skipped": False},
+    {
+        "code": "EXPENSE_REIMB",
+        "name": "Expense reimbursement: Taxi",
+        "kind": "reimbursement",
+        "amount": "1250.00",
+        "skipped": False,
+    },
+    {
+        "code": "LOAN_EMI",
+        "name": "Salary advance instalment",
+        "kind": "recovery",
+        "amount": "1000.00",
+        "skipped": False,
+    },
+    {
+        "code": "ADVANCE_RECOVERY",
+        "name": "Travel advance recovery",
+        "kind": "recovery",
+        "amount": "0.00",
+        "skipped": True,
+    },
+    {
+        "code": "REWARD_PERQUISITE",
+        "name": "Reward perquisite (non-cash)",
+        "kind": "perquisite",
+        "amount": "500.00",
+        "skipped": False,
+    },
 ]
 
 
@@ -112,3 +140,30 @@ def test_the_page_says_what_an_employee_needs_and_escapes_it() -> None:
 def test_it_renders_to_a_pdf() -> None:
     data = render_payslip_pdf(document())
     assert data[:5] == b"%PDF-"
+
+
+def test_the_details_print_in_two_even_columns() -> None:
+    """Every details cell carries its width. With only the labels sized, the
+    renderer gave the left value all the room and crushed the right-hand
+    column (Employee code, Date of joining, UAN) into the margin."""
+    page = payslip_html(document())
+    facts = page.split('<table class="facts"', 1)[1].split(">", 1)[1].split("</table>", 1)[0]
+    cells = facts.count("<td")
+    assert cells and cells == facts.count('width="')
+    assert facts.count('width="19%"') == facts.count('width="31%"')
+
+
+def test_the_details_are_the_same_list_the_screen_shows() -> None:
+    from app.services.payroll.payslip_pdf import payslip_facts
+
+    doc = document()
+    facts = payslip_facts(doc)
+    assert facts[:2] == [("Employee", "Meera Iyer"), ("Employee code", "DEMO005")]
+    assert ("Date of joining", "15 Sep 2026") in facts
+    assert ("Days paid", "16 of 30") in facts
+    assert ("Not employed", "14 day(s)") in facts
+    assert all(label != "Loss of pay" for label, _ in facts)
+    page = payslip_html(doc)
+    for label, value in facts:
+        assert f">{label}<" in page
+        assert value.replace("&", "&amp;") in page

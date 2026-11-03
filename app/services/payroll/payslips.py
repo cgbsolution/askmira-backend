@@ -47,6 +47,9 @@ from app.schemas.payroll_run import (
     PayslipLineRead,
     PayslipRead,
     PayslipSalaryRead,
+    PayslipSheetFactRead,
+    PayslipSheetLineRead,
+    PayslipSheetRead,
     PayslipSummaryRead,
     RegisterRead,
     RegisterRowRead,
@@ -56,6 +59,7 @@ from app.schemas.payroll_run import (
     VarianceFlagRead,
 )
 from app.services import audit
+from app.services.documents.indian_numbers import amount_in_words
 from app.services.documents.pdf import PdfRenderError
 from app.services.employee_identifiers import PAN_PATTERN
 from app.services.payroll import payslip_pdf
@@ -592,6 +596,8 @@ async def _payslip_read(
             "rule set in force."
         )
 
+    sheet, sheet_error = await payslip_sheet(session, user, payslip, run, employee)
+
     return PayslipRead(
         id=payslip.id,
         run_id=run.id,
@@ -677,6 +683,8 @@ async def _payslip_read(
         # The register's own cells for this person's row(s): their own pay
         # figures, never an identifier, so HR and the employee both see them.
         import_summary=payslip_import_summary(payslip, run, with_cells=True),
+        sheet=sheet,
+        sheet_error=sheet_error,
     )
 
 
@@ -781,9 +789,14 @@ async def my_payslip(session: AsyncSession, user: User, payslip_id: uuid.UUID) -
     return await _payslip_read(session, user, payslip, run, employee)
 
 
-async def _render_pdf(
+async def payslip_document(
     session: AsyncSession, user: User, payslip: Payslip, run: PayrollRun, employee: Employee
-) -> tuple[bytes, str]:
+) -> payslip_pdf.PayslipDocument:
+    """The payslip as printed: company, the person's details, every line, checked.
+
+    Raises `payslip_pdf.PayslipMismatchError` when its lines do not add up to
+    its own totals.
+    """
     entity = await session.scalar(
         tenant_scoped(
             select(LegalEntity).where(LegalEntity.id == run.legal_entity_id), LegalEntity, user
@@ -793,31 +806,76 @@ async def _render_pdf(
     if not company:
         tenant = await session.get(Tenant, user.tenant_id)
         company = tenant.name if tenant else "Employer"
+    return payslip_pdf.build_payslip_document(
+        company_name=company,
+        company_address=entity.registered_address if entity else None,
+        period_year=run.period_year,
+        period_month=run.period_month,
+        employee_name=employee.full_name,
+        employee_code=employee.employee_code,
+        designation=employee.designation,
+        date_of_joining=employee.date_of_joining,
+        pan=employee.pan,
+        uan=employee.uan,
+        payment_date=run.payment_date,
+        working_days=payslip.working_days,
+        paid_days=payslip.paid_days,
+        lop_days=payslip.lop_days,
+        not_employed_days=payslip.not_employed_days,
+        line_items=list(payslip.line_items or []),
+        input_lines=list(payslip.input_lines or []),
+        tds=payslip.tds,
+        gross_earnings=payslip.gross_earnings,
+        other_earnings=other_earnings_of(payslip),
+        total_deductions=payslip.total_deductions,
+        net_pay=payslip.net_pay,
+    )
+
+
+def payslip_filename(employee: Employee, run: PayrollRun) -> str:
+    return f"payslip-{employee.employee_code}-{run.period_year}-{run.period_month:02d}.pdf"
+
+
+def _sheet_lines(lines: list[tuple[str, Decimal]]) -> list[PayslipSheetLineRead]:
+    return [PayslipSheetLineRead(name=name, amount=amount) for name, amount in lines]
+
+
+async def payslip_sheet(
+    session: AsyncSession, user: User, payslip: Payslip, run: PayrollRun, employee: Employee
+) -> tuple[PayslipSheetRead | None, str | None]:
+    """The payslip as its PDF prints it, for the screen; or why it cannot be shown."""
     try:
-        document = payslip_pdf.build_payslip_document(
-            company_name=company,
-            company_address=entity.registered_address if entity else None,
-            period_year=run.period_year,
-            period_month=run.period_month,
-            employee_name=employee.full_name,
-            employee_code=employee.employee_code,
-            designation=employee.designation,
-            date_of_joining=employee.date_of_joining,
-            pan=employee.pan,
-            uan=employee.uan,
-            payment_date=run.payment_date,
-            working_days=payslip.working_days,
-            paid_days=payslip.paid_days,
-            lop_days=payslip.lop_days,
-            not_employed_days=payslip.not_employed_days,
-            line_items=list(payslip.line_items or []),
-            input_lines=list(payslip.input_lines or []),
-            tds=payslip.tds,
-            gross_earnings=payslip.gross_earnings,
-            other_earnings=other_earnings_of(payslip),
-            total_deductions=payslip.total_deductions,
-            net_pay=payslip.net_pay,
-        )
+        document = await payslip_document(session, user, payslip, run, employee)
+    except payslip_pdf.PayslipMismatchError as exc:
+        return None, str(exc)
+    return (
+        PayslipSheetRead(
+            company_name=document.company_name,
+            company_address=document.company_address,
+            title=f"Payslip for {document.period_label}",
+            reference=document.reference,
+            facts=[
+                PayslipSheetFactRead(label=label, value=value)
+                for label, value in payslip_pdf.payslip_facts(document)
+            ],
+            earnings=_sheet_lines(document.earnings),
+            deductions=_sheet_lines(document.deductions),
+            employer_contributions=_sheet_lines(document.employer_contributions),
+            perquisites=_sheet_lines(document.perquisites),
+            total_earnings=document.total_earnings,
+            total_deductions=document.total_deductions,
+            net_pay=document.net_pay,
+            net_pay_in_words=amount_in_words(document.net_pay),
+        ),
+        None,
+    )
+
+
+async def _render_pdf(
+    session: AsyncSession, user: User, payslip: Payslip, run: PayrollRun, employee: Employee
+) -> tuple[bytes, str]:
+    try:
+        document = await payslip_document(session, user, payslip, run, employee)
         data = payslip_pdf.render_payslip_pdf(document)
     except payslip_pdf.PayslipMismatchError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -826,8 +884,7 @@ async def _render_pdf(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"The payslip could not be rendered as a PDF just now: {exc}",
         ) from exc
-    filename = f"payslip-{employee.employee_code}-{run.period_year}-{run.period_month:02d}.pdf"
-    return data, filename
+    return data, payslip_filename(employee, run)
 
 
 async def hr_payslip_pdf(

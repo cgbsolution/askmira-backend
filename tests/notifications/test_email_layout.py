@@ -8,7 +8,12 @@ from typing import ClassVar
 
 import pytest
 
-from app.services.notifications.adapters import InlineImage, OutboundMessage, SmtpEmailAdapter
+from app.services.notifications.adapters import (
+    Attachment,
+    InlineImage,
+    OutboundMessage,
+    SmtpEmailAdapter,
+)
 from app.services.notifications.email_layout import (
     DEFAULT_ACCENT,
     LOGO_CID,
@@ -81,7 +86,9 @@ def test_a_bad_colour_falls_back_to_the_default() -> None:
 
 def test_the_default_colour_is_the_askmira_brand_red() -> None:
     assert DEFAULT_ACCENT == "#EB061D"
-    rendered = render_email(EmailBrand(company_name="Acme"), subject="S", body="B", action_url="https://p")
+    rendered = render_email(
+        EmailBrand(company_name="Acme"), subject="S", body="B", action_url="https://p"
+    )
     assert "background:#EB061D" in rendered.html
 
 
@@ -180,3 +187,38 @@ async def test_smtp_sends_text_and_branded_html_with_the_logo_inline() -> None:
     images = [part for part in parsed.walk() if part.get_content_type() == "image/png"]
     assert len(images) == 1
     assert images[0]["Content-ID"] == f"<{LOGO_CID}>"
+
+
+@pytest.mark.asyncio
+async def test_smtp_sends_attachments_beside_the_branded_body() -> None:
+    """Payslips go out as PDF attachments, with the text and HTML parts intact."""
+    _FakeSmtp.sent = []
+    rendered = render_email(brand(logo=PNG), subject="Your payslip", body="Attached.")
+    adapter = SmtpEmailAdapter(
+        host="smtp.test", port=587, from_address="hr@acme.test", smtp_factory=_FakeSmtp
+    )
+    await adapter.send(
+        OutboundMessage(
+            recipient_name="Meera",
+            recipient_email="meera@acme.test",
+            recipient_phone=None,
+            subject="Your payslip",
+            body=rendered.text,
+            event_key="payroll.payslips.emailed",
+            html=rendered.html,
+            inline_images=rendered.images,
+            attachments=(
+                Attachment(filename="payslip-E1-2026-08.pdf", data=b"%PDF-1.4 one"),
+                Attachment(filename="payslip-E1-2026-09.pdf", data=b"%PDF-1.4 two"),
+            ),
+        )
+    )
+    parsed = email.message_from_bytes(_FakeSmtp.sent[0].as_bytes(), policy=policy.default)
+    assert parsed.get_content_type() == "multipart/mixed"
+    assert "Attached." in parsed.get_body(preferencelist=("plain",)).get_content()
+    assert "cid:company-logo" in parsed.get_body(preferencelist=("html",)).get_content()
+    files = {part.get_filename(): part.get_content() for part in parsed.iter_attachments()}
+    assert files == {
+        "payslip-E1-2026-08.pdf": b"%PDF-1.4 one",
+        "payslip-E1-2026-09.pdf": b"%PDF-1.4 two",
+    }

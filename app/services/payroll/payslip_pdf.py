@@ -28,6 +28,7 @@ __all__ = [
     "PayslipMismatchError",
     "build_payslip_document",
     "mask_identifier",
+    "payslip_facts",
     "payslip_html",
     "render_payslip_pdf",
 ]
@@ -223,16 +224,25 @@ table.slip td, table.slip th { padding: 2pt 6pt; font-size: 9.5pt; border: 1px s
 table.slip th { background-color: #fde8dd; text-align: left; }
 td.amount, th.amount { text-align: right; }
 tr.total td { background-color: #f9efe8; font-weight: bold; }
-table.facts { margin: 0 0 6pt 0; }
-table.facts td { padding: 1pt 6pt; font-size: 9.5pt; border: none; }
-td.label { color: #7a6e68; width: 18%; }
+table.facts { width: 100%; margin: 0 0 6pt 0; }
+table.facts td { padding: 1pt 6pt; font-size: 9.5pt; border: none; vertical-align: top; }
+td.label { color: #7a6e68; }
 .net { font-size: 13pt; font-weight: bold; color: #1a1110; }
 .small { font-size: 8.5pt; color: #7a6e68; }
 """
 
 
-def payslip_html(document: PayslipDocument) -> str:
-    """The page body. Pure; every value escaped."""
+#: Label, value, label, value: the details block's four columns.
+_LABEL_WIDTH = "19%"
+_VALUE_WIDTH = "31%"
+
+
+def payslip_facts(document: PayslipDocument) -> list[tuple[str, str]]:
+    """The details block, label and value, in the order the page prints them.
+
+    The screen shows the same list, so a payslip reads the same in the portal
+    as on paper.
+    """
     facts: list[tuple[str, str]] = [
         ("Employee", document.employee_name),
         ("Employee code", document.employee_code),
@@ -251,15 +261,29 @@ def payslip_html(document: PayslipDocument) -> str:
         facts.append(("Loss of pay", f"{_days(document.lop_days)} day(s)"))
     if document.not_employed_days:
         facts.append(("Not employed", f"{_days(document.not_employed_days)} day(s)"))
+    return facts
 
-    # Two facts to a row, so the whole payslip fits on one page.
+
+def payslip_html(document: PayslipDocument) -> str:
+    """The page body. Pure; every value escaped."""
+    facts = payslip_facts(document)
+
+    # Two facts to a row, so the whole payslip fits on one page. Every cell has
+    # its width: with only the labels sized, the renderer gave the left value
+    # all the room and crushed the right-hand column into the margin.
     pairs = [facts[i : i + 2] for i in range(0, len(facts), 2)]
     fact_rows = "".join(
         "<tr>"
         + "".join(
-            f'<td class="label">{_e(label)}</td><td>{_e(value)}</td>' for label, value in pair
+            f'<td class="label" width="{_LABEL_WIDTH}">{_e(label)}</td>'
+            f'<td class="value" width="{_VALUE_WIDTH}">{_e(value)}</td>'
+            for label, value in pair
         )
-        + ("<td></td><td></td>" if len(pair) == 1 else "")
+        + (
+            f'<td width="{_LABEL_WIDTH}"></td><td width="{_VALUE_WIDTH}"></td>'
+            if len(pair) == 1
+            else ""
+        )
         + "</tr>"
         for pair in pairs
     )

@@ -448,6 +448,9 @@ TABLES: dict[str, TableClassification] = {
     "employee_salary_components": _p(EMP, "compensation", {"part_of_ctc": "compensation"}),
     "salary_revisions": _p(EMP, "compensation"),
     "payslips": _p(EMP, "compensation"),
+    # Who was sent which months, and to which address: the people's names,
+    # codes and email addresses sit in `results`.
+    "payslip_batches": _p(EMP, "communication", {"results": "communication"}),
     "bonus_computations": _p(EMP, "compensation"),
     "arrear_lines": _p(EMP, "compensation"),
     "flexi_declarations": _p(EMP, "compensation"),

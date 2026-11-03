@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 __all__ = [
+    "Attachment",
     "ChannelAdapter",
     "ConsoleEmailAdapter",
     "DeliveryResult",
@@ -69,6 +70,15 @@ class InlineImage:
 
 
 @dataclass(frozen=True, slots=True)
+class Attachment:
+    """A file sent with an email (a payslip PDF), carried inside the message."""
+
+    filename: str
+    data: bytes
+    mime_type: str = "application/pdf"
+
+
+@dataclass(frozen=True, slots=True)
 class OutboundMessage:
     """What an adapter needs, decoupled from the ORM.
 
@@ -90,6 +100,8 @@ class OutboundMessage:
     # `body` stays the plain-text part, for clients that do not show HTML.
     html: str | None = None
     inline_images: tuple[InlineImage, ...] = ()
+    # Email only: files sent with the message. Other channels ignore them.
+    attachments: tuple[Attachment, ...] = ()
 
 
 class ChannelAdapter(ABC):
@@ -446,6 +458,14 @@ class SmtpEmailAdapter(ChannelAdapter):
                     cid=f"<{image.cid}>",
                     disposition="inline",
                 )
+        for attachment in message.attachments:
+            maintype, _, subtype = attachment.mime_type.partition("/")
+            email.add_attachment(
+                attachment.data,
+                maintype=maintype or "application",
+                subtype=subtype or "octet-stream",
+                filename=attachment.filename,
+            )
 
         await asyncio.to_thread(self._deliver, email, address)
         return DeliveryResult(provider_message_id=message_id.strip("<>"))

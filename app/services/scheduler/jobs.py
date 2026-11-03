@@ -115,6 +115,12 @@ async def _gratuity_accrual(session: AsyncSession, ctx: JobContext) -> dict[str,
     return {"as_of": as_of.isoformat(), "accruals": len(accruals)}
 
 
+async def _payslip_batches(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.payroll import payslip_batches
+
+    return await payslip_batches.sweep(session, ctx.actor)
+
+
 # ── Notifications ───────────────────────────────────────────────────────────
 
 
@@ -694,6 +700,18 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.monthly(day=1, hour=3),
         handler=_gratuity_accrual,
         source="app.services.exit_benefits.service.accrue_gratuity",
+        module="payroll",
+    ),
+    Job(
+        key="payroll.payslip_batches",
+        name="Payslip downloads and emails",
+        description=(
+            "Starts payslip downloads and emails HR asked for that have not started, picks up "
+            "any a restart cut off, and removes prepared downloads a day old."
+        ),
+        cadence=Cadence.every(minutes=1),
+        handler=_payslip_batches,
+        source="app.services.payroll.payslip_batches.sweep",
         module="payroll",
     ),
     Job(

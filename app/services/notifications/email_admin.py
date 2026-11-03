@@ -94,6 +94,8 @@ _SAMPLES: dict[str, str] = {
     "link": "https://example.com/link",
     "minutes": "30",
     "count": "3",
+    "payslip_word": "payslips",
+    "password_note": "",
     "ticket_number": "HD-00009",
     "subject": "Address-proof letter for a rental agreement",
     "course_title": "POSH awareness 2026",

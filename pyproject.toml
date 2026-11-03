@@ -48,6 +48,7 @@ ignore = [
 "tests/integration/test_candidate_comms_flow.py" = ["F811"]
 "tests/integration/test_talent_pools_flow.py" = ["F811"]
 "tests/integration/test_background_checks_flow.py" = ["F811"]
+"tests/integration/test_payslip_batches_flow.py" = ["F811"]
 # AdapterUnavailable says what is true — there is no adapter — and it is raised
 # alongside the two above, so an "Error" suffix on only this one would suggest a
 # different kind of thing.

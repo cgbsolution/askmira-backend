@@ -237,6 +237,34 @@ class PayslipSalaryRead(BaseModel):
     effective_from: date
 
 
+class PayslipSheetLineRead(BaseModel):
+    name: str
+    amount: Money
+
+
+class PayslipSheetFactRead(BaseModel):
+    label: str
+    value: str
+
+
+class PayslipSheetRead(BaseModel):
+    """The payslip as its PDF prints it: the same details and lines, in the same order."""
+
+    company_name: str
+    company_address: str | None
+    title: str
+    reference: str
+    facts: list[PayslipSheetFactRead]
+    earnings: list[PayslipSheetLineRead]
+    deductions: list[PayslipSheetLineRead]
+    employer_contributions: list[PayslipSheetLineRead]
+    perquisites: list[PayslipSheetLineRead]
+    total_earnings: Money
+    total_deductions: Money
+    net_pay: Money
+    net_pay_in_words: str
+
+
 class PayslipRead(BaseModel):
     """One payslip with its full computation trace."""
 
@@ -293,6 +321,10 @@ class PayslipRead(BaseModel):
     #: The run's origin: an imported payslip shows figures as paid on factoHR.
     origin: RunOrigin = "computed"
     import_summary: PayslipImportSummaryRead | None = None
+
+    #: The payslip as printed; None when its lines do not add up (`sheet_error` says why).
+    sheet: PayslipSheetRead | None = None
+    sheet_error: str | None = None
 
 
 class PayslipSummaryRead(BaseModel):
