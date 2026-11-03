@@ -247,22 +247,37 @@ class PayslipSheetFactRead(BaseModel):
     value: str
 
 
+class PayslipSheetEarningRead(BaseModel):
+    """An earnings row: the full-month rate, any arrears, and what was paid."""
+
+    name: str
+    actual: Money | None
+    arrears: Money | None
+    amount: Money
+
+
 class PayslipSheetRead(BaseModel):
-    """The payslip as its PDF prints it: the same details and lines, in the same order."""
+    """The payslip as its PDF prints it (factoHR's layout): the same details and lines."""
 
     company_name: str
     company_address: str | None
+    #: The paying company's logo, else the workspace's.
+    logo_url: str | None
     title: str
     reference: str
-    facts: list[PayslipSheetFactRead]
-    earnings: list[PayslipSheetLineRead]
+    left_facts: list[PayslipSheetFactRead]
+    right_facts: list[PayslipSheetFactRead]
+    payable_days: str
+    net_paid_days: str
+    earnings: list[PayslipSheetEarningRead]
     deductions: list[PayslipSheetLineRead]
-    employer_contributions: list[PayslipSheetLineRead]
-    perquisites: list[PayslipSheetLineRead]
+    total_actual: Money
+    total_arrears: Money
     total_earnings: Money
     total_deductions: Money
     net_pay: Money
     net_pay_in_words: str
+    payment_mode: str | None
 
 
 class PayslipRead(BaseModel):

@@ -38,6 +38,8 @@ __all__ = [
     "LOGO_MAX_BYTES",
     "company_for",
     "entity_logo_url",
+    "payslip_logo",
+    "payslip_logo_url",
     "read_entity_logo",
     "read_logo",
     "remove_entity_logo",
@@ -238,6 +240,42 @@ async def read_entity_logo(session: AsyncSession, entity_id: uuid.UUID) -> tuple
     if row is None or not row.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No logo.")
     return await _read_image(row.logo_key)
+
+
+# ── The logo a payslip prints ──────────────────────────────────────────────
+
+#: Logo bytes by storage key. A key names one upload and a new logo gets a new
+#: key, so a cached entry never goes stale; a batch of thousands of payslips
+#: reads the file once.
+_LOGO_CACHE: dict[str, bytes] = {}
+_LOGO_CACHE_SIZE = 32
+
+
+async def payslip_logo(entity: LegalEntity | None, tenant: Tenant | None) -> bytes | None:
+    """The paying company's logo, else the workspace's; None without one.
+
+    Never raises: a payslip without its logo is better than no payslip.
+    """
+    key = (entity.logo_key if entity else None) or (tenant.logo_key if tenant else None)
+    if not key:
+        return None
+    if key in _LOGO_CACHE:
+        return _LOGO_CACHE[key]
+    try:
+        data, _media = await _read_image(key)
+    except HTTPException:
+        return None
+    if len(_LOGO_CACHE) >= _LOGO_CACHE_SIZE:
+        _LOGO_CACHE.pop(next(iter(_LOGO_CACHE)))
+    _LOGO_CACHE[key] = data
+    return data
+
+
+def payslip_logo_url(entity: LegalEntity | None, tenant: Tenant | None) -> str | None:
+    """Where the screen fetches the same logo the payslip PDF prints."""
+    return (entity_logo_url(entity) if entity else None) or (
+        directory.logo_url(tenant) if tenant else None
+    )
 
 
 # ── The company a signed-in person belongs to ───────────────────────────────

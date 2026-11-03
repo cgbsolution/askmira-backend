@@ -40,6 +40,7 @@ __all__ = [
     "PdfRenderError",
     "content_hash",
     "letter_css",
+    "render_html_document",
     "render_pdf",
     "wrap_document",
     "wrap_letter",
@@ -304,6 +305,30 @@ def render_pdf(
             raise PdfRenderError(
                 f"Could not print letter {reference_number} on the letterhead: {exc}"
             ) from exc
+    return data
+
+
+def render_html_document(document: str, reference_number: str) -> bytes:
+    """Render a complete HTML page, with its own page CSS, to PDF bytes.
+
+    For documents that bring their own layout (the payslip), not printed on a
+    letterhead or the plain header.
+    """
+    try:
+        from xhtml2pdf import pisa
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise PdfRenderError("The PDF renderer is not installed.") from exc
+    buffer = io.BytesIO()
+    result = pisa.CreatePDF(
+        src=document, dest=buffer, encoding="utf-8", **_deterministic_options(document)
+    )
+    if result.err:
+        raise PdfRenderError(
+            f"Could not render {reference_number} to PDF: {result.err} layout error(s)"
+        )
+    data = buffer.getvalue()
+    if not data:
+        raise PdfRenderError(f"The PDF renderer produced no output for {reference_number}")
     return data
 
 

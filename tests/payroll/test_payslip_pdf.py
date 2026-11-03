@@ -126,44 +126,242 @@ def test_the_payslip_prints_pan_and_uan_in_full() -> None:
     assert "XXXXXX" not in page
 
 
-def test_the_page_says_what_an_employee_needs_and_escapes_it() -> None:
-    page = payslip_html(document())
-    assert "Payslip for September 2026" in page
-    assert "Rupees Eighty Eight Thousand Two Hundred Fifty Only" in page
-    assert "88,250.00" in page
-    assert "Not employed" in page and "14 day(s)" in page
-    assert "computer-generated" in page
-    assert "ABCDE1234F" in page  # in full since 2026-10-27
-    assert "<Technologies>" not in page and "&lt;Technologies&gt;" in page
+def test_the_page_is_factohrs_salary_slip_and_escapes_what_it_prints() -> None:
+    """The layout the user asked for on 2026-11-03: their old factoHR payslip."""
+    page = payslip_html(
+        document(
+            pf_number="PYKRP00536030000010667",
+            bank_name="HSBC BANK",
+            bank_account="074112855006",
+            department="IT",
+            payment_mode="NEFT",
+        )
+    )
+    assert "ACME &lt;TECHNOLOGIES&gt; PVT LTD" in page  # the name in capitals, escaped
+    assert "<Technologies>" not in page
+    assert "SALARY SLIP FOR THE MONTH OF SEP-26" in page
+    for label, value in (
+        ("Employee Name", "Meera Iyer"),
+        ("Employee Code", "DEMO005"),
+        ("Designation", "Engineer"),
+        ("Department", "IT"),
+        ("DOJ", "15-09-2026"),
+        ("PAN", "ABCDE1234F"),
+        ("PF A/c No", "PYKRP00536030000010667"),
+        ("UAN", "100200300400"),
+        ("Bank Name", "HSBC BANK"),
+        ("Bank A/c No", "074112855006"),
+        ("Payable Days", "30.0"),
+        ("Net Paid Days", "16.00"),
+    ):
+        assert f">{label}</td>" in page and f": {value}</td>" in page, label
+    for heading in ("EARNINGS", "Actual", "Arrears", "Amount", "DEDUCTIONS"):
+        assert heading in page
+    assert "Gross Earnings" in page and "Total Deductions" in page
+    assert "INR Eighty Eight Thousand Two Hundred Fifty Only" in page
+    assert "Mode of Payment : NEFT" in page
+    assert "*This is a system generated payslip and does not require" in page
+    # Names print in capitals, as factoHR's did.
+    assert "EXPENSE REIMBURSEMENT: TAXI" in page and "INCOME TAX (TDS)" in page
 
 
-def test_it_renders_to_a_pdf() -> None:
-    data = render_payslip_pdf(document())
+def test_actual_is_the_full_month_rate_and_arrears_have_their_column() -> None:
+    doc = document(
+        monthly_rates={"BASIC": "75000.00", "SPECIAL": "112500.00"},
+        input_lines=[
+            *INPUTS,
+            {
+                "provider": "arrears",
+                "code": "ARREARS",
+                "name": "Salary arrears",
+                "kind": "earning",
+                "amount": "500.00",
+                "skipped": False,
+            },
+        ],
+        other_earnings="1750.00",
+        net_pay="88750.00",
+    )
+    rows = {row.name: row for row in doc.earning_rows}
+    assert (rows["Basic"].actual, rows["Basic"].amount) == (
+        Decimal("75000.00"),
+        Decimal("40000.00"),
+    )
+    assert rows["Salary arrears"].arrears == Decimal("500.00")
+    assert rows["Salary arrears"].actual is None
+    assert doc.total_actual == Decimal("187500.00")
+    assert doc.total_arrears == Decimal("500.00")
+    assert doc.total_earnings == Decimal("101750.00")
+
+
+def test_an_imported_month_reads_its_rate_from_the_register_row() -> None:
+    """factoHR's register holds each component twice: the rate, then what was earned."""
+    from app.services.payroll.payslip_pdf import register_value
+
+    details = {
+        "cells": {
+            "Basic Salary (Q)": "25833",
+            "Basic Salary (V)": "23250",
+            "Designation (E)": "Senior Software Engineer",
+            "Department (F)": "IT",
+        }
+    }
+    line = {
+        "code": "BASIC",
+        "name": "BASIC SALARY",
+        "type": "earning",
+        "amount": "23250",
+        "source": {"column": "V", "header": "Basic Salary", "raw": "23250"},
+    }
+    doc = document(
+        line_items=[line],
+        input_lines=[],
+        tds="0",
+        gross_earnings="23250",
+        other_earnings="0",
+        total_deductions="0",
+        net_pay="23250",
+        import_details=details,
+    )
+    assert doc.earning_rows[0].actual == Decimal("25833")
+    assert register_value(details, "Designation") == "Senior Software Engineer"
+    assert register_value(details, "department") == "IT"
+    assert register_value(details, "Grade") is None
+
+
+def test_it_renders_to_a_pdf_with_the_rupee_sign_and_a_logo() -> None:
+    import io
+
+    from PIL import Image
+    from pypdf import PdfReader
+
+    logo = io.BytesIO()
+    Image.new("RGBA", (600, 200), (0, 120, 200, 0)).save(logo, format="PNG")
+    data = render_payslip_pdf(document(logo=logo.getvalue()))
+    assert data[:5] == b"%PDF-"
+    page = PdfReader(io.BytesIO(data)).pages[0]
+    text = page.extract_text()
+    assert "₹" in text  # ₹, from the bundled glyph
+    assert "SALARY SLIP FOR THE MONTH OF SEP-26" in text
+    assert len(page.images) == 1
+    # Small enough for a year of payslips in one ZIP.
+    assert len(data) < 60_000
+
+
+def test_a_logo_that_is_not_an_image_is_left_out() -> None:
+    data = render_payslip_pdf(document(logo=b"not an image"))
     assert data[:5] == b"%PDF-"
 
 
-def test_the_details_print_in_two_even_columns() -> None:
-    """Every details cell carries its width. With only the labels sized, the
-    renderer gave the left value all the room and crushed the right-hand
-    column (Employee code, Date of joining, UAN) into the margin."""
-    page = payslip_html(document())
-    facts = page.split('<table class="facts"', 1)[1].split(">", 1)[1].split("</table>", 1)[0]
-    cells = facts.count("<td")
-    assert cells and cells == facts.count('width="')
-    assert facts.count('width="19%"') == facts.count('width="31%"')
+def test_a_person_on_several_register_rows_gets_the_main_rows_rate() -> None:
+    """A main row and an arrears row: the line's source is a list, and the
+    cells live per row. The rate is the main row's; nothing crashes."""
+    details = {
+        "cells": {},
+        "row_details": [
+            {
+                "file": "Sep.xlsx",
+                "sheet": "Arrears",
+                "row": 9,
+                "kind": "arrears",
+                "cells": {
+                    "Basic Salary (Q)": "0",
+                    "Basic Salary (V)": "1000",
+                    "Designation (E)": "",
+                },
+            },
+            {
+                "file": "Sep.xlsx",
+                "sheet": "Salary Register",
+                "row": 4,
+                "kind": "main",
+                "cells": {
+                    "Basic Salary (Q)": "25833",
+                    "Basic Salary (V)": "23250",
+                    "Designation (E)": "Senior Software Engineer",
+                },
+            },
+        ],
+    }
+    line = {
+        "code": "BASIC",
+        "name": "BASIC SALARY",
+        "type": "earning",
+        "amount": "24250",
+        "source": [
+            {
+                "file": "Sep.xlsx",
+                "sheet": "Salary Register",
+                "row": 4,
+                "column": "V",
+                "header": "Basic Salary",
+                "raw": "23250",
+            },
+            {
+                "file": "Sep.xlsx",
+                "sheet": "Arrears",
+                "row": 9,
+                "column": "V",
+                "header": "Basic Salary",
+                "raw": "1000",
+            },
+        ],
+    }
+    from app.services.payroll.payslip_pdf import register_value
+
+    doc = document(
+        line_items=[line],
+        input_lines=[],
+        tds="0",
+        gross_earnings="24250",
+        other_earnings="0",
+        total_deductions="0",
+        net_pay="24250",
+        import_details=details,
+    )
+    assert doc.earning_rows[0].actual == Decimal("25833")
+    assert register_value(details, "Designation") == "Senior Software Engineer"
+    # Neither an odd source nor odd details stops the payslip.
+    odd = dict(line, source="not a dict")
+    assert (
+        document(
+            line_items=[odd],
+            input_lines=[],
+            tds="0",
+            gross_earnings="24250",
+            other_earnings="0",
+            total_deductions="0",
+            net_pay="24250",
+            import_details=["x"],
+        )
+        .earning_rows[0]
+        .actual
+        is None
+    )
 
 
-def test_the_details_are_the_same_list_the_screen_shows() -> None:
-    from app.services.payroll.payslip_pdf import payslip_facts
-
-    doc = document()
-    facts = payslip_facts(doc)
-    assert facts[:2] == [("Employee", "Meera Iyer"), ("Employee code", "DEMO005")]
-    assert ("Date of joining", "15 Sep 2026") in facts
-    assert ("Days paid", "16 of 30") in facts
-    assert ("Not employed", "14 day(s)") in facts
-    assert all(label != "Loss of pay" for label, _ in facts)
-    page = payslip_html(doc)
-    for label, value in facts:
-        assert f">{label}<" in page
-        assert value.replace("&", "&amp;") in page
+def test_without_a_rate_on_record_a_full_month_shows_what_was_paid() -> None:
+    """factoHR's 2023 registers had only the paid column. Full month: the rate is
+    what was paid. Part month: left blank, never guessed."""
+    line = {
+        "code": "BASIC",
+        "name": "BASIC SALARY",
+        "type": "earning",
+        "amount": "28192",
+        "source": {"column": "M", "header": "BASIC SALARY", "raw": "28192"},
+    }
+    details = {"cells": {"BASIC SALARY (M)": "28192"}}
+    kwargs = dict(
+        line_items=[line],
+        input_lines=[],
+        tds="0",
+        gross_earnings="28192",
+        other_earnings="0",
+        total_deductions="0",
+        net_pay="28192",
+        import_details=details,
+    )
+    full = document(working_days="30", paid_days="30", not_employed_days="0", **kwargs)
+    assert full.earning_rows[0].actual == Decimal("28192")
+    part = document(working_days="30", paid_days="27", not_employed_days="0", **kwargs)
+    assert part.earning_rows[0].actual is None

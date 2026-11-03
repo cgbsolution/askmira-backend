@@ -22,7 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.crypto import encrypt_secret
 from app.models.audit import AuditLog
+from app.models.disbursement import EmployeeBankAccount
 from app.models.employee import Employee, EmploymentStatus
 from app.models.notifications import Channel
 from app.models.org import LegalEntity, Location
@@ -177,6 +179,16 @@ async def org(session, tenant, legal_entity, location, hr_user):
         status=EmploymentStatus.EXITED,
     )
     bina = await _person(session, tenant, legal_entity, location, "E002", "Bina")
+    session.add(
+        EmployeeBankAccount(
+            tenant_id=tenant.id,
+            employee_id=bina.id,
+            account_number=encrypt_secret("50100123456789", tenant.id),
+            ifsc="HDFC0001234",
+            account_holder_name="Bina Test",
+            bank_name="HDFC BANK",
+        )
+    )
     chet = await _person(session, tenant, legal_entity, location, "E003", "Chet")
     await _month(session, tenant, legal_entity, [asha, bina, chet], 2026, 6)
     await _month(session, tenant, legal_entity, [asha, bina, chet], 2026, 7)
@@ -297,7 +309,7 @@ async def test_a_download_is_one_zip_of_pdfs(
     ]
     pdf = zipfile.ZipFile(io.BytesIO(file.content)).read("payslip-E002-2026-09.pdf")
     text = PdfReader(io.BytesIO(pdf)).pages[0].extract_text()
-    assert "Payslip for September 2026" in text and "40,200.00" in text
+    assert "SALARY SLIP FOR THE MONTH OF SEP-26" in text and "40,200.00" in text
 
     summaries = (
         await session.scalars(
@@ -648,21 +660,51 @@ async def test_the_payslip_on_screen_is_the_payslip_on_paper(
     sheet = body["sheet"]
     assert body["sheet_error"] is None
     assert sheet["company_name"] == "Acme Technologies Pvt Ltd"
-    assert sheet["title"] == "Payslip for September 2026"
-    assert sheet["facts"][:2] == [
-        {"label": "Employee", "value": "Bina Test"},
-        {"label": "Employee code", "value": "E002"},
+    assert sheet["title"] == "SALARY SLIP FOR THE MONTH OF SEP-26"
+    assert sheet["logo_url"] is None  # no logo uploaded
+    assert sheet["left_facts"][:2] == [
+        {"label": "Employee Name", "value": "Bina Test"},
+        {"label": "Employee Code", "value": "E002"},
     ]
-    assert {"label": "Days paid", "value": "30 of 30"} in sheet["facts"]
-    assert [(line["name"], line["amount"]) for line in sheet["earnings"]] == [
-        ("BASIC SALARY", "30000.00"),
-        ("HOUSE RENT ALLOWANCE", "12000.00"),
+    assert {"label": "DOJ", "value": "01-04-2024"} in sheet["left_facts"]
+    assert {"label": "PAN", "value": "ABCDE1234F"} in sheet["right_facts"]
+    assert {"label": "Bank Name", "value": "HDFC BANK"} in sheet["right_facts"]
+    assert {"label": "Bank A/c No", "value": "50100123456789"} in sheet["right_facts"]
+    assert (sheet["payable_days"], sheet["net_paid_days"]) == ("30.0", "30.00")
+    assert [(row["name"], row["actual"], row["amount"]) for row in sheet["earnings"]] == [
+        ("BASIC SALARY", "30000.00", "30000.00"),
+        ("HOUSE RENT ALLOWANCE", "12000.00", "12000.00"),
     ]
-    assert sheet["employer_contributions"] == [
-        {"name": "Provident fund (employer)", "amount": "1800.00"}
-    ]
+    assert sheet["deductions"] == [{"name": "Provident fund (employee)", "amount": "1800.00"}]
     assert sheet["net_pay"] == "40200.00"
-    assert sheet["net_pay_in_words"] == "Rupees Forty Thousand Two Hundred Only"
+    assert sheet["net_pay_in_words"] == "INR Forty Thousand Two Hundred Only"
+    assert sheet["payment_mode"] == "NEFT"
+
+    # With a company logo, the screen points at it and the PDF prints it.
+    import io
+
+    from PIL import Image
+    from pypdf import PdfReader
+
+    from app.services.storage import get_storage
+
+    png = io.BytesIO()
+    Image.new("RGB", (300, 100), (10, 120, 200)).save(png, format="PNG")
+    key = get_storage().new_key(org["bina"].tenant_id, "branding", ".png")
+    await get_storage().put(key, png.getvalue())
+    entity = await session.get(LegalEntity, run.legal_entity_id)
+    entity.logo_key = key
+    await session.commit()
+    again = (
+        await client.get(
+            f"/api/v1/payroll/runs/{run.id}/payslips/{slip.id}", headers=bearer(org["hr"])
+        )
+    ).json()
+    assert f"/entities/{entity.id}/logo?v=" in again["sheet"]["logo_url"]
+    pdf = await client.get(
+        f"/api/v1/payroll/runs/{run.id}/payslips/{slip.id}/pdf", headers=bearer(org["hr"])
+    )
+    assert len(PdfReader(io.BytesIO(pdf.content)).pages[0].images) == 1
 
     # A payslip whose lines do not add up shows why instead of a sheet.
     slip.net_pay = Decimal("1.00")

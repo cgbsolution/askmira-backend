@@ -24,12 +24,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
+from app.core.crypto import decrypt_secret
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.disbursement import EmployeeBankAccount
 from app.models.employee import Employee
-from app.models.org import LegalEntity
+from app.models.org import Department, LegalEntity
 from app.models.payroll import (
     EmployeeSalary,
+    EmployeeSalaryComponent,
     PayrollRuleSet,
     PayrollRun,
     PayrollRunStatus,
@@ -47,6 +50,7 @@ from app.schemas.payroll_run import (
     PayslipLineRead,
     PayslipRead,
     PayslipSalaryRead,
+    PayslipSheetEarningRead,
     PayslipSheetFactRead,
     PayslipSheetLineRead,
     PayslipSheetRead,
@@ -58,8 +62,7 @@ from app.schemas.payroll_run import (
     SalaryRecordRead,
     VarianceFlagRead,
 )
-from app.services import audit
-from app.services.documents.indian_numbers import amount_in_words
+from app.services import audit, branding
 from app.services.documents.pdf import PdfRenderError
 from app.services.employee_identifiers import PAN_PATTERN
 from app.services.payroll import payslip_pdf
@@ -789,23 +792,110 @@ async def my_payslip(session: AsyncSession, user: User, payslip_id: uuid.UUID) -
     return await _payslip_read(session, user, payslip, run, employee)
 
 
-async def payslip_document(
-    session: AsyncSession, user: User, payslip: Payslip, run: PayrollRun, employee: Employee
-) -> payslip_pdf.PayslipDocument:
-    """The payslip as printed: company, the person's details, every line, checked.
+#: How the factoHR import recorded a person's payment method, as the payslip
+#: prints it ("Mode of Payment : NEFT").
+_PAYMENT_MODES = {
+    "banktransfer": "NEFT",
+    "neft": "NEFT",
+    "rtgs": "RTGS",
+    "imps": "IMPS",
+    "cash": "Cash",
+    "cheque": "Cheque",
+    "check": "Cheque",
+}
 
-    Raises `payslip_pdf.PayslipMismatchError` when its lines do not add up to
-    its own totals.
+
+def _payment_mode(employee: Employee, has_bank_account: bool) -> str | None:
+    raw = str((employee.custom_fields or {}).get("fh_payment_method") or "")
+    mode = _PAYMENT_MODES.get(raw.replace(" ", "").lower())
+    if mode:
+        return mode
+    return "NEFT" if has_bank_account else None
+
+
+async def _bank(
+    session: AsyncSession, user: User, employee: Employee
+) -> tuple[str | None, str | None]:
+    """The salary account's bank and number, in full (no masking, 2026-10-27)."""
+    account = await session.scalar(
+        tenant_scoped(
+            select(EmployeeBankAccount)
+            .where(
+                EmployeeBankAccount.employee_id == employee.id,
+                EmployeeBankAccount.is_primary.is_(True),
+                EmployeeBankAccount.active.is_(True),
+            )
+            .order_by(EmployeeBankAccount.created_at.desc())
+            .limit(1),
+            EmployeeBankAccount,
+            user,
+        )
+    )
+    if account is not None:
+        number = decrypt_secret(account.account_number, user.tenant_id) or None
+        return account.bank_name, number
+    return None, (employee.bank_account_number or None)
+
+
+async def payslip_document(
+    session: AsyncSession,
+    user: User,
+    payslip: Payslip,
+    run: PayrollRun,
+    employee: Employee,
+    *,
+    with_logo: bool = True,
+) -> payslip_pdf.PayslipDocument:
+    """The payslip as printed: company and logo, the person's details, every line, checked.
+
+    An imported month prints the designation and department its register row
+    had, as factoHR did; a computed one, the person's own. Raises
+    `payslip_pdf.PayslipMismatchError` when its lines do not add up to its own
+    totals.
     """
     entity = await session.scalar(
         tenant_scoped(
             select(LegalEntity).where(LegalEntity.id == run.legal_entity_id), LegalEntity, user
         )
     )
-    company = entity.name if entity else None
-    if not company:
-        tenant = await session.get(Tenant, user.tenant_id)
-        company = tenant.name if tenant else "Employer"
+    tenant = await session.get(Tenant, user.tenant_id)
+    company = (entity.name if entity else None) or (tenant.name if tenant else "Employer")
+
+    details = payslip.import_details if is_imported(run) else None
+    designation = payslip_pdf.register_value(details, "Designation") or employee.designation
+    department = payslip_pdf.register_value(details, "Department")
+    if department is None and employee.department_id is not None:
+        department = await session.scalar(
+            tenant_scoped(
+                select(Department.name).where(Department.id == employee.department_id),
+                Department,
+                user,
+            )
+        )
+
+    rates: dict[str, Any] = {}
+    if payslip.employee_salary_id is not None:
+        rates = {
+            code: amount
+            for code, amount in (
+                await session.execute(
+                    tenant_scoped(
+                        select(
+                            EmployeeSalaryComponent.component_code,
+                            EmployeeSalaryComponent.monthly_amount,
+                        ).where(
+                            EmployeeSalaryComponent.employee_salary_id == payslip.employee_salary_id
+                        ),
+                        EmployeeSalaryComponent,
+                        user,
+                    )
+                )
+            ).all()
+        }
+
+    bank_name, bank_account = await _bank(session, user, employee)
+    logo = await branding.payslip_logo(entity, tenant) if with_logo else None
+
     return payslip_pdf.build_payslip_document(
         company_name=company,
         company_address=entity.registered_address if entity else None,
@@ -813,7 +903,7 @@ async def payslip_document(
         period_month=run.period_month,
         employee_name=employee.full_name,
         employee_code=employee.employee_code,
-        designation=employee.designation,
+        designation=designation,
         date_of_joining=employee.date_of_joining,
         pan=employee.pan,
         uan=employee.uan,
@@ -829,6 +919,15 @@ async def payslip_document(
         other_earnings=other_earnings_of(payslip),
         total_deductions=payslip.total_deductions,
         net_pay=payslip.net_pay,
+        monthly_rates=rates,
+        import_details=details,
+        department=department,
+        pf_number=employee.pf_number,
+        esi_number=employee.esi_number,
+        bank_name=bank_name,
+        bank_account=bank_account,
+        payment_mode=_payment_mode(employee, bool(bank_account)),
+        logo=logo,
     )
 
 
@@ -845,27 +944,42 @@ async def payslip_sheet(
 ) -> tuple[PayslipSheetRead | None, str | None]:
     """The payslip as its PDF prints it, for the screen; or why it cannot be shown."""
     try:
-        document = await payslip_document(session, user, payslip, run, employee)
+        document = await payslip_document(session, user, payslip, run, employee, with_logo=False)
     except payslip_pdf.PayslipMismatchError as exc:
         return None, str(exc)
+    entity = await session.scalar(
+        tenant_scoped(
+            select(LegalEntity).where(LegalEntity.id == run.legal_entity_id), LegalEntity, user
+        )
+    )
+    tenant = await session.get(Tenant, user.tenant_id)
+    left, right = payslip_pdf.payslip_facts(document)
+    payable, paid = payslip_pdf.payslip_days(document)
     return (
         PayslipSheetRead(
             company_name=document.company_name,
             company_address=document.company_address,
-            title=f"Payslip for {document.period_label}",
+            logo_url=branding.payslip_logo_url(entity, tenant),
+            title=document.title,
             reference=document.reference,
-            facts=[
-                PayslipSheetFactRead(label=label, value=value)
-                for label, value in payslip_pdf.payslip_facts(document)
+            left_facts=[PayslipSheetFactRead(label=k, value=v) for k, v in left],
+            right_facts=[PayslipSheetFactRead(label=k, value=v) for k, v in right],
+            payable_days=payable,
+            net_paid_days=paid,
+            earnings=[
+                PayslipSheetEarningRead(
+                    name=row.name, actual=row.actual, arrears=row.arrears, amount=row.amount
+                )
+                for row in document.earning_rows
             ],
-            earnings=_sheet_lines(document.earnings),
             deductions=_sheet_lines(document.deductions),
-            employer_contributions=_sheet_lines(document.employer_contributions),
-            perquisites=_sheet_lines(document.perquisites),
+            total_actual=document.total_actual,
+            total_arrears=document.total_arrears,
             total_earnings=document.total_earnings,
             total_deductions=document.total_deductions,
             net_pay=document.net_pay,
-            net_pay_in_words=amount_in_words(document.net_pay),
+            net_pay_in_words=document.net_pay_in_words,
+            payment_mode=document.payment_mode,
         ),
         None,
     )
