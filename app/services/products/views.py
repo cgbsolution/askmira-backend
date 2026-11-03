@@ -1,5 +1,5 @@
-"""A linked product's records as pages in the portal: Expenses, Hiring, Helpdesk and
-Assets, read live.
+"""A linked product's records as pages in the portal: Expenses, Hiring, Helpdesk,
+Assets, Sales and Procurement, read live.
 
 When a workspace links ExpenseGenie, AnytimeHire or CGB Helpdesk, its Expenses,
 Hiring, Helpdesk or Assets section shows that product's own records — the
@@ -26,7 +26,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from app.services.companion import product_tools
+from app.services.companion import product_tools, sales_tools
 from app.services.products import data as products_data
 from app.services.products.catalogue import PRODUCTS
 
@@ -56,10 +56,19 @@ VIEWS: dict[tuple[str, str], tuple[str, dict[str, str]]] = {
     ("helpdesk", "overview"): ("helpdesk_overview", {}),
     ("helpdesk", "assets"): ("helpdesk_assets", {"scope": "mine"}),
     ("helpdesk", "register"): ("helpdesk_assets", {"scope": "company"}),
+    ("saleinx", "deals"): ("sales_deals", {}),
+    ("saleinx", "pipeline"): ("sales_pipeline", {}),
+    ("saleinx", "approvals"): ("sales_deals", {"deal_stage": "awaiting_approval"}),
+    ("procurement", "overview"): ("procurement_overview", {}),
+    ("procurement", "approvals"): ("procurement_approvals", {}),
+    ("procurement", "requisitions"): ("procurement_documents", {"document": "requisitions"}),
+    ("procurement", "orders"): ("procurement_documents", {"document": "purchase_orders"}),
+    ("procurement", "invoices"): ("procurement_documents", {"document": "invoices"}),
+    ("procurement", "budgets"): ("procurement_budgets", {}),
 }
 
 #: What a person may set on a page. Anything else in the query string is ignored.
-NARROWING = ("status", "query", "from", "to", "page")
+NARROWING = ("status", "query", "from", "to", "page", "stage", "scope")
 
 
 async def render(
@@ -78,11 +87,15 @@ async def render(
     if key == "expense_summary":
         # Totals are the person's own unless HR asks for the whole company.
         inputs["scope"] = "company" if params.get("scope") == "company" else "mine"
+    if key == "procurement_documents":
+        inputs["doc_status"] = inputs.pop("status", "")
+        inputs["scope"] = "company" if params.get("scope") == "company" else "mine"
+    if key == "sales_deals" and "deal_stage" not in fixed:
+        inputs["deal_stage"] = str(params.get("stage") or "none")
     inputs.update(fixed)
+    runner = sales_tools.run if key in sales_tools.READ_TOOLS else product_tools.run
     try:
-        cards, used = await product_tools.run(
-            session, user, key, inputs, today=datetime.now(IST).date()
-        )
+        cards, used = await runner(session, user, key, inputs, today=datetime.now(IST).date())
     except ValueError as exc:  # a malformed or too-long date range
         cards, used = [_notice(str(exc))], {}
     return {"product": product, "view": view, "cards": cards, "used": used}

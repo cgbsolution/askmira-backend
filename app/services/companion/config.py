@@ -65,6 +65,18 @@ TOOL_GROUPS: dict[str, str] = {
     "expense, travel and asset requests waiting on the person, when they confirm. Payroll, "
     "loans, settlements and hiring stay in the portal. Needs AI.",
     "actions_helpdesk": "Raise an HR helpdesk ticket for the person, when they confirm. Needs AI.",
+    "sales_data": "Read leads, deals and the pipeline from the linked sales CRM (Saleinx), as "
+    "each person's own access there shows them.",
+    "actions_sales": "Add a lead from a pasted note, update it, move a deal's stage or approve a "
+    "rep's Won in Saleinx for the person, when they confirm, with Saleinx's own rules and their "
+    "own access there. Needs AI.",
+    "actions_orders": "Book a signed order: check its deal is Won and approved and its PO matches "
+    "the team's billing, open the positions in the interview tool and write the prospective P&L, "
+    "when the person confirms; a failed step undoes the earlier ones. Needs AI.",
+    "procurement_data": "Read requisitions, approvals, purchase orders, invoices and budgets from "
+    "the linked procure-to-pay system (ProcureFlow), as each person's role there allows.",
+    "actions_procurement": "Approve or reject what waits on the person in ProcureFlow, when they "
+    "confirm. Needs AI.",
 }
 
 #: One to three plain words. The name is written into the agent's instructions,

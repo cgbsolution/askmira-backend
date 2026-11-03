@@ -32,6 +32,16 @@ report has a reporting line, whatever their login role.
 Some things only the person can do for themselves — answering a survey,
 acknowledging a policy. HR cannot do those on anybody's behalf, and
 `require_self` exists for exactly that.
+
+═══════════════════════════════════════════════════════════════════════════════
+THE DIRECTORY
+═══════════════════════════════════════════════════════════════════════════════
+
+Outside HR, nobody browses the company. The people list and a person's record
+show a non-HR caller only their own circle (`directory_circle`): themselves,
+their manager and dotted-line manager, the colleagues who share their manager,
+and their reporting line. Picking a colleague to thank or ask for feedback goes
+through a name search that returns names and titles only, never a record.
 """
 
 from __future__ import annotations
@@ -49,6 +59,7 @@ from app.models.user import User, UserRole
 __all__ = [
     "ADMIN_ROLES",
     "HR_ROLES",
+    "directory_circle",
     "forbidden",
     "is_admin",
     "is_hr",
@@ -289,3 +300,40 @@ async def visible_employee_ids(session: AsyncSession, user: User) -> set[uuid.UU
         ids.add(user.employee_id)
     ids |= await reporting_line(session, user)
     return ids
+
+
+async def directory_circle(session: AsyncSession, user: User) -> set[uuid.UUID] | None:
+    """Whose directory entry and record this caller may open.
+
+    `None` means everybody in the tenant (HR). Otherwise: the caller, their
+    manager and dotted-line manager, the colleagues who share their manager,
+    and their reporting line. Empty for a login with no employee record.
+    """
+    if is_hr(user):
+        return None
+    if user.employee_id is None:
+        return set()
+    circle = {user.employee_id} | await reporting_line(session, user)
+    managers = (
+        await session.execute(
+            tenant_scoped(
+                select(Employee.manager_id, Employee.dotted_line_manager_id).where(
+                    Employee.id == user.employee_id
+                ),
+                Employee,
+                user,
+            )
+        )
+    ).first()
+    if managers is None:
+        return circle
+    manager_id, dotted_id = managers
+    circle |= {m for m in (manager_id, dotted_id) if m is not None}
+    if manager_id is not None:
+        peers = await session.scalars(
+            tenant_scoped(
+                select(Employee.id).where(Employee.manager_id == manager_id), Employee, user
+            )
+        )
+        circle |= set(peers.all())
+    return circle

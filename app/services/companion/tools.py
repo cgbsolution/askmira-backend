@@ -15,9 +15,11 @@ the tool declares in `reads`.
 An action tool (`kind="action"`) never changes anything itself: it checks what
 the module would check and saves an offer the person confirms (actions.py).
 
-A tool that reads a linked product (AnytimeHire, ExpenseGenie, CGB Helpdesk) is offered only
-when the workspace has that product linked and the person has a role in it;
-it asks the product as them (product_tools.py).
+A tool that reads a linked product (AnytimeHire, ExpenseGenie, CGB Helpdesk, Saleinx,
+ProcureFlow) is offered only when the workspace has that product linked and the
+person has a role in it; it asks the product as them (product_tools.py,
+sales_tools.py). For Saleinx and ProcureFlow that role is the product's own
+(a rep, a manager, a viewer; a requester, an approver), never AskMira's.
 """
 
 from __future__ import annotations
@@ -40,8 +42,10 @@ from app.services.companion import (
     analysis_tools,
     data_tools,
     hr_tools,
+    order_win,
     people_tools,
     product_tools,
+    sales_tools,
 )
 from app.services.companion.config import CompanionConfig, group_on
 from app.services.products import data as products_data
@@ -52,6 +56,8 @@ from app.services.reporting.semantic import ENTITIES
 _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
 _HELPDESK = PRODUCTS["helpdesk"].brand
+_SALES = PRODUCTS["saleinx"].brand
+_PROCURE = PRODUCTS["procurement"].brand
 
 __all__ = ["INPUTS", "TOOLS", "Tool", "coerce", "offered", "run", "tool_schema"]
 
@@ -588,14 +594,222 @@ TOOLS: dict[str, Tool] = {
             inputs=("action_id",),
         ),
         Tool(
+            key="sales_deals",
+            group="sales_data",
+            product="saleinx",
+            title="Deals",
+            description=(
+                f"Leads and deals in {_SALES}, the sales CRM, that the asker can see there (a "
+                "rep sees their own and unassigned ones; a manager the whole team): stage, "
+                "value, margin, close date, approval of a Won, next step. Put a deal's name, "
+                "its company or both (as shown, 'Company - Deal') in `query`; set "
+                "`deal_stage` to one stage, or awaiting_approval for Wons waiting on a manager. "
+                "Use it to find a deal before changing it."
+            ),
+            inputs=("query", "deal_stage"),
+        ),
+        Tool(
+            key="sales_pipeline",
+            group="sales_data",
+            product="saleinx",
+            title="Pipeline",
+            description=f"The asker's pipeline in {_SALES}: deals and value by stage.",
+        ),
+        Tool(
+            key="save_lead",
+            group="actions_sales",
+            product="saleinx",
+            title="Lead",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Prepares a new lead in {_SALES} from what the person said or pasted, or an "
+                "update to an existing one, and offers it; the person confirms. For a new lead: "
+                "`company`, `contact_name`, `contact_title`, `contact_email`, `contact_phone`, "
+                "`deal_name` (a short name for what they want), `description` (what they want, "
+                "in a sentence or two), `amount` (the budget in rupees: 1.2 crore is 12000000), "
+                "`decision_by` (the date they decide), `referred_by` and `source`, "
+                "`follow_up` and `follow_up_date` ('call him back this Thursday': the "
+                "coming Thursday's date), `offerings` (what it sells, from the workspace's "
+                "list), `note`. To change an existing lead, put its name or company in `deal` "
+                "and only what changed (a new title, a new phone number). A lead has no close "
+                "date in Saleinx: the decision date goes into its next step."
+            ),
+            inputs=(
+                "deal",
+                "company",
+                "contact_name",
+                "contact_title",
+                "contact_email",
+                "contact_phone",
+                "deal_name",
+                "description",
+                "amount",
+                "decision_by",
+                "referred_by",
+                "source",
+                "follow_up",
+                "follow_up_date",
+                "offerings",
+                "note",
+            ),
+            reads=("ai_interaction", "organisational"),
+        ),
+        Tool(
+            key="move_deal",
+            group="actions_sales",
+            product="saleinx",
+            title="Deal stage",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Moves a deal to another stage in {_SALES}, after checking what Saleinx "
+                "requires, and offers it; the person confirms. Set `deal` (its name or company) "
+                "and `deal_stage`, plus what the move needs: `margin_pct` from Qualified "
+                "onwards, `close_date` for Proposal, Negotiation and Won, `next_step`, for Hold "
+                "a `hold_reason` and `revisit_on` (the date to look at it again), for Lost a "
+                "`reason`, and for a move backwards a `rollback_reason`. When the tool asks for "
+                "one of these, ask the person; never make it up. A rep's Won waits for a "
+                "manager's approval."
+            ),
+            inputs=(
+                "deal",
+                "deal_stage",
+                "margin_pct",
+                "close_date",
+                "next_step",
+                "hold_reason",
+                "revisit_on",
+                "reason",
+                "rollback_reason",
+            ),
+        ),
+        Tool(
+            key="decide_deal",
+            group="actions_sales",
+            product="saleinx",
+            title="Approve a won deal",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"For sales managers: approves or rejects a rep's Won waiting in {_SALES}. Set "
+                "`deal`, `decision` and, to reject, `reason`. The person confirms."
+            ),
+            inputs=("deal", "decision", "reason"),
+        ),
+        Tool(
+            key="book_order",
+            group="actions_orders",
+            product="saleinx",
+            title="Order win",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "When a customer has signed: checks the deal is Won and approved in "
+                f"{_SALES}, checks the PO's value against the team's billing, and offers to "
+                f"open the positions in {_HIRE} and write the prospective P&L (billing, cost, "
+                "recruitment, margin by month) on the customer's account. The person confirms; "
+                "if a step fails the earlier ones are undone. Set `deal` (the deal or "
+                "customer), `po_number`, `po_value` (rupees: 71.1 lakh is 7110000; empty if "
+                "not given), `start_date`, `months`, `location`, `work_mode`, "
+                "`recruitment_cost_per_hire`, and `roles`: one entry per role with `title`, "
+                "`count`, `experience` ('4 to 6', '8+'), `allocation` (per cent of full time, "
+                "100 unless said), `bill_rate` and `cost_rate` (rupees a month at full time) "
+                "and `skills`. Never work out the totals yourself: repeat the tool's figures."
+            ),
+            inputs=(
+                "deal",
+                "client",
+                "po_number",
+                "po_value",
+                "start_date",
+                "months",
+                "location",
+                "work_mode",
+                "recruitment_cost_per_hire",
+                "roles",
+            ),
+        ),
+        Tool(
+            key="procurement_overview",
+            group="procurement_data",
+            product="procurement",
+            title="Procurement at a glance",
+            description=(
+                f"What {_PROCURE}, the procure-to-pay system, shows the asker: approvals "
+                "waiting on them, their requisitions by status, and (if their role there "
+                "allows) purchase orders and invoices by status."
+            ),
+        ),
+        Tool(
+            key="procurement_approvals",
+            group="procurement_data",
+            product="procurement",
+            title="ProcureFlow approvals",
+            description=(
+                f"Requisitions, purchase orders, invoices and payment runs waiting on the "
+                f"asker's approval in {_PROCURE}, each with its ref for decide_procurement."
+            ),
+        ),
+        Tool(
+            key="procurement_documents",
+            group="procurement_data",
+            product="procurement",
+            title="Procurement documents",
+            description=(
+                f"Requisitions, purchase orders or invoices in {_PROCURE} (set `document`), "
+                "with `doc_status` and `query` (a number, a title or a vendor) to narrow. "
+                "Requisitions are the asker's own unless `scope` is company and their role "
+                "there sees everyone's."
+            ),
+            inputs=("document", "doc_status", "query", "scope"),
+        ),
+        Tool(
+            key="procurement_budgets",
+            group="procurement_data",
+            product="procurement",
+            title="Budgets",
+            description=(
+                f"This period's budgets in {_PROCURE} by cost centre: budget, committed, spent, "
+                "available and how much is used, for people whose role there reads budgets."
+            ),
+        ),
+        Tool(
+            key="decide_procurement",
+            group="actions_procurement",
+            product="procurement",
+            title="Decide in ProcureFlow",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Offers to approve or reject what waits on the asker in {_PROCURE}: look them "
+                "up with procurement_approvals and put their refs (pf:…) in `refs`, `decision` "
+                "approve or reject, and `note` (required to reject). The person confirms."
+            ),
+            inputs=("refs", "decision", "note"),
+        ),
+        Tool(
+            key="account_forecast",
+            hr_only=True,
+            group="payroll_figures",
+            title="Prospective P&L",
+            description=(
+                "For admins and sub-admins who may view payroll: the prospective P&L booked on "
+                "client accounts from won orders, month by month (billing, people cost, "
+                "recruitment, margin). Put the account's name in `query`, or leave it empty "
+                "for all."
+            ),
+            inputs=("query",),
+        ),
+        Tool(
             key="product_connections",
             group="products",
             title="Linked products",
             description=(
-                f"Whether {_HIRE} (interviews), {_EXPENSE} (expenses) and {_HELPDESK} (IT "
-                "tickets and assets) are connected to this workspace, and what the asker may "
-                "read from each. Use it when the person asks whether a product is connected, "
-                "linked or set up."
+                f"Whether {_HIRE} (interviews), {_EXPENSE} (expenses), {_HELPDESK} (IT "
+                f"tickets and assets), {_SALES} (sales CRM) and {_PROCURE} (procure-to-pay) are "
+                "connected to this workspace, and what the asker may read from each. Use it "
+                "when the person asks whether a product is connected, linked or set up."
             ),
         ),
         Tool(
@@ -603,9 +817,10 @@ TOOLS: dict[str, Tool] = {
             group="products",
             title="Open a linked product",
             description=(
-                "Opens a product this workspace uses instead of an AskMira module: "
-                "'interview' for hiring and interviews, 'expense' for expense claims, "
-                "'helpdesk' for IT tickets and assets. Set `product`."
+                "Opens a product this workspace uses: 'interview' for hiring and interviews, "
+                "'expense' for expense claims, 'helpdesk' for IT tickets and assets, "
+                "'saleinx' for leads and deals, 'procurement' for requisitions, orders and "
+                "invoices. Set `product`."
             ),
             inputs=("product",),
         ),
@@ -680,6 +895,68 @@ INPUTS: dict[str, dict[str, Any]] = {
     },
     "chart": {"type": "string", "enum": list(data_tools.CHARTS)},
     "top": {"type": "integer", "description": "How many groups to draw before 'Others'."},
+    # Saleinx
+    "deal": {
+        "type": "string",
+        "description": "A deal or lead: its name, its company, or 'Company - Deal' as shown.",
+    },
+    "deal_stage": {
+        "type": "string",
+        "enum": ["none", *sales_tools.DEAL_STAGES, "awaiting_approval"],
+    },
+    "margin_pct": {"type": "string", "description": "Gross margin in per cent, like 32, or empty."},
+    "close_date": {"type": "string", "description": "Expected close date, YYYY-MM-DD, or empty."},
+    "next_step": {"type": "string", "description": "What happens next on the deal, or empty."},
+    "hold_reason": {"type": "string", "enum": ["none", *sales_tools.HOLD_REASONS]},
+    "revisit_on": {"type": "string", "description": "When to look at it again, YYYY-MM-DD."},
+    "rollback_reason": {"type": "string", "enum": ["none", *sales_tools.ROLLBACK_REASONS]},
+    "company": {"type": "string", "description": "The customer company's name, or empty."},
+    "contact_name": {"type": "string"},
+    "contact_title": {"type": "string", "description": "Their job title, like VP IT."},
+    "contact_email": {"type": "string"},
+    "contact_phone": {"type": "string"},
+    "deal_name": {"type": "string", "description": "A short name for what they want."},
+    "amount": {"type": "string", "description": "Rupees, like 12000000, or empty."},
+    "decision_by": {"type": "string", "description": "When they decide, YYYY-MM-DD, or empty."},
+    "referred_by": {"type": "string", "description": "Who referred them, or empty."},
+    "source": {"type": "string", "description": "Where the lead came from, or empty."},
+    "follow_up": {"type": "string", "description": "The follow-up to do, like 'Call back'."},
+    "follow_up_date": {"type": "string", "description": "YYYY-MM-DD, or empty."},
+    "offerings": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "What the deal sells, from the workspace's list.",
+    },
+    # Order win
+    "client": {"type": "string", "description": "The customer, if not the deal's company."},
+    "po_number": {"type": "string", "description": "The customer's purchase order number."},
+    "po_value": {"type": "string", "description": "The PO's value in rupees, or empty."},
+    "start_date": {"type": "string", "description": "When the work starts, YYYY-MM-DD."},
+    "location": {"type": "string", "description": "Where it is delivered from, like Pune."},
+    "work_mode": {"type": "string", "description": "Onsite, hybrid or remote."},
+    "recruitment_cost_per_hire": {"type": "string", "description": "Rupees per hire, or 0."},
+    "roles": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "count": {"type": "string"},
+                "experience": {"type": "string"},
+                "allocation": {"type": "string"},
+                "bill_rate": {"type": "string"},
+                "cost_rate": {"type": "string"},
+                "skills": {"type": "string"},
+            },
+        },
+        "description": "One entry per role the order needs.",
+    },
+    # ProcureFlow
+    "document": {"type": "string", "enum": list(sales_tools.PROCUREMENT_DOCUMENTS)},
+    "doc_status": {
+        "type": "string",
+        "description": "A status there, like AWAITING_APPROVAL, APPROVED or PAID, or empty.",
+    },
 }
 
 #: What each existing lookup lets the model read (views.py strips the rest).
@@ -707,6 +984,14 @@ _READS: dict[str, tuple[str, ...]] = {
     "helpdesk_tickets": ("identity", "organisational"),
     "helpdesk_overview": ("organisational",),
     "helpdesk_assets": ("identity", "organisational"),
+    # Business records; the model's view carries no person (sales_tools.py).
+    "sales_deals": ("organisational",),
+    "sales_pipeline": ("organisational",),
+    "procurement_overview": ("organisational",),
+    "procurement_approvals": ("organisational",),
+    "procurement_documents": ("organisational",),
+    "procurement_budgets": ("organisational",),
+    "account_forecast": ("organisational",),
 }
 TOOLS = {key: replace(tool, reads=_READS.get(key, tool.reads)) for key, tool in TOOLS.items()}
 
@@ -869,6 +1154,9 @@ async def run(
 async def _run(
     session: AsyncSession, user: User, tool: Tool, inputs: dict[str, Any], *, today: date
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if tool.key in sales_tools.READ_TOOLS:
+        return await sales_tools.run(session, user, tool.key, inputs, today=today)
+
     if tool.product:
         return await product_tools.run(session, user, tool.key, inputs, today=today)
 
@@ -1058,6 +1346,16 @@ async def _act(
         return await actions.propose_decision(session, user, inputs, ctx)
     if tool.key == "raise_hr_ticket":
         return await actions.propose_hr_ticket(session, user, inputs, ctx)
+    if tool.key == "save_lead":
+        return await sales_tools.propose_lead(session, user, inputs, ctx)
+    if tool.key == "move_deal":
+        return await sales_tools.propose_stage(session, user, inputs, ctx)
+    if tool.key == "decide_deal":
+        return await sales_tools.propose_deal_decision(session, user, inputs, ctx)
+    if tool.key == "decide_procurement":
+        return await sales_tools.propose_procurement_decision(session, user, inputs, ctx)
+    if tool.key == "book_order":
+        return await order_win.propose(session, user, inputs, ctx)
     if tool.key in ("confirm_action", "cancel_action"):
         try:
             action_id = uuid.UUID(str(inputs.get("action_id") or "").strip())

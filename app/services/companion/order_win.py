@@ -1,0 +1,938 @@
+"""An order win: a signed order opens its positions and writes its prospective P&L.
+
+A manager (or anyone with the rights) tells Ask Mira a customer signed: the PO,
+its value, the months, the team with each role's billing and cost rate, and the
+recruitment cost per hire. Ask Mira then
+
+1. **checks before it offers anything** — deterministically, here, not in the
+   model's head:
+   * the deal is Won *and approved* in Saleinx (a rep's Won waits for a
+     manager; nothing is opened until it is approved);
+   * the PO's value matches what the team bills over the months (within
+     half a percent), or it refuses and shows both figures;
+   * the same PO was not booked already (one live run per PO number);
+   * the person may open jobs in AnytimeHire and write the P&L in AskMira;
+2. **offers** the plan: the positions, and the forecast month by month with
+   billing, people cost, recruitment and margin;
+3. on Confirm, **carries it out step by step** (CompanionRun), recording each:
+   open each position in AnytimeHire (each with its own key, "<PO>:<n>", so a
+   retried request never doubles it), write the forecast to the finance
+   provider, note the Saleinx deal. If a step fails, every step before it is
+   undone in reverse — positions withdrawn (and their quota given back), the
+   forecast withdrawn — and the person is told exactly what happened.
+
+Money is Decimal throughout; nothing here is a float.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
+
+from fastapi import HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import permissions
+from app.core.deps import tenant_scoped
+from app.models.audit import AuditAction
+from app.models.companion import (
+    CompanionAction,
+    CompanionActionStatus,
+    CompanionRun,
+    CompanionRunStatus,
+)
+from app.models.user import User
+from app.services import audit
+from app.services.documents.indian_numbers import group_indian
+from app.services.finance import ForecastLineIn, ForecastPlan, ForecastWritten, provider_for
+from app.services.products import data as products
+
+__all__ = [
+    "OrderFigures",
+    "Role",
+    "figures_for",
+    "parse_roles",
+    "po_mismatch",
+    "propose",
+    "run",
+    "rupees",
+]
+
+ZERO = Decimal(0)
+CENT = Decimal("0.01")
+#: How far the PO's value may sit from the team's billing before it is refused.
+PO_TOLERANCE = Decimal("0.005")
+MAX_ROLES = 20
+MAX_MONTHS = 60
+
+_LAKH = Decimal(100_000)
+_CRORE = Decimal(10_000_000)
+
+
+# ── Reading what the person said ─────────────────────────────────────────────
+
+
+def rupees(value: Any) -> Decimal | None:
+    """An amount in rupees from what a person writes: 190000, 1,90,000, "1.9 lakh", "Rs 1.2 crore".
+
+    None when empty. A value that is not an amount raises ValueError.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int | Decimal):
+        return Decimal(value)
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^(?:rs\.?|inr|₹)\s*", "", text).replace(",", "").strip()
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|l|crores?|cr|k|thousand)?(?:\s*(?:/|per)\s*(?:month|mo|m))?",
+        text,
+    )
+    if not match:
+        raise ValueError(f"'{value}' is not an amount. Write it like 190000 or 1.9 lakh.")
+    number = Decimal(match.group(1))
+    unit = match.group(2) or ""
+    if unit.startswith(("lakh", "lac")) or unit == "l":
+        number *= _LAKH
+    elif unit.startswith(("crore", "cr")):
+        number *= _CRORE
+    elif unit in ("k", "thousand"):
+        number *= 1000
+    return number.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _percent(value: Any, default: Decimal = Decimal(100)) -> Decimal:
+    if value in (None, ""):
+        return default
+    text = str(value).strip().rstrip("%").strip()
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(
+            f"'{value}' is not an allocation. Write it like 50 for half time."
+        ) from None
+    if not (ZERO < number <= 100):
+        raise ValueError("An allocation is more than 0 and at most 100 (per cent of full time).")
+    return number
+
+
+def _years(value: Any) -> tuple[int, int]:
+    """'4 to 6', '4-6', '3 - 5 years', '8+' → (min, max). '8+' reads as 8 to 15."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0, 2
+    plus = re.fullmatch(r"(\d{1,2})\s*\+\s*(?:years?|yrs?)?", text)
+    if plus:
+        low = int(plus.group(1))
+        return low, min(low + 7, 40)
+    span = re.fullmatch(r"(\d{1,2})\s*(?:-|\u2013|to)\s*(\d{1,2})\s*(?:years?|yrs?)?", text)
+    if span:
+        low, high = int(span.group(1)), int(span.group(2))
+        if high < low:
+            raise ValueError(f"The experience range '{value}' ends before it starts.")
+        return low, high
+    one = re.fullmatch(r"(\d{1,2})\s*(?:years?|yrs?)?", text)
+    if one:
+        return int(one.group(1)), int(one.group(1))
+    raise ValueError(f"'{value}' is not an experience range. Write it like 4 to 6, or 8+.")
+
+
+@dataclass(frozen=True, slots=True)
+class Role:
+    title: str
+    count: int
+    experience: tuple[int, int]
+    #: Per cent of full time this order pays for (a PM at 50%).
+    allocation: Decimal
+    #: What the customer is billed for one person a month, at full time.
+    bill_rate: Decimal
+    #: What one person costs a month (loaded), at full time.
+    cost_rate: Decimal
+    skills: tuple[str, ...] = ()
+
+    @property
+    def share(self) -> Decimal:
+        return self.allocation / 100
+
+    @property
+    def monthly_billing(self) -> Decimal:
+        return (self.bill_rate * self.count * self.share).quantize(CENT, rounding=ROUND_HALF_UP)
+
+    @property
+    def monthly_cost(self) -> Decimal:
+        return (self.cost_rate * self.count * self.share).quantize(CENT, rounding=ROUND_HALF_UP)
+
+    @property
+    def label(self) -> str:
+        part = "" if self.allocation == 100 else f" at {_num(self.allocation)}%"
+        return f"{self.title} x {self.count}{part}"
+
+
+def _num(value: Decimal) -> str:
+    text = f"{value.normalize():f}"
+    return text
+
+
+def parse_roles(raw: Any) -> list[Role]:
+    """The team as the model filled it in, read strictly. A bad row raises ValueError."""
+    items = raw if isinstance(raw, list) else []
+    roles: list[Role] = []
+    for index, item in enumerate(items[:MAX_ROLES], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())[:120]
+        if len(title) < 2:
+            raise ValueError(f"Role {index} has no title.")
+        try:
+            count = int(str(item.get("count") or "1").strip())
+        except ValueError:
+            raise ValueError(f"How many {title}s? '{item.get('count')}' is not a number.") from None
+        if not 1 <= count <= 200:
+            raise ValueError(f"The number of {title}s must be between 1 and 200.")
+        bill = rupees(item.get("bill_rate"))
+        cost = rupees(item.get("cost_rate"))
+        if bill is None or bill <= 0:
+            raise ValueError(f"What is the monthly billing rate for a {title}?")
+        if cost is None or cost <= 0:
+            raise ValueError(f"What is the monthly loaded cost of a {title}?")
+        skills = tuple(
+            s.strip()[:60] for s in re.split(r"[,;/]", str(item.get("skills") or "")) if s.strip()
+        )[:10]
+        roles.append(
+            Role(
+                title=title,
+                count=count,
+                experience=_years(item.get("experience")),
+                allocation=_percent(item.get("allocation")),
+                bill_rate=bill,
+                cost_rate=cost,
+                skills=skills,
+            )
+        )
+    return roles
+
+
+@dataclass(frozen=True, slots=True)
+class OrderFigures:
+    monthly_billing: Decimal
+    monthly_cost: Decimal
+    months: int
+    hires: int
+    per_hire: Decimal
+
+    @property
+    def billing(self) -> Decimal:
+        return self.monthly_billing * self.months
+
+    @property
+    def people_cost(self) -> Decimal:
+        return self.monthly_cost * self.months
+
+    @property
+    def recruitment(self) -> Decimal:
+        return self.per_hire * self.hires
+
+    @property
+    def cost(self) -> Decimal:
+        return self.people_cost + self.recruitment
+
+    @property
+    def margin(self) -> Decimal:
+        return self.billing - self.cost
+
+    @property
+    def margin_pct(self) -> Decimal | None:
+        if not self.billing:
+            return None
+        return (self.margin / self.billing * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def figures_for(roles: list[Role], months: int, per_hire: Decimal) -> OrderFigures:
+    return OrderFigures(
+        monthly_billing=sum((r.monthly_billing for r in roles), ZERO),
+        monthly_cost=sum((r.monthly_cost for r in roles), ZERO),
+        months=months,
+        # Each person is one hire, whatever share of their time the order pays for.
+        hires=sum(r.count for r in roles),
+        per_hire=per_hire,
+    )
+
+
+def inr(value: Decimal) -> str:
+    """₹71,10,000 — Indian grouping, paise only when there are any."""
+    whole = value.quantize(CENT, rounding=ROUND_HALF_UP)
+    text = group_indian(int(whole))
+    paise = int((whole - int(whole)) * 100)
+    return f"₹{text}" + (f".{paise:02d}" if paise else "")
+
+
+def po_mismatch(po_value: Decimal | None, figures: OrderFigures) -> str | None:
+    """Why the PO and the team's billing disagree, or None when they agree (or no PO value)."""
+    if po_value is None:
+        return None
+    gap = abs(po_value - figures.billing)
+    if gap <= max(Decimal(1), figures.billing * PO_TOLERANCE):
+        return None
+    return (
+        f"The PO says {inr(po_value)}, but the team bills {inr(figures.monthly_billing)} a month: "
+        f"{inr(figures.billing)} over {figures.months} months. The PO is {inr(gap)} "
+        f"{'less' if po_value < figures.billing else 'more'} than that. Check the PO value, the "
+        "rates or the months; nothing has been opened or written."
+    )
+
+
+def _start(value: Any) -> date:
+    try:
+        day = date.fromisoformat(str(value or "").strip())
+    except ValueError:
+        raise ValueError("When does the order start? Give the date as YYYY-MM-DD.") from None
+    return day
+
+
+def _po(value: Any) -> str:
+    text = re.sub(r"\s+", "", str(value or "")).upper()[:60]
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9/_.-]{2,59}", text):
+        raise ValueError("What is the customer's PO number?")
+    return text
+
+
+def business_key(po_number: str) -> str:
+    return f"order_win:{po_number}"
+
+
+# ── Cards ────────────────────────────────────────────────────────────────────
+
+
+def _notice(text: str, tone: str = "info") -> dict[str, Any]:
+    return {"type": "notice", "tone": tone, "text": text}
+
+
+def _months_label(start: date, months: int) -> str:
+    index = start.year * 12 + start.month - 1 + months - 1
+    end = date(index // 12, index % 12 + 1, 1)
+    return f"{start:%b %Y} to {end:%b %Y}"
+
+
+def _run_summary(run: CompanionRun) -> str:
+    jobs = [s for s in run.steps if s.get("step") == "job" and s.get("status") == "done"]
+    forecast = next(
+        (s for s in run.steps if s.get("step") == "forecast" and s.get("status") == "done"), None
+    )
+    parts = [f"{len(jobs)} position(s) opened in AnytimeHire"]
+    if forecast:
+        parts.append(f"the prospective P&L written on {forecast.get('account', 'the account')}")
+    return ", ".join(parts)
+
+
+async def _live_run(session: AsyncSession, user: User, key: str) -> CompanionRun | None:
+    return await session.scalar(
+        tenant_scoped(
+            select(CompanionRun).where(
+                CompanionRun.business_key == key,
+                CompanionRun.status.in_(
+                    (CompanionRunStatus.RUNNING, CompanionRunStatus.DONE, CompanionRunStatus.STUCK)
+                ),
+            ),
+            CompanionRun,
+            user,
+        )
+    )
+
+
+def _deal_choice(deals: list[dict[str, Any]], wanted: str) -> dict[str, Any] | list[dict[str, Any]]:
+    """The one deal meant: an exact title or company match wins over a partial one."""
+    dashes = str.maketrans({0x2013: "-", 0x2014: "-"})
+    want = " ".join(wanted.lower().translate(dashes).split())
+    exact = [
+        d
+        for d in deals
+        if want in (str(d.get("title") or "").lower(), str(d.get("company") or "").lower())
+        or str(d.get("name") or "").lower() == want
+    ]
+    pool = exact or deals
+    return pool[0] if len(pool) == 1 else pool
+
+
+# ── Propose ──────────────────────────────────────────────────────────────────
+
+
+async def propose(
+    session: AsyncSession, user: User, inputs: dict[str, Any], ctx: Any
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Check an order win end to end and offer it. Nothing changes until the person confirms."""
+    from app.services.companion import actions
+
+    try:
+        po = _po(inputs.get("po_number"))
+        start = _start(inputs.get("start_date"))
+        months = int(inputs.get("months") or 0)
+        if not 1 <= months <= MAX_MONTHS:
+            raise ValueError(f"For how many months? Between 1 and {MAX_MONTHS}.")
+        roles = parse_roles(inputs.get("roles"))
+        if not roles:
+            raise ValueError(
+                "Which roles does the order need? Give each one's title, how many, experience, "
+                "allocation, monthly billing rate and monthly loaded cost."
+            )
+        per_hire_raw = inputs.get("recruitment_cost_per_hire")
+        per_hire = rupees(per_hire_raw) if str(per_hire_raw or "").strip() else None
+        if per_hire is None:
+            raise ValueError("What does recruiting one person cost? Say 0 if nothing.")
+        po_value = (
+            rupees(inputs.get("po_value")) if str(inputs.get("po_value") or "").strip() else None
+        )
+    except ValueError as exc:
+        return [_notice(str(exc), "warning")], {}
+
+    used = {"po_number": po, "start_date": start.isoformat(), "months": months}
+    key = business_key(po)
+    earlier = await _live_run(session, user, key)
+    if earlier is not None:
+        when = earlier.created_at.strftime("%d %b %Y") if earlier.created_at else "earlier"
+        if earlier.status is CompanionRunStatus.DONE:
+            text = (
+                f"PO {po} was already booked on {when}: {_run_summary(earlier)}. Nothing was "
+                "done again. To change it, withdraw the forecast on the Account P&L page or the "
+                "positions in AnytimeHire first."
+            )
+        elif earlier.status is CompanionRunStatus.RUNNING:
+            text = f"PO {po} is being booked right now. Give it a moment and ask again."
+        else:
+            text = (
+                f"PO {po} was booked on {when} but part of it could not be undone after a "
+                f"failure: {_run_summary(earlier)}. Someone needs to finish it by hand before "
+                "it is tried again."
+            )
+        card = _notice(text, "warning" if earlier.status is not CompanionRunStatus.DONE else "info")
+        card["model_note"] = text
+        return [card], used
+    # The same order already waiting on the person's say in this conversation.
+    waiting = await session.scalar(
+        tenant_scoped(
+            select(CompanionAction).where(
+                CompanionAction.kind == "order_win",
+                CompanionAction.user_id == user.id,
+                CompanionAction.status == CompanionActionStatus.PROPOSED,
+                CompanionAction.expires_at > datetime.now(UTC),
+            ),
+            CompanionAction,
+            user,
+        )
+    )
+    if waiting is not None and (waiting.payload or {}).get("po_number") == po:
+        return [actions.card_for(waiting)], used
+
+    # The deal: Won and approved in Saleinx.
+    wanted = " ".join(str(inputs.get("deal") or inputs.get("client") or "").split())
+    if not wanted:
+        return [_notice("Which customer or deal in Saleinx is this order for?")], used
+    if await products.role_in(session, user, "saleinx") is None:
+        return [
+            _notice(
+                "Saleinx is not linked to your workspace for you, so the deal can't be checked.",
+                "warning",
+            )
+        ], used
+    try:
+        found = await products.ask(
+            session, user, "saleinx", "deals", {"query": wanted, "limit": 10}
+        )
+    except products.ProductUnavailableError as exc:
+        return [_notice(str(exc), "warning")], used
+    deals = [d for d in found.get("deals") or [] if isinstance(d, dict)]
+    if not deals:
+        return [_notice(f"No deal you can see in Saleinx matches “{wanted}”.", "warning")], used
+    won = [d for d in deals if d.get("stage") == "won"]
+    if not won:
+        choice = _deal_choice(deals, wanted)
+        deal = choice if isinstance(choice, dict) else deals[0]
+        return [
+            _notice(
+                f"{deal.get('title')} is at {deal.get('stage_label')} in Saleinx. An order is "
+                "booked once its deal is Won and approved there.",
+                "warning",
+            )
+        ], used
+    choice = _deal_choice(won, wanted)
+    if isinstance(choice, list):
+        names = "; ".join(str(d.get("title")) for d in choice[:6])
+        text = f"More than one won deal matches “{wanted}”: {names}. Which one?"
+        return [_notice(text)], used
+    deal = choice
+    if deal.get("approval_status") != "approved":
+        text = (
+            f"{deal.get('title')} is marked Won but is waiting for a manager's approval in "
+            "Saleinx. Positions and the P&L wait until a manager approves the Won there; nothing "
+            "has been opened or written."
+        )
+        card = _notice(text, "warning")
+        card["model_note"] = text
+        return [card], used
+
+    # Who may do each step.
+    hiring_role = await products.role_in(session, user, "interview")
+    problems = []
+    if hiring_role not in ("admin", "recruiter"):
+        problems.append("open positions in AnytimeHire (that is for its admins and recruiters)")
+    if not permissions.is_hr(user):
+        problems.append("write the P&L (that is for admins and sub-admins with payroll rights)")
+    if problems:
+        return [
+            _notice(
+                "You can't " + " or ".join(problems) + ". Ask your HR admin to book this order.",
+                "warning",
+            )
+        ], used
+
+    figures = figures_for(roles, months, per_hire)
+    mismatch = po_mismatch(po_value, figures)
+    if mismatch:
+        card = _notice(mismatch, "warning")
+        card["model_note"] = mismatch
+        return [card], used
+
+    account = " ".join(str(inputs.get("client") or deal.get("company") or deal.get("name")).split())
+    location = " ".join(str(inputs.get("location") or "").split())[:120] or "Not stated"
+    mode = " ".join(str(inputs.get("work_mode") or "").split())[:40] or "Not stated"
+    plan = {
+        "po_number": po,
+        "po_value": f"{po_value}" if po_value is not None else None,
+        "deal_id": deal.get("id"),
+        "deal_title": deal.get("title"),
+        "account": account[:160],
+        "start_date": start.isoformat(),
+        "start_month": start.replace(day=1).isoformat(),
+        "months": months,
+        "location": location,
+        "work_mode": mode,
+        "per_hire": f"{per_hire}",
+        "roles": [
+            {
+                "title": r.title,
+                "count": r.count,
+                "experience": list(r.experience),
+                "allocation": f"{r.allocation}",
+                "bill_rate": f"{r.bill_rate}",
+                "cost_rate": f"{r.cost_rate}",
+                "skills": list(r.skills),
+            }
+            for r in roles
+        ],
+        "figures": {
+            "monthly_billing": f"{figures.monthly_billing}",
+            "monthly_cost": f"{figures.monthly_cost}",
+            "billing": f"{figures.billing}",
+            "people_cost": f"{figures.people_cost}",
+            "recruitment": f"{figures.recruitment}",
+            "cost": f"{figures.cost}",
+            "margin": f"{figures.margin}",
+            "margin_pct": f"{figures.margin_pct}" if figures.margin_pct is not None else None,
+            "hires": figures.hires,
+        },
+    }
+    span = _months_label(start.replace(day=1), months)
+    notes = [
+        f"Positions open in AnytimeHire as {location}, {mode}: "
+        + "; ".join(
+            f"{r.title} ({r.count} opening{'s' if r.count > 1 else ''}, "
+            f"{r.experience[0]} to {r.experience[1]} years)"
+            for r in roles
+        ),
+        f"The prospective P&L goes on the account “{account}” for {span}; recruitment "
+        f"({figures.hires} hires at {inr(per_hire)} each) in the first month.",
+    ]
+    if po_value is None:
+        notes.append(
+            f"No PO value was given: the P&L uses the team's billing, {inr(figures.billing)}."
+        )
+    else:
+        notes.append(f"The PO's {inr(po_value)} matches the team's billing.")
+    notes.append(
+        "If any step fails, the steps before it are undone: positions withdrawn, the "
+        "forecast taken back."
+    )
+    action = await actions._offer(
+        session,
+        user,
+        ctx,
+        kind="order_win",
+        payload=plan,
+        summary={
+            "title": f"Book PO {po}: {deal.get('title')}",
+            "figures": [
+                {"label": "Deal", "value": str(deal.get("title"))},
+                {"label": "Starts", "value": f"{start:%d %b %Y}, {months} months"},
+                {"label": "Billing a month", "value": inr(figures.monthly_billing)},
+                {"label": "Cost a month", "value": inr(figures.monthly_cost)},
+                {"label": "Billing in all", "value": inr(figures.billing)},
+                {"label": "People cost", "value": inr(figures.people_cost)},
+                {"label": "Recruitment", "value": inr(figures.recruitment)},
+                {
+                    "label": "Margin",
+                    "value": f"{inr(figures.margin)} ({figures.margin_pct}%)",
+                },
+            ],
+            "table": {
+                "columns": ["Role", "People", "Allocation", "Bill / month", "Cost / month"],
+                "rows": [
+                    [
+                        r.title,
+                        r.count,
+                        f"{_num(r.allocation)}%",
+                        inr(r.monthly_billing),
+                        inr(r.monthly_cost),
+                    ]
+                    for r in roles
+                ],
+            },
+            "notes": notes,
+            "confirm_label": "Open positions and write the P&L",
+            "question": "Book this order?",
+        },
+    )
+    return [actions.card_for(action)], used
+
+
+# ── Carry it out ─────────────────────────────────────────────────────────────
+
+
+def _step(run: CompanionRun, entry: dict[str, Any]) -> None:
+    entry = {**entry, "at": datetime.now(UTC).isoformat()}
+    # A new list, so the JSONB column sees the change.
+    run.steps = [*run.steps, entry]
+
+
+async def _record(
+    session: AsyncSession, user: User, run: CompanionRun, summary: str, request: Request | None
+) -> None:
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="companion_run",
+        entity_id=run.id,
+        actor=user,
+        changes={"status": run.status.value, "steps": run.steps[-1:] if run.steps else []},
+        summary=summary,
+        request=request,
+    )
+
+
+def _job_params(plan: dict[str, Any], index: int, role: dict[str, Any]) -> dict[str, Any]:
+    start = date.fromisoformat(plan["start_date"])
+    allocation = Decimal(role["allocation"])
+    share = "" if allocation == 100 else f", {_num(allocation)}% allocation"
+    return {
+        "key": f"{plan['po_number']}:{index}",
+        "title": f"{role['title']} ({plan['account']})"[:255],
+        "department": "Delivery",
+        "location": plan["location"],
+        "job_type": "Full Time",
+        "emp_type": plan["work_mode"],
+        "experience_min": role["experience"][0],
+        "experience_max": role["experience"][1],
+        "openings": role["count"],
+        "skills": [{"name": s} for s in role.get("skills") or []],
+        "responsibilities": [
+            f"{plan['account']}: {plan['months']}-month engagement from {start:%d %b %Y} "
+            f"(PO {plan['po_number']}){share}."
+        ],
+    }
+
+
+def _forecast_plan(plan: dict[str, Any], run_id: uuid.UUID) -> ForecastPlan:
+    months = int(plan["months"])
+    lines: list[ForecastLineIn] = []
+    for role in plan["roles"]:
+        r = Role(
+            title=role["title"],
+            count=int(role["count"]),
+            experience=tuple(role["experience"]),  # type: ignore[arg-type]
+            allocation=Decimal(role["allocation"]),
+            bill_rate=Decimal(role["bill_rate"]),
+            cost_rate=Decimal(role["cost_rate"]),
+        )
+        lines.append(ForecastLineIn("billing", r.label, r.monthly_billing, 0, months))
+        lines.append(ForecastLineIn("people_cost", r.label, r.monthly_cost, 0, months))
+    recruitment = Decimal(plan["figures"]["recruitment"])
+    if recruitment > 0:
+        lines.append(
+            ForecastLineIn(
+                "recruitment",
+                f"Recruitment ({plan['figures']['hires']} hires)",
+                recruitment,
+                0,
+                1,
+            )
+        )
+    return ForecastPlan(
+        account_name=plan["account"],
+        reference=plan["po_number"],
+        title=f"PO {plan['po_number']}: {plan['deal_title']}"[:200],
+        start_month=date.fromisoformat(plan["start_month"]),
+        months=months,
+        lines=lines,
+        order_value=Decimal(plan["po_value"]) if plan.get("po_value") else None,
+        source="order_win",
+        source_ref=str(run_id),
+        notes=f"Booked from Ask Mira. Saleinx deal {plan.get('deal_id')}.",
+    )
+
+
+async def _undo(
+    session: AsyncSession, user: User, run: CompanionRun, request: Request | None
+) -> list[str]:
+    """Undo every done step, newest first. Returns what could not be undone."""
+    stuck: list[str] = []
+    for entry in reversed([s for s in run.steps if s.get("status") == "done"]):
+        if entry.get("step") == "forecast":
+            try:
+                await provider_for(session, user).withdraw_forecast(
+                    session,
+                    user,
+                    ForecastWritten(
+                        forecast_id=uuid.UUID(entry["forecast_id"]),
+                        account_id=uuid.UUID(entry["account_id"]),
+                        account_code=entry.get("account_code", ""),
+                        account_name=entry.get("account", ""),
+                        account_created=bool(entry.get("account_created")),
+                    ),
+                    reason=f"PO {run.plan['po_number']}: a later step failed",
+                    request=request,
+                )
+                _step(
+                    run,
+                    {"step": "undo_forecast", "status": "done", "label": "P&L forecast withdrawn"},
+                )
+            except HTTPException as exc:
+                stuck.append(f"the P&L forecast ({exc.detail})")
+                _step(run, {"step": "undo_forecast", "status": "failed", "detail": str(exc.detail)})
+        elif entry.get("step") == "job" and not entry.get("existing"):
+            try:
+                answer = await products.act(
+                    session, user, "interview", "job.withdraw", {"key": entry["key"]}
+                )
+                _step(
+                    run,
+                    {
+                        "step": "undo_job",
+                        "status": "done",
+                        "key": entry["key"],
+                        "label": f"{entry.get('title')} withdrawn",
+                        "withdrawn": bool(answer.get("withdrawn")),
+                    },
+                )
+            except products.ProductUnavailableError as exc:
+                stuck.append(f"the position “{entry.get('title')}” in AnytimeHire ({exc})")
+                _step(
+                    run,
+                    {
+                        "step": "undo_job",
+                        "status": "failed",
+                        "key": entry["key"],
+                        "detail": str(exc),
+                    },
+                )
+        await session.commit()
+    return stuck
+
+
+async def run(
+    session: AsyncSession, user: User, action: CompanionAction, request: Request | None
+) -> dict[str, Any]:
+    """Book the order the person confirmed, step by step, undoing on failure."""
+    plan = dict(action.payload)
+    key = business_key(plan["po_number"])
+    if await _live_run(session, user, key) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"PO {plan['po_number']} was already booked. Nothing was done again.",
+        )
+    booking = CompanionRun(
+        tenant_id=user.tenant_id,
+        kind="order_win",
+        business_key=key,
+        user_id=user.id,
+        action_id=action.id,
+        status=CompanionRunStatus.RUNNING,
+        plan=plan,
+        steps=[],
+    )
+    session.add(booking)
+    try:
+        await session.flush()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409, detail=f"PO {plan['po_number']} is already being booked."
+        ) from None
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.CREATE,
+        entity_type="companion_run",
+        entity_id=booking.id,
+        actor=user,
+        changes={"kind": "order_win", "po_number": plan["po_number"], "figures": plan["figures"]},
+        summary=f"Ask Mira started booking PO {plan['po_number']} for {plan['account']}",
+        request=request,
+    )
+    await session.commit()
+    run_id = booking.id
+
+    failure: str | None = None
+    # 1. The positions, one per role.
+    for index, role in enumerate(plan["roles"], start=1):
+        params = _job_params(plan, index, role)
+        try:
+            answer = await products.act(session, user, "interview", "job.open", params)
+        except products.ProductUnavailableError as exc:
+            failure = f"AnytimeHire refused the position “{role['title']}”: {exc}"
+            _step(
+                booking,
+                {"step": "job", "status": "failed", "key": params["key"], "detail": str(exc)},
+            )
+            await session.commit()
+            break
+        job = answer.get("job") if isinstance(answer.get("job"), dict) else {}
+        _step(
+            booking,
+            {
+                "step": "job",
+                "status": "done",
+                "key": params["key"],
+                "ref": job.get("ref"),
+                "title": job.get("title") or params["title"],
+                "openings": job.get("openings") or role["count"],
+                "existing": bool(answer.get("existing")),
+            },
+        )
+        await _record(
+            session,
+            user,
+            booking,
+            f"Order {plan['po_number']}: opened {params['title']} in AnytimeHire",
+            request,
+        )
+        await session.commit()
+
+    # 2. The prospective P&L.
+    if failure is None:
+        try:
+            written = await provider_for(session, user).write_forecast(
+                session, user, _forecast_plan(plan, run_id), request=request
+            )
+            booking = await session.get(CompanionRun, run_id) or booking
+            _step(
+                booking,
+                {
+                    "step": "forecast",
+                    "status": "done",
+                    "forecast_id": str(written.forecast_id),
+                    "account_id": str(written.account_id),
+                    "account_code": written.account_code,
+                    "account": written.account_name,
+                    "account_created": written.account_created,
+                    "existing": written.existing,
+                },
+            )
+            await _record(
+                session,
+                user,
+                booking,
+                f"Order {plan['po_number']}: prospective P&L written",
+                request,
+            )
+            await session.commit()
+        except HTTPException as exc:
+            await session.rollback()
+            booking = await session.get(CompanionRun, run_id) or booking
+            failure = f"The P&L could not be written: {exc.detail}"
+            _step(booking, {"step": "forecast", "status": "failed", "detail": str(exc.detail)})
+            await session.commit()
+
+    if failure is not None:
+        booking = await session.get(CompanionRun, run_id) or booking
+        stuck = await _undo(session, user, booking, request)
+        booking.status = CompanionRunStatus.STUCK if stuck else CompanionRunStatus.UNDONE
+        booking.finished_at = datetime.now(UTC)
+        await _record(
+            session,
+            user,
+            booking,
+            f"Order {plan['po_number']} not booked: {failure}"
+            + (
+                f"; could not undo {', '.join(stuck)}" if stuck else "; everything before it undone"
+            ),
+            request,
+        )
+        await session.commit()
+        if stuck:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{failure.rstrip('.')}. The steps before it were undone except "
+                    f"{', '.join(stuck)}: someone needs to remove that by hand."
+                ),
+            )
+        opened = [s for s in booking.steps if s.get("step") == "job" and s.get("status") == "done"]
+        undone = f" The {len(opened)} position(s) already opened were withdrawn." if opened else ""
+        raise HTTPException(
+            status_code=409,
+            detail=f"{failure.rstrip('.')}.{undone} Nothing from this order was kept.",
+        )
+
+    # 3. A note on the deal (a courtesy: its failure is said, not undone).
+    jobs = [s for s in booking.steps if s.get("step") == "job" and s.get("status") == "done"]
+    figures = plan["figures"]
+    note = (
+        f"Order booked from AskMira: PO {plan['po_number']}, {plan['months']} months from "
+        f"{date.fromisoformat(plan['start_date']):%d %b %Y}. {len(jobs)} position(s) opened in "
+        f"AnytimeHire ({figures['hires']} hires). Prospective P&L: billing "
+        f"{inr(Decimal(figures['billing']))}, cost {inr(Decimal(figures['cost']))}, margin "
+        f"{inr(Decimal(figures['margin']))} ({figures['margin_pct']}%)."
+    )
+    warning = None
+    try:
+        await products.act(
+            session, user, "saleinx", "deal.note", {"deal_id": plan["deal_id"], "body": note}
+        )
+        _step(
+            booking,
+            {"step": "deal_note", "status": "done", "label": "Note added on the Saleinx deal"},
+        )
+    except products.ProductUnavailableError as exc:
+        warning = f"The note on the Saleinx deal could not be added ({exc})."
+        _step(booking, {"step": "deal_note", "status": "failed", "detail": str(exc)})
+    booking.status = CompanionRunStatus.DONE
+    booking.finished_at = datetime.now(UTC)
+    await _record(
+        session,
+        user,
+        booking,
+        f"Order {plan['po_number']} booked: {_run_summary(booking)}",
+        request,
+    )
+    await session.commit()
+
+    forecast = next(s for s in booking.steps if s.get("step") == "forecast")
+    text = (
+        f"PO {plan['po_number']} is booked. {len(jobs)} position(s) are open in AnytimeHire for "
+        f"{figures['hires']} hires, and the prospective P&L is on “{forecast.get('account')}”: "
+        f"billing {inr(Decimal(figures['billing']))}, cost {inr(Decimal(figures['cost']))}, margin "
+        f"{inr(Decimal(figures['margin']))} ({figures['margin_pct']}%)."
+    )
+    if warning:
+        text += " " + warning
+    return {
+        "text": text,
+        "open": "/payroll/accounts",
+        "reference": str(run_id),
+        "positions": [{"title": s.get("title"), "ref": s.get("ref")} for s in jobs],
+    }

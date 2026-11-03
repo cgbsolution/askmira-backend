@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -96,6 +97,10 @@ class MessageIn(BaseModel):
     #: tool and inputs it carries. Run without planning, as the person, and only
     #: when that tool is offered to them now.
     pick: PickIn | None = None
+    #: The browser's own id for this message. Sent again (a retry after a
+    #: dropped connection), it gets the first answer back; the turn never runs
+    #: twice, so nothing it offered or did is doubled.
+    client_ref: str | None = Field(default=None, min_length=8, max_length=64, pattern=r"^[\w-]+$")
 
     @field_validator("text")
     @classmethod
@@ -372,9 +377,50 @@ async def settings_view(session: AsyncSession, user: User) -> dict[str, Any]:
 # ── A turn ───────────────────────────────────────────────────────────────────
 
 
+async def _answered(session: AsyncSession, user: User, client_ref: str) -> dict[str, Any] | None:
+    """A message this person already sent with this id, and the answer it got, or None."""
+    mine = await session.scalar(
+        tenant_scoped(
+            select(CompanionMessage).where(
+                CompanionMessage.user_id == user.id,
+                CompanionMessage.client_ref == client_ref,
+            ),
+            CompanionMessage,
+            user,
+        )
+    )
+    if mine is None:
+        return None
+    conversation = await _own_conversation(session, user, mine.conversation_id, owner_id=user.id)
+    reply = await session.scalar(
+        tenant_scoped(
+            select(CompanionMessage)
+            .where(
+                CompanionMessage.conversation_id == mine.conversation_id,
+                CompanionMessage.user_id == user.id,
+                CompanionMessage.role == "assistant",
+                CompanionMessage.created_at >= mine.created_at,
+            )
+            .order_by(CompanionMessage.created_at, CompanionMessage.id)
+            .limit(1),
+            CompanionMessage,
+            user,
+        )
+    )
+    messages = [_message_read(mine)]
+    if reply is not None:
+        messages.append(await _fresh(session, user, reply))
+    return {"conversation": _conversation_read(conversation), "messages": messages, "repeat": True}
+
+
 async def send(
     session: AsyncSession, user: User, payload: MessageIn, *, request: Request | None
 ) -> dict[str, Any]:
+    if payload.client_ref:
+        earlier = await _answered(session, user, payload.client_ref)
+        if earlier is not None:
+            # Sent before: the same answer, and nothing runs again.
+            return earlier
     config = await get_config(session, user)
     ai = await _reason(session, user) is None
     await _check_limits(session, user, config, ai=ai)
@@ -403,9 +449,22 @@ async def send(
         role="user",
         text=payload.text,
         cards=[],
+        client_ref=payload.client_ref,
     )
     session.add(mine)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # The same message, sent again while the first was being answered: that
+        # one has finished now (its row was what this one waited on).
+        await session.rollback()
+        await session.refresh(user)
+        earlier = await _answered(session, user, payload.client_ref or "")
+        if earlier is not None:
+            return earlier
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="That message is being answered already."
+        ) from None
 
     if payload.pick is not None or not ai:
         return await _send_direct(

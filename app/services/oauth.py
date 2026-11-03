@@ -80,7 +80,11 @@ def _oauth_error(error: str, description: str, code: int = 400) -> HTTPException
 
 
 def allowed_scopes(user: User) -> set[str]:
-    """Everyone sees the directory, org and who is out in the app; attendance is HR's."""
+    """Everyone sees their directory circle, org and who is out in the app; attendance is HR's.
+
+    `employees:read` reaches as far as the app's directory does: the whole
+    company for HR, the caller's own circle for anybody else.
+    """
     scopes = {"employees:read", "org:read", "leave:read"}
     if permissions.is_hr(user):
         scopes.add("attendance:read")

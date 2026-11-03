@@ -186,13 +186,16 @@ async def test_a_reporting_loop_is_refused(client, session, tenant, hr_user, emp
 async def test_the_directory_filters_and_searches(client, session, tenant, hr_user, employee):
     dept = await _department(session, tenant, "ENG")
     await _person(session, tenant, "ZED1", department_id=dept.id, designation="Data engineer")
-    me = await _login(session, tenant, employee, UserRole.EMPLOYEE, "dir")
-    by_dept = await client.get(f"/api/v1/employees?department_id={dept.id}", headers=_auth(me))
+    by_dept = await client.get(f"/api/v1/employees?department_id={dept.id}", headers=_auth(hr_user))
     assert [p["employee_code"] for p in by_dept.json()["items"]] == ["ZED1"]
-    by_title = await client.get("/api/v1/employees?search=data%20eng", headers=_auth(me))
+    by_title = await client.get("/api/v1/employees?search=data%20eng", headers=_auth(hr_user))
     assert by_title.json()["total"] == 1
-    bad_status = await client.get("/api/v1/employees?status=nonsense", headers=_auth(me))
+    bad_status = await client.get("/api/v1/employees?status=nonsense", headers=_auth(hr_user))
     assert bad_status.status_code == 422
+    # Outside HR the filters search the caller's own team only; ZED1 is not in it.
+    me = await _login(session, tenant, employee, UserRole.EMPLOYEE, "dir")
+    mine = await client.get(f"/api/v1/employees?department_id={dept.id}", headers=_auth(me))
+    assert mine.json()["items"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@ from app.core.deps import tenant_scoped
 from app.models.product_link import ProductLink
 from app.models.user import User
 from app.services.products import client
-from app.services.products.catalogue import PRODUCTS
+from app.services.products.catalogue import PRODUCTS, member_role
 from app.services.products.connections import endpoint
 from app.services.products.service import ACTIVE
 
@@ -70,6 +70,9 @@ async def role_in(session: AsyncSession, user: User, product_key: str) -> str | 
     )
     if row is None or row.status != ACTIVE:
         return None
+    if product.roles_from_product:
+        # The product's own word on who this person is there (its last sync).
+        return member_role(product, row.member_roles, user.email)
     return product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
 
 
@@ -101,6 +104,13 @@ async def connection(session: AsyncSession, user: User, product_key: str) -> dic
         access = "None while you act in this workspace as the platform operator"
     elif row is None or row.status != ACTIVE:
         access = "None"
+    elif product.roles_from_product:
+        role = member_role(product, row.member_roles, user.email)
+        access = (
+            f"As {role} there"
+            if role
+            else f"None: you are not a member in {product.brand}; its admins invite people there"
+        )
     else:
         role = product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
         access = f"As {role}" if role else "None for your role"

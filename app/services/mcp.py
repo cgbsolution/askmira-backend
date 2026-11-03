@@ -47,6 +47,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.attendance import AttendanceDay
 from app.models.audit import AuditAction
@@ -118,7 +119,9 @@ TOOLS: dict[str, dict[str, Any]] = {
         "scope": "employees:read",
         "description": (
             "Find people in the directory by name, employee code, title or email. "
-            "Returns code, name, title, department, manager, status and work email."
+            "Returns code, name, title, department, manager, status and work email. "
+            "HR searches the whole company; anybody else only their own circle: "
+            "their manager, the colleagues who share that manager and their reports."
         ),
         "inputSchema": {
             "type": "object",
@@ -185,7 +188,11 @@ async def _search_employees(
     query = str(arguments.get("query") or "").strip()
     limit = max(1, min(int(arguments.get("limit") or 25), 100))
     stmt = select(Employee).where(Employee.deleted_at.is_(None))
-    if not arguments.get("include_exited"):
+    circle = await permissions.directory_circle(session, actor)
+    if circle is not None:
+        # The same circle the app's directory shows a non-HR person; never leavers.
+        stmt = stmt.where(Employee.id.in_(circle), Employee.status != EmploymentStatus.EXITED)
+    elif not arguments.get("include_exited"):
         stmt = stmt.where(Employee.status != EmploymentStatus.EXITED)
     if query:
         like = f"%{query}%"

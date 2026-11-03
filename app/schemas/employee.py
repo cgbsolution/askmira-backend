@@ -162,6 +162,20 @@ class EmployeeSummary(BaseModel):
     status: EmploymentStatus
 
 
+class ColleagueRead(BaseModel):
+    """A colleague found by name to pick: who they are and nothing about their record."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    employee_code: str
+    first_name: str
+    last_name: str | None
+    display_name: str | None
+    designation: str | None
+    photo_url: str | None
+
+
 class EntityMoveRequest(BaseModel):
     """Put these people in one company (legal entity)."""
 

@@ -1,4 +1,4 @@
-"""Settings → Connectors: a workspace's admin connects AnytimeHire, ExpenseGenie or CGB Helpdesk.
+"""Settings → Connectors: a workspace's admin connects one of our products (catalogue.py).
 
 Like "Sign in with…", started here and allowed there:
 
@@ -80,6 +80,18 @@ DESCRIPTIONS = {
         "they hold under Helpdesk and Assets, without a second login; HR sees the "
         "company's tickets and assets, the IT team what the helpdesk shows them, and "
         "Ask Mira can read them."
+    ),
+    "saleinx": (
+        "Sales CRM. Members open it without a second login, and Ask Mira reads and "
+        "updates their leads and deals with their own Saleinx access: a rep's Won still "
+        "waits for a manager. Saleinx's admins decide who is a member and their role; "
+        "a member who leaves here is switched off there."
+    ),
+    "procurement": (
+        "Procure-to-pay. People with a ProcureFlow account open it without a second "
+        "login, and Ask Mira shows their requisitions, approvals, purchase orders, "
+        "invoices and budgets, and decides approvals for them. ProcureFlow's admins "
+        "decide who has an account and its role."
     ),
 }
 

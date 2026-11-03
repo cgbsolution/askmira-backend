@@ -12,6 +12,7 @@ from app.models.employee import EmploymentStatus, ProfileChangeStatus
 from app.models.user import UserRole
 from app.schemas.common import Page
 from app.schemas.employee import (
+    ColleagueRead,
     EmployeeCreate,
     EmployeeExportRequest,
     EmployeeRead,
@@ -332,6 +333,22 @@ async def celebrations(
     return await employee_service.celebrations(session, user, days=days)
 
 
+@router.get("/colleagues", response_model=list[ColleagueRead])
+async def find_colleagues(
+    user: CurrentUser,
+    session: DbSession,
+    search: str = Query(default="", max_length=128),
+    limit: int = Query(
+        default=employee_service.COLLEAGUE_LIMIT, ge=1, le=employee_service.COLLEAGUE_LIMIT
+    ),
+) -> list[ColleagueRead]:
+    """Colleagues by name or code, to pick one: names and titles only, from two letters."""
+    rows = await employee_service.find_colleagues(session, user, search, limit=limit)
+    items = [ColleagueRead.model_validate(row) for row in rows]
+    await strip_hidden_photos(session, user, items)
+    return items
+
+
 @router.get("/me", response_model=EmployeeRead)
 async def get_my_record(user: CurrentUser, session: DbSession) -> EmployeeRead:
     """The caller's own full record, found through the login's own link."""
@@ -467,7 +484,7 @@ async def withdraw_change_request(
 async def get_employee(
     employee_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> EmployeeRead:
-    employee = await employee_service.get_employee(session, user, employee_id)
+    employee = await employee_service.get_visible_employee(session, user, employee_id)
     return await employee_service.employee_view(session, user, employee)
 
 

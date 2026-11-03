@@ -1,6 +1,7 @@
 """Where each product lives, and the older server-wide secret, from the environment.
 
-Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…, HELPDESK_TOOL_…):
+Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…, HELPDESK_TOOL_…, SALEINX_TOOL_…,
+PROCUREMENT_TOOL_…):
 
     _API_URL  the product's backend, which AskMira calls server to server
     _APP_URL  the product's web app, where Connect and a launch land
@@ -11,7 +12,7 @@ Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…, HELPDESK_TOOL_…):
 The addresses are public facts, not secrets. The products' production
 addresses are built in; set the variables only to point somewhere else (a
 local or staging copy). The helpdesk is one Next.js app: its API is the web
-app's /api.
+app's /api; ProcureFlow's web app forwards /api/v1 to its API.
 """
 
 from __future__ import annotations
@@ -39,6 +40,12 @@ class ProductSettings(BaseSettings):
     helpdesk_tool_api_url: str | None = None
     helpdesk_tool_app_url: str | None = None
     helpdesk_tool_secret: str | None = None
+    saleinx_tool_api_url: str | None = None
+    saleinx_tool_app_url: str | None = None
+    saleinx_tool_secret: str | None = None
+    procurement_tool_api_url: str | None = None
+    procurement_tool_app_url: str | None = None
+    procurement_tool_secret: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +56,13 @@ class Endpoint:
 
 
 #: The environment variables' prefix for each product.
-_PREFIX = {"interview": "interview_tool", "expense": "expense_tool", "helpdesk": "helpdesk_tool"}
+_PREFIX = {
+    "interview": "interview_tool",
+    "expense": "expense_tool",
+    "helpdesk": "helpdesk_tool",
+    "saleinx": "saleinx_tool",
+    "procurement": "procurement_tool",
+}
 
 
 @lru_cache
@@ -79,6 +92,12 @@ DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
         "https://standalone-expenses-ginie-dashboard.vercel.app",
     ),
     "helpdesk": ("https://cgb-helpdesk.vercel.app/api", "https://cgb-helpdesk.vercel.app"),
+    "procurement": (
+        "https://procure-to-pay-blue.vercel.app/api/v1",
+        "https://procure-to-pay-blue.vercel.app",
+    ),
+    # Saleinx has no fixed production address yet: set SALEINX_TOOL_API_URL and
+    # SALEINX_TOOL_APP_URL, or the workspace's admin sets it in Connectors.
 }
 
 

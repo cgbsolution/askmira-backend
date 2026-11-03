@@ -393,7 +393,14 @@ def test_every_status_and_scope_is_a_choice_the_model_is_given() -> None:
     }
     assert {"open", "applied", "pending", "approved", "none"} <= set(tools.INPUTS["status"]["enum"])
     assert {"in_progress", "hold", "closed", "spare"} <= set(tools.INPUTS["status"]["enum"])
-    assert set(tools.INPUTS["product"]["enum"]) == {"none", "interview", "expense", "helpdesk"}
+    assert set(tools.INPUTS["product"]["enum"]) == {
+        "none",
+        "interview",
+        "expense",
+        "helpdesk",
+        "saleinx",
+        "procurement",
+    }
 
 
 async def test_each_candidate_row_opens_its_job_in_the_product(

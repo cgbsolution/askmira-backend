@@ -23,8 +23,15 @@ ENDPOINTS: dict[str, str] = {
         "permissions: the person the certificate is for, or HR."
     ),
     "GET /employees": (
-        "reference: the company directory - names, titles, departments and work "
-        "email, which every colleague may see. Personal fields are not in it."
+        "scoped:directory_circle: HR lists the whole company; anybody else only their "
+        "own circle - their manager and dotted-line manager, the colleagues who share "
+        "that manager, and their reporting line - never people who have left. "
+        "Personal fields are not in it."
+    ),
+    "GET /employees/colleagues": (
+        "scoped:own_company: a name search to pick a colleague - names and titles "
+        "only, from two typed letters, at most twenty; outside HR only current staff "
+        "of the caller's own company."
     ),
     "GET /employees/me": ("own: the caller's own record, found through the login's employee link."),
     "PATCH /employees/me": (
@@ -32,8 +39,10 @@ ENDPOINTS: dict[str, str] = {
         "employment field is in the contract."
     ),
     "GET /employees/{employee_id}": (
-        "permissions: full record for self and HR; a line manager keeps "
-        "employment fields; everybody else gets the directory view."
+        "permissions: HR opens anybody; anybody else only their directory circle "
+        "(permissions.directory_circle), a 404 outside it. Full record for self and "
+        "HR; a line manager keeps employment fields; the rest of the circle gets the "
+        "directory view."
     ),
     "GET /employees/celebrations": (
         "scoped:culture_service.calendar: the culture calendar's own opt-in rule "

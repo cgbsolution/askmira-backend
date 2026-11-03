@@ -66,7 +66,23 @@ OFFER_LIFETIME = timedelta(hours=2)
 #: The most requests one "approve these" may carry.
 MAX_DECISIONS = 20
 
-KINDS = ("leave_request", "leave_cancel", "regularisation", "approval_decision", "hr_ticket")
+KINDS = (
+    "leave_request",
+    "leave_cancel",
+    "regularisation",
+    "approval_decision",
+    "hr_ticket",
+    # In a linked product, through its own rules, as the person (sales_tools.py).
+    "saleinx_lead",
+    "saleinx_stage",
+    "saleinx_decision",
+    "procurement_decision",
+    # Across products, step by step, undone on failure (order_win.py).
+    "order_win",
+)
+_PRODUCT_KINDS = frozenset(
+    {"saleinx_lead", "saleinx_stage", "saleinx_decision", "procurement_decision"}
+)
 
 #: Where each kind's own endpoint lives, so a sub-admin's rights are read as the
 #: portal would read them for the same change.
@@ -882,6 +898,16 @@ async def _run(
         if failed:
             text += " Not decided: " + "; ".join(failed)
         return {"text": text, "open": "/approvals", "done": done, "failed": failed}
+
+    if action.kind in _PRODUCT_KINDS:
+        from app.services.companion import sales_tools
+
+        return await sales_tools.carry_out(session, user, action)
+
+    if action.kind == "order_win":
+        from app.services.companion import order_win
+
+        return await order_win.run(session, user, action, request)
 
     raise HTTPException(status_code=422, detail="This offer cannot be carried out.")
 

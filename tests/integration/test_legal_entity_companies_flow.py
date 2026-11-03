@@ -60,10 +60,7 @@ def _png() -> bytes:
     header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
     pixels = zlib.compress(b"\x00\xff\x00\x00")
     return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", pixels)
-        + chunk(b"IEND", b"")
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
     )
 
 
@@ -315,8 +312,13 @@ async def test_hr_moves_people_to_another_company_in_one_go(
 
     # The directory filters by company, and the list counts each company's people.
     listed = (
-        await client.get(f"{API}/employees?legal_entity_id={dxc.id}", headers=bearer(staff))
+        await client.get(f"{API}/employees?legal_entity_id={dxc.id}", headers=bearer(hr))
     ).json()
+    # Outside HR nobody lists another company's people.
+    staff_view = await client.get(
+        f"{API}/employees?legal_entity_id={dxc.id}", headers=bearer(staff)
+    )
+    assert staff_view.json()["items"] == []
     assert {row["employee_code"] for row in listed["items"]} == {
         "EXT001",
         "EXT002",
@@ -338,7 +340,7 @@ async def test_hr_moves_people_to_another_company_in_one_go(
     assert all(row["legal_entity_id"] is None for row in loose["items"])
 
     # The export names each person's company.
-    csv = (await client.get(f"{API}/employees/export?legal_entity_id={dxc.id}", headers=bearer(hr)))
+    csv = await client.get(f"{API}/employees/export?legal_entity_id={dxc.id}", headers=bearer(hr))
     assert csv.status_code == 200
     assert "Company" in csv.text.splitlines()[0]
     assert "DXC Technology (client)" in csv.text
@@ -794,14 +796,10 @@ async def test_a_mid_year_mover_is_flagged_on_the_tds_return_and_the_increment(
 
     # Q4 Annexure II: one row for the year under DXC, flagged to be split; and
     # ACME told to add the row for what it paid.
-    at_dxc = await filings_service._annexure_ii_movers(
-        session, org["maker"], dxc.id, "2026-2027"
-    )
+    at_dxc = await filings_service._annexure_ii_movers(session, org["maker"], dxc.id, "2026-2027")
     assert [(w.code, w.subject) for w in at_dxc] == [("ANNEXURE_II_MOVER", "MEERA")]
     assert "Acme Technologies Pvt Ltd" in at_dxc[0].message
-    at_acme = await filings_service._annexure_ii_movers(
-        session, org["maker"], acme.id, "2026-2027"
-    )
+    at_acme = await filings_service._annexure_ii_movers(session, org["maker"], acme.id, "2026-2027")
     assert [(w.code, w.subject) for w in at_acme] == [("ANNEXURE_II_MOVED_OUT", "MEERA")]
 
     # An increment effective 1 April: April was paid by ACME, so its arrears are named, not dropped.

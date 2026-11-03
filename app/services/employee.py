@@ -207,10 +207,15 @@ async def list_employees(
     `current_only` is everybody who has not left: active, on notice, on leave
     or about to join. An org chart drawn from `status=active` alone loses
     everyone on notice or on leave, and their reports float to the top.
+
+    HR gets the whole company. Anybody else gets their own circle
+    (`permissions.directory_circle`), people who have left never included,
+    whatever the filters ask for.
     """
-    stmt = tenant_scoped(select(Employee), Employee, user).options(
-        load_only(*_DIRECTORY_COLUMNS)
-    )
+    stmt = tenant_scoped(select(Employee), Employee, user).options(load_only(*_DIRECTORY_COLUMNS))
+    circle = await permissions.directory_circle(session, user)
+    if circle is not None:
+        stmt = stmt.where(Employee.id.in_(circle), Employee.status != EmploymentStatus.EXITED)
     stmt = filter_directory(
         stmt,
         search=search,
@@ -345,6 +350,74 @@ async def get_employee(session: AsyncSession, user: User, employee_id: uuid.UUID
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     return employee
+
+
+async def get_visible_employee(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> Employee:
+    """One person's record as the directory opens it: HR anybody, others their circle.
+
+    Outside the circle is a 404, like another tenant's id, so the answer does
+    not confirm that the person exists.
+    """
+    employee = await get_employee(session, user, employee_id)
+    circle = await permissions.directory_circle(session, user)
+    if circle is not None and employee.id not in circle:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return employee
+
+
+#: A colleague search answers from this many letters, and never with more people.
+COLLEAGUE_MIN_CHARS = 2
+COLLEAGUE_LIMIT = 20
+
+
+async def find_colleagues(
+    session: AsyncSession, user: User, search: str, *, limit: int = COLLEAGUE_LIMIT
+) -> list[Employee]:
+    """Colleagues to pick by name — to thank, nominate, ask for feedback or swap a shift with.
+
+    Names and titles only (the router's schema), and only once two letters are
+    typed, so it finds a person rather than lists the company. Outside HR it
+    is people still working here, in the caller's own company.
+    """
+    term = search.strip()
+    if len(term) < COLLEAGUE_MIN_CHARS:
+        return []
+    stmt = tenant_scoped(select(Employee), Employee, user).where(
+        Employee.deleted_at.is_(None), Employee.status != EmploymentStatus.EXITED
+    )
+    if not permissions.is_hr(user):
+        if user.employee_id is None:
+            return []
+        own_company = await session.scalar(
+            tenant_scoped(
+                select(Employee.legal_entity_id).where(Employee.id == user.employee_id),
+                Employee,
+                user,
+            )
+        )
+        stmt = stmt.where(
+            Employee.legal_entity_id == own_company
+            if own_company is not None
+            else Employee.legal_entity_id.is_(None)
+        )
+    like = f"%{term}%"
+    stmt = stmt.where(
+        or_(
+            Employee.first_name.ilike(like),
+            func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(like),
+            Employee.last_name.ilike(like),
+            Employee.display_name.ilike(like),
+            Employee.employee_code.ilike(like),
+        )
+    )
+    rows = await session.scalars(
+        stmt.order_by(Employee.first_name, Employee.last_name, Employee.id).limit(
+            max(1, min(limit, COLLEAGUE_LIMIT))
+        )
+    )
+    return list(rows.all())
 
 
 async def get_own_employee(session: AsyncSession, user: User) -> Employee:
@@ -760,9 +833,7 @@ async def move_to_legal_entity(
         for row in (
             await session.scalars(
                 tenant_scoped(
-                    select(Employee).where(
-                        Employee.id.in_(wanted), Employee.deleted_at.is_(None)
-                    ),
+                    select(Employee).where(Employee.id.in_(wanted), Employee.deleted_at.is_(None)),
                     Employee,
                     user,
                 )
@@ -882,9 +953,7 @@ async def move_to_project(
         for row in (
             await session.scalars(
                 tenant_scoped(
-                    select(Employee).where(
-                        Employee.id.in_(wanted), Employee.deleted_at.is_(None)
-                    ),
+                    select(Employee).where(Employee.id.in_(wanted), Employee.deleted_at.is_(None)),
                     Employee,
                     user,
                 )

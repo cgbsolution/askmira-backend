@@ -705,6 +705,159 @@ PRODUCTS_Q = (
     ("launch expensegenie", "open_product", {"product": "expense"}),
     ("take me to anytimehire", "open_product", {"product": "interview"}),
     ("go to the helpdesk", "open_product", {"product": "helpdesk"}),
+    ("is saleinx connected", "product_connections", {}),
+    ("is procureflow linked", "product_connections", {}),
+    ("is the crm integrated", "product_connections", {}),
+    ("open saleinx", "open_product", {"product": "saleinx"}),
+    ("launch the crm", "open_product", {"product": "saleinx"}),
+    ("open procureflow", "open_product", {"product": "procurement"}),
+    ("take me to procurement", "open_product", {"product": "procurement"}),
+)
+
+#: Saleinx, the sales CRM: deals by stage or name, and the pipeline.
+SALES = (
+    ("show deals in saleinx", "sales_deals", {"deal_stage": "none", "query": ""}),
+    ("deals in negotiation", "sales_deals", {"deal_stage": "negotiation"}),
+    ("deals on hold", "sales_deals", {"deal_stage": "hold"}),
+    ("won deals waiting for approval", "sales_deals", {"deal_stage": "awaiting_approval"}),
+    (
+        "deals waiting for my approval in saleinx",
+        "sales_deals",
+        {"deal_stage": "awaiting_approval"},
+    ),
+    (
+        "crm wins pending manager approval",
+        "sales_deals",
+        {"deal_stage": "awaiting_approval"},
+    ),
+    ("lost deals", "sales_deals", {"deal_stage": "lost"}),
+    ("won deals", "sales_deals", {"deal_stage": "won"}),
+    ("qualified deals", "sales_deals", {"deal_stage": "qualified"}),
+    ("deals at proposal stage", "sales_deals", {"deal_stage": "proposal"}),
+    ("new leads", "sales_deals", {"deal_stage": "lead"}),
+    ("leads in the crm", "sales_deals", {"deal_stage": "lead"}),
+    ("how many leads this week", "sales_deals", {"deal_stage": "lead"}),
+    ("the orion deal", "sales_deals", {"query": "orion"}),
+    ("status of the kestrel deal", "sales_deals", {"query": "kestrel"}),
+    ("deals for acme", "sales_deals", {"query": "acme"}),
+    ("open deals in saleinx", "sales_deals", {"deal_stage": "none", "query": ""}),
+    ("crm deals", "sales_deals", {"query": ""}),
+    ("sales pipeline", "sales_pipeline", {}),
+    ("my pipeline in saleinx", "sales_pipeline", {}),
+    ("deal pipeline by stage", "sales_pipeline", {}),
+    ("saleinx pipeline", "sales_pipeline", {}),
+    ("crm pipeline", "sales_pipeline", {}),
+    ("deals by stage", "sales_pipeline", {}),
+    ("how much is in the sales funnel", "sales_pipeline", {}),
+    ("sales pipeline value", "sales_pipeline", {}),
+    ("pipeline of deals", "sales_pipeline", {}),
+    ("show my deal pipeline", "sales_pipeline", {}),
+    ("stage wise deals", "sales_pipeline", {}),
+    ("crm funnel", "sales_pipeline", {}),
+)
+
+#: ProcureFlow, the procure-to-pay system: approvals, documents, budgets.
+PROCUREMENT = (
+    ("procureflow overview", "procurement_overview", {}),
+    ("procurement summary", "procurement_overview", {}),
+    ("how is procurement looking", "procurement_overview", {}),
+    ("procurement at a glance", "procurement_overview", {}),
+    ("show procureflow", "procurement_overview", {}),
+    ("p2p dashboard", "procurement_overview", {}),
+    ("procure to pay status", "procurement_overview", {}),
+    ("procurement status", "procurement_overview", {}),
+    ("my procureflow summary", "procurement_overview", {}),
+    ("what is happening in procureflow", "procurement_overview", {}),
+    ("what is waiting for my approval in procureflow", "procurement_approvals", {}),
+    ("pending approvals in procureflow", "procurement_approvals", {}),
+    ("invoices waiting for my approval", "procurement_approvals", {}),
+    ("purchase orders to approve", "procurement_approvals", {}),
+    ("payment runs to approve", "procurement_approvals", {}),
+    ("procurement approvals", "procurement_approvals", {}),
+    ("purchase requisitions waiting for my approval", "procurement_approvals", {}),
+    ("my approvals in procureflow", "procurement_approvals", {}),
+    ("procureflow inbox", "procurement_approvals", {}),
+    ("payment runs pending", "procurement_approvals", {}),
+    ("pending invoice approvals", "procurement_approvals", {}),
+    (
+        "invoices awaiting approval",
+        "procurement_documents",
+        {"document": "invoices", "doc_status": "AWAITING_APPROVAL"},
+    ),
+    (
+        "approved purchase orders",
+        "procurement_documents",
+        {"document": "purchase_orders", "doc_status": "APPROVED"},
+    ),
+    ("paid invoices", "procurement_documents", {"document": "invoices", "doc_status": "PAID"}),
+    ("my purchase requisitions", "procurement_documents", {"document": "requisitions"}),
+    (
+        "requisitions in procureflow",
+        "procurement_documents",
+        {"document": "requisitions", "scope": "none"},
+    ),
+    (
+        "all requisitions in procureflow",
+        "procurement_documents",
+        {"document": "requisitions", "scope": "company"},
+    ),
+    (
+        "draft purchase requisitions",
+        "procurement_documents",
+        {"document": "requisitions", "doc_status": "DRAFT"},
+    ),
+    (
+        "purchase orders issued",
+        "procurement_documents",
+        {"document": "purchase_orders", "doc_status": "ISSUED"},
+    ),
+    ("invoices from dell", "procurement_documents", {"document": "invoices", "query": "dell"}),
+    (
+        "purchase orders for lenovo",
+        "procurement_documents",
+        {"document": "purchase_orders", "query": "lenovo"},
+    ),
+    (
+        "rejected invoices",
+        "procurement_documents",
+        {"document": "invoices", "doc_status": "REJECTED"},
+    ),
+    (
+        "purchase orders on hold",
+        "procurement_documents",
+        {"document": "purchase_orders", "doc_status": "ON_HOLD"},
+    ),
+    (
+        "invoice inv-2026-0042",
+        "procurement_documents",
+        {"document": "invoices", "query": "inv-2026-0042"},
+    ),
+    ("budgets by cost centre", "procurement_budgets", {}),
+    ("procurement budgets", "procurement_budgets", {}),
+    ("how much budget is left in procureflow", "procurement_budgets", {}),
+    ("cost center budgets", "procurement_budgets", {}),
+    ("budget utilisation by cost centre", "procurement_budgets", {}),
+    ("budget spent so far", "procurement_budgets", {}),
+    ("committed vs available budget", "procurement_budgets", {}),
+    ("budgets in procureflow", "procurement_budgets", {}),
+    ("which cost centres are over budget", "procurement_budgets", {}),
+    ("remaining budget per cost center", "procurement_budgets", {}),
+)
+
+#: The prospective P&L booked from won orders (HR only, as the P&L is).
+FORECAST = (
+    ("prospective p&l", {"query": ""}),
+    ("prospective p&l of kestrel", {"query": "kestrel"}),
+    ("projected margin for each account", {"query": ""}),
+    ("forecast p&l", {"query": ""}),
+    ("p&l forecast for orion", {"query": "orion"}),
+    ("revenue forecast", {"query": ""}),
+    ("expected billing from won orders", {"query": ""}),
+    ("booked orders forecast", {"query": ""}),
+    ("projected profit of lotus account", {"query": "lotus"}),
+    ("future billing for each client", {"query": ""}),
+    ("margin outlook", {"query": ""}),
+    ("prospective pnl of all accounts", {"query": ""}),
 )
 
 ORG = (
@@ -1136,6 +1289,28 @@ def build() -> list[Case]:
     for question, tool, inputs in PRODUCTS_Q:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, tool, inputs))
+
+    # Saleinx and ProcureFlow answer anybody with a role there, as that role.
+    for question, tool, inputs in (*SALES, *PROCUREMENT):
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, tool, inputs))
+            cases.append(Case(text, tool, inputs, hr=False))
+    for question, inputs in FORECAST:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "account_forecast", inputs))
+        cases.append(Case(question, REFUSED, hr=False))
+    # Named but not readable here: said so, and nothing else runs.
+    for question in ("show deals in saleinx", "saleinx pipeline", "leads in the crm"):
+        cases.append(
+            Case(question, None, without=("sales_data",), reply_has="Reading Saleinx is not")
+        )
+    for question in ("procureflow overview", "budgets in procureflow", "procurement approvals"):
+        cases.append(
+            Case(question, None, without=("procurement_data",), reply_has="Reading ProcureFlow")
+        )
+    # Not about ProcureFlow at all when it is not named.
+    cases.append(Case("annual salary budget", "salary_totals"))
+    cases.append(Case("requisitions waiting for my approval", "my_approvals", {"kind": "hiring"}))
 
     for question, tool, inputs in ORG:
         for text in _wrapped(question, LIGHT if tool == "search_people" else WRAPPERS[:6]):

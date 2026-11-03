@@ -27,7 +27,8 @@ class ProductLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
         UniqueConstraint("tenant_id", "product", name="uq_product_links_tenant_product"),
     )
 
-    #: "interview", "expense" or "helpdesk" — the keys of app.services.products.catalogue.PRODUCTS.
+    #: A key of app.services.products.catalogue.PRODUCTS: "interview", "expense",
+    #: "helpdesk", "saleinx" or "procurement".
     product: Mapped[str] = mapped_column(String(32), nullable=False)
     #: "active" or "disabled". A disabled link keeps its external_ref for relinking.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
@@ -53,3 +54,8 @@ class ProductLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
     secret_encrypted: Mapped[str | None] = mapped_column(EncryptedText(), nullable=True)
     #: The organisation in the product this workspace is connected to, as it calls it.
     organization_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: For a product whose roles are its own (Saleinx, ProcureFlow): each linked
+    #: person's role there, by login email, as the product said at the last
+    #: people sync. AskMira never grants these; it reads them to know what to
+    #: offer a person, and the product checks the person again on every call.
+    member_roles: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

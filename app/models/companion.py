@@ -39,6 +39,8 @@ __all__ = [
     "CompanionActionStatus",
     "CompanionConversation",
     "CompanionMessage",
+    "CompanionRun",
+    "CompanionRunStatus",
 ]
 
 
@@ -58,7 +60,17 @@ class CompanionConversation(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
 class CompanionMessage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     __tablename__ = "companion_messages"
-    __table_args__ = (Index("ix_companion_messages_thread", "conversation_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_companion_messages_thread", "conversation_id", "created_at"),
+        # A message sent twice (a retry after a dropped connection) is answered once.
+        Index(
+            "uq_companion_messages_client_ref",
+            "user_id",
+            "client_ref",
+            unique=True,
+            postgresql_where="client_ref IS NOT NULL",
+        ),
+    )
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
@@ -98,6 +110,9 @@ class CompanionMessage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     transcript: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     #: The tools a reply used, in order: key, title and the inputs it ran with.
     steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: The browser's own id for a message the person sent, so sending it again
+    #: (a retry) returns the first answer instead of running the turn twice.
+    client_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CompanionActionStatus(str, enum.Enum):
@@ -149,3 +164,66 @@ class CompanionAction(Base, UUIDMixin, TenantMixin, TimestampMixin):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: "button" or "message": how the person said yes (or no).
     decided_via: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class CompanionRunStatus(str, enum.Enum):
+    RUNNING = "running"
+    #: Every step done.
+    DONE = "done"
+    #: A step failed and every step before it was undone: nothing is left behind.
+    UNDONE = "undone"
+    #: A step failed and something could not be undone: a person must finish it.
+    STUCK = "stuck"
+
+
+class CompanionRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """One multi-step job Ask Mira carried out across products, after the person confirmed.
+
+    An order win opens positions in the interview tool, then writes the
+    prospective P&L, then notes the CRM deal. Each step is recorded here as it
+    happens, with what it made (a job's key, a forecast's id), so a failure
+    part-way undoes the steps before it in reverse, and the person sees exactly
+    what was done and undone.
+
+    `business_key` is the request's own identity (an order: its PO number). Only
+    one live run may hold a key — a running, done or stuck one — so the same
+    order sent again is answered with what was done the first time. A run that
+    was fully undone frees the key for another try.
+    """
+
+    __tablename__ = "companion_runs"
+    __table_args__ = (
+        Index(
+            "uq_companion_runs_live_key",
+            "tenant_id",
+            "business_key",
+            unique=True,
+            postgresql_where="status IN ('RUNNING', 'DONE', 'STUCK')",
+        ),
+        Index("ix_companion_runs_user", "user_id", "created_at"),
+    )
+
+    #: "order_win".
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    business_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_companion_runs_user"),
+        nullable=False,
+    )
+    #: The offer the person confirmed.
+    action_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("companion_actions.id", ondelete="SET NULL", name="fk_companion_runs_action"),
+        nullable=True,
+    )
+    status: Mapped[CompanionRunStatus] = mapped_column(
+        Enum(CompanionRunStatus, name="companion_run_status"),
+        default=CompanionRunStatus.RUNNING,
+        nullable=False,
+    )
+    #: What was to be done, with the figures checked before the offer.
+    plan: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    #: Each step as it happened: {step, label, status, ref, detail, at}.
+    steps: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

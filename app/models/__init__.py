@@ -7,7 +7,15 @@ file that is not listed here will silently produce an empty migration.
 
 from app.models.access import AdminScope, UserAreaRights
 from app.models.accounting import LedgerMapping, LedgerNature
-from app.models.accounts import AccountAllocation, AccountEntry, AccountEntryKind, ClientAccount
+from app.models.accounts import (
+    AccountAllocation,
+    AccountEntry,
+    AccountEntryKind,
+    AccountForecast,
+    AccountForecastKind,
+    AccountForecastLine,
+    ClientAccount,
+)
 from app.models.agenteval import (
     AgentFeedback,
     EvalCaseRow,
@@ -112,6 +120,8 @@ from app.models.companion import (
     CompanionActionStatus,
     CompanionConversation,
     CompanionMessage,
+    CompanionRun,
+    CompanionRunStatus,
 )
 from app.models.company_documents import (
     CompanyDocument,
@@ -643,6 +653,9 @@ __all__ = [
     "AccountAllocation",
     "AccountEntry",
     "AccountEntryKind",
+    "AccountForecast",
+    "AccountForecastKind",
+    "AccountForecastLine",
     "AcknowledgementType",
     "ActionPlanItem",
     "AdjustmentCategory",
@@ -765,6 +778,8 @@ __all__ = [
     "CompanionActionStatus",
     "CompanionConversation",
     "CompanionMessage",
+    "CompanionRun",
+    "CompanionRunStatus",
     "CompanyDocument",
     "CompanyDocumentAcknowledgement",
     "CompanyEvent",

@@ -546,6 +546,12 @@ TABLES: dict[str, TableClassification] = {
         "A client engagement the company bills: its code, name and who looks after it."
     ),
     "account_entries": _none("An amount billed to an account, or a direct cost, for a month."),
+    "account_forecasts": _none(
+        "What a won order is expected to bill and cost: its account, PO reference and months."
+    ),
+    "account_forecast_lines": _none(
+        "One expected amount (billing, people cost by role, recruitment) in one month."
+    ),
     "account_allocations": _p(EMP, "organisational"),
     "custom_table_definitions": _none("The design of an extra table on the employee record."),
     "custom_table_rows": _p(EMP, "identity", {"values": "identity"}),
@@ -556,9 +562,10 @@ TABLES: dict[str, TableClassification] = {
     "reward_catalogue_items": _none("What recognition points can be spent on."),
     "operator_grants": _p(USER, "account_security", {"operator_email": "identity"}),
     "product_links": _none(
-        "Which organisation in our interview or expense product is this workspace, and how "
-        "the last people sync went.",
-        {"last_sync": "identity"},
+        "Which organisation in one of our products is this workspace, and how the last "
+        "people sync went.",
+        # member_roles: linked people's login emails and their role in Saleinx/ProcureFlow.
+        {"last_sync": "identity", "member_roles": "identity"},
     ),
     "social_login_attempts": _none(
         "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
@@ -582,6 +589,10 @@ TABLES: dict[str, TableClassification] = {
         USER,
         "ai_interaction",
         {"payload": "leave", "summary": "leave", "result": "ai_interaction"},
+    ),
+    # An order win Ask Mira carried out for a person: the order's figures and each step.
+    "companion_runs": _p(
+        USER, "ai_interaction", {"plan": "ai_interaction", "steps": "ai_interaction"}
     ),
     "survey_topic_summaries": _none(
         "Paraphrased themes counted across anonymous survey comments; no respondent link."

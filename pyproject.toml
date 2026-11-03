@@ -42,6 +42,10 @@ ignore = [
 "tests/integration/test_companion_agent.py" = ["F811"]
 "tests/integration/test_account_pnl_flow.py" = ["F811"]
 "tests/integration/test_companion_product_data.py" = ["F811"]
+# Reuse the companion fixtures (injected by name) and keep each scenario's
+# figures and expectations on one line, as the user wrote the test prompts.
+"tests/integration/test_sales_procurement_link.py" = ["F811", "E501"]
+"tests/integration/test_ask_mira_real_model_eval.py" = ["F811", "E501"]
 "tests/integration/test_tds_mid_year_flow.py" = ["F811"]
 "tests/integration/test_payroll_no_salary_flow.py" = ["F811"]
 # Imports the hiring portal's fixtures, which pytest then injects by name.

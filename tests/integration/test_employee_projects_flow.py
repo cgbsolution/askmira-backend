@@ -187,10 +187,11 @@ async def test_hr_puts_people_on_a_project_in_one_go(
     assert audited == 2
 
     # The directory filters by project and says each person's project.
-    listed = (
-        await client.get(f"{API}/employees?project_id={dxc.id}", headers=bearer(staff))
-    ).json()
+    listed = (await client.get(f"{API}/employees?project_id={dxc.id}", headers=bearer(hr))).json()
     assert {row["employee_code"] for row in listed["items"]} == {"P001", "P002", "P003"}
+    # Outside HR nobody lists a project's people: they are not in the caller's team.
+    staff_view = await client.get(f"{API}/employees?project_id={dxc.id}", headers=bearer(staff))
+    assert staff_view.json()["items"] == []
     assert all(row["project_id"] == str(dxc.id) for row in listed["items"])
     loose = (await client.get(f"{API}/employees?without_project=true", headers=bearer(hr))).json()
     assert str(two.id) not in {row["id"] for row in loose["items"]}
@@ -330,8 +331,9 @@ async def test_departments_that_stood_in_for_projects_become_projects(
     assert deleted == 2
 
     # Again (External 1 is still there, closed): nothing new, nothing moved.
-    again = await client.post(url, json={"department_ids": [body["department_ids"][2]]},
-                              headers=bearer(admin))
+    again = await client.post(
+        url, json={"department_ids": [body["department_ids"][2]]}, headers=bearer(admin)
+    )
     assert again.status_code == 200, again.text
     assert again.json()["projects_created"] == [] and again.json()["moved"] == 0
     assert again.json()["projects_reused"] == ["External 1"]

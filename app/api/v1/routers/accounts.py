@@ -19,6 +19,7 @@ from app.schemas.accounts import (
     AccountEntryCreate,
     AccountEntryRead,
     AccountEntryUpdate,
+    AccountForecastRead,
     AccountImportRead,
     AccountPnlRead,
     AllocationCreate,
@@ -29,6 +30,7 @@ from app.schemas.accounts import (
     ClientAccountUpdate,
     PnlDetailRead,
 )
+from app.services import finance
 from app.services.accounts import service
 
 router = APIRouter(
@@ -55,6 +57,33 @@ async def create_account(
     payload: ClientAccountCreate, user: CurrentUser, session: DbSession, request: Request
 ) -> ClientAccountRead:
     return await service.create_account(session, user, payload, request=request)
+
+
+# ── Prospective P&L (forecasts from won orders) ──────────────────────────────
+
+
+@router.get("/forecasts", response_model=list[AccountForecastRead])
+async def list_forecasts(
+    user: CurrentUser,
+    session: DbSession,
+    account_id: uuid.UUID | None = None,
+    include_withdrawn: bool = False,
+) -> list[AccountForecastRead]:
+    rows = await finance.list_forecasts(
+        session, user, account_id=account_id, include_withdrawn=include_withdrawn
+    )
+    return [AccountForecastRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/forecasts/{forecast_id}/withdraw",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def withdraw_forecast(
+    forecast_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await finance.withdraw_forecast_by_id(session, user, forecast_id, request=request)
 
 
 @router.patch("/{account_id}", response_model=ClientAccountRead)

@@ -346,3 +346,42 @@ class PnlDetailRead(BaseModel):
     months: list[AccountPnlMonth]
     people: list[AccountPnlPerson]
     notes: list[str]
+
+
+class AccountForecastMonth(BaseModel):
+    month: str
+    billing: Decimal
+    people_cost: Decimal
+    recruitment: Decimal
+    other_cost: Decimal
+    cost: Decimal
+    margin: Decimal
+
+
+class AccountForecastLineTotal(BaseModel):
+    kind: str
+    label: str
+    total: Decimal
+
+
+class AccountForecastRead(BaseModel):
+    """A prospective P&L: what an order is expected to bill and cost, by month."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    account_code: str
+    account_name: str
+    title: str
+    reference: str
+    source: str
+    status: str
+    start_month: str
+    months: int
+    order_value: Decimal | None
+    billing: Decimal
+    cost: Decimal
+    margin: Decimal
+    margin_pct: Decimal | None
+    by_month: list[AccountForecastMonth]
+    lines: list[AccountForecastLineTotal]
+    created_at: str | None

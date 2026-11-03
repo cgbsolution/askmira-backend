@@ -26,7 +26,7 @@ from app.models.product_link import ProductLink
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services import audit
-from app.services.products.catalogue import PRODUCTS, Product
+from app.services.products.catalogue import PRODUCTS, Product, member_role
 from app.services.products.client import ProductError, provision_organisation, sync_people
 from app.services.products.connections import endpoint, require_super
 from app.services.products.tokens import launch_token
@@ -336,12 +336,14 @@ async def sync(
     target = await endpoint(session, product.key, tenant_id)
     if row is None or row.status != ACTIVE:
         return {"skipped": "not linked"}
+    members: dict[str, str] | None = None
     if target is None:
         outcome: dict[str, Any] = {"error": f"{product.name} is not configured on this server."}
     else:
         people = await _roster(session, tenant_id, product)
         try:
             result = await sync_people(target, product.key, tenant_id, people)
+            members = _members(result) if product.roles_from_product else None
             outcome = {
                 "sent": len(people),
                 "created": int(result.get("created", 0)),
@@ -364,6 +366,9 @@ async def sync(
     else:
         row.last_error = None
         row.last_sync = outcome
+        if product.roles_from_product:
+            # Who is who there: the product's answer replaces the last one.
+            row.member_roles = members or {}
         row.last_synced_at = datetime.now(UTC)
     await audit.record(
         session,
@@ -383,6 +388,19 @@ async def sync(
     )
     await session.commit()
     return outcome
+
+
+def _members(result: dict[str, Any]) -> dict[str, str]:
+    """{login email: role there} from a product's sync answer; anything odd is left out."""
+    out: dict[str, str] = {}
+    for item in result.get("members") or []:
+        if not isinstance(item, dict):
+            continue
+        email = str(item.get("email") or "").strip().lower()
+        role = str(item.get("role") or "").strip()[:60]
+        if "@" in email and role:
+            out[email[:254]] = role
+    return out
 
 
 async def sync_workspace(session: AsyncSession, actor: User) -> dict[str, Any]:
@@ -432,7 +450,18 @@ async def launch(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{product.name} is not set up for your workspace.",
         )
-    role = product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
+    if product.roles_from_product:
+        role = member_role(product, row.member_roles, user.email)
+        if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"You are not a member in {product.brand}. Its admins invite people there; "
+                    "after that, your admin syncs people again from Connectors."
+                ),
+            )
+    else:
+        role = product.role_for(user.role, is_manager=bool(getattr(user, "has_reports", False)))
     if role is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

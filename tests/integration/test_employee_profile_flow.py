@@ -389,9 +389,23 @@ async def test_a_self_read_carries_no_hiring_or_sensitive_custom_fields(
     for leaked in ("fit_score", "expected_ctc", "current_ctc_at_offer", "1800000"):
         assert leaked not in own.text
 
-    assert (await client.get(f"/api/v1/employees/{person.id}", headers=_auth(colleague))).json()[
-        "custom_fields"
-    ] == {}
+    # A colleague outside the person's team does not see the record at all…
+    outsider = await client.get(f"/api/v1/employees/{person.id}", headers=_auth(colleague))
+    assert outsider.status_code == 404
+    # …and a teammate (same manager) sees it without the custom fields.
+    lead = await _person(session, tenant, "LEAD1")
+    person.manager_id = lead.id
+    await session.commit()
+    teammate = await _login(
+        session,
+        tenant,
+        await _person(session, tenant, "MATE1", manager_id=lead.id),
+        UserRole.EMPLOYEE,
+        "mate1",
+    )
+    seen = await client.get(f"/api/v1/employees/{person.id}", headers=_auth(teammate))
+    assert seen.status_code == 200
+    assert seen.json()["custom_fields"] == {}
     assert (await client.get(f"/api/v1/employees/{person.id}", headers=_auth(hr_user))).json()[
         "custom_fields"
     ]["fit_score"] == "82.50"

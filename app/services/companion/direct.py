@@ -40,6 +40,8 @@ __all__ = ["DirectPlan", "dates", "examples", "normalise", "plan"]
 _HIRE = PRODUCTS["interview"].brand
 _EXPENSE = PRODUCTS["expense"].brand
 _HELPDESK = PRODUCTS["helpdesk"].brand
+_SALES = PRODUCTS["saleinx"].brand
+_PROCURE = PRODUCTS["procurement"].brand
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,6 +1026,7 @@ _HR_TOOLS = frozenset(
         "payroll_trend",
         "headcount_trend",
         "account_pnl",
+        "account_forecast",
     }
 )
 
@@ -1164,6 +1167,13 @@ def examples(tools: list[Tool]) -> list[str]:
         ("helpdesk_overview", "Helpdesk overview"),
         ("product_connections", f"Is {_HIRE} connected?"),
         ("open_product", f"Open {_HIRE}"),
+        ("sales_deals", f"Won deals waiting for approval in {_SALES}"),
+        ("sales_pipeline", "My sales pipeline"),
+        ("procurement_approvals", f"What is waiting for my approval in {_PROCURE}?"),
+        ("procurement_documents", "Invoices awaiting approval"),
+        ("procurement_budgets", "Budgets by cost centre"),
+        ("procurement_overview", f"{_PROCURE} overview"),
+        ("account_forecast", "Prospective P&L of each account"),
     ]
     return [text for key, text in sample if key in keys]
 
@@ -1494,6 +1504,328 @@ _PNL = (
     r"billing (vs|versus|against|and) ",
     r"account (cost|costs|profitability)",
 )
+
+
+def _account_of(words: str) -> str:
+    """The client account a P&L question names ("P&L of Kestrel"), or empty for all."""
+    account = re.search(
+        r"\b(?:of|for|on) (?:the )?(?!each\b|every\b|all\b|our\b|my\b)"
+        r"([a-z0-9][a-z0-9 .&-]{1,40}?)(?: account| client)?"
+        r"(?: (?:this|last|previous|in) [a-z0-9 ]+)?$",
+        words,
+    )
+    query = account.group(1).strip() if account else ""
+    if query in ("account", "accounts", "client", "clients", "company", "the company"):
+        return ""
+    return query
+
+
+#: The prospective P&L booked from won orders: ahead, not what was billed.
+_FORECAST = (
+    r"(prospective|projected|forecast(ed)?|expected|future|upcoming)\b.{0,20}"
+    r"(p ?& ?l\b|pnl\b|profit|margins?\b|billing|revenue)",
+    r"(p ?& ?l\b|pnl\b|profit|margins?\b|billing|revenue)\b.{0,20}"
+    r"\b(forecasts?|projections?|outlook)\b",
+    r"(booked|won) orders?\b",
+    r"order wins?\b",
+)
+
+# ── Saleinx and ProcureFlow ──────────────────────────────────────────────────
+
+#: Saleinx, the sales CRM, by name.
+_SALES_NAME = (r"sale ?inx", r"crm\b")
+#: Deals and leads in the sales sense: "team leads" are people, "deal with" a verb.
+_SALES_WORDS = (
+    *_SALES_NAME,
+    r"deals?\b(?! with)",
+    r"(?<!team )(?<!tech )(?<!who )leads\b(?! (the|a|an|our|my)\b)",
+    r"(sales|new|hot|warm|cold) leads?\b",
+    r"sales (pipeline|funnel)\b",
+)
+#: A deal's stage, read from the words; the first that matches wins.
+_DEAL_STAGES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "awaiting_approval",
+        (
+            r"(waiting|awaiting|pending|needs?|needing)\b.{0,30}\b(approv|sign-?off|decision)",
+            r"to (be )?approved?\b",
+            r"approvals?\b",
+            r"unapproved\b",
+        ),
+    ),
+    ("negotiation", (r"negotiat",)),
+    ("proposal", (r"proposals?\b",)),
+    ("qualified", (r"qualified\b",)),
+    ("hold", (r"on hold\b", r"parked\b", r"held\b")),
+    ("won", (r"won\b", r"wins?\b")),
+    ("lost", (r"lost\b",)),
+)
+_SALES_DROP = (
+    "deal",
+    "deals",
+    "lead",
+    "leads",
+    "saleinx",
+    "sales",
+    "sale",
+    "inx",
+    "crm",
+    "pipeline",
+    "funnel",
+    "stage",
+    "stages",
+    "won",
+    "win",
+    "wins",
+    "lost",
+    "held",
+    "parked",
+    "negotiation",
+    "negotiating",
+    "proposal",
+    "proposals",
+    "qualified",
+    "approval",
+    "approvals",
+    "approve",
+    "approved",
+    "unapproved",
+    "waiting",
+    "awaiting",
+    "pending",
+    "needs",
+    "needing",
+    "sign-off",
+    "decision",
+    "manager",
+    "manager's",
+    "open",
+    "active",
+    "new",
+    "hot",
+    "warm",
+    "cold",
+    "value",
+    "worth",
+    "biggest",
+    "top",
+    "latest",
+    "recent",
+    "by",
+    "so",
+    "far",
+    "year",
+    "quarter",
+    "closed",
+    "closing",
+    "close",
+    "date",
+    "next",
+    "step",
+    "owner",
+    *_MONTHS,
+)
+
+#: ProcureFlow, the procure-to-pay system, by name.
+_PROCURE_NAME = (r"procure ?flow", r"procurement\b", r"p2p\b", r"procure.to.pay")
+#: Which document a question is about. Bare "requisitions" are AskMira's hiring
+#: requisitions unless ProcureFlow is named.
+_PROCURE_DOCS: tuple[tuple[str, tuple[str, ...], bool], ...] = (
+    ("purchase_orders", (r"purchase orders?\b",), False),
+    ("invoices", (r"invoices?\b", r"vendor bills?\b"), False),
+    ("requisitions", (r"purchase (requisitions?|requests?)\b",), False),
+    ("requisitions", (r"requisitions?\b", r"prs?\b", r"indents?\b"), True),
+)
+#: Statuses a person names, as ProcureFlow's, and which documents have each.
+_DOC_STATUS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "AWAITING_APPROVAL",
+        (r"(awaiting|waiting|pending)\b", r"unapproved\b", r"for approval\b"),
+        ("requisitions", "purchase_orders", "invoices"),
+    ),
+    ("APPROVED", (r"approved\b",), ("requisitions", "purchase_orders", "invoices")),
+    ("REJECTED", (r"rejected\b", r"declined\b"), ("requisitions", "purchase_orders", "invoices")),
+    ("PAID", (r"paid\b", r"settled\b"), ("invoices",)),
+    ("DRAFT", (r"drafts?\b",), ("requisitions", "purchase_orders")),
+    ("ON_HOLD", (r"on hold\b", r"held\b"), ("purchase_orders", "invoices")),
+    ("ISSUED", (r"issued\b", r"sent to (the )?vendors?\b"), ("purchase_orders",)),
+    ("RECEIVED", (r"received\b", r"delivered\b"), ("purchase_orders", "invoices")),
+    ("SCHEDULED", (r"scheduled\b",), ("invoices",)),
+    ("CANCELLED", (r"cancel?led\b",), ("requisitions", "purchase_orders")),
+    ("CLOSED", (r"closed\b",), ("requisitions", "purchase_orders")),
+)
+#: The asker's own decisions there, as against documents in a status.
+_PROCURE_APPROVALS = (
+    r"(my|me)\b.{0,20}\bapprov",
+    r"approv\w*\b.{0,20}\b(my|me)\b",
+    r"to approve\b",
+    # Plural: "invoices awaiting approval" are documents in that status.
+    r"approvals\b",
+    r"inbox\b",
+    r"waiting (for|on) me\b",
+    r"payment runs?\b",
+)
+_BUDGET_USE = (
+    r"cost cent(re|er)s?\b",
+    r"(spent|spend|committed|available|utili[sz]|consum|remaining|left|used|usage|"
+    r"overrun|breach|exceed|over budget|under budget)",
+)
+_NOT_PROCUREMENT_BUDGET = (
+    "salar",
+    "payroll",
+    r"ctc\b",
+    "hiring",
+    "recruit",
+    "training",
+    "headcount",
+    "expense",
+)
+_PROCURE_DROP = (
+    "procureflow",
+    "procure",
+    "flow",
+    "procurement",
+    "p2p",
+    "purchase",
+    "order",
+    "orders",
+    "requisition",
+    "requisitions",
+    "request",
+    "requests",
+    "pr",
+    "prs",
+    "indent",
+    "indents",
+    "invoice",
+    "invoices",
+    "vendor",
+    "vendors",
+    "bill",
+    "bills",
+    "pending",
+    "awaiting",
+    "waiting",
+    "approval",
+    "approved",
+    "unapproved",
+    "rejected",
+    "declined",
+    "paid",
+    "settled",
+    "draft",
+    "drafts",
+    "held",
+    "issued",
+    "sent",
+    "received",
+    "delivered",
+    "scheduled",
+    "cancelled",
+    "canceled",
+    "closed",
+    "open",
+    "everyone's",
+    "everybody's",
+    "everyone",
+    "org",
+    "total",
+    "value",
+    "amount",
+    "latest",
+    "recent",
+    "new",
+    "created",
+    "submitted",
+    "by",
+    "so",
+    "far",
+    *_MONTHS,
+)
+
+
+def _sales(words: str, offered: set[str]) -> DirectPlan | None:
+    """Deals, leads and the pipeline in Saleinx; None when the words are not about them."""
+    if not _has(words, *_SALES_WORDS):
+        return None
+    pipeline = _has(words, r"pipeline\b", r"funnel\b", r"by stages?\b", r"stage.?wise\b")
+    if pipeline and "sales_pipeline" in offered:
+        return DirectPlan(reply=f"Here is your pipeline in {_SALES}.", tool="sales_pipeline")
+    if "sales_deals" not in offered:
+        return _unavailable(_SALES)
+    stage = next((key for key, pats in _DEAL_STAGES if _has(words, *pats)), "none")
+    if stage == "none" and _has(words, r"leads?\b") and not _has(words, r"deals?\b"):
+        stage = "lead"
+    query = _search_text(words, _SALES_DROP)
+    if stage == "awaiting_approval":
+        reply = f"Here are the Won deals waiting for a manager's approval in {_SALES}."
+    elif stage == "lead":
+        reply = f"Here are the leads in {_SALES}."
+    elif stage != "none":
+        reply = f"Here are the deals in {stage} in {_SALES}."
+    else:
+        reply = f"Here are the deals in {_SALES}."
+    return DirectPlan(reply=reply, tool="sales_deals", inputs={"query": query, "deal_stage": stage})
+
+
+def _procurement(words: str, offered: set[str]) -> DirectPlan | None:
+    """Approvals, documents and budgets in ProcureFlow; None when the words are not about them."""
+    named = _has(words, *_PROCURE_NAME)
+    document = next(
+        (
+            key
+            for key, pats, needs_name in _PROCURE_DOCS
+            if (named or not needs_name) and _has(words, *pats)
+        ),
+        None,
+    )
+    if document == "invoices" and not named and _has(words, "expense", "claim", "reimburs"):
+        document = None  # an expense claim's invoice is ExpenseGenie's
+    budget = (
+        _has(words, r"budgets?\b")
+        and not _has(words, *_NOT_PROCUREMENT_BUDGET)
+        and (named or _has(words, *_BUDGET_USE))
+    )
+    approvals = _has(words, *_PROCURE_APPROVALS)
+    if not (named or document or budget or _has(words, r"payment runs?\b")):
+        return None
+
+    def chosen(key: str, reply: str, **inputs: Any) -> DirectPlan | None:
+        if key in offered:
+            return DirectPlan(reply=reply, tool=key, inputs=inputs)
+        return _unavailable(_PROCURE) if named else None
+
+    if budget:
+        return chosen("procurement_budgets", f"Here are this period's budgets in {_PROCURE}.")
+    if approvals:
+        return chosen(
+            "procurement_approvals", f"Here is what waits on your approval in {_PROCURE}."
+        )
+    if document:
+        status = next(
+            (
+                value
+                for value, pats, kinds in _DOC_STATUS
+                if document in kinds and _has(words, *pats)
+            ),
+            "",
+        )
+        scope = (
+            "company"
+            if document == "requisitions"
+            and _has(words, r"(all|every(one|body)'?s?|company|whole|org)\b")
+            else "none"
+        )
+        label = {"purchase_orders": "purchase orders"}.get(document, document)
+        return chosen(
+            "procurement_documents",
+            f"Here are the {label} in {_PROCURE}.",
+            document=document,
+            doc_status=status,
+            query=_search_text(words, _PROCURE_DROP),
+            scope=scope,
+        )
+    return chosen("procurement_overview", f"Here is {_PROCURE} at a glance.")
 
 
 #: Dates a follow-up's pie chart drops from the grouping.
@@ -1865,6 +2197,8 @@ def _plan(
         "expense",
         "genie",
         "help ?desk",
+        *_SALES_NAME,
+        *_PROCURE_NAME,
         "products?\\b",
         "tools?\\b",
         "portals?",
@@ -1872,7 +2206,7 @@ def _plan(
     ):
         chosen = pick(
             "product_connections",
-            f"Here is how {_HIRE}, {_EXPENSE} and {_HELPDESK} are connected for you.",
+            "Here is how each linked product is connected for you.",
         )
         if chosen:
             return chosen
@@ -1923,6 +2257,14 @@ def _plan(
         r"tickets\b",
         r"assets\b",
         r"positions\b",
+        r"deals?\b",
+        r"leads\b",
+        "pipeline",
+        r"requisitions\b",
+        r"orders\b",
+        r"invoices\b",
+        r"budgets?\b",
+        r"approvals\b",
     ):
         if _has(words, "anytime", "hire", "interview tool", "hiring tool", "recruit"):
             chosen = pick("open_product", f"Opening {_HIRE}.", product="interview")
@@ -1930,8 +2272,30 @@ def _plan(
             chosen = pick("open_product", f"Opening {_EXPENSE}.", product="expense")
         elif _has(words, "help ?desk", "cgb", "it support", "it portal", "ticket"):
             chosen = pick("open_product", f"Opening {_HELPDESK}.", product="helpdesk")
+        elif _has(words, *_SALES_NAME):
+            chosen = pick("open_product", f"Opening {_SALES}.", product="saleinx")
+        elif _has(words, *_PROCURE_NAME):
+            chosen = pick("open_product", f"Opening {_PROCURE}.", product="procurement")
         if chosen:
             return chosen
+
+    # The prospective P&L booked from won orders, before the P&L that was billed.
+    if _has(words, *_FORECAST):
+        query = _account_of(words)
+        chosen = pick(
+            "account_forecast",
+            f"Here is the prospective P&L of {query}."
+            if query
+            else "Here is the prospective P&L booked from won orders.",
+            query=query,
+        )
+        if chosen:
+            return chosen
+
+    # Deals in Saleinx; approvals, documents and budgets in ProcureFlow.
+    chosen = _sales(words, offered) or _procurement(words, offered)
+    if chosen:
+        return chosen
 
     # What is waiting on my decision, across AskMira.
     approval = _has(words, *_APPROVAL) and not _has(
@@ -2001,15 +2365,7 @@ def _plan(
 
     # A client account's P&L: billed against the cost mapped to it.
     if _has(words, *_PNL):
-        account = re.search(
-            r"\b(?:of|for|on) (?:the )?(?!each\b|every\b|all\b|our\b|my\b)"
-            r"([a-z0-9][a-z0-9 .&-]{1,40}?)(?: account| client)?"
-            r"(?: (?:this|last|previous|in) [a-z0-9 ]+)?$",
-            words,
-        )
-        query = account.group(1).strip() if account else ""
-        if query in ("account", "accounts", "client", "clients", "company", "the company"):
-            query = ""
+        query = _account_of(words)
         chosen = pick(
             "account_pnl",
             f"Here is the P&L of {query}." if query else "Here is the P&L of each client account.",
