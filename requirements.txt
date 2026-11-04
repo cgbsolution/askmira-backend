@@ -25,6 +25,13 @@ argon2-cffi==23.1.0
 # Pure-Python PDF rendering. WeasyPrint gives better typography but needs GTK
 # native libraries, which is a poor Windows developer experience.
 xhtml2pdf==0.2.17
+# Pinned with it, to what the server installs: unpinned, a laptop drifted to
+# xhtml2pdf 0.2.18 / reportlab 5 and the payslip passed there while the server
+# collapsed its columns (2026-11-04). Change them together, and re-check the
+# payslip PDF (tests/payroll/test_payslip_pdf.py) when you do.
+reportlab==4.5.1
+pillow==13.0.0
+svglib==2.3.2
 # Imported directly (resume text, Form 16 Part A); also an xhtml2pdf dependency.
 pypdf==6.17.0
 

@@ -442,7 +442,13 @@ def _print_logo(logo: bytes) -> tuple[str, float, float] | None:
             size = (max(1, round(width * 2.5)), max(1, round(height * 2.5)))
             flat = Image.new("RGB", image.size, (255, 255, 255))
             rgba = image.convert("RGBA")
-            flat.paste(rgba, mask=rgba.getchannel("A"))
+            alpha = rgba.getchannel("A")
+            _low, high = alpha.getextrema()
+            if 0 < high < 250:
+                # A logo saved semi-transparent all over prints washed out on
+                # white; scale it so its most solid pixel is fully solid.
+                alpha = alpha.point(lambda value: min(255, round(value * 255 / high)))
+            flat.paste(rgba, mask=alpha)
             flat = flat.resize(size, Image.LANCZOS)
             out = io.BytesIO()
             flat.save(out, format="PNG", optimize=True)
@@ -504,17 +510,24 @@ td { vertical-align: top; }
 .facts td { padding: 1.6pt 3pt 1.6pt 3pt; }
 .facts td.value { font-weight: bold; }
 .facts tr.days td { border-top: 0.8pt solid #000000; }
-.pay td, .pay th { border-left: 0.8pt solid #000000; border-right: 0.8pt solid #000000;
-                   padding: 1.6pt 3pt 1.6pt 3pt; }
-.pay th { border: 0.8pt solid #000000; font-weight: bold; text-align: center;
-          padding: 4pt 3pt 4pt 3pt; }
-.pay th.big { font-size: 8.6pt; }
+.pay td { border-left: 0.8pt solid #000000; border-right: 0.8pt solid #000000;
+          padding: 1.6pt 3pt 1.6pt 3pt; }
+.pay td.h { border-top: 0.8pt solid #000000; border-bottom: 0.8pt solid #000000;
+            font-weight: bold; text-align: center; padding: 4pt 2pt 4pt 2pt; }
+.pay td.big { font-size: 8.6pt; }
 .pay td.num { text-align: right; }
 .pay td.paid { font-size: 8.6pt; }
-.pay tr.total td { border: 0.8pt solid #000000; font-weight: bold; padding: 3pt; }
+.pay td.t { border-top: 0.8pt solid #000000; border-bottom: 0.8pt solid #000000;
+            font-weight: bold; padding: 3pt; }
 .net td { padding: 2pt 4pt 2pt 4pt; }
 .net td.foot { border-top: 0.8pt solid #000000; font-weight: bold; padding: 4pt 8pt 4pt 8pt; }
 """
+
+
+#: The pay table's six columns. On every cell of every row, not just a header
+#: row: xhtml2pdf 0.2.17 (what the server installs) ignores widths and borders
+#: on <th>, and the columns collapsed into each other (2026-11-04).
+_W = tuple(f'width="{width}"' for width in ("26%", "11%", "11%", "11%", "29%", "12%"))
 
 
 def payslip_html(document: PayslipDocument) -> str:
@@ -548,18 +561,20 @@ def payslip_html(document: PayslipDocument) -> str:
         if index < len(earnings):
             row = earnings[index]
             earning = (
-                f"<td>{_e(row.name.upper())}</td>"
-                f'<td class="num">{_cell_money(row.actual)}</td>'
-                f'<td class="num">{_cell_money(row.arrears)}</td>'
-                f'<td class="num paid">{_money(row.amount)}</td>'
+                f"<td {_W[0]}>{_e(row.name.upper())}</td>"
+                f'<td {_W[1]} class="num">{_cell_money(row.actual)}</td>'
+                f'<td {_W[2]} class="num">{_cell_money(row.arrears)}</td>'
+                f'<td {_W[3]} class="num paid">{_money(row.amount)}</td>'
             )
         else:
-            earning = '<td></td><td class="num"></td><td class="num"></td><td class="num"></td>'
+            earning = f"<td {_W[0]}></td><td {_W[1]}></td><td {_W[2]}></td><td {_W[3]}></td>"
         if index < len(deductions):
             name, amount = deductions[index]
-            deduction = f'<td>{_e(name.upper())}</td><td class="num">{_money(amount)}</td>'
+            deduction = (
+                f'<td {_W[4]}>{_e(name.upper())}</td><td {_W[5]} class="num">{_money(amount)}</td>'
+            )
         else:
-            deduction = '<td></td><td class="num"></td>'
+            deduction = f"<td {_W[4]}></td><td {_W[5]}></td>"
         pay_rows += f"<tr>{earning}{deduction}</tr>"
 
     rs = _rupee()
@@ -570,7 +585,7 @@ def payslip_html(document: PayslipDocument) -> str:
         else ""
     )
     mode = (
-        f'<tr><td width="20%"></td><td width="80%">Mode of Payment : '
+        f'<tr><td width="27%"></td><td width="73%">Mode of Payment : '
         f"{_e(document.payment_mode)}</td></tr>"
         if document.payment_mode
         else ""
@@ -594,30 +609,30 @@ def payslip_html(document: PayslipDocument) -> str:
 <table class="facts">{fact_rows}</table>
 </td></tr></table>
 
-<table class="pay">
+<table class="pay" cellspacing="0" cellpadding="0">
 <tr>
-  <th width="26%" class="big">EARNINGS</th>
-  <th width="11%">Actual {rs}</th>
-  <th width="11%">Arrears {rs}</th>
-  <th width="11%">Amount {rs}</th>
-  <th width="29%" class="big">DEDUCTIONS</th>
-  <th width="12%">Amount {rs}</th>
+  <td {_W[0]} class="h big">EARNINGS</td>
+  <td {_W[1]} class="h">Actual {rs}</td>
+  <td {_W[2]} class="h">Arrears {rs}</td>
+  <td {_W[3]} class="h">Amount {rs}</td>
+  <td {_W[4]} class="h big">DEDUCTIONS</td>
+  <td {_W[5]} class="h">Amount {rs}</td>
 </tr>
 {pay_rows}
-<tr class="total">
-  <td>Gross Earnings</td>
-  <td class="num">{_money(document.total_actual)}</td>
-  <td class="num">{_money(document.total_arrears)}</td>
-  <td class="num">{_money(document.total_earnings)}</td>
-  <td>Total Deductions</td>
-  <td class="num">{_money(document.total_deductions)}</td>
+<tr>
+  <td {_W[0]} class="t">Gross Earnings</td>
+  <td {_W[1]} class="t num">{_money(document.total_actual)}</td>
+  <td {_W[2]} class="t num">{_money(document.total_arrears)}</td>
+  <td {_W[3]} class="t num">{_money(document.total_earnings)}</td>
+  <td {_W[4]} class="t">Total Deductions</td>
+  <td {_W[5]} class="t num">{_money(document.total_deductions)}</td>
 </tr>
 </table>
 
 <table class="box net"><tr><td>
 <table>
-<tr><td width="20%"><b>Net Pay</b> &nbsp; <b>: {rs} {_money(document.net_pay)}</b></td>
-<td width="80%">({rs}{_e(document.net_pay_in_words)})</td></tr>
+<tr><td width="27%"><b>Net Pay</b> &nbsp; <b>: {rs} {_money(document.net_pay)}</b></td>
+<td width="73%">({rs}{_e(document.net_pay_in_words)})</td></tr>
 {mode}
 <tr><td colspan="2">&nbsp;</td></tr>
 <tr><td colspan="2" class="foot">*This is a system generated payslip and does not require

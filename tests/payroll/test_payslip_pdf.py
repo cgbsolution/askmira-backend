@@ -365,3 +365,81 @@ def test_without_a_rate_on_record_a_full_month_shows_what_was_paid() -> None:
     assert full.earning_rows[0].actual == Decimal("28192")
     part = document(working_days="30", paid_days="27", not_employed_days="0", **kwargs)
     assert part.earning_rows[0].actual is None
+
+
+def test_the_pay_table_keeps_its_columns_in_the_rendered_pdf() -> None:
+    """Read back where each value was drawn. On xhtml2pdf 0.2.17 a <th> header
+    row lost its widths and the columns collapsed into each other: the amounts
+    ran into the deductions ("23,250.00239.00INSURANCE"). Passing in the HTML
+    proved nothing; this checks the PDF."""
+    import io
+
+    from pypdf import PdfReader
+
+    data = render_payslip_pdf(document(monthly_rates={"BASIC": "75000.00", "SPECIAL": "112500.00"}))
+    page = PdfReader(io.BytesIO(data)).pages[0]
+    drawn: dict[str, tuple[float, float]] = {}
+
+    def visit(text, cm, tm, _font, _size) -> None:
+        if text.strip():
+            x = cm[0] * tm[4] + cm[2] * tm[5] + cm[4]
+            y = cm[1] * tm[4] + cm[3] * tm[5] + cm[5]
+            drawn.setdefault(text.strip(), (x, y))
+
+    page.extract_text(visitor_text=visit)
+    # The page's margins (1.1 cm left, 0.9 cm right) and the six columns' shares.
+    left = 1.1 / 2.54 * 72
+    usable = float(page.mediabox.width) - left - 0.9 / 2.54 * 72
+    edges = [left]
+    for share in (0.26, 0.11, 0.11, 0.11, 0.29, 0.12):
+        edges.append(edges[-1] + usable * share)
+
+    def column(text: str) -> int:
+        x = drawn[text][0]
+        return next(i for i in range(6) if edges[i] - 1 <= x < edges[i + 1])
+
+    assert column("EARNINGS") == 0 and column("DEDUCTIONS") == 4
+    assert column("Actual") == 1 and column("Arrears") == 2
+    assert [column(t) for t in ("BASIC", "75,000.00", "40,000.00")] == [0, 1, 3]
+    assert [column(t) for t in ("PROVIDENT FUND (EMPLOYEE)", "1,800.00")] == [4, 5]
+    # One row: the earning and the deduction beside it share a line.
+    assert abs(drawn["BASIC"][1] - drawn["PROVIDENT FUND (EMPLOYEE)"][1]) < 2
+
+
+def test_the_pdf_libraries_are_the_ones_the_server_installs() -> None:
+    """The payslip is laid out by xhtml2pdf and reportlab, and their versions
+    change how it looks. requirements.txt pins what the server installs; a
+    machine running other versions tests a different page."""
+    import importlib.metadata
+    import re
+    from pathlib import Path
+
+    pins = dict(
+        re.findall(
+            r"^(xhtml2pdf|reportlab|pillow|svglib|pypdf)==(\S+)",
+            (Path(__file__).resolve().parents[2] / "requirements.txt").read_text(),
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+    )
+    assert set(pins) == {"xhtml2pdf", "reportlab", "pillow", "svglib", "pypdf"}
+    installed = {name: importlib.metadata.version(name) for name in pins}
+    assert installed == pins, (
+        f"Installed {installed}, requirements.txt pins {pins}. Run "
+        "`pip install -r requirements.txt` so you test what the server renders."
+    )
+
+
+def test_a_semi_transparent_logo_prints_at_full_strength() -> None:
+    """A logo saved at 40% opacity all over printed washed out on white."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    from app.services.payroll.payslip_pdf import _print_logo
+
+    logo = io.BytesIO()
+    Image.new("RGBA", (300, 100), (20, 40, 60, 100)).save(logo, format="PNG")
+    uri, _width, _height = _print_logo(logo.getvalue())
+    printed = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGB")
+    assert printed.getpixel((150, 50)) == (20, 40, 60)
