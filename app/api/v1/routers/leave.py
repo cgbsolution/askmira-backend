@@ -14,7 +14,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 
 from app.core import permissions
-from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.leave import LeaveRequestStatus
 from app.schemas.common import Page
@@ -48,6 +47,7 @@ from app.schemas.leave import (
     WhoIsOutRead,
     YearEndRead,
 )
+from app.services import uploads
 from app.services.leave import attachments, balance_report, comp_off, holiday_calendar, ledger
 from app.services.leave import service as leave_service
 
@@ -372,7 +372,7 @@ async def upload_attachment(
     if not permissions.is_hr(user):
         # A login with no employee record has no request to attach it to.
         permissions.own_employee_id(user)
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await attachments.upload(session, user, data, request=request)
 
 

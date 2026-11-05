@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, Valida
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.jobboard import ApplicationStatus, JobBoard
 from app.models.user import UserRole
+from app.services import uploads
 from app.services.hiring import (
     background_checks,
     candidate_portal,
@@ -32,7 +33,6 @@ from app.services.hiring import (
     ingestion,
     public_apply,
     public_guard,
-    resume_files,
 )
 from app.services.hiring import careers as careers_service
 from app.services.jobboards import distribution, overview
@@ -44,6 +44,9 @@ ADMIN_ROLES = (UserRole.ADMIN,)
 
 #: Room for the form fields around the largest file each route accepts.
 _FORM_OVERHEAD = 64 * 1024
+#: The largest file any workspace accepts. The hiring workspace's own upload
+#: limit, which may be lower, is applied when the file is stored.
+_MOST = uploads.READ_CEILING - 1
 
 
 # ── Contracts ───────────────────────────────────────────────────────────────
@@ -409,7 +412,7 @@ async def apply(
     """Apply without an account: consent required, resume checked from its bytes."""
     public_guard.throttle(request, public_guard.APPLY, scope=slug[:64])
     public_guard.refuse_honeypot(website)
-    _refuse_oversize(request, resume_files.RESUME_MAX_BYTES)
+    _refuse_oversize(request, _MOST)
     try:
         clean_email = str(_EMAIL.validate_python(email.strip()))
     except ValidationError as exc:
@@ -418,7 +421,7 @@ async def apply(
             detail="That email address does not look right.",
         ) from exc
 
-    data = await _read_upload(resume, resume_files.RESUME_MAX_BYTES)
+    data = await _read_upload(resume, _MOST)
     result = await public_apply.submit_application(
         session,
         slug=slug[:64],
@@ -465,8 +468,8 @@ async def upload_candidate_document(
 ) -> dict[str, Any]:
     """Pre-joining document upload. Type from the bytes; key generated; retention applied."""
     public_guard.throttle(request, public_guard.DOCUMENT_UPLOAD)
-    _refuse_oversize(request, resume_files.DOCUMENT_MAX_BYTES)
-    data = await _read_upload(file, resume_files.DOCUMENT_MAX_BYTES)
+    _refuse_oversize(request, _MOST)
+    data = await _read_upload(file, _MOST)
     if not data:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The file is empty."
@@ -678,8 +681,8 @@ async def upload_background_report(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    _refuse_oversize(request, resume_files.DOCUMENT_MAX_BYTES)
-    data = await _read_upload(file, resume_files.DOCUMENT_MAX_BYTES)
+    _refuse_oversize(request, _MOST)
+    data = await _read_upload(file, _MOST)
     if data is None:
         raise HTTPException(status_code=422, detail="The file is empty.")
     result = await background_checks.upload_report(

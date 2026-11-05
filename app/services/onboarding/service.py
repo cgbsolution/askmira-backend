@@ -35,7 +35,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.config import settings
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import (
@@ -59,10 +58,10 @@ from app.models.org import Department, Location
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.onboarding import PlanCreate, TemplateCreate, TemplateTaskIn, TemplateUpdate
-from app.services import audit
+from app.services import audit, uploads
 from app.services.notifications.dispatch import notify, register_event
 from app.services.onboarding import rules
-from app.services.storage import FileRejectedError, StorageError, get_storage, validate_upload
+from app.services.storage import StorageError, get_storage
 
 __all__ = [
     "activate_due_joiners",
@@ -1533,20 +1532,8 @@ async def upload_for_task(
         raise _conflict(f"'{task.title}' does not collect a document.")
     _refuse_completion(user, plan, task)
 
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                "limit."
-            ),
-        )
-    try:
-        kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
+    accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
+    kind, data = accepted.kind, accepted.data
 
     employee = (await _employees(session, user, {plan.employee_id})).get(plan.employee_id)
     if employee is None:
@@ -1595,7 +1582,7 @@ async def upload_for_task(
                 "category": document.category,
                 "title": document.title,
                 "mime_type": kind.mime_type,
-                "size_bytes": len(data),
+                **accepted.sizes,
                 "verification_status": verification.value,
                 "onboarding_task_id": str(task.id),
             },

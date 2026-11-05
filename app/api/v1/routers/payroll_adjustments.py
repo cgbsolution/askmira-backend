@@ -21,6 +21,7 @@ from app.schemas.payroll_inputs import (
     AdjustmentImportResult,
     AdjustmentRead,
 )
+from app.services import uploads
 from app.services.payroll import adjustments as adjustment_service
 
 PAYROLL_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
@@ -31,8 +32,6 @@ router = APIRouter(
     tags=["payroll"],
     dependencies=[Depends(require_roles(*PAYROLL_ROLES))],
 )
-
-_MAX_IMPORT_BYTES = 2 * 1024 * 1024
 
 
 @router.get("", response_model=Page[AdjustmentRead])
@@ -75,9 +74,7 @@ async def import_adjustments(
     request: Request,
     file: UploadFile = File(...),
 ) -> AdjustmentImportResult:
-    data = await file.read(_MAX_IMPORT_BYTES + 1)
-    if len(data) > _MAX_IMPORT_BYTES:
-        return AdjustmentImportResult(created=0, errors=["The file is larger than 2 MB."])
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await adjustment_service.import_csv(session, user, data, request=request)
 
 

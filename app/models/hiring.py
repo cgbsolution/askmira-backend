@@ -144,6 +144,13 @@ class Requisition(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # The job this requisition opened in the linked interview tool (AnytimeHire)
+    # once it was approved: its reference there, when, and the tool's own words
+    # when it could not be opened (shown with a button to try again).
+    linked_job_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    linked_job_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    linked_job_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # The approved seat this requisition fills (slice 23). Null is legitimate
     # and is exactly what makes a requisition off-budget: companies do hire
     # ahead of an approval, and a product that blocked it would be worked

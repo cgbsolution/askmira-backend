@@ -64,16 +64,14 @@ from app.schemas.employee_profile import (
     SectionWrite,
     StatutoryRead,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services import employee_identifiers as ids
 from app.services.disbursement import validation as bank_validation
 from app.services.notifications.dispatch import notify, register_event
 from app.services.storage import (
-    FileRejectedError,
     StorageError,
     get_storage,
     sniff,
-    validate_upload,
 )
 
 __all__ = [
@@ -121,7 +119,6 @@ HIRING_KEYS: frozenset[str] = frozenset(
 )
 
 #: Profile photos: small, and images only. A PDF avatar is not an avatar.
-PHOTO_MAX_BYTES = 5 * 1024 * 1024
 PHOTO_TYPES = frozenset({"image/png", "image/jpeg"})
 
 #: Adult age for a nominee; below it a guardian must be named (EPF para 61).
@@ -1168,22 +1165,16 @@ async def set_photo(
     if not is_self:
         permissions.require_hr(user, detail="You can only change your own photo.")
     employee = await _employee(session, user, employee_id)
-    if len(data) > PHOTO_MAX_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="A profile photo can be at most 5 MB.",
-        )
-    try:
-        kind = validate_upload(data, max_bytes=PHOTO_MAX_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
-    if kind.mime_type not in PHOTO_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="A profile photo has to be a PNG or JPEG image.",
-        )
+    # Scaled to a face's size: it is drawn as an avatar, never printed.
+    accepted = await uploads.accept_for_tenant(
+        session,
+        user.tenant_id,
+        data,
+        profile=uploads.PHOTO,
+        types=PHOTO_TYPES,
+        wrong_type="A profile photo has to be a PNG or JPEG image.",
+    )
+    kind, data = accepted.kind, accepted.data
 
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "photos", kind.extension)
@@ -1207,7 +1198,7 @@ async def set_photo(
             action=AuditAction.UPDATE,
             entity_type="employee",
             entity_id=employee.id,
-            changes={"photo": "replaced" if previous else "added", "size_bytes": len(data)},
+            changes={"photo": "replaced" if previous else "added", **accepted.sizes},
             summary=f"Updated the profile photo of {employee.employee_code}",
             request=request,
         )

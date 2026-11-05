@@ -71,8 +71,12 @@ class FilingDue(BaseModel):
 
 class DashboardSummary(BaseModel):
     greeting_name: str
-    headcount: int
-    new_hires_30d: int
+    #: HR only: company-wide figures are not for everyone. Null for anybody else.
+    headcount: int | None = None
+    #: HR only, like `headcount`.
+    new_hires_30d: int | None = None
+    #: The whole company for HR; for anybody else, only their own circle (their
+    #: manager, the colleagues who share that manager, and their reports).
     on_leave_today: int
     pending_approvals: int
     shoutouts_this_week: int
@@ -113,44 +117,50 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
     thirty_days_ago = today - timedelta(days=30)
     week_ago = datetime.now(UTC) - timedelta(days=7)
 
-    headcount = await session.scalar(
-        tenant_scoped(
-            select(func.count(Employee.id)).where(
-                Employee.deleted_at.is_(None),
-                Employee.status.in_(
-                    [EmploymentStatus.ACTIVE, EmploymentStatus.ON_NOTICE, EmploymentStatus.ON_LEAVE]
+    # Company-wide figures are HR's. Anybody else sees their own circle only,
+    # as in the directory: no headcount, no new hires, their team on leave.
+    circle = await permissions.directory_circle(session, user)
+    headcount: int | None = None
+    new_hires: int | None = None
+    if circle is None:
+        headcount = await session.scalar(
+            tenant_scoped(
+                select(func.count(Employee.id)).where(
+                    Employee.deleted_at.is_(None),
+                    Employee.status.in_(
+                        [
+                            EmploymentStatus.ACTIVE,
+                            EmploymentStatus.ON_NOTICE,
+                            EmploymentStatus.ON_LEAVE,
+                        ]
+                    ),
                 ),
-            ),
-            Employee,
-            user,
+                Employee,
+                user,
+            )
         )
-    )
-
-    # Joined in the last 30 days — not pre-joiners with a future date.
-    new_hires = await session.scalar(
-        tenant_scoped(
-            select(func.count(Employee.id)).where(
-                Employee.deleted_at.is_(None),
-                Employee.date_of_joining >= thirty_days_ago,
-                Employee.date_of_joining <= today,
-            ),
-            Employee,
-            user,
+        # Joined in the last 30 days — not pre-joiners with a future date.
+        new_hires = await session.scalar(
+            tenant_scoped(
+                select(func.count(Employee.id)).where(
+                    Employee.deleted_at.is_(None),
+                    Employee.date_of_joining >= thirty_days_ago,
+                    Employee.date_of_joining <= today,
+                ),
+                Employee,
+                user,
+            )
         )
-    )
 
     # People, not requests: two approved requests covering today are one person.
-    on_leave = await session.scalar(
-        tenant_scoped(
-            select(func.count(func.distinct(LeaveRequest.employee_id))).where(
-                LeaveRequest.status == LeaveRequestStatus.APPROVED,
-                LeaveRequest.start_date <= today,
-                LeaveRequest.end_date >= today,
-            ),
-            LeaveRequest,
-            user,
-        )
+    on_leave_stmt = select(func.count(func.distinct(LeaveRequest.employee_id))).where(
+        LeaveRequest.status == LeaveRequestStatus.APPROVED,
+        LeaveRequest.start_date <= today,
+        LeaveRequest.end_date >= today,
     )
+    if circle is not None:
+        on_leave_stmt = on_leave_stmt.where(LeaveRequest.employee_id.in_(circle))
+    on_leave = await session.scalar(tenant_scoped(on_leave_stmt, LeaveRequest, user))
 
     # Exactly what the approvals inbox lists for this person, so the two agree.
     pending = (await approvals_service.inbox(session, user)).total
@@ -199,8 +209,8 @@ async def summary(user: CurrentUser, session: DbSession) -> DashboardSummary:
 
     return DashboardSummary(
         greeting_name=user.full_name.split(" ")[0],
-        headcount=headcount or 0,
-        new_hires_30d=new_hires or 0,
+        headcount=None if circle is not None else (headcount or 0),
+        new_hires_30d=None if circle is not None else (new_hires or 0),
         on_leave_today=on_leave or 0,
         pending_approvals=pending,
         shoutouts_this_week=shoutouts,

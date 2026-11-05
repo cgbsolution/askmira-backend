@@ -33,6 +33,7 @@ from app.models.bi import (
 )
 from app.models.user import UserRole
 from app.services.bi import benchmarks as benchmark_engine
+from app.services.bi import delivery
 from app.services.bi import exposed_schema as schema_engine
 from app.services.bi import service as bi
 
@@ -45,17 +46,37 @@ ADMIN_ROLES = (UserRole.ADMIN,)
 # ── Contracts ───────────────────────────────────────────────────────────────
 
 
+class StorageIn(BaseModel):
+    bucket: str = Field(min_length=3, max_length=63)
+    region: str = Field(default="", max_length=32)
+    #: A folder inside the bucket, or empty.
+    prefix: str = Field(default="", max_length=200)
+    access_key_id: str = Field(min_length=1, max_length=128)
+    #: Empty for Amazon S3; the https address of any other S3-compatible store.
+    endpoint: str = Field(default="", max_length=300)
+
+
 class ConnectionIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     #: A name from the published schema, never a table name.
     entity_name: str = Field(min_length=1, max_length=64)
+    #: object_storage (your bucket) or https_feed (a feed link for your BI tool).
     destination: BiDestinationKind
-    #: The role name or the bucket URI. "To where" is half of what the audit
-    #: row is for, so a connection cannot exist without it.
-    destination_ref: str = Field(min_length=1, max_length=500)
+    #: Worked out from the bucket, or "feed link"; what is sent here is ignored.
+    destination_ref: str = Field(default="", max_length=500)
     export_role: str = Field(min_length=1, max_length=50)
     #: Omit for "every field this role may see". A list narrows it further.
     field_names: list[str] | None = None
+    storage: StorageIn | None = None
+    #: The bucket's secret access key. Encrypted; never returned.
+    secret: str | None = Field(default=None, max_length=256)
+    #: "manual", or "daily" (every night at 02:00 India time; bucket only).
+    schedule: str = Field(default="manual", max_length=16)
+
+
+class ScheduleIn(BaseModel):
+    schedule: str = Field(max_length=16)
+    is_active: bool = True
 
 
 class ExportIn(BaseModel):
@@ -138,6 +159,52 @@ async def create_connection(
         destination_ref=body.destination_ref,
         export_role=body.export_role,
         field_names=body.field_names,
+        storage=body.storage.model_dump() if body.storage else None,
+        secret=body.secret,
+        schedule=body.schedule,
+        request=request,
+    )
+
+
+@router.post("/bi/connections/{connection_id}/deliver")
+async def deliver_now(
+    connection_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """Write the connection's rows to its bucket now. Recorded whether it worked or not."""
+    return await delivery.deliver(session, user, connection_id=connection_id, request=request)
+
+
+@router.post("/bi/connections/{connection_id}/feed-link")
+async def new_feed_link(
+    connection_id: uuid.UUID,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    """A new feed link, shown once. The old link stops working."""
+    return await bi.rotate_feed(session, user, connection_id=connection_id, request=request)
+
+
+@router.put("/bi/connections/{connection_id}/schedule")
+async def set_schedule(
+    connection_id: uuid.UUID,
+    body: ScheduleIn,
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    _admin=Depends(require_roles(*ADMIN_ROLES)),
+) -> dict[str, Any]:
+    return await bi.set_schedule(
+        session,
+        user,
+        connection_id=connection_id,
+        schedule=body.schedule,
+        is_active=body.is_active,
         request=request,
     )
 
@@ -307,4 +374,26 @@ async def benchmark_position(
         period=period,
         own_value=own_value,
         source=source,
+    )
+
+
+# ── The feed link a BI tool reads (no sign-in: the token is the credential) ──
+
+public_router = APIRouter(prefix="/public/bi-feed", tags=["bi"])
+
+
+@public_router.get("/{token}")
+async def read_feed(token: str, session: DbSession, request: Request) -> Response:
+    """The connection's rows as CSV, compiled now as the admin who set it up, and audited."""
+    filename, content = await delivery.feed_csv(
+        session, token.removesuffix(".csv"), request=request
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Robots-Tag": "noindex",
+        },
     )

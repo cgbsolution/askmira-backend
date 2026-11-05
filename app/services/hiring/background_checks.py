@@ -455,7 +455,7 @@ async def upload_report(
         raise HTTPException(
             status_code=409, detail="A report belongs to a check the candidate agreed to."
         )
-    key, _kind = await resume_files.accept_document(data, user.tenant_id)
+    key, _kind = await resume_files.accept_document(session, data, user.tenant_id)
     row.report_storage_key = key
     row.report_filename = filename[:255] or "report"
     await session.flush()

@@ -15,6 +15,13 @@ from app.services.products import service as products
 router = APIRouter(prefix="/products", tags=["products"])
 
 
+@router.get("/roles/me")
+async def my_product_roles(user: CurrentUser, session: DbSession) -> dict[str, dict[str, str]]:
+    """The caller's role in each linked product that keeps its own (Saleinx, ProcureFlow) or
+    names its IT team (the helpdesk): what the portal's menu offers them there."""
+    return {"roles": await products.my_roles(session, user)}
+
+
 @router.post("/{product}/launch")
 async def launch(
     product: str, user: CurrentUser, session: DbSession, to: str | None = None

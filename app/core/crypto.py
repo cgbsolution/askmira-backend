@@ -30,18 +30,23 @@ from app.core.config import settings
 __all__ = [
     "EncryptionError",
     "can_encrypt",
+    "decrypt_bytes",
     "decrypt_field",
     "decrypt_secret",
+    "encrypt_bytes",
     "encrypt_field",
     "encrypt_secret",
     "field_reader",
     "is_encrypted",
+    "is_encrypted_bytes",
     "secret_reader",
 ]
 
 # Marks a value as produced by this module, so a plaintext value written before
 # encryption existed can be detected rather than mangled.
 _PREFIX = "enc:v1:"
+# The same for a file: binary, so it costs no text encoding on top.
+_BYTES_PREFIX = b"encb:v1:"
 
 
 class EncryptionError(RuntimeError):
@@ -208,3 +213,36 @@ def field_reader() -> Callable[[str | None], str | None]:
         return _open_field(fernet, value)
 
     return read
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Files
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def is_encrypted_bytes(value: bytes | None) -> bool:
+    return bool(value) and value.startswith(_BYTES_PREFIX)
+
+
+def encrypt_bytes(data: bytes, tenant_id: uuid.UUID) -> bytes:
+    """Encrypt a file's bytes for storage, under the tenant's key.
+
+    The Fernet token is kept as raw bytes rather than its base64 text, so the
+    stored file is only a few dozen bytes larger than what it holds.
+    """
+    token = Fernet(_tenant_key(tenant_id)).encrypt(data)
+    return _BYTES_PREFIX + base64.urlsafe_b64decode(token)
+
+
+def decrypt_bytes(value: bytes, tenant_id: uuid.UUID) -> bytes:
+    """The bytes `encrypt_bytes` sealed. Raises `EncryptionError` like `decrypt_secret`."""
+    if not is_encrypted_bytes(value):
+        raise EncryptionError("This file was not encrypted by this server.")
+    token = base64.urlsafe_b64encode(value[len(_BYTES_PREFIX) :])
+    try:
+        return Fernet(_tenant_key(tenant_id)).decrypt(token)
+    except (InvalidToken, ValueError) as exc:
+        raise EncryptionError(
+            "A stored file could not be decrypted. Either it belongs to a different "
+            "tenant, or SECRET_ENCRYPTION_KEY has changed since it was written."
+        ) from exc

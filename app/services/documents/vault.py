@@ -22,6 +22,7 @@ uploads are `not_required` — HR is the one who would verify them.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import re
@@ -49,9 +50,10 @@ from app.schemas.documents import (
     DocumentUpdate,
     DocumentVerify,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services.notifications.dispatch import notify, register_event
-from app.services.storage import FileRejectedError, StorageError, get_storage, validate_upload
+from app.services.storage import FileRejectedError, StorageError, get_storage
+from app.services.storage.sniff import size_label
 
 __all__ = [
     "delete_document",
@@ -303,20 +305,8 @@ async def upload_document(
     _refuse_own_record(user, employee_id)
     employee = await _employee(session, user, employee_id)
 
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                "limit."
-            ),
-        )
-    try:
-        kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
+    accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
+    kind, data = accepted.kind, accepted.data
 
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "documents", kind.extension)
@@ -358,7 +348,7 @@ async def upload_document(
                 "category": category.value,
                 "title": document.title,
                 "mime_type": kind.mime_type,
-                "size_bytes": len(data),
+                **accepted.sizes,
                 "employee_visible": is_employee_visible,
             },
             summary=f"Uploaded '{document.title}' to {employee.employee_code}'s vault",
@@ -393,7 +383,9 @@ def _title_from(name: str) -> str:
     return (title or "Document")[:255]
 
 
-def _unzip(name: str, data: bytes, skipped: list[BulkDocumentSkipped]) -> list[tuple[str, bytes]]:
+def _unzip(
+    name: str, data: bytes, skipped: list[BulkDocumentSkipped], limit: int
+) -> list[tuple[str, bytes]]:
     """The files inside a ZIP, each read no further than the upload limit.
 
     The sizes a ZIP declares are not trusted: every entry is read with a cap,
@@ -422,19 +414,19 @@ def _unzip(name: str, data: bytes, skipped: list[BulkDocumentSkipped]) -> list[t
         if info.flag_bits & 0x1:
             skipped.append(BulkDocumentSkipped(file=inner, reason="Password-protected."))
             continue
-        if info.file_size > settings.MAX_UPLOAD_BYTES:
-            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large()))
+        if info.file_size > limit:
+            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large(limit)))
             continue
         try:
             with archive.open(info) as handle:
-                content = handle.read(min(settings.MAX_UPLOAD_BYTES, budget) + 1)
+                content = handle.read(min(limit, budget) + 1)
         except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
             skipped.append(
                 BulkDocumentSkipped(file=inner, reason="Could not be read from the ZIP.")
             )
             continue
-        if len(content) > settings.MAX_UPLOAD_BYTES:
-            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large()))
+        if len(content) > limit:
+            skipped.append(BulkDocumentSkipped(file=inner, reason=_too_large(limit)))
             continue
         if len(content) > budget:
             skipped.append(
@@ -446,8 +438,34 @@ def _unzip(name: str, data: bytes, skipped: list[BulkDocumentSkipped]) -> list[t
     return files
 
 
-def _too_large() -> str:
-    return f"Larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
+def _too_large(limit: int) -> str:
+    return f"Larger than the {size_label(limit)} limit."
+
+
+#: Files compressed at once in a bulk upload: enough to use the server's cores,
+#: few enough that one upload cannot take all of them.
+_PARALLEL_COMPRESSION = 4
+
+
+async def _accept_each(
+    candidates: list[tuple[str, bytes]], limit: int
+) -> list[tuple[str, uploads.AcceptedFile | str]]:
+    """Check and compress every file, a few at a time, in the order given.
+
+    Each comes back accepted, or as the reason it was refused.
+    """
+    gate = asyncio.Semaphore(_PARALLEL_COMPRESSION)
+
+    async def one(name: str, data: bytes) -> tuple[str, uploads.AcceptedFile | str]:
+        if not data:
+            return name, "The file is empty."
+        async with gate:
+            try:
+                return name, await uploads.accept(data, max_bytes=limit)
+            except FileRejectedError as exc:
+                return name, str(exc)
+
+    return list(await asyncio.gather(*(one(name, data) for name, data in candidates)))
 
 
 async def upload_documents(
@@ -472,19 +490,19 @@ async def upload_documents(
     permissions.require_hr(user, detail="Only HR can upload to an employee's vault.")
     _refuse_own_record(user, employee_id)
     employee = await _employee(session, user, employee_id)
+    limit = await uploads.limit_bytes(session, user.tenant_id)
 
     skipped: list[BulkDocumentSkipped] = []
     candidates: list[tuple[str, bytes]] = []
     for name, data in files:
         if len(data) > settings.MAX_ARCHIVE_BYTES:
-            limit = settings.MAX_ARCHIVE_BYTES // (1024 * 1024)
             skipped.append(
-                BulkDocumentSkipped(file=name, reason=f"Larger than the {limit} MB limit.")
+                BulkDocumentSkipped(file=name, reason=_too_large(settings.MAX_ARCHIVE_BYTES))
             )
         elif data.startswith(_ZIP_MAGIC):
-            candidates.extend(_unzip(name, data, skipped))
-        elif len(data) > settings.MAX_UPLOAD_BYTES:
-            skipped.append(BulkDocumentSkipped(file=name, reason=_too_large()))
+            candidates.extend(_unzip(name, data, skipped, limit))
+        elif len(data) > limit:
+            skipped.append(BulkDocumentSkipped(file=name, reason=_too_large(limit)))
         else:
             candidates.append((name, data))
     if len(candidates) > MAX_BULK_FILES:
@@ -493,19 +511,16 @@ async def upload_documents(
             detail=f"That is {len(candidates)} files. Upload at most {MAX_BULK_FILES} at a time.",
         )
 
+    checked = await _accept_each(candidates, limit)
     storage = get_storage()
     keys: list[str] = []
     documents: list[EmployeeDocument] = []
     try:
-        for name, data in candidates:
-            if not data:
-                skipped.append(BulkDocumentSkipped(file=name, reason="The file is empty."))
+        for name, outcome in checked:
+            if isinstance(outcome, str):
+                skipped.append(BulkDocumentSkipped(file=name, reason=outcome))
                 continue
-            try:
-                kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-            except FileRejectedError as exc:
-                skipped.append(BulkDocumentSkipped(file=name, reason=str(exc)))
-                continue
+            kind, data = outcome.kind, outcome.data
             key = storage.new_key(user.tenant_id, "documents", kind.extension)
             try:
                 await storage.put(key, data)
@@ -539,7 +554,7 @@ async def upload_documents(
                     "category": category.value,
                     "title": document.title,
                     "mime_type": kind.mime_type,
-                    "size_bytes": len(data),
+                    **outcome.sizes,
                     "employee_visible": is_employee_visible,
                     "file": name,
                     "bulk": True,
@@ -660,21 +675,9 @@ async def delete_document(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _checked(data: bytes):
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                "limit."
-            ),
-        )
-    try:
-        return validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
+async def _checked(session: AsyncSession, user: User, data: bytes) -> uploads.AcceptedFile:
+    """The workspace's size limit, the type from the bytes, then compression."""
+    return await uploads.accept_for_tenant(session, user.tenant_id, data)
 
 
 async def _hr_logins(session: AsyncSession, user: User) -> list[uuid.UUID]:
@@ -725,7 +728,8 @@ async def upload_own_document(
         )
     _check_dates(issued_on, valid_until)
     employee = await _employee(session, user, own)
-    kind = _checked(data)
+    accepted = await _checked(session, user, data)
+    kind, data = accepted.kind, accepted.data
 
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "documents", kind.extension)
@@ -768,7 +772,7 @@ async def upload_own_document(
                 "category": category.value,
                 "title": document.title,
                 "mime_type": kind.mime_type,
-                "size_bytes": len(data),
+                **accepted.sizes,
                 "verification_status": DocumentVerification.PENDING.value,
             },
             summary=f"{employee.employee_code} uploaded '{document.title}' for verification",

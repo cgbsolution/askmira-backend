@@ -186,7 +186,8 @@ async def upload_company_document(
             detail="A document employees must acknowledge has to be published to them.",
         )
     _check_dates(issued_on, valid_until)
-    kind = _checked(data)
+    accepted = await _checked(session, user, data)
+    kind, data = accepted.kind, accepted.data
 
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "company-documents", kind.extension)

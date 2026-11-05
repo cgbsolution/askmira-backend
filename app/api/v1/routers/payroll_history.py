@@ -12,10 +12,12 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, DbSession, require_roles
-from app.models.user import UserRole
+from app.models.user import User, UserRole
 from app.schemas.payroll_history import HistoryImportRead
+from app.services import uploads
 from app.services.payroll import history_import
 
 router = APIRouter(
@@ -27,9 +29,11 @@ router = APIRouter(
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-async def _read(files: list[UploadFile]) -> list[tuple[str, bytes]]:
+async def _read(
+    files: list[UploadFile], session: AsyncSession, user: User
+) -> list[tuple[str, bytes]]:
     return [
-        (f.filename or "register.xlsx", await f.read(history_import.MAX_FILE_BYTES + 1))
+        (f.filename or "register.xlsx", await uploads.read_file(f, session, user.tenant_id))
         for f in files
     ]
 
@@ -43,7 +47,7 @@ async def history_import_preview(
 ) -> HistoryImportRead:
     """What importing these registers would do, checked. Nothing is saved."""
     plan = await history_import.check_files(
-        session, user, await _read(files), legal_entity_id=legal_entity_id
+        session, user, await _read(files, session, user), legal_entity_id=legal_entity_id
     )
     return HistoryImportRead.model_validate(history_import.preview(plan))
 
@@ -58,7 +62,7 @@ async def history_import_apply(
 ) -> HistoryImportRead:
     """Import the months: saved together, or not at all while any error remains."""
     plan = await history_import.check_files(
-        session, user, await _read(files), legal_entity_id=legal_entity_id
+        session, user, await _read(files, session, user), legal_entity_id=legal_entity_id
     )
     plan = await history_import.apply(session, user, plan, request)
     return HistoryImportRead.model_validate(history_import.preview(plan))
@@ -73,7 +77,7 @@ async def history_import_issues(
 ) -> Response:
     """The check as a workbook: errors, warnings, notes, salary changes, months."""
     plan = await history_import.check_files(
-        session, user, await _read(files), legal_entity_id=legal_entity_id
+        session, user, await _read(files, session, user), legal_entity_id=legal_entity_id
     )
     return Response(
         content=history_import.issues_xlsx(plan),
@@ -82,9 +86,7 @@ async def history_import_issues(
     )
 
 
-@router.delete(
-    "/runs/{run_id}/import", status_code=status.HTTP_204_NO_CONTENT, response_model=None
-)
+@router.delete("/runs/{run_id}/import", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def undo_history_import(
     run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> None:

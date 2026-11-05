@@ -185,9 +185,7 @@ async def execute_erasure(
         raise _bad_request(HELD_IN_EMPLOYEE_RECORD_NOTE)
     candidate_id = await _candidate_id(session, user, row.principal_id)
     if candidate_id is not None:
-        return await _erase_candidate(
-            session, user, row, candidate_id, request=request, now=moment
-        )
+        return await _erase_candidate(session, user, row, candidate_id, request=request, now=moment)
 
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == row.principal_id), Employee, user)

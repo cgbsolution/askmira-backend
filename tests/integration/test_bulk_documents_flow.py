@@ -126,18 +126,19 @@ async def test_files_and_a_zip_land_in_the_vault(
     for row in rows:
         assert (_storage_root / row.file_url).exists()
     audits = (
-        await session.scalars(
-            select(AuditLog).where(AuditLog.entity_type == "employee_document")
-        )
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "employee_document"))
     ).all()
     assert len([row for row in audits if row.changes.get("bulk")]) == 4
 
 
 async def test_oversized_and_unreadable_files_are_reported_not_stored(
-    client, session, hr_user, employee, monkeypatch
+    client, session, tenant, hr_user, employee
 ) -> None:
-    monkeypatch.setattr(settings, "MAX_UPLOAD_BYTES", 1000)
-    archive = _zip({"big.pdf": PDF + b"\x00" * 5000, "small.pdf": PDF})
+    # The workspace's upload limit holds for every file, inside a ZIP or not.
+    tenant.settings = {**(tenant.settings or {}), "max_upload_mb": 1}
+    await session.commit()
+    big = PDF + b"\x00" * (1024 * 1024)
+    archive = _zip({"big.pdf": big, "small.pdf": PDF})
     response = await _upload(
         client,
         hr_user,
@@ -145,7 +146,7 @@ async def test_oversized_and_unreadable_files_are_reported_not_stored(
         [
             ("bundle.zip", archive, "application/zip"),
             ("broken.zip", b"PK\x03\x04 not really a zip", "application/zip"),
-            ("huge.pdf", PDF + b"\x00" * 5000, "application/pdf"),
+            ("huge.pdf", big, "application/pdf"),
         ],
     )
     assert response.status_code == 200, response.text

@@ -733,6 +733,9 @@ async def requisition_detail(
             authority.message if authority is not None and not authority.allowed else None
         ),
         "candidate_count": int(candidate_count or 0),
+        "linked_job_ref": requisition.linked_job_ref,
+        "linked_job_at": requisition.linked_job_at,
+        "linked_job_error": requisition.linked_job_error,
     }
 
 

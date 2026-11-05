@@ -158,23 +158,30 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
 
     departments: dict[str, tuple[uuid.UUID, str]] = {}
     department_codes: set[str] = set()
-    for row in (await session.execute(scoped(Department, Department.id, Department.name,
-                                             Department.code))).all():
+    for row in (
+        await session.execute(scoped(Department, Department.id, Department.name, Department.code))
+    ).all():
         departments.setdefault(_key(row.name), (row.id, row.name))
         departments.setdefault(_key(row.code), (row.id, row.name))
         department_codes.add(row.code.upper())
 
     locations: dict[str, tuple[uuid.UUID, str]] = {}
     location_codes: set[str] = set()
-    for row in (await session.execute(scoped(Location, Location.id, Location.name, Location.code,
-                                             Location.city))).all():
+    for row in (
+        await session.execute(
+            scoped(Location, Location.id, Location.name, Location.code, Location.city)
+        )
+    ).all():
         for name in (row.name, row.code, row.city):
             if name:
                 locations.setdefault(_key(name), (row.id, row.name))
         location_codes.add(row.code.upper())
 
-    entity_rows = (await session.execute(scoped(LegalEntity, LegalEntity.id, LegalEntity.name,
-                                                LegalEntity.code))).all()
+    entity_rows = (
+        await session.execute(
+            scoped(LegalEntity, LegalEntity.id, LegalEntity.name, LegalEntity.code)
+        )
+    ).all()
     entities: dict[str, uuid.UUID] = {}
     entity_names: dict[str, uuid.UUID] = {}
     for row in entity_rows:
@@ -185,10 +192,21 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
     codes: dict[str, uuid.UUID] = {}
     emails: dict[str, tuple[str, str]] = {}
     current_emails: set[str] = set()
-    for row in (await session.execute(scoped(
-        Employee, Employee.id, Employee.employee_code, Employee.work_email, Employee.display_name,
-        Employee.first_name, Employee.last_name, Employee.status, Employee.deleted_at,
-    ))).all():
+    for row in (
+        await session.execute(
+            scoped(
+                Employee,
+                Employee.id,
+                Employee.employee_code,
+                Employee.work_email,
+                Employee.display_name,
+                Employee.first_name,
+                Employee.last_name,
+                Employee.status,
+                Employee.deleted_at,
+            )
+        )
+    ).all():
         codes[row.employee_code.upper()] = row.id
         if not row.work_email:
             continue
@@ -200,8 +218,9 @@ async def _workspace(session: AsyncSession, user: User) -> _Workspace:
             current_emails.add(row.work_email.lower())
     projects: dict[str, tuple[uuid.UUID, str]] = {}
     project_codes: set[str] = set()
-    for row in (await session.execute(scoped(Project, Project.id, Project.name,
-                                             Project.code))).all():
+    for row in (
+        await session.execute(scoped(Project, Project.id, Project.name, Project.code))
+    ).all():
         projects.setdefault(_key(row.name), (row.id, row.name))
         projects.setdefault(_key(row.code), (row.id, row.name))
         project_codes.add(row.code.upper())
@@ -304,8 +323,9 @@ class _Reader:
         return value
 
 
-def _status(read: _Reader, joining: date | None, today: date) -> tuple[EmploymentStatus | None,
-                                                                        date | None]:
+def _status(
+    read: _Reader, joining: date | None, today: date
+) -> tuple[EmploymentStatus | None, date | None]:
     """Where they stand, and their exit date when they have one."""
     row = read.row
     try:
@@ -424,8 +444,10 @@ def _entries(model: Any, items: list[dict[str, Any]], what: str, row: _Row) -> l
         try:
             kept.append(model(**item))
         except ValidationError as exc:
-            row.warnings.append(f"{what} {item.get('name') or item.get('qualification')} left "
-                                f"out: {_first_error(exc)}.")
+            row.warnings.append(
+                f"{what} {item.get('name') or item.get('qualification')} left "
+                f"out: {_first_error(exc)}."
+            )
     return kept
 
 
@@ -482,12 +504,15 @@ def _sections(read: _Reader, name: str, more: list[list[Any]]) -> None:
     else:
         contact = read.limited("emergency_name", 255)
         items = (
-            [{
-                "name": contact,
-                "relationship": read.get("emergency_relationship", f.read_relationship) or "other",
-                "phone": read.get("emergency_phone", f.read_phone),
-                "is_primary": True,
-            }]
+            [
+                {
+                    "name": contact,
+                    "relationship": read.get("emergency_relationship", f.read_relationship)
+                    or "other",
+                    "phone": read.get("emergency_phone", f.read_phone),
+                    "is_primary": True,
+                }
+            ]
             if contact
             else []
         )
@@ -555,8 +580,9 @@ def _sections(read: _Reader, name: str, more: list[list[Any]]) -> None:
             "bank_name": read.limited("bank_name", 128),
         }
         if len(bank["ifsc"]) > 11:
-            row.warnings.append(f"IFSC Code '{bank['ifsc']}' is longer than 11 characters — "
-                                "bank account left out.")
+            row.warnings.append(
+                f"IFSC Code '{bank['ifsc']}' is longer than 11 characters — bank account left out."
+            )
         else:
             try:
                 BankAccountDetails(**bank)
@@ -800,8 +826,10 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
     extras, not_kept = g.extra_columns(table, people, set(ws.all_custom_keys))
     notes: list[str] = []
     not_kept.extend(g.section_leftovers(table, [c for _, c in table.rows]))
-    for key, over in (("leaving_date", "last_working_date"),
-                      ("expected_confirmation_date", "confirmation_date")):
+    for key, over in (
+        ("leaving_date", "last_working_date"),
+        ("expected_confirmation_date", "confirmation_date"),
+    ):
         index, other = table.mapping.get(key), table.mapping.get(over)
         if index is None or other is None or not can_create:
             continue
@@ -876,6 +904,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
                     filled=sum(words.values()),
                 )
             )
+
             def _left(word: str) -> bool:
                 try:
                     return f.read_status(word) == "left"
@@ -984,8 +1013,9 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         if first is not None:
             other = current_in_file.get(email)
             if not row.leaver and not row.skip and other is not None:
-                row.errors.append(f"Email {email} is also on row {other.line}, and both are "
-                                  "still working here.")
+                row.errors.append(
+                    f"Email {email} is also on row {other.line}, and both are still working here."
+                )
                 continue
             row.issues.append(f"Email {email} is also {first.code}'s (row {first.line}).")
             if not any(email in issue for issue in first.issues):
@@ -1063,8 +1093,9 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
             row.warnings.append("Reporting Manager is the employee themselves — left blank.")
             row.manager_code = None
         elif upper not in in_file and upper not in ws.codes:
-            row.warnings.append(f"Reporting Manager {code} is not in the file or in AskMira — "
-                                "left blank.")
+            row.warnings.append(
+                f"Reporting Manager {code} is not in the file or in AskMira — left blank."
+            )
             row.manager_code = None
     by_code = {row.code.upper(): row for row in ready if row.code}
     for row in ready:
@@ -1087,8 +1118,9 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         )
         for key, index in sorted(table.mapping.items(), key=lambda item: item[1])
     ] + [
-        ImportColumn(header=by_index[index].header, field=ws.custom[key].label,
-                     section="Custom fields")
+        ImportColumn(
+            header=by_index[index].header, field=ws.custom[key].label, section="Custom fields"
+        )
         for key, index in custom.items()
     ]
     return _Plan(
@@ -1335,8 +1367,12 @@ async def run(
     for key, name in sorted(plan.new_departments.items()):
         if not any(row.department and _key(row.department) == key for row in chosen):
             continue
-        department = Department(id=uuid.uuid4(), tenant_id=user.tenant_id, name=name[:255],
-                                code=_unique_code(name, taken))
+        department = Department(
+            id=uuid.uuid4(),
+            tenant_id=user.tenant_id,
+            name=name[:255],
+            code=_unique_code(name, taken),
+        )
         session.add(department)
         ws.departments[key] = (department.id, department.name)
         departments_created.append(department.name)
@@ -1410,8 +1446,12 @@ async def run(
             entity_type="location",
             entity_id=location.id,
             actor=user,
-            changes={"name": location.name, "code": location.code, "state_code": state,
-                     "source": filename},
+            changes={
+                "name": location.name,
+                "code": location.code,
+                "state_code": state,
+                "source": filename,
+            },
             summary=f"Created location {location.code} in state {state} while importing employees",
             request=request,
             flush=False,
@@ -1595,11 +1635,16 @@ async def issues(session: AsyncSession, user: User, data: bytes, filename: str) 
             if attribute != "errors" and row.outcome == "error":
                 points = []
             for point in points:
-                sheet.append([
-                    row.code, row.name, row.line,
-                    status.value.replace("_", " ").capitalize() if status else None,
-                    kind, point,
-                ])
+                sheet.append(
+                    [
+                        row.code,
+                        row.name,
+                        row.line,
+                        status.value.replace("_", " ").capitalize() if status else None,
+                        kind,
+                        point,
+                    ]
+                )
     if plan.notes:
         about = book.create_sheet("About the file")
         for note in plan.notes:

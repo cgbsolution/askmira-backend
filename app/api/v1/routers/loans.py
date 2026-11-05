@@ -26,6 +26,7 @@ from app.models.loans import (
     ReimbursementClaim,
 )
 from app.models.user import UserRole
+from app.services import uploads
 from app.services.attendance.service import local_today
 from app.services.filings import support
 from app.services.loans import flexi
@@ -596,7 +597,7 @@ async def submit_claim(
     target = permissions.resolve_employee(
         user, employee_id, detail="You can only claim reimbursements for yourself"
     )
-    bill = await file.read(support.MAX_UPLOAD_BYTES + 1) if file is not None else None
+    bill = await uploads.read_file(file, session, user.tenant_id) if file is not None else None
     claim = await loan_service.submit_claim(
         session,
         user,

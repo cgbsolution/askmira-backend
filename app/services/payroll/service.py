@@ -60,6 +60,7 @@ from app.services.payroll.salary_structure import (
     round_to_structure,
     validate_structure,
 )
+from app.services.payroll.templates import template_breakdown
 
 _PAISE = Decimal("0.01")
 
@@ -244,9 +245,20 @@ async def preview_structure(
     """
     structure = await get_structure(session, user, structure_id)
     try:
-        return structure, resolve_ctc(structure, ctc)
+        return structure, structure_breakdown(structure, ctc)
     except SalaryStructureError as exc:
         raise _bad_request(exc) from exc
+
+
+def structure_breakdown(structure: SalaryStructure, ctc_annual: Decimal) -> SalaryBreakdown:
+    """A yearly CTC split by a structure, for a page that shows it (an offer's breakup).
+
+    A template's employer contributions kept inside the CTC are listed as lines
+    here, so the breakup adds up to the CTC; a salary never stores them.
+    """
+    if structure.template is not None:
+        return template_breakdown(structure, ctc_annual, with_employer=True)
+    return resolve_ctc(structure, ctc_annual)
 
 
 async def preview_salary(
@@ -367,7 +379,12 @@ async def resolve_manual(
             raise _unprocessable(f"{', '.join(inactive)} is switched off in payroll setup")
         extras = [found[code] for code in sorted(extra_codes)]
     try:
-        breakdown = resolve_ctc(structure, ctc_annual, manual=manual, extras=extras)
+        if structure.template is not None:
+            # A template (Payroll → Salary structures): split by its rules, with
+            # the employer contributions it keeps inside the CTC left to payroll.
+            breakdown = template_breakdown(structure, ctc_annual, manual=manual, extras=extras)
+        else:
+            breakdown = resolve_ctc(structure, ctc_annual, manual=manual, extras=extras)
     except SalaryStructureError as exc:
         raise _bad_request(exc) from exc
     present = {component.code for component in breakdown.components}
@@ -542,7 +559,9 @@ async def resolve_amounts(
         amount = monthly_ctc if monthly_ctc is not None else payload.ctc_amount
         assert amount is not None  # the schema requires one way of giving the CTC
         ctc, _ = to_period_amounts(amount, basis)
-        if not manual_entry:
+        # A template keeps the CTC as typed: rounding leaves paise unallocated
+        # rather than changing what the person was offered.
+        if not manual_entry and structure.template is None:
             ctc = round_to_structure(structure, ctc)
     if manual_entry:
         resolved = await resolve_typed(
@@ -734,7 +753,14 @@ async def assign_salary(
     await session.flush()
 
     await _salary_audit(
-        session, user, employee, salary, structure, payload, resolved, previous_ctc,
+        session,
+        user,
+        employee,
+        salary,
+        structure,
+        payload,
+        resolved,
+        previous_ctc,
         request=request,
     )
     # `commit=False` for a caller that owns the transaction — a lifecycle
@@ -890,8 +916,16 @@ async def assign_salaries(
             salary = _new_salary(user, employee.id, structure, payload, resolved)
             session.add(salary)
             await _salary_audit(
-                session, user, employee, salary, structure, payload, resolved, previous_ctc,
-                request=request, flush=False,
+                session,
+                user,
+                employee,
+                salary,
+                structure,
+                payload,
+                resolved,
+                previous_ctc,
+                request=request,
+                flush=False,
             )
             current[employee.id] = salary
             saved.append(salary)

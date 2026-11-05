@@ -7,6 +7,8 @@ an attachment, never rendered into the portal.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import uuid
 
 from fastapi import HTTPException, Request, status
@@ -19,7 +21,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.expenses import ExpenseReceipt
 from app.models.user import User
-from app.services import audit
+from app.services import audit, uploads
 from app.services.expenses import receipts
 
 
@@ -32,10 +34,18 @@ async def store_receipt(
     filename: str | None,
     request: Request | None = None,
 ) -> ExpenseReceipt:
+    uploaded_size = len(data)
     try:
-        verdict = receipts.validate_receipt(data)
+        verdict = receipts.validate_receipt(
+            data, max_bytes=await uploads.limit_bytes(session, user.tenant_id)
+        )
     except receipts.ReceiptError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    # Checked as uploaded; stored, counted and hashed as compressed.
+    data = await uploads.shrink(data, verdict.content_type)
+    verdict = dataclasses.replace(
+        verdict, size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest()
+    )
 
     employee = await session.scalar(
         tenant_scoped(select(Employee.id).where(Employee.id == employee_id), Employee, user)
@@ -69,6 +79,7 @@ async def store_receipt(
             "employee_id": str(employee_id),
             "content_type": verdict.content_type,
             "size_bytes": verdict.size_bytes,
+            "uploaded_size_bytes": uploaded_size,
             "sha256": verdict.sha256,
         },
         summary=f"Receipt uploaded ({verdict.content_type}, {verdict.size_bytes} bytes)",

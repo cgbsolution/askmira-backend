@@ -844,6 +844,62 @@ PROCUREMENT = (
     ("remaining budget per cost center", "procurement_budgets", {}),
 )
 
+#: A department's headcount budget, and whether more hires fit (HR only).
+BUDGET = (
+    ("can our department afford to hire two more people", {"query": "", "hires": 2, "amount": ""}),
+    ("headcount budget for engineering", {"query": "engineering", "hires": 0, "amount": ""}),
+    ("how many positions left in sales", {"query": "sales", "hires": 0, "amount": ""}),
+    (
+        "can sales afford 2 more hires at 9 lakh",
+        {"query": "sales", "hires": 2, "amount": "9 lakh"},
+    ),
+    (
+        "can we hire 3 more engineers at 12 lpa",
+        {"query": "engineers", "hires": 3, "amount": "12 lakh"},
+    ),
+    ("hiring budget for marketing", {"query": "marketing", "hires": 0, "amount": ""}),
+    ("positions remaining in finance", {"query": "finance", "hires": 0, "amount": ""}),
+    (
+        "can we add one more developer at 15 lakh in engineering",
+        {"query": "developer engineering", "hires": 1, "amount": "15 lakh"},
+    ),
+    ("is there room to hire in operations", {"query": "operations", "hires": 0, "amount": ""}),
+    ("department budget for hr", {"query": "hr", "hires": 0, "amount": ""}),
+    ("manpower budget", {"query": "", "hires": 0, "amount": ""}),
+    (
+        "can support afford five more people",
+        {"query": "support", "hires": 5, "amount": ""},
+    ),
+)
+
+#: New joiners and whether they hold equipment yet (HR only).
+EQUIPMENT = (
+    "which employees still need equipment assigned",
+    "new joiners without laptops",
+    "joiners still waiting for a laptop",
+    "new hires equipment status",
+    "which joiners have no assets",
+    "joiners without equipment",
+    "new employees missing laptops",
+    "equipment not yet assigned to joiners",
+    "do the new joiners have laptops",
+    "onboarding joiners assets",
+)
+
+#: Tickets raised by the asker's team (managers).
+TEAM_TICKETS = (
+    ("show the open support tickets affecting our team", {"scope": "team", "status": "open"}),
+    ("my team tickets", {"scope": "team"}),
+    ("my team's it tickets", {"scope": "team"}),
+    ("open tickets of my reportees", {"scope": "team", "status": "open"}),
+    ("tickets raised by my direct reports", {"scope": "team"}),
+    ("our team's helpdesk tickets", {"scope": "team"}),
+    ("closed tickets of my team", {"scope": "team", "status": "closed"}),
+    ("tickets affecting my team", {"scope": "team"}),
+    ("my reports' open it tickets", {"scope": "team", "status": "open"}),
+    ("team's tickets on hold", {"scope": "team", "status": "hold"}),
+)
+
 #: The prospective P&L booked from won orders (HR only, as the P&L is).
 FORECAST = (
     ("prospective p&l", {"query": ""}),
@@ -1295,6 +1351,17 @@ def build() -> list[Case]:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, tool, inputs))
             cases.append(Case(text, tool, inputs, hr=False))
+    for question in EQUIPMENT:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "joiners_equipment", {}))
+        cases.append(Case(question, REFUSED, hr=False))
+    for question, inputs in TEAM_TICKETS:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "helpdesk_tickets", inputs, hr=False))
+    for question, inputs in BUDGET:
+        for text in _wrapped(question, LIGHT):
+            cases.append(Case(text, "department_budget", inputs))
+        cases.append(Case(question, REFUSED, hr=False))
     for question, inputs in FORECAST:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "account_forecast", inputs))

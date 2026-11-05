@@ -190,6 +190,29 @@ async def test_hr_lists_the_whole_company(client, session, hr_user, org) -> None
     assert "X001" not in everyone
 
 
+# ── Picking somebody to act for (start an exit) ─────────────────────────────
+
+
+async def test_a_manager_acts_only_for_their_reporting_line(client, session, tenant, org) -> None:
+    me = await _login(session, tenant, org.me)
+
+    # Never their manager, dotted-line manager or the colleagues beside them.
+    assert await _listed(client, me, "&reporting_line=true") == {"C003", "C006", "C007"}
+    assert await _listed(client, me, "&reporting_line=true&search=Pooja") == set()
+
+
+async def test_without_reports_a_person_acts_for_nobody_else(client, session, tenant, org) -> None:
+    peer = await _login(session, tenant, org.peer)
+
+    assert await _listed(client, peer, "&reporting_line=true") == {"C004"}
+
+
+async def test_hr_acts_for_anybody(client, session, hr_user, org) -> None:
+    everyone = await _listed(client, hr_user, "&reporting_line=true")
+
+    assert {"C001", "C004", "C008", "C009"} <= everyone
+
+
 # ── One record ──────────────────────────────────────────────────────────────
 
 

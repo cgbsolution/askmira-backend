@@ -39,6 +39,7 @@ from app.schemas.letters import (
     TemplateVersionRead,
     VerifyRead,
 )
+from app.services import uploads
 from app.services.documents import acknowledgement
 from app.services.documents import letterhead as letterhead_service
 from app.services.documents import service as letter_service
@@ -434,7 +435,7 @@ async def upload_letterhead_image(
 ) -> LetterheadRead:
     """The logo printed on letters (otherwise the workspace logo), or the signatory's
     signature. PNG or JPEG, 1 MB."""
-    data = await file.read(letterhead_service.IMAGE_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     await letterhead_service.save_image(session, user, kind, data, request=request)
     return await _letterhead_read(session, user)
 

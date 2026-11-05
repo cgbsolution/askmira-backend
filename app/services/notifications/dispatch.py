@@ -39,7 +39,10 @@ from app.core.config import settings
 from app.core.crypto import decrypt_secret
 from app.core.deps import tenant_filter
 from app.models.notifications import (
+    CHAT_CHANNELS,
     Channel,
+    ChatEvents,
+    ChatRecipient,
     DigestMode,
     Notification,
     NotificationDigest,
@@ -48,6 +51,7 @@ from app.models.notifications import (
     NotificationStatus,
     NotificationTemplate,
     PushDevice,
+    TenantChatApp,
     TenantSmtpSettings,
     TenantWhatsAppSettings,
     WhatsAppConsent,
@@ -60,6 +64,7 @@ from app.services.notifications.adapters import (
     ConsoleEmailAdapter,
     ExpoPushAdapter,
     InAppAdapter,
+    MessageAction,
     NullPushAdapter,
     OutboundMessage,
     PermanentFailure,
@@ -528,6 +533,74 @@ async def whatsapp_adapter_for(
     return WhatsAppCloudAdapter(row.phone_number_id, token)
 
 
+async def chat_apps_on(session: AsyncSession, tenant_id: uuid.UUID) -> list[TenantChatApp]:
+    """This workspace's Slack app and Teams bot that are switched on and have a secret."""
+    rows = (
+        await session.scalars(
+            select(TenantChatApp).where(
+                tenant_filter(TenantChatApp, tenant_id),
+                TenantChatApp.enabled.is_(True),
+                TenantChatApp.secret_encrypted.is_not(None),
+            )
+        )
+    ).all()
+    return list(rows)
+
+
+def chat_adapter(row: TenantChatApp) -> ChannelAdapter:
+    """The adapter for one connected chat app."""
+    from app.services.notifications.chat import SlackAdapter, TeamsAdapter
+
+    secret = decrypt_secret(row.secret_encrypted, row.tenant_id) if row.secret_encrypted else ""
+    if row.provider is Channel.SLACK:
+        return SlackAdapter(secret or "")
+    return TeamsAdapter(row.app_id or "", secret or "", row.directory_tenant_id or "")
+
+
+async def chat_adapter_for(
+    session: AsyncSession, tenant_id: uuid.UUID, channel: Channel
+) -> ChannelAdapter | None:
+    """Slack or Teams for this tenant: a registered adapter (tests), else its own app."""
+    registered = _ADAPTERS.get(channel)
+    if registered is not None:
+        return registered
+    row = await session.scalar(
+        select(TenantChatApp).where(
+            tenant_filter(TenantChatApp, tenant_id),
+            TenantChatApp.provider == channel,
+            TenantChatApp.enabled.is_(True),
+        )
+    )
+    if row is None or not row.secret_encrypted:
+        return None
+    return chat_adapter(row)
+
+
+def _with_chat(
+    preferences: dict[Channel, DigestMode],
+    apps: list[TenantChatApp],
+    *,
+    approval: bool,
+    urgent: bool,
+) -> dict[Channel, DigestMode]:
+    """The person's channels plus the workspace's chat apps, where this event goes there.
+
+    A chat app carries approval requests (and urgent notices) always, and with
+    "everything" whatever else reaches the person. A person who switched a chat
+    app off for an event (a saved preference) keeps it off.
+    """
+    out = {c: m for c, m in preferences.items() if c not in CHAT_CHANNELS}
+    reaches = any(mode is not DigestMode.OFF for mode in out.values())
+    for app in apps:
+        # The person's own "off" stands; their "on" only allows what the admin chose.
+        if preferences.get(app.provider) is DigestMode.OFF:
+            out[app.provider] = DigestMode.OFF
+            continue
+        if approval or urgent or (app.events is ChatEvents.ALL and reaches):
+            out[app.provider] = DigestMode.IMMEDIATE
+    return out
+
+
 async def whatsapp_template_for(
     session: AsyncSession, tenant_id: uuid.UUID, event_key: str
 ) -> tuple[NotificationTemplate, WhatsAppTemplate] | None:
@@ -617,6 +690,7 @@ async def notify(
     policy = await _policy(session, tenant_id)
     urgent = event_key in URGENT_EVENT_KEYS
     now = datetime.now(UTC)
+    apps = await chat_apps_on(session, tenant_id)
 
     for user_id in recipient_user_ids:
         user = await session.get(User, user_id)
@@ -624,14 +698,26 @@ async def notify(
             outcome.suppressed += 1
             continue
 
-        preferences = await _preferences_for(session, tenant_id, user_id, event_key)
+        preferences = _with_chat(
+            await _preferences_for(session, tenant_id, user_id, event_key),
+            apps,
+            approval="_approval" in payload,
+            urgent=urgent,
+        )
 
         for channel, mode in preferences.items():
             if mode is DigestMode.OFF:
                 outcome.suppressed += 1
                 continue
 
-            template = await _template_for(session, tenant_id, event_key, channel, locale)
+            # A chat message says what the in-app notice says.
+            template = await _template_for(
+                session,
+                tenant_id,
+                event_key,
+                Channel.IN_APP if channel in CHAT_CHANNELS else channel,
+                locale,
+            )
             if template is None:
                 outcome.suppressed += 1
                 outcome.errors.append(
@@ -639,7 +725,7 @@ async def notify(
                 )
                 continue
 
-            if mode is DigestMode.DAILY_DIGEST and not urgent:
+            if mode is DigestMode.DAILY_DIGEST and not urgent and channel not in CHAT_CHANNELS:
                 await _append_to_digest(
                     session, tenant_id, user, event_key, template, payload, policy
                 )
@@ -730,6 +816,13 @@ async def _dispatch_one(
                 f"This workspace's WhatsApp account could not be used: {exc}"
             )
             return False
+    if notification.channel in CHAT_CHANNELS and adapter is None:
+        try:
+            adapter = await chat_adapter_for(session, notification.tenant_id, notification.channel)
+        except Exception as exc:
+            notification.status = NotificationStatus.FAILED
+            notification.failure_reason = f"This workspace's chat app could not be used: {exc}"
+            return False
     if notification.channel is Channel.EMAIL and adapter is _DEFAULT_EMAIL_ADAPTER:
         try:
             adapter, _relay = await email_adapter_for(session, notification.tenant_id)
@@ -792,6 +885,11 @@ async def _dispatch_one(
             )
             email_fields = {"body": notification.rendered_body}
 
+    chat_fields: dict[str, Any] = {}
+    kept: ChatRecipient | None = None
+    if notification.channel in CHAT_CHANNELS:
+        chat_fields, kept = await _chat_fields(session, notification, user)
+
     message = OutboundMessage(
         recipient_name=user.full_name,
         recipient_email=user.email,
@@ -805,6 +903,7 @@ async def _dispatch_one(
             for name in (meta_template.parameter_names if meta_template else [])
         ],
         push_token=device.push_token_encrypted if device else None,
+        **chat_fields,
     )
 
     notification.attempt_count += 1
@@ -837,6 +936,8 @@ async def _dispatch_one(
         notification.failure_reason = f"Adapter error: {exc}"
         return False
 
+    if notification.channel in CHAT_CHANNELS and result.recipient_address:
+        _keep_address(session, notification, user, kept, result.recipient_address)
     notification.status = (
         NotificationStatus.DELIVERED if result.delivered else NotificationStatus.SENT
     )
@@ -847,6 +948,65 @@ async def _dispatch_one(
     notification.failure_reason = None
     notification.next_attempt_at = None
     return True
+
+
+async def _chat_fields(
+    session: AsyncSession, notification: Notification, user: User
+) -> tuple[dict[str, Any], ChatRecipient | None]:
+    """A chat message's buttons, and where the person was found last time."""
+    actions: tuple[MessageAction, ...] = ()
+    try:
+        from app.services.approvals import email_actions
+
+        buttons = await email_actions.buttons_for(
+            session, user, (notification.payload or {}).get("_approval")
+        )
+        actions = tuple(
+            MessageAction(
+                label=b.label,
+                url=b.url,
+                style={"Approve": "primary", "Reject": "danger"}.get(b.label, "default"),
+            )
+            for b in buttons
+        )
+    except Exception:
+        logger.warning("Approval buttons could not be built for %s", notification.id, exc_info=True)
+    base = email_brand.portal_url()
+    if base:
+        actions = (*actions, MessageAction(label="Open AskMira", url=base.rstrip("/")))
+    kept = await session.scalar(
+        select(ChatRecipient).where(
+            tenant_filter(ChatRecipient, notification.tenant_id),
+            ChatRecipient.provider == notification.channel,
+            ChatRecipient.user_id == user.id,
+        )
+    )
+    email = (user.email or "").lower()
+    address = kept.address if kept is not None and kept.email == email else None
+    return {"actions": actions, "chat_address": address}, kept
+
+
+def _keep_address(
+    session: AsyncSession,
+    notification: Notification,
+    user: User,
+    kept: ChatRecipient | None,
+    address: str,
+) -> None:
+    email = (user.email or "").lower()
+    if kept is None:
+        session.add(
+            ChatRecipient(
+                tenant_id=notification.tenant_id,
+                provider=notification.channel,
+                user_id=user.id,
+                email=email,
+                address=address[:512],
+            )
+        )
+    else:
+        kept.email = email
+        kept.address = address[:512]
 
 
 def _backoff(attempt: int) -> timedelta:

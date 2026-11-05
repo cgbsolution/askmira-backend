@@ -150,6 +150,234 @@ class SalaryStructureRead(BaseModel):
     rounding_mode: RoundingMode
     rounding_precision: int
     active: bool
+    #: Built on Payroll → Salary structures as a CTC template (rules per line).
+    is_template: bool = False
+
+
+# ── Templates (Payroll → Salary structures) ─────────────────────────────────
+#
+# Amounts and percentages travel as strings, both ways: a rule is configuration
+# HR typed, and "4.81" must come back as "4.81", not 4.8099999.
+
+#: What a rule may be "of": the CTC, the gross, PF or ESI wages, or a line's code.
+TemplateMethod = Literal["percent", "fixed", "balance", "slab"]
+_MAX_RULE_AMOUNT = Decimal("100000000")
+
+
+class TemplateConditionIO(BaseModel):
+    """The rule applies only while a monthly figure is up to / above an amount."""
+
+    on: str = Field(default="GROSS", min_length=1, max_length=32)
+    op: Literal["up_to", "above"]
+    #: Empty is allowed here so the calculator can say which box to fill.
+    amount: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+
+    @field_validator("on")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class TemplateSlabIO(BaseModel):
+    #: The slab covers a monthly figure up to this; empty on the last slab.
+    up_to: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+    amount: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+
+
+class TemplateRuleIO(BaseModel):
+    """How one line of a template is worked out. Checked in full by `ctc_template.parse_rule`."""
+
+    method: TemplateMethod
+    value: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+    of: str | None = Field(default=None, max_length=32)
+    basis: Literal["monthly", "annual"] = "monthly"
+    ceiling: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+    when: TemplateConditionIO | None = None
+    slabs: list[TemplateSlabIO] = Field(default_factory=list, max_length=20)
+    rounding: Literal["nearest", "up", "down"] = "nearest"
+
+    @field_validator("of")
+    @classmethod
+    def _upper(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value and value.strip() else None
+
+    def as_stored(self) -> dict:
+        # Slab limits keep their None (the open last slab); elsewhere None is "not set".
+        stored = self.model_dump(mode="json", exclude_none=True)
+        if self.slabs:
+            stored["slabs"] = [slab.model_dump(mode="json") for slab in self.slabs]
+        if self.when is not None:
+            stored["when"] = self.when.model_dump(mode="json")
+        return stored
+
+
+class TemplateLineInput(BaseModel):
+    component_code: str = Field(min_length=1, max_length=32)
+    rule: TemplateRuleIO
+
+    @field_validator("component_code")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class SalaryTemplateInput(BaseModel):
+    """A template as the Salary structures editor saves it."""
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=1000)
+    #: 0 rounds every line to whole rupees, 2 keeps paise.
+    rounding_precision: Literal[0, 2] = 0
+    lines: list[TemplateLineInput] = Field(min_length=1, max_length=200)
+    #: Employer contributions kept inside the CTC; null = payroll adds them on top.
+    employer_pf: TemplateRuleIO | None = None
+    employer_esi: TemplateRuleIO | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Give the structure a name")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def _description(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
+
+    @model_validator(mode="after")
+    def _unique_lines(self) -> SalaryTemplateInput:
+        codes = [line.component_code for line in self.lines]
+        repeated = sorted({code for code in codes if codes.count(code) > 1})
+        if repeated:
+            raise ValueError(f"{', '.join(repeated)} is in the structure more than once")
+        return self
+
+
+class SalaryTemplateDraftRead(BaseModel):
+    """What "New structure" opens with: the usual split, not yet saved."""
+
+    name: str
+    rounding_precision: int
+    lines: list[TemplateLineInput]
+    employer_pf: TemplateRuleIO | None
+    employer_esi: TemplateRuleIO | None
+
+
+class SalaryTemplateActiveInput(BaseModel):
+    active: bool
+
+
+class TemplateCalculateInput(BaseModel):
+    """A CTC to split by a template, in any Pay Basis."""
+
+    ctc_amount: Decimal = Field(gt=0, le=_MAX_RULE_AMOUNT)
+    ctc_basis: Literal["annual", "monthly", "weekly", "daily", "hourly"] = "monthly"
+
+    @field_validator("ctc_amount")
+    @classmethod
+    def _paise(cls, value: Decimal) -> Decimal:
+        if value != value.quantize(Decimal("0.01")):
+            raise ValueError(f"CTC {value} has more than two decimals")
+        return value
+
+
+class TemplatePreviewInput(TemplateCalculateInput):
+    """An unsaved template and a CTC: the editor's live example."""
+
+    template: SalaryTemplateInput
+
+
+class TemplateLineRead(BaseModel):
+    component_code: str
+    component_name: str
+    component_type: ComponentType
+    wage_group: WageGroup
+    part_of_ctc: bool
+    active: bool
+    rule: dict
+    rule_text: str
+
+
+class SalaryTemplateRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    rounding_precision: int
+    active: bool
+    #: False: a structure of the earlier kind, shown translated into rules;
+    #: saving it turns it into a template. `notes` says what could not be.
+    is_template: bool
+    lines: list[TemplateLineRead]
+    employer_pf: dict | None
+    employer_pf_text: str | None
+    employer_esi: dict | None
+    employer_esi_text: str | None
+    notes: list[str] = Field(default_factory=list)
+    #: People with a salary revision on this structure.
+    used_by: int = 0
+    updated_at: datetime | None = None
+
+
+class SalaryTemplateSummaryRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    active: bool
+    is_template: bool
+    line_count: int
+    #: The main rules in a line, e.g. "BASIC SALARY 50% of CTC · …".
+    summary: str
+    employer_in_ctc: list[str] = Field(default_factory=list)
+    used_by: int = 0
+    updated_at: datetime | None = None
+
+
+class TemplateCalcLineRead(BaseModel):
+    component_code: str
+    component_name: str
+    component_type: ComponentType
+    wage_group: WageGroup
+    part_of_ctc: bool
+    rule_text: str
+    applied: bool
+    note: str | None = None
+    monthly: Money
+    annual: Money
+    #: The figure in the CTC's own Pay Basis (a year's when the CTC was typed
+    #: yearly, else a month's): what the Salary master fills its box with.
+    amount: Money
+    basis: Literal["annual", "monthly"]
+
+
+class TemplateEmployerRead(BaseModel):
+    key: str
+    name: str
+    rule_text: str
+    applied: bool
+    note: str | None = None
+    monthly: Money
+    annual: Money
+
+
+class TemplateCalcRead(BaseModel):
+    structure_id: uuid.UUID | None
+    structure_name: str
+    ctc_basis: str
+    ctc_monthly: Money
+    ctc_annual: Money
+    lines: list[TemplateCalcLineRead]
+    employer: list[TemplateEmployerRead]
+    gross_monthly: Money
+    gross_annual: Money
+    employer_monthly: Money
+    #: The lines inside the CTC plus the employer contributions kept in it.
+    allocated_monthly: Money
+    #: Paise rounding left of the CTC, a month.
+    unallocated_monthly: Money
+    group_totals: list[SalaryGroupTotalRead] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 # ── Resolution / preview ────────────────────────────────────────────────────

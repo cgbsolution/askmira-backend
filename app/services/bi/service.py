@@ -114,6 +114,9 @@ async def create_connection(
     destination_ref: str,
     export_role: str,
     field_names: list[str] | None = None,
+    storage: dict[str, str] | None = None,
+    secret: str | None = None,
+    schedule: str = "manual",
     request: Request | None = None,
 ) -> dict[str, Any]:
     """Configure one egress path, validating it before it can ever run.
@@ -123,6 +126,33 @@ async def create_connection(
     not in the published schema, is refused now rather than at 2am on the first
     scheduled run.
     """
+    from app.services.bi import delivery
+
+    target = None
+    feed_token = feed_hash = None
+    if destination is BiDestinationKind.POSTGRES_ROLE:
+        raise _bad_request(
+            "Choose your bucket or a feed link. A database role is not offered: your BI "
+            "tool reads the feed link, or the files in your bucket."
+        )
+    if destination is BiDestinationKind.OBJECT_STORAGE:
+        target = delivery.storage_target(
+            bucket=(storage or {}).get("bucket", ""),
+            region=(storage or {}).get("region", ""),
+            prefix=(storage or {}).get("prefix", ""),
+            access_key_id=(storage or {}).get("access_key_id", ""),
+            endpoint=(storage or {}).get("endpoint", ""),
+        )
+        if not (secret or "").strip():
+            raise _bad_request("Add the secret access key for the bucket.")
+        destination_ref = target.uri
+    else:
+        feed_token, feed_hash = delivery.new_feed_token()
+        destination_ref = "feed link"
+        schedule = "manual"
+    if schedule not in ("manual", "daily"):
+        raise _bad_request("Deliver it on demand, or every night.")
+
     try:
         probe = export.plan_export(
             entity_name=entity_name,
@@ -145,6 +175,22 @@ async def create_connection(
         field_names=list(field_names) if field_names is not None else None,
         schema_version=exposed_schema.SCHEMA_VERSION,
         created_by_user_id=user.id,
+        storage=(
+            {
+                "bucket": target.bucket,
+                "region": target.region,
+                "prefix": target.prefix,
+                "access_key_id": target.access_key_id,
+                "endpoint": target.endpoint,
+            }
+            if target
+            else None
+        ),
+        secret_encrypted=(
+            delivery.encrypt_storage_secret(secret or "", user.tenant_id) if target else None
+        ),
+        feed_token_hash=feed_hash,
+        schedule=schedule,
     )
     session.add(row)
     await audit.record(
@@ -159,13 +205,15 @@ async def create_connection(
             f"{destination.value}, {len(probe.fields)} field(s) as "
             f"{export_role}."
         ),
-        changes={"fields": list(probe.field_names)},
+        changes={"fields": list(probe.field_names), "schedule": schedule},
         request=request,
     )
     await session.commit()
     await session.refresh(row)
     return {
         "connection_id": str(row.id),
+        # Shown once: only its hash is kept.
+        "feed_token": feed_token,
         "entity": entity_name,
         "schema_version": row.schema_version,
         "fields": list(probe.field_names),
@@ -193,9 +241,91 @@ async def list_connections(session: AsyncSession, user: User) -> list[dict[str, 
             "schema_version": row.schema_version,
             "last_watermark": (row.last_watermark.isoformat() if row.last_watermark else None),
             "is_active": row.is_active,
+            "schedule": row.schedule,
+            "storage": dict(row.storage) if row.storage else None,
+            "has_feed": bool(row.feed_token_hash),
+            "last_delivered_at": (
+                row.last_delivered_at.isoformat() if row.last_delivered_at else None
+            ),
+            "last_delivery_error": row.last_delivery_error,
         }
         for row in rows
     ]
+
+
+async def rotate_feed(
+    session: AsyncSession,
+    user: User,
+    *,
+    connection_id: uuid.UUID,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """A new feed link for a feed connection. The old link stops working now."""
+    from app.services.bi import delivery
+
+    stmt = tenant_scoped(
+        select(BiConnection).where(BiConnection.id == connection_id), BiConnection, user
+    )
+    connection = (await session.execute(stmt)).scalars().first()
+    if connection is None:
+        raise _not_found("No such BI connection.")
+    if connection.destination is not BiDestinationKind.HTTPS_FEED:
+        raise _bad_request("Only a feed connection has a link.")
+    token, digest = delivery.new_feed_token()
+    connection.feed_token_hash = digest
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="bi_connection",
+        entity_id=connection.id,
+        actor=user,
+        summary=f"BI connection {connection.name!r}: new feed link; the old one stopped working",
+        request=request,
+    )
+    await session.commit()
+    return {"connection_id": str(connection.id), "feed_token": token}
+
+
+async def set_schedule(
+    session: AsyncSession,
+    user: User,
+    *,
+    connection_id: uuid.UUID,
+    schedule: str,
+    is_active: bool,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Every night or on demand, and on or off."""
+    if schedule not in ("manual", "daily"):
+        raise _bad_request("Deliver it on demand, or every night.")
+    stmt = tenant_scoped(
+        select(BiConnection).where(BiConnection.id == connection_id), BiConnection, user
+    )
+    connection = (await session.execute(stmt)).scalars().first()
+    if connection is None:
+        raise _not_found("No such BI connection.")
+    if schedule == "daily" and connection.destination is not BiDestinationKind.OBJECT_STORAGE:
+        raise _bad_request("Only a bucket connection is delivered every night.")
+    connection.schedule = schedule
+    connection.is_active = is_active
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="bi_connection",
+        entity_id=connection.id,
+        actor=user,
+        changes={"schedule": schedule, "is_active": is_active},
+        summary=(
+            f"BI connection {connection.name!r}: "
+            f"{'every night' if schedule == 'daily' else 'on demand'}, "
+            f"{'on' if is_active else 'off'}"
+        ),
+        request=request,
+    )
+    await session.commit()
+    return {"connection_id": str(connection.id), "schedule": schedule, "is_active": is_active}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -687,24 +817,21 @@ def bi_posture() -> dict[str, Any]:
             "Opting out deletes the contributions as well as clearing the flag.",
             "Every benchmark is labelled with its source and its sample size, "
             "and the percentile is a coarse band rather than an exact figure.",
+            "A bucket delivery writes a dated CSV and replaces latest.csv, on demand "
+            "or every night, signed with the bucket's own key; a feed link gives a BI "
+            "tool the same file. Each is an export run with its field list and an "
+            "audit row, and a delivery that fails is recorded with the bucket's reason.",
         ],
         "not_built": [
-            "An export is delivered only as a CSV download to the admin who runs "
-            "it. No Parquet file is written, no bucket is uploaded to, and no "
-            "read-only Postgres role is created - those destinations are recorded "
-            "and their transports are not built.",
-            "Nothing schedules an export: there is no bucket or role transport for "
-            "a schedule to deliver to. A run is initiated deliberately.",
+            "Files are CSV. No Parquet file is written: CSV opens in every BI tool and in "
+            "Excel, and a second format is a second thing to get wrong.",
+            "No licensed benchmark dataset is loaded. The source enum distinguishes one, "
+            "and no vendor feed is wired.",
             "Nothing derives a benchmark contribution from payroll "
             "automatically. A company-level figure that leaves the building on "
             "a schedule is a decision, not a default.",
-            "No licensed dataset is loaded. The source enum distinguishes one, "
-            "and no vendor feed is wired.",
             "No differential-privacy noise is added. Suppression is the control "
             "here: a cell is published intact or not at all, because a noised "
             "cell that is still identifiable is worse than an absent one.",
-            "The exposed schema has never been through a breaking change, so "
-            "the version-bump and announcement path is written down and "
-            "untested against a real client dashboard.",
         ],
     }

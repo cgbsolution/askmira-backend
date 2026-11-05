@@ -26,6 +26,7 @@ from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.notifications import (
     Channel,
+    ChatEvents,
     Notification,
     NotificationPolicy,
     NotificationStatus,
@@ -141,6 +142,11 @@ async def channel_status(session: AsyncSession, user: User) -> list[dict[str, An
             ),
         }
     whatsapp_live = await dispatch.whatsapp_adapter_for(session, user.tenant_id) is not None
+    # Chat app → whether it carries everything (True) or approvals only (False).
+    chat_on = {
+        row.provider: row.events is ChatEvents.ALL
+        for row in await dispatch.chat_apps_on(session, user.tenant_id)
+    }
     devices = int(
         await session.scalar(
             tenant_scoped(
@@ -181,6 +187,20 @@ async def channel_status(session: AsyncSession, user: User) -> list[dict[str, An
                 )
             ),
         },
+        *[
+            {
+                "channel": channel.value,
+                "state": "live" if channel in chat_on else "not_connected",
+                "summary": (
+                    f"Direct messages from your company's {name} app: requests waiting on "
+                    "you with Approve and Reject buttons"
+                    + (", and everything else you are told." if chat_on.get(channel) else ".")
+                    if channel in chat_on
+                    else f"Not connected. An admin connects {name} under Settings → Notifications."
+                ),
+            }
+            for channel, name in ((Channel.SLACK, "Slack"), (Channel.TEAMS, "Microsoft Teams"))
+        ],
     ]
 
 

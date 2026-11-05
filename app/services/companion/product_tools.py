@@ -78,7 +78,7 @@ STATUS_CHOICES = tuple(
 )
 EXPENSE_SCOPES = ("mine", "approvals", "company")
 #: Tickets: raised by the person, assigned to them, the unassigned queue, everyone's.
-TICKET_SCOPES = ("mine", "assigned", "queue", "company")
+TICKET_SCOPES = ("mine", "assigned", "queue", "company", "team")
 ASSET_SCOPES = ("mine", "company")
 #: Every scope the model may set, for whichever tool it picks.
 SCOPES = tuple(dict.fromkeys((*EXPENSE_SCOPES, *TICKET_SCOPES, *ASSET_SCOPES)))
@@ -790,7 +790,30 @@ _TICKET_TITLE = {
     "assigned": "Tickets assigned to you",
     "queue": "Unassigned tickets",
     "company": "All the company's tickets",
+    "team": "Your team's tickets",
 }
+
+
+async def team_emails(session: AsyncSession, user: User) -> list[str]:
+    """The work emails of the people who report to the asker, for "my team's tickets"."""
+    from sqlalchemy import select
+
+    from app.core.deps import tenant_scoped
+    from app.models.employee import Employee, EmploymentStatus
+
+    if user.employee_id is None:
+        return []
+    rows = await session.scalars(
+        tenant_scoped(
+            select(Employee.work_email).where(
+                Employee.manager_id == user.employee_id,
+                Employee.status != EmploymentStatus.EXITED,
+            ),
+            Employee,
+            user,
+        )
+    )
+    return sorted({str(e).lower() for e in rows.all() if e})[:200]
 
 
 def _label(value: Any, labels: dict[str, str]) -> str:
@@ -857,6 +880,17 @@ async def _helpdesk_tickets(
     if days:
         params["from"], params["to"] = _instants(days)
         used |= {"from": days[0].isoformat(), "to": days[1].isoformat()}
+    if scope == "team":
+        # AskMira says who the team is: the asker's own direct reports, nobody else.
+        params["team_emails"] = await team_emails(session, user)
+        if not params["team_emails"]:
+            return [
+                {
+                    "type": "notice",
+                    "tone": "info",
+                    "text": "Nobody reports to you in AskMira, so there are no team tickets.",
+                }
+            ], used
     data = await products.ask(session, user, "helpdesk", "tickets", params)
 
     tickets = _items(data, "tickets")

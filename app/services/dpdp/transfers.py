@@ -327,7 +327,8 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             name="Google Maps Platform",
             service=(
                 "Draws the map around a punch location on the attendance screens, "
-                "and the office geofence when HR sets one."
+                "and the office geofence when HR sets one. Also turns a punch's "
+                "coordinates into a street address (Geocoding API), from the server."
             ),
             location=ProcessingLocation.OUTSIDE_INDIA,
             country="United States",
@@ -335,11 +336,16 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             is_optional=True,
             safeguards=(
                 "Only map tiles for an area are requested; no name or employee id is sent",
-                "Falls back to OpenStreetMap when the workspace has no Google key",
+                "An address lookup sends coordinates rounded to about 11 metres and nothing "
+                "else; each place is asked once and the answer kept, so repeat punches at an "
+                "office send nothing",
+                "Falls back to OpenStreetMap, and looks up no addresses, when the workspace "
+                "has no Google key",
             ),
             what_is_sent=(
                 "The map area around a punch (its coordinates) and the viewer's IP "
-                "address, when someone opens a map."
+                "address, when someone opens a map; and, from the server, a place's "
+                "rounded coordinates the first time its address is needed."
             ),
         ),
         _s(

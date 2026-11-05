@@ -35,16 +35,17 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.arrears import ArrearBatch, ArrearLine, ArrearStatus
 from app.models.attendance import AttendanceDay, AttendanceStatus, Shift
+from app.models.employee import Employee
 from app.models.exit_benefits import EncashmentRequest, EncashmentStatus
 from app.models.expenses import (
     AdvanceSettlement,
@@ -54,6 +55,7 @@ from app.models.expenses import (
     SettlementOutcomeEnum,
     TravelAdvance,
 )
+from app.models.linked_claims import LinkedClaimPayment
 from app.models.loans import (
     ClaimStatus,
     InterestType,
@@ -77,6 +79,7 @@ from app.models.payroll_inputs import (
 )
 from app.models.recruiting import PayoutStatusEnum, Referral, ReferralPayout
 from app.models.rewards import RewardEvent
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.loans import flexi
 from app.services.loans.reimbursements import ReimbursementError, accepted_for_payment
@@ -1328,6 +1331,164 @@ class ExpenseClaimProvider(InputProvider):
         claim.reimbursed_at = datetime.now(UTC)
 
 
+# ── Expense Genie claims (with Expense Genie linked) ────────────────────────
+#
+# Approved, unpaid claims there are paid with salary like AskMira's own claims;
+# the approval records each one (LinkedClaimPayment) so no run pays it twice, and
+# linked_expenses.hand_back tells Expense Genie.
+
+_GENIE = "expense"
+_GENIE_ZERO = Decimal("0.00")
+_GENIE_BRAND = "Expense Genie"
+
+
+def _rupees(value: Any) -> Decimal | None:
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return None
+    return amount if amount > 0 else None
+
+
+async def _linked(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    tenant = await session.get(Tenant, tenant_id)
+    return bool(tenant and (tenant.linked_products or {}).get(_GENIE))
+
+
+class ExpenseGenieClaimProvider(InputProvider):
+    """Approved, unpaid Expense Genie claims of the people in this run."""
+
+    key = "expense_genie_claims"
+    label = f"{_GENIE_BRAND} claims"
+    source_type = "expense_genie_claim"
+
+    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
+        from app.services.products import data as products
+
+        output = ProviderOutput()
+        if not scope.employee_ids or not await _linked(session, user.tenant_id):
+            return output
+        try:
+            answer = await products.ask(session, user, _GENIE, "payable", {"scope": "company"})
+        except products.ProductUnavailableError as exc:
+            output.notices.append(
+                f"{_GENIE_BRAND} could not be asked for approved claims, so none are in "
+                f"this run: {exc}"
+            )
+            return output
+
+        people = (
+            await session.execute(
+                tenant_scoped(
+                    select(Employee.id, Employee.work_email).where(
+                        Employee.id.in_(scope.employee_ids)
+                    ),
+                    Employee,
+                    user,
+                )
+            )
+        ).all()
+        by_email = {str(email).lower(): emp for emp, email in people if email}
+        logins = (
+            await session.execute(
+                select(User.employee_id, User.email).where(
+                    tenant_filter(User, user.tenant_id), User.employee_id.in_(scope.employee_ids)
+                )
+            )
+        ).all()
+        for emp, email in logins:
+            if email:
+                by_email.setdefault(str(email).lower(), emp)
+
+        paid = set(
+            (
+                await session.scalars(
+                    tenant_scoped(
+                        select(LinkedClaimPayment.reference).where(
+                            LinkedClaimPayment.product == _GENIE
+                        ),
+                        LinkedClaimPayment,
+                        user,
+                    )
+                )
+            ).all()
+        )
+        foreign = 0
+        for claim in answer.get("claims") or []:
+            if not isinstance(claim, dict):
+                continue
+            reference = str(claim.get("reference") or "")[:128]
+            employee_id = by_email.get(str(claim.get("submitter_email") or "").lower())
+            amount = _rupees(claim.get("amount"))
+            if not reference or reference in paid or employee_id is None or amount is None:
+                continue
+            if str(claim.get("currency") or "INR").upper() != "INR":
+                foreign += 1
+                continue
+            category = str(claim.get("category") or "Expense").strip()[:60] or "Expense"
+            title = str(claim.get("title") or "").strip()[:120]
+            output.lines[employee_id].append(
+                InputLine(
+                    provider=self.key,
+                    code="EXPENSE_GENIE",
+                    name=f"Expense reimbursement: {category}",
+                    kind=InputKind.REIMBURSEMENT,
+                    amount=amount,
+                    taxable_amount=_GENIE_ZERO,
+                    basis=(
+                        f"{_GENIE_BRAND} claim {reference}"
+                        + (f" ({title})" if title else "")
+                        + f", approved there, of {amount}. Business expenditure paid at cost; "
+                        "not taxable."
+                    ),
+                    source={
+                        "type": self.source_type,
+                        "id": reference,
+                        "employee_id": str(employee_id),
+                        "amount": str(amount),
+                        "title": title,
+                    },
+                )
+            )
+        if foreign:
+            output.notices.append(
+                f"{foreign} approved {_GENIE_BRAND} claim(s) are in another currency and are "
+                "not paid with salary; settle them in Expense Genie."
+            )
+        return output
+
+    async def consume(
+        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
+    ) -> None:
+        source = line.get("source") or {}
+        reference = str(source.get("id") or "")
+        taken = await session.scalar(
+            tenant_scoped(
+                select(LinkedClaimPayment).where(
+                    LinkedClaimPayment.product == _GENIE,
+                    LinkedClaimPayment.reference == reference,
+                ),
+                LinkedClaimPayment,
+                user,
+            )
+        )
+        if not reference or (taken is not None and taken.run_id != run.id):
+            raise _conflict(f"The {_GENIE_BRAND} claim {reference or '(unnamed)'}")
+        if taken is not None:
+            return
+        session.add(
+            LinkedClaimPayment(
+                tenant_id=user.tenant_id,
+                product=_GENIE,
+                reference=reference,
+                employee_id=uuid.UUID(str(source["employee_id"])),
+                run_id=run.id,
+                amount=Decimal(str(source.get("amount") or line.get("amount") or "0")),
+                title=(str(source.get("title") or "") or None),
+            )
+        )
+
+
 class AdvanceRefundProvider(InputProvider):
     """A settled trip that cost more than its advance: the balance, paid in the run.
 
@@ -1827,6 +1988,7 @@ PROVIDERS: tuple[InputProvider, ...] = (
     ReferralBonusProvider(),
     ReimbursementProvider(),
     ExpenseClaimProvider(),
+    ExpenseGenieClaimProvider(),
     AdvanceRefundProvider(),
     RewardPerquisiteProvider(),
     AdvanceRecoveryProvider(),

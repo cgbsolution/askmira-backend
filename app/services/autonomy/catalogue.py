@@ -276,6 +276,24 @@ ACTIONS: dict[str, AgentAction] = {
             ),
         ),
         _a(
+            agent_key="order_win",
+            action_key="book_after_approval",
+            description=(
+                "Book a held order once its deal's Won is approved in Saleinx: open its "
+                "positions in AnytimeHire as drafts and write the prospective P&L."
+            ),
+            default_autonomy=AutonomyLevel.PROPOSE_FOR_APPROVAL,
+            max_autonomy=AutonomyLevel.AUTO_APPLY_WITH_NOTIFY,
+            reversible=True,
+            impact=ImpactLevel.HIGH,
+            ceiling_reason=(
+                "A person already decided twice: the order was checked and held at their "
+                "request, and a manager approved the Won. The positions open as drafts and "
+                "the forecast is prospective, both withdrawn in one step. Never silent: the "
+                "person who asked is told what was booked."
+            ),
+        ),
+        _a(
             agent_key="retention_risk",
             action_key="flag_to_manager",
             description="Surface a retention-risk signal to a manager.",

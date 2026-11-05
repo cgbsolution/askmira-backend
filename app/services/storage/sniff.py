@@ -10,13 +10,16 @@ Pure: no I/O, no configuration. The size limit is passed in by the caller.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 __all__ = [
     "ALLOWED_TYPES",
     "FileRejected",
     "FileRejectedError",
+    "FileTooLargeError",
     "SniffedType",
+    "size_label",
     "sniff",
     "validate_upload",
 ]
@@ -24,6 +27,11 @@ __all__ = [
 
 class FileRejectedError(ValueError):
     """The file is not one the vault stores."""
+
+
+class FileTooLargeError(FileRejectedError):
+    """The file is over the size limit. A `FileRejectedError` too, so a caller
+    that only knows "rejected" still refuses it; one that cares answers 413."""
 
 
 #: The name other modules already import. Kept so they do not break.
@@ -65,9 +73,9 @@ def validate_upload(data: bytes, *, max_bytes: int) -> SniffedType:
     if not data:
         raise FileRejectedError("The file is empty.")
     if len(data) > max_bytes:
-        limit_mb = max_bytes / (1024 * 1024)
-        raise FileRejectedError(
-            f"The file is {len(data) / (1024 * 1024):.1f} MB. The limit is {limit_mb:g} MB."
+        raise FileTooLargeError(
+            f"The file is {size_label(len(data), up=True)}. "
+            f"The upload limit is {size_label(max_bytes)}."
         )
     kind = sniff(data[:16])
     if kind is None:
@@ -78,3 +86,17 @@ def validate_upload(data: bytes, *, max_bytes: int) -> SniffedType:
             "not its name."
         )
     return kind
+
+
+def size_label(size: int, *, up: bool = False) -> str:
+    """A size as people read it: "10 MB", "12.4 MB", "600 KB".
+
+    `up` rounds up, for a file over a limit: one byte over 10 MB reads
+    "10.1 MB", never "10 MB".
+    """
+    megabytes = size / (1024 * 1024)
+    if megabytes >= 1:
+        tenths = math.ceil(megabytes * 10) if up else round(megabytes * 10)
+        return f"{tenths / 10:.1f}".removesuffix(".0") + " MB"
+    kilobytes = math.ceil(size / 1024) if up else round(size / 1024)
+    return f"{max(1, kilobytes)} KB"

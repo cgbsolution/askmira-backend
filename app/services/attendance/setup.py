@@ -38,7 +38,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.org import Location
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.attendance import (
     AssignmentRead,
     AttendanceSettings,
@@ -776,16 +776,60 @@ async def update_attendance_settings(
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is None:
         raise _not_found("Workspace")
+    from app.services.attendance import late_rule
+    from app.services.attendance.service import local_today
+
     before = await attendance_settings(session, user)
     settings = dict(tenant.settings or {})
+    sent = data.model_dump(mode="json", exclude_unset=True)
+    # The rule's start month is the server's to set, never the caller's.
+    sent.pop("late_marks_rule_from", None)
+    for key in ("late_marks_per_half_day", "monthly_correction_limit"):
+        if (
+            key in sent
+            and sent[key] != getattr(before, key)
+            and user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only an admin changes the late-mark rule and the monthly correction limit: "
+                    "they decide half days and pay."
+                ),
+            )
+    today = await local_today(session, user)
+    month = today.replace(day=1)
+    rule_changed = (
+        "late_marks_per_half_day" in sent
+        and sent["late_marks_per_half_day"] != before.late_marks_per_half_day
+    )
+    if rule_changed:
+        sent["late_marks_rule_from"] = (
+            month.isoformat() if sent["late_marks_per_half_day"] else None
+        )
     # Only what was sent: saving the location rule must not reset the photo rule.
-    settings["attendance"] = {
-        **(settings.get("attendance") or {}),
-        **data.model_dump(exclude_unset=True),
-    }
+    settings["attendance"] = {**(settings.get("attendance") or {}), **sent}
     # Reassigned, not mutated: JSONB changes are only seen on assignment.
     tenant.settings = settings
     after = AttendanceSettings.model_validate(settings["attendance"])
+
+    if rule_changed:
+        # This month follows the new rule straight away; earlier months stay.
+        last_day = (month + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        await late_rule.undo_late_rule(session, user, start=month, end=last_day)
+        await late_rule.apply_late_rule(
+            session,
+            user,
+            employee_ids=None,
+            start=month,
+            end=last_day,
+            every=after.late_marks_per_half_day,
+            rule_from=after.late_marks_rule_from,
+        )
+
+    def rule_words(every: int | None) -> str:
+        return f"every {every} late marks a half day" if every else "late marks cost nothing"
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -793,8 +837,15 @@ async def update_attendance_settings(
         entity_type="attendance_settings",
         entity_id=tenant.id,
         actor=user,
-        changes={"before": before.model_dump(), "after": after.model_dump()},
-        summary=(f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}"),
+        changes={
+            "before": before.model_dump(mode="json"),
+            "after": after.model_dump(mode="json"),
+        },
+        summary=(
+            f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}; "
+            f"{rule_words(after.late_marks_per_half_day)}; corrections per month: "
+            f"{after.monthly_correction_limit or 'no limit'}"
+        ),
         request=request,
     )
     await session.commit()

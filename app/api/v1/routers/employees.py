@@ -35,13 +35,11 @@ from app.schemas.employee_profile import (
     EmployeeProfileRead,
     ProfileUpdate,
 )
-from app.services import custom_tables, employee_export, employee_timeline
+from app.services import custom_tables, employee_export, employee_timeline, uploads
 from app.services import employee as employee_service
 from app.services import employee_profile as profile_service
 from app.services.dpdp.gates import strip_hidden_photos
 from app.services.employee_import import service as import_service
-from app.services.employee_import.sheet import MAX_BYTES as IMPORT_MAX_BYTES
-from app.services.employee_profile import PHOTO_MAX_BYTES
 
 router = APIRouter(prefix="/employees", tags=["core-hr"])
 
@@ -67,6 +65,14 @@ async def list_employees(
     current: bool = Query(
         default=False, description="Everybody who has not left: every status but exited."
     ),
+    reporting_line: bool = Query(
+        default=False,
+        description=(
+            "Only the people the caller acts for as a manager: themselves and everybody "
+            "who reports to them, directly or through others. HR acts for anybody, so "
+            "HR still gets everyone."
+        ),
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[EmployeeSummary]:
@@ -83,6 +89,7 @@ async def list_employees(
         without_project=without_project,
         status_filter=employment_status.value if employment_status else None,
         current_only=current,
+        reporting_line_only=reporting_line,
         offset=(page - 1) * page_size,
         limit=page_size,
     )
@@ -256,7 +263,7 @@ async def import_preview(
     user: CurrentUser, session: DbSession, file: UploadFile = File(...)
 ) -> ImportPreview:
     """What importing the file would do, row by row. Nothing is saved."""
-    data = await file.read(IMPORT_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await import_service.preview(session, user, data, file.filename or "employees.xlsx")
 
 
@@ -265,7 +272,7 @@ async def import_rejected(
     user: CurrentUser, session: DbSession, file: UploadFile = File(...)
 ) -> Response:
     """The file's rows that are not added, with their own cells and why. Nothing is saved."""
-    data = await file.read(IMPORT_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     content = await import_service.rejected(session, user, data, file.filename or "employees.xlsx")
     return Response(
         content=content,
@@ -282,7 +289,7 @@ async def import_issues(
     user: CurrentUser, session: DbSession, file: UploadFile = File(...)
 ) -> Response:
     """Everybody the file has something to look at for, one line per point. Nothing is saved."""
-    data = await file.read(IMPORT_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     content = await import_service.issues(session, user, data, file.filename or "employees.xlsx")
     return Response(
         content=content,
@@ -308,7 +315,7 @@ async def import_employees(
     include_leavers: bool = Form(default=True),
 ) -> ImportResult:
     """Import the file's ready rows in one transaction; codes already here are skipped."""
-    data = await file.read(IMPORT_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     result = await import_service.run(
         session,
         user,
@@ -411,7 +418,7 @@ async def upload_my_photo(
     file: Annotated[UploadFile, File()],
 ) -> EmployeeRead:
     employee = await employee_service.get_own_employee(session, user)
-    data = await file.read(PHOTO_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     saved = await profile_service.set_photo(session, user, employee.id, data, request=request)
     return await employee_service.employee_view(session, user, saved)
 
@@ -592,7 +599,7 @@ async def upload_photo(
     request: Request,
     file: Annotated[UploadFile, File()],
 ) -> EmployeeRead:
-    data = await file.read(PHOTO_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     saved = await profile_service.set_photo(session, user, employee_id, data, request=request)
     return await employee_service.employee_view(session, user, saved)
 

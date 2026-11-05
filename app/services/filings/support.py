@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import re
 import uuid
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -31,21 +32,15 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.crypto import decrypt_bytes, decrypt_secret, encrypt_bytes, is_encrypted_bytes
 from app.core.deps import tenant_filter, tenant_scoped
 from app.models.documents import IssuedLetter, LetterTemplate
 from app.models.notifications import Channel, NotificationTemplate
 from app.models.user import User, UserRole
-from app.services.storage import (
-    FileRejected,
-    FileStorage,
-    StorageError,
-    get_storage,
-    validate_upload,
-)
+from app.services import uploads
+from app.services.storage import FileStorage, StorageError, get_storage
 
 __all__ = [
-    "MAX_UPLOAD_BYTES",
     "StoredFile",
     "active_user_ids",
     "attachment_headers",
@@ -58,8 +53,6 @@ __all__ = [
     "system_actor",
 ]
 
-#: Evidence uploads: a scanned rent receipt or a Form 16 is well under this.
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 #: Longest stored document title (the `document_name` columns).
 MAX_TITLE_LENGTH = 255
 
@@ -85,31 +78,59 @@ class StoredFile:
     size: int
 
 
+#: The first byte inside a sealed file: how what follows is packed.
+_RAW = b"\x00"
+_DEFLATED = b"\x01"
+
+
+def _seal(tenant_id: uuid.UUID, data: bytes) -> bytes:
+    """Compress (when that saves a tenth or more), then encrypt.
+
+    Compression has to come first: encrypted bytes look random and do not
+    compress. Uploaded PDFs and photos arrive already compressed by
+    `uploads.accept`; a generated return or bank file is text, which shrinks a lot.
+    """
+    packed = zlib.compress(data, 9)
+    body = _DEFLATED + packed if len(packed) <= len(data) * 0.9 else _RAW + data
+    return encrypt_bytes(body, tenant_id)
+
+
+def _unseal(tenant_id: uuid.UUID, raw: bytes) -> bytes | None:
+    if is_encrypted_bytes(raw):
+        body = decrypt_bytes(raw, tenant_id)
+        return zlib.decompress(body[1:]) if body[:1] == _DEFLATED else body[1:]
+    # Written before 2026-11-05: the base64 text of the file, encrypted as text.
+    plain = decrypt_secret(raw.decode("ascii"), tenant_id)
+    return None if plain is None else base64.b64decode(plain)
+
+
 async def _put(tenant_id: uuid.UUID, key: str, data: bytes) -> None:
-    sealed = encrypt_secret(base64.b64encode(data).decode("ascii"), tenant_id)
     try:
-        await get_storage().put(key, sealed.encode("ascii"))
+        await get_storage().put(key, _seal(tenant_id, data))
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
 
-async def store_upload(tenant_id: uuid.UUID, namespace: str, data: bytes) -> StoredFile:
-    """Validate and store an uploaded document. Refuses with the vault's reason.
+async def store_upload(
+    session: AsyncSession, tenant_id: uuid.UUID, namespace: str, data: bytes
+) -> StoredFile:
+    """Validate, compress and store an uploaded document. Refuses with the vault's reason.
 
     The client's filename and content type are never consulted: the type comes
-    from the file's first bytes, and the key is generated here.
+    from the file's first bytes, and the key is generated here. The size limit
+    is the workspace's upload limit.
     """
-    try:
-        kind = validate_upload(data, max_bytes=MAX_UPLOAD_BYTES)
-    except FileRejected as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+    accepted = await uploads.accept_for_tenant(
+        session, tenant_id, data, reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
+    kind = accepted.kind
     key = FileStorage.new_key(tenant_id, namespace, kind.extension)
-    await _put(tenant_id, key, data)
-    return StoredFile(key=key, mime_type=kind.mime_type, extension=kind.extension, size=len(data))
+    await _put(tenant_id, key, accepted.data)
+    return StoredFile(
+        key=key, mime_type=kind.mime_type, extension=kind.extension, size=accepted.size
+    )
 
 
 async def store_generated(
@@ -135,11 +156,11 @@ async def load_file(tenant_id: uuid.UUID, key: str | None) -> tuple[bytes, str] 
         return None
     if raw is None:
         return None
-    plain = decrypt_secret(raw.decode("ascii"), tenant_id)
-    if plain is None:
+    data = _unseal(tenant_id, raw)
+    if data is None:
         return None
     extension = key[key.rfind(".") :] if "." in key else ""
-    return base64.b64decode(plain), _MIME_BY_EXTENSION.get(extension, "application/octet-stream")
+    return data, _MIME_BY_EXTENSION.get(extension, "application/octet-stream")
 
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")

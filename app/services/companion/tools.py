@@ -40,7 +40,10 @@ from app.services.ai import analytics, assistant, governance
 from app.services.companion import (
     actions,
     analysis_tools,
+    budget_tools,
     data_tools,
+    equipment_tools,
+    helpdesk_actions,
     hr_tools,
     order_win,
     people_tools,
@@ -209,6 +212,33 @@ TOOLS: dict[str, Tool] = {
             hr_only=True,
         ),
         Tool(
+            key="joiners_equipment",
+            group="person_records",
+            title="Joiners and equipment",
+            description=(
+                "For admins and sub-admins: the people joining in the next 30 days or who joined "
+                "in the last 30 (or `from`/`to`), and whether each already holds equipment in "
+                "the asset register (the linked helpdesk's, else AskMira's). Use it for 'which "
+                "employees still need equipment assigned?'."
+            ),
+            inputs=("from", "to"),
+            hr_only=True,
+        ),
+        Tool(
+            key="department_budget",
+            group="budgets",
+            title="Department budget",
+            description=(
+                "For admins and sub-admins: a department's headcount budget this financial "
+                "year: approved positions and cost, what is counted and filled, and what is "
+                "left. To ask whether more people can be hired, set `hires` to how many and "
+                "`amount` to the yearly CTC per hire (rupees, as said). Put the department's "
+                "name in `query`, or leave it empty for every budget."
+            ),
+            inputs=("query", "hires", "amount"),
+            hr_only=True,
+        ),
+        Tool(
             key="my_approvals",
             group="approvals",
             title="Waiting on you",
@@ -369,8 +399,9 @@ TOOLS: dict[str, Tool] = {
             description=(
                 f"IT tickets in {_HELPDESK}, the company's helpdesk. Set `scope`: mine (tickets "
                 "the asker raised), assigned (assigned to the asker, for IT staff), queue (the "
-                "unassigned queue, for IT staff) or company (all the company's, for helpdesk "
-                "admins). Optionally set `status` (new, open, in_progress, hold or closed), "
+                "unassigned queue, for IT staff), company (all the company's, for helpdesk "
+                "admins) or team (raised by the people who report to the asker, for managers). "
+                "Optionally set `status` (new, open, in_progress, hold or closed), "
                 "`from` and `to` (when raised) and `query` (a subject, category or person)."
             ),
             inputs=("scope", "status", "from", "to", "query"),
@@ -565,6 +596,48 @@ TOOLS: dict[str, Tool] = {
             ),
             inputs=("category", "subject", "description"),
             reads=("ai_interaction",),
+        ),
+        Tool(
+            key="raise_it_ticket",
+            group="actions_it_helpdesk",
+            product="helpdesk",
+            title="IT ticket",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Prepares an IT ticket in {_HELPDESK} for the asker (a laptop, VPN, email, "
+                "printer or access problem) and offers it; the person confirms. Set `subject` (a "
+                "few words), `description` (their words), `priority` (low, medium or high: ask "
+                "only if they didn't say), `location` if they gave one, and `category` and "
+                "`sub_category` yourself when the problem makes them clear (a laptop or screen "
+                "is Hardware, a VPN is Network & Connectivity, a password is Access & Identity). "
+                "When the tool lists the helpdesk's categories or sub categories, pick the one "
+                "that fits what they said and call it again; ask the person only if it is truly "
+                "unclear. For HR matters use raise_hr_ticket."
+            ),
+            inputs=("subject", "description", "category", "sub_category", "priority", "location"),
+            reads=("ai_interaction", "organisational"),
+        ),
+        Tool(
+            key="work_it_ticket",
+            group="actions_it_helpdesk",
+            product="helpdesk",
+            title="Work an IT ticket",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Does one thing on a ticket in {_HELPDESK}, as the helpdesk lets the asker: "
+                "`ticket_action` reply (`message`), acquire (pick it up from the queue), assign "
+                "(`engineer`: a name or email; IT admins), hold (`reason` and `hours`: 24, 48 or "
+                "72), close (`note`: an optional closing note) or reopen. Set `ticket` to its "
+                "number (#1A2B3C4D) or its subject. Call it as soon as the person names a ticket "
+                "and what to do, with only those if that is all you have: the helpdesk decides "
+                "whether they may, and the tool says what else it needs. Never tell them they can "
+                "do it, or ask for details, before the tool has checked. When it asks for "
+                "something, ask the person; never make it up."
+            ),
+            inputs=("ticket", "ticket_action", "message", "engineer", "reason", "hours", "note"),
+            reads=("ai_interaction", "organisational"),
         ),
         Tool(
             key="confirm_action",
@@ -858,6 +931,13 @@ INPUTS: dict[str, dict[str, Any]] = {
     "decision": {"type": "string", "enum": ["none", "approve", "reject"]},
     "note": {"type": "string", "description": "A note for the requester, or empty."},
     "category": {"type": "string", "description": "A helpdesk category's name, or empty."},
+    "sub_category": {"type": "string", "description": "A helpdesk sub category, or empty."},
+    "priority": {"type": "string", "enum": ["none", "low", "medium", "high"]},
+    "ticket": {"type": "string", "description": "A ticket's number like #1A2B3C4D, or subject."},
+    "ticket_action": {"type": "string", "enum": ["none", *helpdesk_actions.TICKET_ACTIONS]},
+    "message": {"type": "string", "description": "What to write, in the person's words."},
+    "engineer": {"type": "string", "description": "An IT engineer's name or email, or empty."},
+    "hours": {"type": "string", "enum": ["none", "24", "48", "72"]},
     "subject": {"type": "string"},
     "description": {"type": "string"},
     "action_id": {"type": "string", "description": "An offer's id, from earlier in this chat."},
@@ -874,6 +954,7 @@ INPUTS: dict[str, dict[str, Any]] = {
     },
     "bucket": {"type": "string", "enum": ["none", *BUCKETS]},
     "time_field": {"type": "string", "description": "The date to run a trend along, or empty."},
+    "hires": {"type": "integer", "description": "How many more people, or 0."},
     "months": {
         "type": "integer",
         "description": (
@@ -992,6 +1073,10 @@ _READS: dict[str, tuple[str, ...]] = {
     "procurement_documents": ("organisational",),
     "procurement_budgets": ("organisational",),
     "account_forecast": ("organisational",),
+    # Budgets and the budgeted ceilings on seats; no person's pay.
+    "department_budget": ("organisational",),
+    # Counts only (the card writes its own view); names stay on screen.
+    "joiners_equipment": ("organisational",),
 }
 TOOLS = {key: replace(tool, reads=_READS.get(key, tool.reads)) for key, tool in TOOLS.items()}
 
@@ -1215,6 +1300,12 @@ async def _run(
     if tool.key == "headcount":
         return await people_tools.headcount(session, user, today=today)
 
+    if tool.key == "joiners_equipment":
+        return await equipment_tools.joiners_equipment(session, user, inputs, today=today)
+
+    if tool.key == "department_budget":
+        return await budget_tools.department_budget(session, user, inputs, today=today)
+
     if tool.key == "search_people":
         used = {
             "query": str(inputs.get("query") or "").strip(),
@@ -1346,6 +1437,10 @@ async def _act(
         return await actions.propose_decision(session, user, inputs, ctx)
     if tool.key == "raise_hr_ticket":
         return await actions.propose_hr_ticket(session, user, inputs, ctx)
+    if tool.key == "raise_it_ticket":
+        return await helpdesk_actions.propose_raise(session, user, inputs, ctx)
+    if tool.key == "work_it_ticket":
+        return await helpdesk_actions.propose_work(session, user, inputs, ctx)
     if tool.key == "save_lead":
         return await sales_tools.propose_lead(session, user, inputs, ctx)
     if tool.key == "move_deal":

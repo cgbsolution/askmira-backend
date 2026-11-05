@@ -17,11 +17,13 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services import uploads
 from app.services.employee_import.fields import FIELDS, GROUP_SEP, norm, qualified
 
 #: Big enough for a few thousand people with every column; an export larger
 #: than this is not an employee master.
-MAX_BYTES = 10 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it can be.
+MAX_BYTES = uploads.CEILING_BYTES
 MAX_ROWS = 5000
 #: How far down the header row may be.
 HEADER_SCAN = 25
@@ -150,7 +152,9 @@ def read_table(data: bytes, filename: str) -> Table:
     if not data:
         raise SheetError("The file is empty.")
     if len(data) > MAX_BYTES:
-        raise SheetError("The file is over 10 MB. Split it, or remove columns you do not need.")
+        raise SheetError(
+            f"The file is over {uploads.MAX_MB} MB. Split it, or remove columns you do not need."
+        )
     lowered = filename.lower()
     if lowered.endswith(".xls"):
         raise SheetError("Old .xls files cannot be read. Open it in Excel and save as .xlsx.")
@@ -257,8 +261,9 @@ def write_left_out(table: Table, left_out: list[tuple[list[Any], str]]) -> bytes
             # Their own text, never a formula to run.
             if isinstance(cell.value, str) and cell.value.startswith("="):
                 cell.data_type = "s"
-        sheet.cell(row=sheet.max_row, column=1).alignment = Alignment(wrap_text=True,
-                                                                     vertical="top")
+        sheet.cell(row=sheet.max_row, column=1).alignment = Alignment(
+            wrap_text=True, vertical="top"
+        )
     sheet.column_dimensions["A"].width = 60
     sheet.freeze_panes = sheet.cell(row=header + 1, column=3)
     out = io.BytesIO()

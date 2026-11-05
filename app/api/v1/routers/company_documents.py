@@ -9,7 +9,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 
 from app.core import permissions
-from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.schemas.documents import (
     AcknowledgementRegisterRead,
@@ -17,6 +16,7 @@ from app.schemas.documents import (
     CompanyDocumentRead,
     CompanyDocumentUpdate,
 )
+from app.services import uploads
 from app.services.documents import company, handbook
 
 router = APIRouter(prefix="/documents/company", tags=["documents"])
@@ -97,7 +97,7 @@ async def upload(
     requires_acknowledgement: Annotated[bool, Form()] = False,
 ) -> CompanyDocumentRead:
     """A PDF, PNG or JPEG. Its type is read from the bytes, not the file name."""
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await company.upload_company_document(
         session,
         user,

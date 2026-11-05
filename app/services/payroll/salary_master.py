@@ -777,7 +777,8 @@ async def attach_file(
     not change what was paid.
     """
     salary = await _revision(session, user, employee_id, salary_id)
-    kind = _checked(data)
+    accepted = await _checked(session, user, data)
+    kind, data = accepted.kind, accepted.data
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "salary-attachments", kind.extension)
     try:

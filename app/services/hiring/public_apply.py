@@ -107,7 +107,7 @@ async def submit_application(
     resume_key: str | None = None
     extracted: dict[str, Any] | None = None
     if resume:
-        resume_key, extracted = await resume_files.accept_resume(resume, config.tenant_id)
+        resume_key, extracted = await resume_files.accept_resume(session, resume, config.tenant_id)
 
     purposes = [ConsentPurpose.APPLICATION_PROCESSING]
     if consent_talent_pool:

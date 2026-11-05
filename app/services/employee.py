@@ -198,6 +198,7 @@ async def list_employees(
     without_project: bool = False,
     status_filter: str | None = None,
     current_only: bool = False,
+    reporting_line_only: bool = False,
     include_deleted: bool = False,
     offset: int = 0,
     limit: int = 25,
@@ -211,9 +212,17 @@ async def list_employees(
     HR gets the whole company. Anybody else gets their own circle
     (`permissions.directory_circle`), people who have left never included,
     whatever the filters ask for.
+
+    `reporting_line_only` is for picking somebody to act for as their manager
+    (start their exit, own an action plan): outside HR only the caller and
+    their reporting line, never their manager or the colleagues beside them.
     """
     stmt = tenant_scoped(select(Employee), Employee, user).options(load_only(*_DIRECTORY_COLUMNS))
-    circle = await permissions.directory_circle(session, user)
+    circle = (
+        await permissions.visible_employee_ids(session, user)
+        if reporting_line_only
+        else await permissions.directory_circle(session, user)
+    )
     if circle is not None:
         stmt = stmt.where(Employee.id.in_(circle), Employee.status != EmploymentStatus.EXITED)
     stmt = filter_directory(

@@ -69,10 +69,7 @@ from app.services.hiring import (
 )
 from app.services.notifications import dispatch
 from app.services.payroll import service as payroll_service
-from app.services.payroll.salary_structure import (
-    SalaryStructureError,
-    resolve_ctc,
-)
+from app.services.payroll.salary_structure import SalaryStructureError
 
 __all__ = [
     "accept_offer",
@@ -210,7 +207,9 @@ async def _write_breakup(
     payslip would be two implementations of the same rule, and they would drift.
     """
     try:
-        breakdown = resolve_ctc(structure, Decimal(str(offer.ctc_annual)))
+        # A template structure lists the employer contributions it keeps inside
+        # the CTC as lines too, so the breakup on the letter adds up to the CTC.
+        breakdown = payroll_service.structure_breakdown(structure, Decimal(str(offer.ctc_annual)))
     except SalaryStructureError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

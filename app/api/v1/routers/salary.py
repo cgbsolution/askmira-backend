@@ -24,7 +24,6 @@ from fastapi import (
     status,
 )
 
-from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.payroll import SalaryStructure
 from app.models.user import UserRole
@@ -45,14 +44,24 @@ from app.schemas.payroll import (
     SalaryRevisionRead,
     SalaryStructureCreate,
     SalaryStructureRead,
+    SalaryTemplateActiveInput,
+    SalaryTemplateDraftRead,
+    SalaryTemplateInput,
+    SalaryTemplateRead,
+    SalaryTemplateSummaryRead,
     SalaryTrailEntryRead,
     StandardSetupRead,
     StandardStatusRead,
+    TemplateCalcRead,
+    TemplateCalculateInput,
+    TemplatePreviewInput,
 )
 from app.schemas.payroll_run import SalaryOverviewRead, SalaryStructureDetailRead
+from app.services import uploads
 from app.services.payroll import grades as grade_service
 from app.services.payroll import salary_import, salary_master, standard_setup
 from app.services.payroll import service as salary_service
+from app.services.payroll import templates as template_service
 from app.services.payroll.salary_structure import SalaryBreakdown
 
 router = APIRouter(
@@ -207,6 +216,94 @@ def _breakdown_read(
     )
 
 
+# ── Templates (Payroll → Salary structures) ─────────────────────────────────
+
+
+@router.get("/salary-templates", response_model=list[SalaryTemplateSummaryRead])
+async def list_salary_templates(
+    user: CurrentUser, session: DbSession
+) -> list[SalaryTemplateSummaryRead]:
+    """Every salary structure, with its main rules in a line and who uses it."""
+    return await template_service.list_templates(session, user)
+
+
+@router.get("/salary-templates/new", response_model=SalaryTemplateDraftRead)
+async def new_salary_template(user: CurrentUser, session: DbSession) -> SalaryTemplateDraftRead:
+    """What a new structure starts from in the editor. Saves nothing."""
+    return await template_service.new_template_draft(session, user)
+
+
+@router.post(
+    "/salary-templates", response_model=SalaryTemplateRead, status_code=status.HTTP_201_CREATED
+)
+async def create_salary_template(
+    payload: SalaryTemplateInput, user: CurrentUser, session: DbSession, request: Request
+) -> SalaryTemplateRead:
+    return await template_service.create_template(session, user, payload, request)
+
+
+@router.post("/salary-templates/preview", response_model=TemplateCalcRead)
+async def preview_salary_template(
+    payload: TemplatePreviewInput, user: CurrentUser, session: DbSession
+) -> TemplateCalcRead:
+    """An unsaved structure split for an example CTC: the editor's live check."""
+    return await template_service.preview_draft(
+        session, user, payload.template, payload.ctc_amount, payload.ctc_basis
+    )
+
+
+@router.get("/salary-templates/{structure_id}", response_model=SalaryTemplateRead)
+async def get_salary_template(
+    structure_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> SalaryTemplateRead:
+    return await template_service.get_template(session, user, structure_id)
+
+
+@router.put("/salary-templates/{structure_id}", response_model=SalaryTemplateRead)
+async def update_salary_template(
+    structure_id: uuid.UUID,
+    payload: SalaryTemplateInput,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SalaryTemplateRead:
+    """Save a structure's rules. Salaries already saved keep their amounts."""
+    return await template_service.update_template(session, user, structure_id, payload, request)
+
+
+@router.patch("/salary-templates/{structure_id}", response_model=SalaryTemplateRead)
+async def set_salary_template_active(
+    structure_id: uuid.UUID,
+    payload: SalaryTemplateActiveInput,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> SalaryTemplateRead:
+    return await template_service.set_active(session, user, structure_id, payload.active, request)
+
+
+@router.delete(
+    "/salary-templates/{structure_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_salary_template(
+    structure_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    """Remove a structure no salary or offer uses (otherwise 409: switch it off)."""
+    await template_service.delete_template(session, user, structure_id, request)
+
+
+@router.post("/salary-templates/{structure_id}/calculate", response_model=TemplateCalcRead)
+async def calculate_salary_template(
+    structure_id: uuid.UUID, payload: TemplateCalculateInput, user: CurrentUser, session: DbSession
+) -> TemplateCalcRead:
+    """The Salary master's Calculate: a CTC split by a structure. Writes nothing."""
+    return await template_service.calculate_saved(
+        session, user, structure_id, payload.ctc_amount, payload.ctc_basis
+    )
+
+
 @router.get("/salary-components/standard", response_model=StandardStatusRead)
 async def standard_setup_status(user: CurrentUser, session: DbSession) -> StandardStatusRead:
     """Whether the workspace has the Salary Master template's wage types and names."""
@@ -263,7 +360,7 @@ async def salary_import_upload(
 
     Nothing is saved while any row has an error.
     """
-    data = await file.read(salary_import.MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await salary_import.upload(
         session, user, data, file.filename or "salaries.xlsx", apply=apply, request=request
     )
@@ -384,7 +481,7 @@ async def attach_salary_file(
     request: Request,
 ) -> SalaryRevisionRead:
     """Attach the letter or approval behind a revision: a PDF, PNG or JPEG."""
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     salary = await salary_master.attach_file(
         session, user, employee_id, salary_id, filename=file.filename, data=data, request=request
     )

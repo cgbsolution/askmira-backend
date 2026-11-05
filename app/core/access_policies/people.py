@@ -25,8 +25,9 @@ ENDPOINTS: dict[str, str] = {
     "GET /employees": (
         "scoped:directory_circle: HR lists the whole company; anybody else only their "
         "own circle - their manager and dotted-line manager, the colleagues who share "
-        "that manager, and their reporting line - never people who have left. "
-        "Personal fields are not in it."
+        "that manager, and their reporting line - never people who have left. With "
+        "reporting_line=true (picking someone to act for as a manager) only the caller "
+        "and their reporting line. Personal fields are not in it."
     ),
     "GET /employees/colleagues": (
         "scoped:own_company: a name search to pick a colleague - names and titles "

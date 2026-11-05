@@ -157,6 +157,10 @@ class RequisitionDetail(RequisitionSummary):
     can_decide: bool = False
     decide_blocked_reason: str | None = None
     candidate_count: int = 0
+    #: The job this requisition opened in the linked interview tool, once approved.
+    linked_job_ref: str | None = None
+    linked_job_at: datetime | None = None
+    linked_job_error: str | None = None
 
 
 class PendingDecision(BaseModel):

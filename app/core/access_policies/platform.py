@@ -23,6 +23,10 @@ ENDPOINTS: dict[str, str] = {
         "scoped:from_user_id: only the person who handed over, or HR, ends it."
     ),
     # ── Linked products ─────────────────────────────────────────────────────
+    "GET /products/roles/me": (
+        "scoped:my_roles: only the caller's own role in each linked product, found by the "
+        "email on their token among their own workspace's links (tenant_scoped)."
+    ),
     "POST /products/{product}/launch": (
         "own: signs the caller in to the product as themselves (identity from the token); "
         "the product's role rule refuses anyone it does not admit."

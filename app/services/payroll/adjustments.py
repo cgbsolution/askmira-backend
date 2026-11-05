@@ -517,6 +517,10 @@ def _plain(error: dict) -> str:
 _TRUE = {"1", "true", "yes", "y"}
 
 
+#: Rows in one import. The file's size is held to the workspace's upload limit.
+_MAX_IMPORT_ROWS = 20_000
+
+
 async def import_csv(
     session: AsyncSession,
     user: User,
@@ -553,6 +557,14 @@ async def import_csv(
     payloads: list[AdjustmentCreate] = []
     errors: list[str] = []
     for number, raw in enumerate(reader, start=2):
+        if number - 1 > _MAX_IMPORT_ROWS:
+            return AdjustmentImportResult(
+                created=0,
+                errors=[
+                    f"The file has more than {_MAX_IMPORT_ROWS:,} rows. "
+                    "Split it and import the parts."
+                ],
+            )
         row = {k.strip().lower(): (v or "").strip() for k, v in raw.items() if k}
         if not any(row.values()):
             continue

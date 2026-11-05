@@ -24,6 +24,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import date, datetime, time
+from decimal import Decimal
 
 from sqlalchemy import (
     ARRAY,
@@ -411,6 +412,12 @@ class AttendanceDay(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
     is_regularised: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: A present day turned into a half day by the workspace's late-mark rule
+    #: (every Nth late mark in a month). Lets the rule undo it when the count
+    #: moves — a correction to an earlier day, the rule switched off.
+    late_mark_half_day: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     # Why the computation landed where it did — shown to the employee, so it
     # has to be readable rather than a status code.
     computation_note: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -512,3 +519,29 @@ class AttendancePeriodLock(Base, UUIDMixin, TenantMixin, TimestampMixin):
     @property
     def is_active(self) -> bool:
         return self.unlocked_at is None
+
+
+# ── Punch addresses ─────────────────────────────────────────────────────────
+
+
+class PunchAddress(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """The street address of a place people punch from, looked up once.
+
+    Keyed by the coordinates rounded to four decimals (about 11 metres), so
+    the many punches made at one office share one lookup. Kept apart from the
+    punch on purpose: a punch is insert-only, and the address of a place is
+    not part of what was observed — it can be looked up again without
+    touching a single punch.
+
+    `address` is null when the lookup found nothing for the place; such a
+    place is not asked about again.
+    """
+
+    __tablename__ = "punch_addresses"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "lat_key", "lng_key", name="uq_punch_address_place"),
+    )
+
+    lat_key: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    lng_key: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(512), nullable=True)

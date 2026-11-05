@@ -264,9 +264,7 @@ async def check_no_later_change(
         )
 
 
-async def unplaced_on(
-    session: AsyncSession, user: User, start: date, end: date
-) -> list[str]:
+async def unplaced_on(session: AsyncSession, user: User, start: date, end: date) -> list[str]:
     """Codes of people employed in the period who belong to no company on its last day.
 
     No run pays them; every run of the period says so, rather than leaving the

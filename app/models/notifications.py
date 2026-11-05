@@ -54,6 +54,14 @@ class Channel(str, enum.Enum):
     PUSH = "push"
     IN_APP = "in_app"
     WHATSAPP = "whatsapp"
+    #: A direct message from the workspace's own Slack app.
+    SLACK = "slack"
+    #: A chat message from the workspace's own Microsoft Teams bot.
+    TEAMS = "teams"
+
+
+#: The chat apps a workspace connects itself (TenantChatApp.provider).
+CHAT_CHANNELS = (Channel.SLACK, Channel.TEAMS)
 
 
 class DigestMode(str, enum.Enum):
@@ -398,3 +406,68 @@ class PushDevice(Base, UUIDMixin, TenantMixin, TimestampMixin):
     platform: Mapped[str] = mapped_column(String(16), default="expo", nullable=False)
     last_registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatEvents(str, enum.Enum):
+    #: Requests waiting on the person, with Approve and Reject buttons.
+    APPROVALS = "approvals"
+    #: Everything the person is told in AskMira.
+    ALL = "all"
+
+
+class TenantChatApp(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """This workspace's own Slack app or Microsoft Teams bot.
+
+    The customer creates the app in their own Slack workspace or Microsoft 365
+    tenant (AskMira gives them the manifest) and pastes its credentials here.
+    AskMira then messages each person directly, found by their work email, and
+    approval requests carry the same signed Approve and Reject buttons as the
+    approval email. Secrets are encrypted with the tenant key and never returned.
+    """
+
+    __tablename__ = "tenant_chat_apps"
+    __table_args__ = (UniqueConstraint("tenant_id", "provider", name="uq_tenant_chat_app"),)
+
+    provider: Mapped[Channel] = mapped_column(
+        Enum(Channel, name="notification_channel", create_type=False), nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    events: Mapped[ChatEvents] = mapped_column(
+        Enum(ChatEvents, name="chat_events"), default=ChatEvents.APPROVALS, nullable=False
+    )
+    #: Slack: the bot token (xoxb-…). Teams: the bot's client secret.
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Teams only: the bot's Microsoft app (client) id and the Microsoft 365 tenant id.
+    app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    directory_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Shown to the admin: the Slack workspace or Teams tenant it answered as.
+    connected_as: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class ChatRecipient(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """Where a person's chat messages go, once found by their work email.
+
+    Slack: their user id. Teams: their directory object id and the one-to-one
+    conversation the bot opened with them. Kept so every message does not look
+    the person up again; dropped when their email changes or the app is removed.
+    """
+
+    __tablename__ = "chat_recipients"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", "user_id", name="uq_chat_recipient"),
+    )
+
+    provider: Mapped[Channel] = mapped_column(
+        Enum(Channel, name="notification_channel", create_type=False), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The email it was found by; a different email now means look again.
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    address: Mapped[str] = mapped_column(String(512), nullable=False)

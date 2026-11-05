@@ -31,6 +31,9 @@ TOOL_GROUPS: dict[str, str] = {
     "balance, attendance, manager or profile), the company's headcount, joiners and exits, and "
     "birthdays, anniversaries and probation ends. Employees are only ever answered about "
     "themselves.",
+    "budgets": "Let admins and sub-admins ask what a department's headcount budget still "
+    "allows this financial year (positions and cost left), and whether more hires at a given "
+    "CTC fit inside it.",
     "approvals": "Tell a person what is waiting on their approval: leave, attendance, expenses, "
     "payroll, hiring, exits and more. Only what they may decide.",
     "payroll_figures": "Let admins and sub-admins who may view payroll ask for a month's payroll "
@@ -65,6 +68,9 @@ TOOL_GROUPS: dict[str, str] = {
     "expense, travel and asset requests waiting on the person, when they confirm. Payroll, "
     "loans, settlements and hiring stay in the portal. Needs AI.",
     "actions_helpdesk": "Raise an HR helpdesk ticket for the person, when they confirm. Needs AI.",
+    "actions_it_helpdesk": "Raise an IT ticket in the linked helpdesk, and work tickets there - "
+    "reply, pick one up, assign, hold, close or reopen - as the helpdesk lets each person, when "
+    "they confirm. Needs AI.",
     "sales_data": "Read leads, deals and the pipeline from the linked sales CRM (Saleinx), as "
     "each person's own access there shows them.",
     "actions_sales": "Add a lead from a pasted note, update it, move a deal's stage or approve a "

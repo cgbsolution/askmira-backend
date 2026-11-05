@@ -25,7 +25,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 
-from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.helpdesk import HelpdeskPriority
 from app.models.user import UserRole
@@ -46,6 +45,7 @@ from app.schemas.helpdesk import (
     TicketDetail,
     TicketSummary,
 )
+from app.services import uploads
 from app.services.helpdesk import categories, service
 
 router = APIRouter(prefix="/helpdesk", tags=["helpdesk"])
@@ -60,7 +60,7 @@ async def _read_upload(file: UploadFile | None) -> tuple[bytes | None, str | Non
     """
     if file is None:
         return None, None
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await file.read(uploads.READ_CEILING)
     if not data and not file.filename:
         return None, None
     return data, file.filename

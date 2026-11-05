@@ -29,7 +29,7 @@ from app.models.jobboard import CandidateDocument, CareersPageConfig
 from app.models.org import Department, Location
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import audit
+from app.services import audit, uploads
 from app.services.hiring import careers, ingestion, plain_text, resume_files
 from app.services.interviews import availability
 from app.services.notifications import dispatch
@@ -137,7 +137,7 @@ async def public_job(session: AsyncSession, slug: str, code: str) -> dict[str, A
     payload["organisation"] = tenant.name if tenant else ""
     payload["document_rules"] = {
         "resume_types": ["PDF"],
-        "resume_max_mb": resume_files.RESUME_MAX_BYTES // (1024 * 1024),
+        "resume_max_mb": uploads.limit_mb(tenant.settings if tenant else None),
     }
     return payload
 
@@ -197,7 +197,7 @@ async def portal_overview(session: AsyncSession, token: str) -> dict[str, Any]:
         "document_rules": {
             "categories": list(DOCUMENT_CATEGORIES),
             "accepted_types": list(ALLOWED_TYPES),
-            "max_mb": resume_files.DOCUMENT_MAX_BYTES // (1024 * 1024),
+            "max_mb": uploads.limit_mb(tenant.settings if tenant else None),
         },
         "consents": await _consents(session, row.tenant_id, row.candidate_id),
     }
@@ -328,7 +328,7 @@ async def upload_document(
             detail="Choose one of the listed document types.",
         )
     row = await careers.resolve_portal_token(session, token)
-    key, kind = await resume_files.accept_document(data, row.tenant_id)
+    key, kind = await resume_files.accept_document(session, data, row.tenant_id)
 
     config = await session.scalar(
         select(CareersPageConfig).where(tenant_filter(CareersPageConfig, row.tenant_id))

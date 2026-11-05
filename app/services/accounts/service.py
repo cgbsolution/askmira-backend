@@ -53,7 +53,7 @@ from app.schemas.accounts import (
     ClientAccountUpdate,
     PnlDetailRead,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services.accounts import pnl as math
 from app.services.attendance.service import local_today
 from app.services.employee_import.fields import read_date, text
@@ -81,7 +81,8 @@ __all__ = [
 #: Runs whose payslips are not a cost: cancelled, or failed before anything was computed.
 _NOT_A_COST = (PayrollRunStatus.CANCELLED, PayrollRunStatus.FAILED)
 _FINAL = (PayrollRunStatus.APPROVED, PayrollRunStatus.PAID)
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it can be.
+MAX_UPLOAD_BYTES = uploads.CEILING_BYTES
 MAX_UPLOAD_ROWS = 5000
 ZERO = Decimal(0)
 
@@ -692,7 +693,7 @@ def _sheet_rows(data: bytes, filename: str) -> list[tuple[int, list[Any]]]:
     if not data:
         raise _unprocessable("The file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise _unprocessable("The file is larger than 5 MB.")
+        raise _unprocessable(f"The file is larger than {uploads.MAX_MB} MB.")
     name = filename.lower()
     if name.endswith(".csv"):
         try:

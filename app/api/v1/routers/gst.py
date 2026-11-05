@@ -45,6 +45,7 @@ from app.schemas.gst import (
     ReconciliationRead,
     ReviewIn,
 )
+from app.services import uploads
 from app.services.gst import csv_io
 from app.services.gst import eligibility as elig_engine
 from app.services.gst import gstin as gstin_engine
@@ -334,7 +335,7 @@ async def import_gstr2b_csv(
     2B with rows silently dropped would report those vendors as unfiled. The rows
     come back with their numbers so the file can be fixed and uploaded again.
     """
-    raw = await file.read(csv_io.MAX_BYTES + 1)
+    raw = await uploads.read_file(file, session, user.tenant_id)
     try:
         text = csv_io.decode_csv(raw)
         lines, errors = csv_io.parse_gstr2b_csv(text)

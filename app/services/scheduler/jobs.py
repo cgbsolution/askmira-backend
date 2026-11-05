@@ -290,6 +290,24 @@ async def _product_people_sync(session: AsyncSession, ctx: JobContext) -> dict[s
     return await products.sync_workspace(session, ctx.actor)
 
 
+async def _expense_genie_payments(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.payroll import linked_expenses
+
+    return await linked_expenses.hand_back_pending(session, ctx.actor)
+
+
+async def _bi_deliveries(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.bi import delivery
+
+    return await delivery.scheduled(session, ctx.actor, now=ctx.now)
+
+
+async def _held_orders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.companion import order_win
+
+    return await order_win.resume_held(session, ctx.actor, now=ctx.now)
+
+
 async def _proposal_expiry(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.autonomy import service as autonomy
 
@@ -888,6 +906,44 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=3),
         handler=_product_people_sync,
         source="app.services.products.service.sync_workspace",
+    ),
+    Job(
+        key="payroll.expense_genie_payments",
+        name="Expense Genie claims paid with salary",
+        description=(
+            "Tells Expense Genie which of its approved claims an approved payroll run paid, "
+            "for any it could not be told about at approval (it was down, say), as the admin "
+            "who approved the run. Does nothing when every paid claim is recorded there."
+        ),
+        cadence=Cadence.every(minutes=60),
+        handler=_expense_genie_payments,
+        source="app.services.payroll.linked_expenses.hand_back_pending",
+    ),
+    Job(
+        key="bi.deliveries",
+        name="BI deliveries to your bucket",
+        description=(
+            "Writes each BI connection set to deliver every night to its bucket: a dated CSV "
+            "and latest.csv, compiled as the admin who set it up. Each delivery is recorded "
+            "with its field list; one that fails is recorded with the bucket's reason. Does "
+            "nothing for a workspace with no nightly connection."
+        ),
+        cadence=Cadence.daily(hour=2),
+        handler=_bi_deliveries,
+        source="app.services.bi.delivery.scheduled",
+    ),
+    Job(
+        key="companion.held_orders",
+        name="Held orders waiting for approval",
+        description=(
+            "Checks each order Ask Mira is holding until its deal's Won is approved in "
+            "Saleinx. Approved: the person is told it is ready to book (or, if the workspace "
+            "lets the order agent act, it is booked and they are told). No longer Won: the "
+            "order is withdrawn and they are told. Does nothing when no order is held."
+        ),
+        cadence=Cadence.every(minutes=15),
+        handler=_held_orders,
+        source="app.services.companion.order_win.resume_held",
     ),
     Job(
         key="autonomy.expire_proposals",

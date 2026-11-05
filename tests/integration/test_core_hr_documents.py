@@ -142,10 +142,13 @@ async def test_content_is_sniffed_not_trusted(client, hr_user, employee) -> None
     assert png.json()["mime_type"] == "image/png"
 
 
-async def test_an_oversized_file_is_refused(client, hr_user, employee, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "MAX_UPLOAD_BYTES", 64)
-    response = await _upload(client, hr_user, employee.id, data=PDF + b"\x00" * 100)
+async def test_an_oversized_file_is_refused(client, session, tenant, hr_user, employee) -> None:
+    """The workspace's own upload limit, set by its admin, decides."""
+    tenant.settings = {**(tenant.settings or {}), "max_upload_mb": 1}
+    await session.commit()
+    response = await _upload(client, hr_user, employee.id, data=PDF + b"\x00" * (1024 * 1024))
     assert response.status_code == 413
+    assert response.json()["detail"] == "The file is 1.1 MB. The upload limit is 1 MB."
 
 
 async def test_a_hidden_document_is_a_404_to_its_employee(

@@ -29,13 +29,11 @@ from app.models.org import LegalEntity
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import CompanyBrand
-from app.services import audit
+from app.services import audit, uploads
 from app.services.identity import directory
 from app.services.storage import StorageError, get_storage
-from app.services.storage.sniff import FileRejectedError, validate_upload
 
 __all__ = [
-    "LOGO_MAX_BYTES",
     "company_for",
     "entity_logo_url",
     "payslip_logo",
@@ -48,23 +46,22 @@ __all__ = [
     "save_logo",
 ]
 
-LOGO_MAX_BYTES = 1024 * 1024
 _IMAGE_TYPES = {"image/png", "image/jpeg"}
 
 
-async def _store_image(tenant_id: uuid.UUID, data: bytes) -> str:
-    """Check the bytes are a PNG or JPEG of at most 1 MB, store them, return the key."""
-    try:
-        kind = validate_upload(data, max_bytes=LOGO_MAX_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-    if kind.mime_type not in _IMAGE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="A logo has to be a PNG or JPEG image.",
-        )
+async def _store_image(session: AsyncSession, tenant_id: uuid.UUID, data: bytes) -> str:
+    """Check the bytes are a PNG or JPEG within the workspace's upload limit,
+    scale them to a logo's size, store them, return the key."""
+    accepted = await uploads.accept_for_tenant(
+        session,
+        tenant_id,
+        data,
+        profile=uploads.LOGO,
+        types=_IMAGE_TYPES,
+        wrong_type="A logo has to be a PNG or JPEG image.",
+        reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+    kind, data = accepted.kind, accepted.data
     storage = get_storage()
     key = storage.new_key(tenant_id, "branding", kind.extension)
     try:
@@ -105,7 +102,7 @@ async def _read_image(key: str | None) -> tuple[bytes, str]:
 async def save_logo(
     session: AsyncSession, actor: User, tenant: Tenant, data: bytes, *, request: Request | None
 ) -> dict[str, Any]:
-    key = await _store_image(tenant.id, data)
+    key = await _store_image(session, tenant.id, data)
     previous = tenant.logo_key
     tenant.logo_key = key
     await audit.record(
@@ -182,7 +179,7 @@ async def save_entity_logo(
     request: Request | None,
 ) -> dict[str, Any]:
     entity = await _entity(session, actor, entity_id)
-    key = await _store_image(actor.tenant_id, data)
+    key = await _store_image(session, actor.tenant_id, data)
     previous = entity.logo_key
     entity.logo_key = key
     await audit.record(

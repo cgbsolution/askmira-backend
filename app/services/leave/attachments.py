@@ -18,13 +18,11 @@ import uuid
 from fastapi import HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.audit import AuditAction
 from app.models.user import User
 from app.schemas.leave import LeaveAttachmentRead
-from app.services import audit
-from app.services.storage import FileRejectedError, StorageError, get_storage, sniff
-from app.services.storage.sniff import validate_upload
+from app.services import audit, uploads
+from app.services.storage import StorageError, get_storage, sniff
 
 NAMESPACE = "leave-docs"
 
@@ -63,20 +61,8 @@ async def upload(
     session: AsyncSession, user: User, data: bytes, *, request: Request | None = None
 ) -> LeaveAttachmentRead:
     """Store a PDF, PNG or JPEG and return the key to put on the request."""
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                "limit."
-            ),
-        )
-    try:
-        kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
+    accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
+    kind, data = accepted.kind, accepted.data
 
     storage = get_storage()
     key = storage.new_key(user.tenant_id, NAMESPACE, kind.extension)
@@ -93,7 +79,7 @@ async def upload(
         action=AuditAction.CREATE,
         entity_type="leave_attachment",
         actor=user,
-        changes={"key": key, "mime_type": kind.mime_type, "size_bytes": len(data)},
+        changes={"key": key, "mime_type": kind.mime_type, **accepted.sizes},
         summary="Uploaded a supporting document for a leave request",
         request=request,
     )

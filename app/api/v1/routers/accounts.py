@@ -30,7 +30,7 @@ from app.schemas.accounts import (
     ClientAccountUpdate,
     PnlDetailRead,
 )
-from app.services import finance
+from app.services import finance, uploads
 from app.services.accounts import service
 
 router = APIRouter(
@@ -165,7 +165,7 @@ async def import_entries(
     apply: Annotated[bool, Form()] = False,
 ) -> AccountImportRead:
     """Check a filled sheet row by row; with `apply`, save every row (none if any has an error)."""
-    data = await file.read(service.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await service.import_entries(
         session, user, data, file.filename or "billing.xlsx", apply=apply, request=request
     )

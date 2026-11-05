@@ -150,6 +150,10 @@ ENDPOINTS: dict[str, str] = {
         "permissions: your own punch unless HR; a punch you record for yourself is "
         "timestamped by the server and cannot claim a device source."
     ),
+    "GET /attendance/corrections/allowance": (
+        "permissions: how many correction requests are left for your own month, your "
+        "reporting line's as their manager, or anyone's for HR (review.viewable_employee)."
+    ),
     "GET /attendance/punches": (
         "permissions: your own punches, your reporting line's as their manager, or HR."
     ),

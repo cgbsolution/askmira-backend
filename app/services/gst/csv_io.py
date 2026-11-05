@@ -30,7 +30,9 @@ __all__ = [
     "register_to_csv",
 ]
 
-MAX_BYTES = 2 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it
+#: can be (`uploads.CEILING_BYTES`, written out because this module is pure).
+MAX_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 20_000
 REQUIRED = ("vendor_gstin", "invoice_number", "invoice_date", "taxable_value")
 TAX_COLUMNS = ("cgst", "sgst", "igst", "cess")

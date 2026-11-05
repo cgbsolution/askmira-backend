@@ -21,31 +21,22 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import uploads
 from app.services.storage import StorageError, get_storage
-from app.services.storage.sniff import FileRejected, SniffedType, validate_upload
+from app.services.storage.sniff import SniffedType
 
 __all__ = [
-    "DOCUMENT_MAX_BYTES",
-    "RESUME_MAX_BYTES",
     "accept_document",
     "accept_resume",
     "attachment_name",
     "read_stored",
 ]
 
-#: Five megabytes. A resume larger than this is almost always a scanned image
-#: PDF, and the limit keeps one upload from filling a disk.
-RESUME_MAX_BYTES = 5 * 1024 * 1024
-DOCUMENT_MAX_BYTES = 8 * 1024 * 1024
-
 #: Pages read for text. A resume is a few pages; a 400-page PDF is not one.
 _MAX_PAGES = 12
 _MAX_TEXT = 20_000
-
-
-def _rejected(detail: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
 
 def _extract_text(data: bytes) -> dict[str, Any]:
@@ -81,19 +72,27 @@ def _extract_text(data: bytes) -> dict[str, Any]:
     }
 
 
-async def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[str, Any]]:
-    """Validate and store a resume. Returns the storage key and extracted text."""
-    try:
-        kind = validate_upload(data, max_bytes=RESUME_MAX_BYTES)
-    except FileRejected as exc:
-        raise _rejected(str(exc)) from exc
-    if kind.mime_type != "application/pdf":
-        raise _rejected("A resume has to be a PDF. The type is read from the file itself.")
+async def accept_resume(
+    session: AsyncSession, data: bytes, tenant_id: uuid.UUID
+) -> tuple[str, dict[str, Any]]:
+    """Validate, compress and store a resume. Returns the storage key and extracted text.
+
+    The size limit is the hiring workspace's upload limit.
+    """
+    accepted = await uploads.accept_for_tenant(
+        session,
+        tenant_id,
+        data,
+        types=("application/pdf",),
+        wrong_type="A resume has to be a PDF. The type is read from the file itself.",
+        reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+    kind = accepted.kind
 
     storage = get_storage()
     key = storage.new_key(tenant_id, "resumes", kind.extension)
     try:
-        await storage.put(key, data)
+        await storage.put(key, accepted.data)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -102,17 +101,19 @@ async def accept_resume(data: bytes, tenant_id: uuid.UUID) -> tuple[str, dict[st
     return key, _extract_text(data)
 
 
-async def accept_document(data: bytes, tenant_id: uuid.UUID) -> tuple[str, SniffedType]:
-    """Validate and store a pre-joining document."""
-    try:
-        kind = validate_upload(data, max_bytes=DOCUMENT_MAX_BYTES)
-    except FileRejected as exc:
-        raise _rejected(str(exc)) from exc
+async def accept_document(
+    session: AsyncSession, data: bytes, tenant_id: uuid.UUID
+) -> tuple[str, SniffedType]:
+    """Validate, compress and store a pre-joining document (or a check report)."""
+    accepted = await uploads.accept_for_tenant(
+        session, tenant_id, data, reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
+    kind = accepted.kind
 
     storage = get_storage()
     key = storage.new_key(tenant_id, "candidate-docs", kind.extension)
     try:
-        await storage.put(key, data)
+        await storage.put(key, accepted.data)
     except StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

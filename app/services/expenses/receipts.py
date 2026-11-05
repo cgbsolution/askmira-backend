@@ -20,6 +20,8 @@ import io
 import re
 from dataclasses import dataclass
 
+from app.services.storage.sniff import size_label
+
 __all__ = [
     "ALLOWED_TYPES",
     "MAX_BYTES",
@@ -92,8 +94,8 @@ def validate_receipt(data: bytes, *, max_bytes: int = MAX_BYTES) -> ValidatedRec
         raise ReceiptError("The file is empty.", 400)
     if len(data) > max_bytes:
         raise ReceiptError(
-            f"The file is larger than {max_bytes // (1024 * 1024)} MB. Upload a smaller "
-            "photo or a compressed PDF.",
+            f"The file is {size_label(len(data), up=True)}. The upload limit is "
+            f"{size_label(max_bytes)}. Upload a smaller photo or a compressed PDF.",
             413,
         )
 

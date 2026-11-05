@@ -1027,6 +1027,8 @@ _HR_TOOLS = frozenset(
         "headcount_trend",
         "account_pnl",
         "account_forecast",
+        "department_budget",
+        "joiners_equipment",
     }
 )
 
@@ -1174,6 +1176,7 @@ def examples(tools: list[Tool]) -> list[str]:
         ("procurement_budgets", "Budgets by cost centre"),
         ("procurement_overview", f"{_PROCURE} overview"),
         ("account_forecast", "Prospective P&L of each account"),
+        ("department_budget", "Can Sales afford two more hires at 9 lakh?"),
     ]
     return [text for key, text in sample if key in keys]
 
@@ -1744,6 +1747,120 @@ _PROCURE_DROP = (
 )
 
 
+_HEADCOUNT_BUDGET = (
+    r"headcount budgets?\b",
+    r"(position|hiring|manpower|people|team|department|dept) budgets?\b",
+    r"budgets? (for|to) (hire|hiring|recruit)",
+    r"\bafford\b",
+    r"positions? (left|remaining|available)",
+    r"(can|could|may) (we|i|they) (hire|add|recruit)",
+    r"(room|space|headroom) (to|for) (hire|hiring|more)",
+    r"budgets? (allow|allows|permit)",
+)
+_BUDGET_DROP = (
+    "afford",
+    "hire",
+    "hires",
+    "hiring",
+    "recruit",
+    "more",
+    "people",
+    "person",
+    "persons",
+    "employees",
+    "headcount",
+    "budget",
+    "budgets",
+    "position",
+    "positions",
+    "left",
+    "remaining",
+    "available",
+    "allow",
+    "allows",
+    "fit",
+    "fits",
+    "within",
+    "inside",
+    "department",
+    "dept",
+    "team",
+    "our",
+    "can",
+    "could",
+    "we",
+    "they",
+    "add",
+    "room",
+    "space",
+    "headroom",
+    "for",
+    "the",
+    "manpower",
+    "lakh",
+    "lakhs",
+    "lac",
+    "lpa",
+    "crore",
+    "cr",
+    "ctc",
+    "each",
+    "per",
+    "year",
+    "annum",
+    "rs",
+    "inr",
+    *_COUNTS,
+)
+
+
+def _department_budget(words: str, offered: set[str], hr: bool) -> DirectPlan | None:
+    """Whether a department's headcount budget has room; None when not asked."""
+    if not _has(words, *_HEADCOUNT_BUDGET):
+        return None
+    if "department_budget" not in offered:
+        return _own_only() if not hr else None
+    hires = 0
+    count = re.search(
+        r"\b(\d{1,3}|" + "|".join(_COUNTS) + r")\s+(more\s+)?(new\s+)?"
+        r"(people|persons|hires?|employees?|heads?|positions?|engineers?|developers?|"
+        r"executives?|members?|resources?|freshers?|interns?|staff)\b",
+        words,
+    ) or re.search(r"\b(\d{1,3}|" + "|".join(_COUNTS) + r")\s+more\b", words)
+    if count:
+        token = count.group(1)
+        hires = int(token) if token.isdigit() else _COUNTS[token]
+    elif _has(words, r"(hire|add|recruit) (a|an|one) ", r"one more\b", r"another (hire|person)"):
+        hires = 1
+    amount = ""
+    money = re.search(
+        r"(?:at|@|of|with|for|ctc|salary|package)\s*(?:₹|rs\.?|inr)?\s*"
+        r"(\d+(?:[., ]\d{2,3})*(?:\.\d+)?)\s*(lakhs?|lacs?|lpa|l\b|crores?|cr\b|k\b|thousand)?",
+        words,
+    )
+    if money:
+        unit = (money.group(2) or "").strip()
+        unit = {"lpa": "lakh", "l": "lakh", "lac": "lakh", "lacs": "lakh"}.get(unit, unit)
+        amount = f"{money.group(1).replace(' ', '')} {unit}".strip()
+    text = re.sub(
+        r"(?:₹|rs\.?|inr)?\s*\d+(?:[., ]\d{2,3})*(?:\.\d+)?\s*(lakhs?|lacs?|lpa|crores?|cr|k)?\b",
+        " ",
+        words,
+    )
+    # Department names that are filler words elsewhere ("support", "it", "admin").
+    query = _search_text(text, _BUDGET_DROP, keep=("support", "it", "admin", "hr", "design"))
+    where = f" for {query}" if query else ""
+    if hires:
+        reply = f"Here is whether {hires} more {'hire fits' if hires == 1 else 'hires fit'}{where}."
+    else:
+        reply = f"Here is what the headcount budget{where} still allows this year."
+    return DirectPlan(
+        reply=reply,
+        tool="department_budget",
+        inputs={"query": query, "hires": hires, "amount": amount},
+    )
+
+
 def _sales(words: str, offered: set[str]) -> DirectPlan | None:
     """Deals, leads and the pipeline in Saleinx; None when the words are not about them."""
     if not _has(words, *_SALES_WORDS):
@@ -2292,6 +2409,31 @@ def _plan(
         if chosen:
             return chosen
 
+    # New joiners and whether they hold equipment yet.
+    if _has(
+        words, r"joiners?\b", r"new (hires?|employees|joinees?)", r"joining", "onboard"
+    ) and _has(words, "equipment", "laptops?", "assets?", "devices?", "machines?", r"kit\b"):
+        chosen = pick(
+            "joiners_equipment", "Here are the joiners and the equipment they hold.", **when
+        )
+        if chosen:
+            return chosen
+    if _has(
+        words,
+        r"(need|needs|needing|without|no|missing|waiting for) (any )?(equipment|laptops?|assets?)",
+        r"(equipment|laptops?|assets?) (not )?(yet )?(assigned|allocated|issued)",
+    ):
+        chosen = pick(
+            "joiners_equipment", "Here are the joiners and the equipment they hold.", **when
+        )
+        if chosen:
+            return chosen
+
+    # A department's headcount budget: what is left, and whether more hires fit.
+    chosen = _department_budget(words, offered, hr)
+    if chosen:
+        return chosen
+
     # Deals in Saleinx; approvals, documents and budgets in ProcureFlow.
     chosen = _sales(words, offered) or _procurement(words, offered)
     if chosen:
@@ -2619,6 +2761,16 @@ def _plan(
                 scope = "queue"
             elif _has(
                 words,
+                r"my team'?s?\b",
+                r"our team'?s?\b",
+                r"my reportees?\b",
+                r"my (direct )?reports\b",
+                r"affecting (my|our) team",
+                r"team'?s tickets",
+            ):
+                scope = "team"
+            elif _has(
+                words,
                 "company",
                 "everyone",
                 "everybody",
@@ -2651,6 +2803,14 @@ def _plan(
                         "active",
                         "about",
                         "regarding",
+                        "affecting",
+                        "team",
+                        "teams",
+                        "reportee",
+                        "reportees",
+                        "reports",
+                        "direct",
+                        "our",
                         "it",
                         "solved",
                         "still",

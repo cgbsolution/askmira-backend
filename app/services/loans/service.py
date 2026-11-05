@@ -695,7 +695,9 @@ async def submit_claim(
         raise _refuse("A bill cannot be dated in the future.")
 
     stored = (
-        await support.store_upload(user.tenant_id, "reimbursement-bills", bill) if bill else None
+        await support.store_upload(session, user.tenant_id, "reimbursement-bills", bill)
+        if bill
+        else None
     )
     claim = ReimbursementClaim(
         tenant_id=user.tenant_id,

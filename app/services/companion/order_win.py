@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -51,6 +51,7 @@ from app.models.user import User
 from app.services import audit
 from app.services.documents.indian_numbers import group_indian
 from app.services.finance import ForecastLineIn, ForecastPlan, ForecastWritten, provider_for
+from app.services.notifications.dispatch import register_event
 from app.services.products import data as products
 
 __all__ = [
@@ -63,6 +64,11 @@ __all__ = [
     "run",
     "rupees",
 ]
+
+#: How long a held order (its Won waiting for approval) is kept before it lapses.
+HELD_FOR = timedelta(days=14)
+#: Once approved, how long the person has to book it before the figures are checked afresh.
+READY_FOR = timedelta(hours=24)
 
 ZERO = Decimal(0)
 CENT = Decimal("0.01")
@@ -331,6 +337,199 @@ def _run_summary(run: CompanionRun) -> str:
     return ", ".join(parts)
 
 
+async def deal_now(
+    session: AsyncSession, user: User, plan: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The order's deal as Saleinx shows it to the person now, or None if they can't see it."""
+    try:
+        found = await products.ask(
+            session,
+            user,
+            "saleinx",
+            "deals",
+            {"query": str(plan.get("deal_title") or ""), "limit": 10},
+        )
+    except products.ProductUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    for deal in found.get("deals") or []:
+        if isinstance(deal, dict) and str(deal.get("id")) == str(plan.get("deal_id")):
+            return deal
+    return None
+
+
+# ── Held orders: waiting for the Won's approval, picked up in the background ──
+
+register_event(
+    "companion.order.ready",
+    "Your order {po_number} is ready to book",
+    "{deal_title}'s Won was approved in Saleinx. Your held order {po_number} is ready: open "
+    "Ask Mira to book it (positions in AnytimeHire and the prospective P&L).",
+)
+register_event(
+    "companion.order.booked",
+    "Order {po_number} was booked",
+    "{deal_title}'s Won was approved, so Ask Mira booked your held order {po_number}: {outcome}",
+)
+register_event(
+    "companion.order.withdrawn",
+    "Held order {po_number} was withdrawn",
+    "{reason} Nothing was opened or written for order {po_number}.",
+)
+
+#: The setting a workspace chooses for what happens once a held order's Won is approved.
+BOOK_AFTER_APPROVAL = "order_win.book_after_approval"
+
+
+async def resume_held(session: AsyncSession, actor: User, *, now: datetime) -> dict[str, int]:
+    """Look at every held order in the actor's workspace; book or offer the approved ones.
+
+    Each order is checked as the person who asked (Saleinx answers what they may
+    see). Approved: the order is ready, offered again for a day and the person
+    told; or, when the workspace lets this agent act, booked at once and the
+    person told what was done. Rejected (the deal is no longer Won): withdrawn
+    and the person told. Still waiting: left as it is.
+    """
+    from app.services.autonomy import service as autonomy
+    from app.services.companion import actions
+    from app.services.notifications.dispatch import notify
+
+    held = (
+        await session.scalars(
+            tenant_scoped(
+                select(CompanionAction).where(
+                    CompanionAction.kind == "order_win",
+                    CompanionAction.status == CompanionActionStatus.PROPOSED,
+                    CompanionAction.expires_at > now,
+                    CompanionAction.payload.has_key("waiting_for"),
+                ),
+                CompanionAction,
+                actor,
+            )
+        )
+    ).all()
+    tally = {"checked": 0, "ready": 0, "booked": 0, "withdrawn": 0, "waiting": 0, "errors": 0}
+    if not held:
+        return tally
+    level, _threshold, _source = await autonomy.effective_autonomy(
+        session, actor, action_key=BOOK_AFTER_APPROVAL
+    )
+    for action in held:
+        tally["checked"] += 1
+        person = await session.get(User, action.user_id)
+        if person is None or not person.is_active:
+            continue
+        plan = dict(action.payload)
+        try:
+            deal = await deal_now(session, person, plan)
+        except HTTPException:
+            tally["errors"] += 1
+            continue
+        facts = {"po_number": plan.get("po_number"), "deal_title": plan.get("deal_title")}
+        if deal is None or deal.get("stage") != "won":
+            where = f" (it is at {deal.get('stage_label')})" if deal else ""
+            reason = f"{plan.get('deal_title')} is no longer Won in Saleinx{where}."
+            action.status = CompanionActionStatus.CANCELLED
+            action.decided_at = now
+            action.decided_via = "automation"
+            action.result = {"text": reason + " The held order was withdrawn.", "error": True}
+            _say_in_chat(
+                session, action, reason + " I withdrew the held order; nothing was opened."
+            )
+            await audit.record(
+                session,
+                tenant_id=action.tenant_id,
+                action=AuditAction.UPDATE,
+                entity_type="companion_action",
+                entity_id=action.id,
+                actor_type="system",
+                changes={"kind": "order_win", "status": "cancelled", "why": "won_not_approved"},
+                summary=f"Held order {plan.get('po_number')} withdrawn: the Won was not approved",
+                request=None,
+            )
+            await session.commit()
+            await notify(
+                session,
+                tenant_id=action.tenant_id,
+                event_key="companion.order.withdrawn",
+                recipient_user_ids=[person.id],
+                payload={**facts, "reason": reason},
+            )
+            tally["withdrawn"] += 1
+            continue
+        if deal.get("approval_status") != "approved":
+            tally["waiting"] += 1
+            continue
+
+        # Approved: the order is no longer held.
+        plan.pop("waiting_for", None)
+        plan["approved_seen_at"] = now.isoformat()
+        action.payload = plan
+        summary = dict(action.summary)
+        summary.pop("waiting", None)
+        summary["notes"] = [
+            f"{plan.get('deal_title')}: the Won was approved in Saleinx on {now:%d %b %Y}.",
+            *summary.get("notes", []),
+        ]
+        action.summary = summary
+        action.expires_at = now + READY_FOR
+        await session.commit()
+        if level.applies_automatically:
+            action_id = action.id
+            done = await actions.confirm(
+                session, person, action_id, owner_id=person.id, via="automation", request=None
+            )
+            outcome = (done.result or {}).get("text") or done.status.value
+            _say_in_chat(
+                session,
+                done,
+                f"The Won on {plan.get('deal_title')} was approved, so I booked order "
+                f"{plan.get('po_number')}: {outcome}",
+            )
+            await session.commit()
+            await notify(
+                session,
+                tenant_id=done.tenant_id,
+                event_key="companion.order.booked",
+                recipient_user_ids=[person.id],
+                payload={**facts, "outcome": outcome},
+            )
+            tally["booked"] += 1
+        else:
+            _say_in_chat(
+                session,
+                action,
+                f"The Won on {plan.get('deal_title')} was approved. Your held order "
+                f"{plan.get('po_number')} is ready: check it and book it here.",
+            )
+            await session.commit()
+            await notify(
+                session,
+                tenant_id=action.tenant_id,
+                event_key="companion.order.ready",
+                recipient_user_ids=[person.id],
+                payload=facts,
+            )
+            tally["ready"] += 1
+    return tally
+
+
+def _say_in_chat(session: AsyncSession, action: CompanionAction, text: str) -> None:
+    """A note from Ask Mira in the conversation the order came from, with its card as it is now."""
+    from app.models.companion import CompanionMessage
+    from app.services.companion import actions
+
+    session.add(
+        CompanionMessage(
+            tenant_id=action.tenant_id,
+            conversation_id=action.conversation_id,
+            user_id=action.user_id,
+            role="assistant",
+            text=text,
+            cards=[actions.card_for(action)],
+        )
+    )
+
+
 async def _live_run(session: AsyncSession, user: User, key: str) -> CompanionRun | None:
     return await session.scalar(
         tenant_scoped(
@@ -466,15 +665,9 @@ async def propose(
         text = f"More than one won deal matches “{wanted}”: {names}. Which one?"
         return [_notice(text)], used
     deal = choice
-    if deal.get("approval_status") != "approved":
-        text = (
-            f"{deal.get('title')} is marked Won but is waiting for a manager's approval in "
-            "Saleinx. Positions and the P&L wait until a manager approves the Won there; nothing "
-            "has been opened or written."
-        )
-        card = _notice(text, "warning")
-        card["model_note"] = text
-        return [card], used
+    # A rep's Won waiting for a manager: everything else is checked now, and the
+    # order is held (resume_held) — nothing is opened or written until approval.
+    held = deal.get("approval_status") != "approved"
 
     # Who may do each step.
     hiring_role = await products.role_in(session, user, "interview")
@@ -558,6 +751,19 @@ async def propose(
         "If any step fails, the steps before it are undone: positions withdrawn, the "
         "forecast taken back."
     )
+    waiting = None
+    if held:
+        waiting = (
+            f"Held: {deal.get('title')} is Won but waits for a manager's approval in Saleinx. "
+            "Nothing is opened or written until it is approved. Ask Mira checks Saleinx every "
+            "15 minutes and tells you the moment it is approved, so you can book it then."
+        )
+        plan["waiting_for"] = {
+            "event": "won_approved",
+            "deal_id": deal.get("id"),
+            "deal_title": deal.get("title"),
+            "since": datetime.now(UTC).isoformat(),
+        }
     action = await actions._offer(
         session,
         user,
@@ -595,8 +801,16 @@ async def propose(
             "notes": notes,
             "confirm_label": "Open positions and write the P&L",
             "question": "Book this order?",
+            **({"waiting": waiting} if waiting else {}),
         },
     )
+    if waiting:
+        action.expires_at = datetime.now(UTC) + HELD_FOR
+        card = actions.card_for(action)
+        card["model_note"] = (
+            waiting + " Say it is held and who must approve it; never say it is booked or done."
+        )
+        return [card], used
     return [actions.card_for(action)], used
 
 
@@ -749,6 +963,25 @@ async def run(
 ) -> dict[str, Any]:
     """Book the order the person confirmed, step by step, undoing on failure."""
     plan = dict(action.payload)
+    if plan.get("waiting_for"):
+        raise HTTPException(
+            status_code=409,
+            detail="This order is held until a manager approves the Won in Saleinx.",
+        )
+    # The Won is checked again now: approval can be taken back after the offer.
+    now_deal = await deal_now(session, user, plan)
+    if (
+        now_deal is None
+        or now_deal.get("stage") != "won"
+        or (now_deal.get("approval_status") != "approved")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{plan.get('deal_title')} is not Won and approved in Saleinx now, so nothing "
+                "was opened or written."
+            ),
+        )
     key = business_key(plan["po_number"])
     if await _live_run(session, user, key) is not None:
         raise HTTPException(

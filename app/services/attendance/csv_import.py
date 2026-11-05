@@ -34,7 +34,9 @@ __all__ = [
     "parse_timestamp",
 ]
 
-MAX_BYTES = 2 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it
+#: can be (`uploads.CEILING_BYTES`, written out because this module is pure).
+MAX_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 5000
 REQUIRED_COLUMNS = ("employee_code", "punched_at", "direction")
 

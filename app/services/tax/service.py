@@ -736,7 +736,7 @@ async def attach_previous_employer_document(
         raise TaxWorkflowError(
             "Save the previous employer's figures first, then attach their Form 16."
         )
-    stored = await support.store_upload(user.tenant_id, "tax-form16", data)
+    stored = await support.store_upload(session, user.tenant_id, "tax-form16", data)
     record.document_storage_key = stored.key
     record.status = ProofStatus.PENDING
     await session.flush()
@@ -843,7 +843,7 @@ async def submit_proof(
         )
     await assert_window_open(session, user, declaration.financial_year, WindowType.PROOF)
 
-    stored = await support.store_upload(user.tenant_id, "tax-proofs", data)
+    stored = await support.store_upload(session, user.tenant_id, "tax-proofs", data)
     proof = TaxProof(
         tenant_id=user.tenant_id,
         declaration_id=declaration.id,

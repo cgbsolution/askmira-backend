@@ -265,9 +265,20 @@ class SalaryStructure(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    #: Set on a structure built as a CTC template (Payroll → Salary structures):
+    #: its lines carry a `rule` each, and this holds the employer contributions
+    #: kept inside the CTC, as {"employer": {"EMPLOYER_PF": rule | null, ...}}.
+    #: Null for a structure of the earlier kind, worked out by `resolve_ctc`.
+    #: See `app/services/payroll/ctc_template.py`.
+    template: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     components: Mapped[list[SalaryStructureComponent]] = relationship(
         back_populates="structure", cascade="all, delete-orphan", lazy="selectin"
     )
+
+    @property
+    def is_template(self) -> bool:
+        return self.template is not None
 
     def __repr__(self) -> str:
         return f"<SalaryStructure {self.name} from {self.effective_from}>"
@@ -301,6 +312,11 @@ class SalaryStructureComponent(Base, UUIDMixin, TenantMixin, TimestampMixin):
     override_value: Mapped[float | None] = mapped_column(Numeric(14, 4), nullable=True)
     override_formula: Mapped[str | None] = mapped_column(String(512), nullable=True)
     override_base_component_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    #: On a template structure, how this line is worked out from the CTC
+    #: (percent / fixed / balance / slab, with an optional limit and condition).
+    #: See `ctc_template.parse_rule`. Null on a structure of the earlier kind.
+    rule: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 

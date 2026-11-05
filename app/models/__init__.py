@@ -63,6 +63,7 @@ from app.models.attendance import (
     AttendancePunch,
     AttendanceRegularisation,
     AttendanceStatus,
+    PunchAddress,
     PunchDirection,
     PunchSource,
     RegularisationKind,
@@ -430,6 +431,7 @@ from app.models.lifecycle import (
     ProbationReminder,
     SilencePolicy,
 )
+from app.models.linked_claims import LinkedClaimPayment
 from app.models.loans import (
     ClaimStatus,
     FlexiDeclaration,
@@ -445,6 +447,8 @@ from app.models.loans import (
 from app.models.mfa import UserMfa
 from app.models.notifications import (
     Channel,
+    ChatEvents,
+    ChatRecipient,
     DigestMode,
     Notification,
     NotificationDigest,
@@ -453,6 +457,7 @@ from app.models.notifications import (
     NotificationStatus,
     NotificationTemplate,
     PushDevice,
+    TenantChatApp,
     TenantSmtpSettings,
     TenantWhatsAppSettings,
     WhatsAppConsent,
@@ -565,6 +570,7 @@ from app.models.position import (
     ScenarioChange,
     ScenarioStatus,
 )
+from app.models.procured_assets import ProcuredAsset
 from app.models.product_link import ProductLink
 from app.models.recruiting import (
     CandidateDiversityDisclosure,
@@ -762,6 +768,8 @@ __all__ = [
     "CareersPageConfig",
     "Channel",
     "ChartType",
+    "ChatEvents",
+    "ChatRecipient",
     "CityTierEnum",
     "ClaimKindEnum",
     "ClaimStatus",
@@ -977,6 +985,7 @@ __all__ = [
     "LifecycleStatus",
     "LimitTypeEnum",
     "LineStatus",
+    "LinkedClaimPayment",
     "LoanAccount",
     "LoanRepayment",
     "LoanScheme",
@@ -1064,6 +1073,7 @@ __all__ = [
     "ProbationPolicy",
     "ProbationReminder",
     "ProbationReview",
+    "ProcuredAsset",
     "ProductLink",
     "ProfileChangeRequest",
     "ProfileChangeStatus",
@@ -1074,6 +1084,7 @@ __all__ = [
     "ProofStatus",
     "ProposalReversal",
     "ProposalStatusEnum",
+    "PunchAddress",
     "PunchDirection",
     "PunchSource",
     "PushDevice",
@@ -1181,6 +1192,7 @@ __all__ = [
     "TdsSection",
     "TemplateAssignmentRule",
     "Tenant",
+    "TenantChatApp",
     "TenantExpenseSettings",
     "TenantMixin",
     "TenantPlan",

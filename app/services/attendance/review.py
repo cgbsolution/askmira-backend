@@ -9,11 +9,12 @@ their own regularisation, HR included.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -48,11 +49,46 @@ from app.schemas.attendance import (
     TeamMemberToday,
     TeamToday,
 )
+from app.services.attendance import addresses
 from app.services.attendance import service as attendance_service
 from app.services.attendance.calendar_tags import day_tag
 from app.services.leave.holidays import holiday_records_for_employees, holidays_for_employees
 
 MAX_RANGE_DAYS = 93
+
+
+@dataclass(frozen=True)
+class OrgFilters:
+    """Company, project, department and location, as chosen on a screen."""
+
+    legal_entity_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+
+    def audit(self) -> dict[str, str | None]:
+        return {
+            key: str(value) if value else None
+            for key, value in (
+                ("legal_entity_id", self.legal_entity_id),
+                ("project_id", self.project_id),
+                ("department_id", self.department_id),
+                ("location_id", self.location_id),
+            )
+        }
+
+
+def apply_org_filters(stmt: Select, filters: OrgFilters) -> Select:
+    """Narrow an employee query to the chosen company, project, department and location."""
+    if filters.legal_entity_id is not None:
+        stmt = stmt.where(Employee.legal_entity_id == filters.legal_entity_id)
+    if filters.project_id is not None:
+        stmt = stmt.where(Employee.project_id == filters.project_id)
+    if filters.department_id is not None:
+        stmt = stmt.where(Employee.department_id == filters.department_id)
+    if filters.location_id is not None:
+        stmt = stmt.where(Employee.location_id == filters.location_id)
+    return stmt
 
 
 def check_range(start: date, end: date) -> None:
@@ -150,6 +186,29 @@ async def viewable_employee(
 
 def _coordinate(value: object) -> float | None:
     return float(value) if value is not None else None
+
+
+def _address_of(
+    places: dict[addresses.Place, str | None], punch: AttendancePunch | None
+) -> str | None:
+    if punch is None:
+        return None
+    place = addresses.place_of(punch.latitude, punch.longitude)
+    return places.get(place) if place else None
+
+
+async def punch_addresses(
+    session: AsyncSession, user: User, punches: list[AttendancePunch]
+) -> dict[uuid.UUID, str | None]:
+    """Each punch's street address where one is known (looked up within a few seconds)."""
+    places = await addresses.addresses_for(
+        session,
+        user,
+        [(p.latitude, p.longitude) for p in punches],
+        budget_seconds=4.0,
+        max_lookups=60,
+    )
+    return {p.id: _address_of(places, p) for p in punches}
 
 
 def _brief(shift: Shift) -> ShiftBrief:
@@ -283,6 +342,12 @@ async def my_period(
         read.correction = corrections.get(d.attendance_date)
         day_reads.append(read)
 
+    from app.services.attendance import setup
+
+    limit = (await setup.attendance_settings(session, user)).monthly_correction_limit
+    used = (
+        await attendance_service.corrections_used(session, user, employee.id, start) if limit else 0
+    )
     return MyAttendancePeriod(
         period_start=start,
         period_end=end,
@@ -315,6 +380,8 @@ async def my_period(
             leaves=leaves,
             resolver=resolver,
         ),
+        corrections_limit=limit,
+        corrections_used=used,
     )
 
 
@@ -356,17 +423,20 @@ def _day_tags(
 
 
 async def team_today(
-    session: AsyncSession, user: User, *, department_id: uuid.UUID | None = None
+    session: AsyncSession, user: User, *, filters: OrgFilters | None = None
 ) -> TeamToday:
-    """Who is in, out, on leave or not in yet today — a manager's team, or everyone for HR."""
+    """Who is in, out, on leave or not in yet today — a manager's team, or everyone for HR.
+
+    Each last punch carries its street address when one is known; the few new
+    places on the screen are looked up here, a few seconds at most.
+    """
     today = await attendance_service.local_today(session, user)
     scope = await _others_in_scope(session, user)
     stmt = select(Employee).where(
         Employee.deleted_at.is_(None),
         Employee.status.not_in([EmploymentStatus.PRE_JOINING, EmploymentStatus.EXITED]),
     )
-    if department_id is not None:
-        stmt = stmt.where(Employee.department_id == department_id)
+    stmt = apply_org_filters(stmt, filters or OrgFilters())
     if scope is not None:
         if not scope:
             return TeamToday(today=today, members=[], counts={})
@@ -440,6 +510,14 @@ async def team_today(
         ).all()
     }
 
+    places = await addresses.addresses_for(
+        session,
+        user,
+        [(own[-1].latitude, own[-1].longitude) for own in by_person.values() if own],
+        budget_seconds=4.0,
+        max_lookups=150,
+    )
+
     members: list[TeamMemberToday] = []
     for employee in employees:
         plan = resolver.resolve(employee.id, today)
@@ -486,6 +564,7 @@ async def team_today(
                 last_punch_outside=bool(last and last.outside_geofence),
                 last_punch_latitude=_coordinate(last.latitude if last else None),
                 last_punch_longitude=_coordinate(last.longitude if last else None),
+                last_punch_address=_address_of(places, last),
                 shift_name=shift.name if shift else None,
                 shift_start=shift.start_time if shift else None,
                 late_by_minutes=late,

@@ -343,7 +343,7 @@ async def sync(
         people = await _roster(session, tenant_id, product)
         try:
             result = await sync_people(target, product.key, tenant_id, people)
-            members = _members(result) if product.roles_from_product else None
+            members = _members(result) if _keeps_members(product) else None
             outcome = {
                 "sent": len(people),
                 "created": int(result.get("created", 0)),
@@ -366,7 +366,7 @@ async def sync(
     else:
         row.last_error = None
         row.last_sync = outcome
-        if product.roles_from_product:
+        if _keeps_members(product):
             # Who is who there: the product's answer replaces the last one.
             row.member_roles = members or {}
         row.last_synced_at = datetime.now(UTC)
@@ -388,6 +388,35 @@ async def sync(
     )
     await session.commit()
     return outcome
+
+
+def _keeps_members(product: Product) -> bool:
+    """Products whose people sync says who is who there.
+
+    Saleinx and ProcureFlow decide each person's role, so AskMira keeps it. The
+    helpdesk names its IT team (engineers and admins) among the people sent, so
+    the portal can show them the ticket queues; AskMira still gives no one a
+    role there.
+    """
+    return product.roles_from_product or product.key == "helpdesk"
+
+
+async def my_roles(session: AsyncSession, user: User) -> dict[str, str]:
+    """The caller's own role in each linked product that says who is who, from its last sync."""
+    rows = (
+        await session.scalars(
+            tenant_scoped(select(ProductLink), ProductLink, user).where(
+                ProductLink.status == ACTIVE
+            )
+        )
+    ).all()
+    email = user.email.lower()
+    out: dict[str, str] = {}
+    for row in rows:
+        role = (row.member_roles or {}).get(email)
+        if role and row.product in PRODUCTS:
+            out[row.product] = str(role)[:60]
+    return out
 
 
 def _members(result: dict[str, Any]) -> dict[str, str]:

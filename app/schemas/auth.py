@@ -140,6 +140,8 @@ class TenantRead(BaseModel):
     enabled_modules: dict
     #: Separate products that replace a module for this workspace, e.g. {"interview": true}.
     linked_products: dict = {}
+    #: The largest file anyone here can upload, in MB (Settings -> Company -> Workspace).
+    max_upload_mb: int = 10
 
 
 class CompanyBrand(BaseModel):

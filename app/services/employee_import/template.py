@@ -75,8 +75,7 @@ def build_template(custom: list[CustomFieldDefinition]) -> bytes:
         "Dates as DD-MM-YYYY. Reporting Manager is the manager's Emp Code.",
         "Somebody who has left: Status Inactive and their Leaving Date.",
         "An export from factoHR (Employee Detail report) can be uploaded as it is.",
-        "Employee codes already in AskMira are skipped, so a corrected file can be "
-        "imported again.",
+        "Employee codes already in AskMira are skipped, so a corrected file can be imported again.",
     ):
         guide.append([line])
     guide.append([])
@@ -90,17 +89,20 @@ def build_template(custom: list[CustomFieldDefinition]) -> bytes:
         hint = field.hint
         if field.choices and not hint:
             hint = "One of: " + ", ".join(field.choices) + "."
-        guide.append([field.label, "Yes" if field.required else "", field.section, hint,
-                      field.example])
+        guide.append(
+            [field.label, "Yes" if field.required else "", field.section, hint, field.example]
+        )
     for definition in custom:
         options = ", ".join(definition.options or [])
-        guide.append([
-            definition.label,
-            "Yes" if definition.is_required else "",
-            "Custom fields",
-            f"One of: {options}." if options else f"A {definition.field_type} value.",
-            "",
-        ])
+        guide.append(
+            [
+                definition.label,
+                "Yes" if definition.is_required else "",
+                "Custom fields",
+                f"One of: {options}." if options else f"A {definition.field_type} value.",
+                "",
+            ]
+        )
     for letter, width in zip("ABCDE", (34, 10, 16, 70, 28), strict=True):
         guide.column_dimensions[letter].width = width
     for row in guide.iter_rows(min_row=header_row + 1):

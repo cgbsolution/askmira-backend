@@ -16,7 +16,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 
 from app.core import permissions
-from app.core.config import settings
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.onboarding import OnboardingPlanStatus
 from app.schemas.onboarding import (
@@ -38,12 +37,19 @@ from app.schemas.onboarding import (
     TemplateRead,
     TemplateUpdate,
 )
-from app.services.onboarding import joiners
+from app.services import uploads
+from app.services.onboarding import joiners, linked_hires
 from app.services.onboarding import service as onboarding
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
 HR_ONLY = [Depends(require_roles(*permissions.HR_ROLES))]
+
+
+@router.get("/linked-hires", dependencies=HR_ONLY)
+async def hired_in_the_interview_tool(user: CurrentUser, session: DbSession) -> dict:
+    """Candidates hired in AnytimeHire who are not in the directory yet, to add as joiners."""
+    return await linked_hires.list_hires(session, user)
 
 
 async def _task_read(session, user, task_id: uuid.UUID) -> TaskRead:
@@ -251,7 +257,7 @@ async def upload_document(
 ) -> TaskRead:
     """Upload a PDF, PNG or JPEG for a document task; it lands in the joiner's vault."""
     # One byte past the limit is enough to know it is over the limit.
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     await onboarding.upload_for_task(session, user, task_id, data=data, request=request)
     return await _task_read(session, user, task_id)
 

@@ -45,6 +45,14 @@ ignore = [
 # Reuse the companion fixtures (injected by name) and keep each scenario's
 # figures and expectations on one line, as the user wrote the test prompts.
 "tests/integration/test_sales_procurement_link.py" = ["F811", "E501"]
+"tests/integration/test_requisition_linked_job.py" = ["F811"]
+"tests/integration/test_chat_apps.py" = ["F811", "E501"]
+"tests/integration/test_bi_delivery.py" = ["E501"]
+"tests/integration/test_expense_genie_payroll.py" = ["E501"]
+"tests/integration/test_linked_hires.py" = ["E501"]
+"tests/integration/test_budget_year.py" = ["E501"]
+"tests/integration/test_companion_team_and_equipment.py" = ["E501"]
+"tests/integration/test_received_equipment.py" = ["E501"]
 "tests/integration/test_ask_mira_real_model_eval.py" = ["F811", "E501"]
 "tests/integration/test_tds_mid_year_flow.py" = ["F811"]
 "tests/integration/test_payroll_no_salary_flow.py" = ["F811"]

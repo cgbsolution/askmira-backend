@@ -387,9 +387,11 @@ def test_every_status_and_scope_is_a_choice_the_model_is_given() -> None:
         "mine",
         "approvals",
         "company",
-        # CGB Helpdesk: tickets assigned to the asker, and the unassigned queue.
+        # CGB Helpdesk: tickets assigned to the asker, the unassigned queue, and
+        # those raised by the asker's own reports.
         "assigned",
         "queue",
+        "team",
     }
     assert {"open", "applied", "pending", "approved", "none"} <= set(tools.INPUTS["status"]["enum"])
     assert {"in_progress", "hold", "closed", "spare"} <= set(tools.INPUTS["status"]["enum"])

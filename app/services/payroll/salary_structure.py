@@ -462,6 +462,12 @@ def resolve_ctc(
             fails — which should be impossible and is asserted rather than
             trusted.
     """
+    if getattr(structure, "template", None) is not None:
+        # A template structure's lines carry rules this engine does not read;
+        # `templates.template_breakdown` splits it. Reaching here is a bug.
+        raise SalaryStructureError(
+            f"'{structure.name}' is a salary structure template; it is split by its own rules"
+        )
     if not isinstance(ctc_annual, Decimal):
         # A float here would defeat the entire point of this module.
         raise SalaryStructureError("CTC must be a Decimal, not a float")

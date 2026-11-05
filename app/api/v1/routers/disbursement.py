@@ -35,10 +35,9 @@ from app.models.disbursement import (
 )
 from app.models.employee import Employee
 from app.models.user import UserRole
-from app.services import audit
+from app.services import audit, uploads
 from app.services.disbursement import service as disbursement_service
 from app.services.disbursement import validation
-from app.services.disbursement.responses import MAX_RESPONSE_BYTES
 
 router = APIRouter(tags=["disbursement"])
 
@@ -602,7 +601,7 @@ async def reconcile_import(
         session,
         user,
         batch_id=batch_id,
-        data=await file.read(MAX_RESPONSE_BYTES + 1),
+        data=await uploads.read_file(file, session, user.tenant_id),
         request=request,
     )
     await session.commit()

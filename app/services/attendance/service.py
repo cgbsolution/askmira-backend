@@ -21,7 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -665,6 +665,22 @@ async def recompute_range(
             _upsert_day(session, user, employee_id, shift, computed, existing.get(day))
             written += 1
 
+    if written:
+        # Every Nth late mark in a month is a half day: re-counted over each
+        # month touched, so the half day follows the late marks as they now stand.
+        from app.services.attendance import late_rule, setup
+
+        rules = await setup.attendance_settings(session, user)
+        await late_rule.apply_late_rule(
+            session,
+            user,
+            employee_ids=ids if employee_ids is not None else None,
+            start=start,
+            end=end,
+            every=rules.late_marks_per_half_day,
+            rule_from=rules.late_marks_rule_from,
+        )
+
     if written or not missing_only:
         # A backfill that found nothing to fill is not an event worth a row.
         await audit.record(
@@ -733,6 +749,8 @@ def _upsert_day(
         "early_by_minutes": computed.early_by_minutes,
         "overtime_minutes": computed.overtime_minutes,
         "is_regularised": computed.is_regularised,
+        # Judged afresh; the late-mark rule then runs over the month (late_rule).
+        "late_mark_half_day": False,
         "computation_note": computed.note,
         "computed_at": datetime.now(UTC),
     }
@@ -987,6 +1005,59 @@ async def _regularisation(
 
 #: On-duty and work-from-home can be planned; nothing else can be asked ahead.
 ADVANCE_KINDS = frozenset({RegularisationKind.ON_DUTY, RegularisationKind.WORK_FROM_HOME})
+#: Corrections of a day that happened: what the monthly limit counts.
+CORRECTION_KINDS = frozenset({RegularisationKind.MISSED_PUNCH, RegularisationKind.STATUS_CHANGE})
+
+
+async def corrections_used(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, month_of: date
+) -> int:
+    """Corrections asked for days in this month: pending, approved or rejected.
+
+    Withdrawn ones do not count, and neither do HR's own corrections (applied
+    directly, never asked for).
+    """
+    first = month_of.replace(day=1)
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(func.count(AttendanceRegularisation.id)).where(
+                    AttendanceRegularisation.employee_id == employee_id,
+                    AttendanceRegularisation.attendance_date.between(first, last),
+                    AttendanceRegularisation.kind.in_(CORRECTION_KINDS),
+                    AttendanceRegularisation.status != RegularisationStatus.CANCELLED,
+                    AttendanceRegularisation.applied_directly.is_(False),
+                ),
+                AttendanceRegularisation,
+                user,
+            )
+        )
+        or 0
+    )
+
+
+async def check_correction_allowance(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, attendance_date: date
+) -> None:
+    """Refuse a correction beyond the workspace's monthly limit, saying how many were used."""
+    from app.services.attendance import setup
+
+    limit = (await setup.attendance_settings(session, user)).monthly_correction_limit
+    if not limit:
+        return
+    used = await corrections_used(session, user, employee_id, attendance_date)
+    if used >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"You have used all {limit} correction requests for "
+                f"{attendance_date:%B %Y}. Ask HR to correct this day; they can change it "
+                "directly. On-duty and work-from-home requests are not limited."
+            ),
+        )
+
+
 #: How far ahead an on-duty or work-from-home day may be requested.
 MAX_ADVANCE_DAYS = 60
 #: The longest on-duty / work-from-home range raised in one go.
@@ -1048,6 +1119,24 @@ async def _approver_user_ids(
     )
 
 
+async def applies_directly(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether this caller's correction to this person's day is the decision itself.
+
+    HR's correction to somebody else's day is: nobody is asked. Their own day
+    is only when nobody stands above them. An admin or sub-admin with a manager
+    asks, like anyone, and their manager decides — HR does not wave through its
+    own missed punch.
+    """
+    if not permissions.is_hr(user):
+        return False
+    if user.employee_id is None or employee_id != user.employee_id:
+        return True
+    manager_id = await session.scalar(
+        tenant_scoped(select(Employee.manager_id).where(Employee.id == employee_id), Employee, user)
+    )
+    return manager_id is None
+
+
 async def _employee_name(session: AsyncSession, user: User, employee_id: uuid.UUID) -> str:
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
@@ -1079,11 +1168,12 @@ async def raise_regularisation(
     until the period is unlocked, and the approver is told so.
 
     HR's correction is the decision, not a request: it is applied at once,
-    approved by them and the day recomputed, for anyone, their own day
-    included. Nobody is asked. A locked period still needs its audited unlock
-    first, because the day it changes has been paid.
+    approved by them and the day recomputed. Nobody is asked. Their own day is
+    the exception when they have a manager: then it is a request like anyone's,
+    and the manager decides (`applies_directly`). A locked period still needs
+    its audited unlock first, because the day it changes has been paid.
     """
-    direct = permissions.is_hr(user)
+    direct = await applies_directly(session, user, employee_id)
     today = await local_today(session, user)
     if kind in ADVANCE_KINDS:
         if attendance_date > today + timedelta(days=MAX_ADVANCE_DAYS):
@@ -1149,6 +1239,8 @@ async def raise_regularisation(
                     "in it."
                 ),
             )
+    elif kind in CORRECTION_KINDS:
+        await check_correction_allowance(session, user, employee_id, attendance_date)
 
     regularisation = AttendanceRegularisation(
         tenant_id=user.tenant_id,
@@ -1273,8 +1365,12 @@ async def raise_regularisation_range(
     reason: str,
     requested_status: AttendanceStatus = AttendanceStatus.PRESENT,
     request: Request | None = None,
+    days: list[date] | None = None,
 ) -> list[AttendanceRegularisation]:
     """Several days at once, one regularisation per working day.
+
+    `days`, for HR marking: exactly the days picked on the calendar (any days
+    between `start` and `end`), not every day of the stretch.
 
     On-duty or work-from-home, asked by anyone. Or HR marking a stretch of
     someone's days present, half day or absent: the correction applied at once,
@@ -1287,10 +1383,14 @@ async def raise_regularisation_range(
     one.
     """
     marking = kind is RegularisationKind.STATUS_CHANGE
-    if marking and not permissions.is_hr(user):
+    if marking and not await applies_directly(session, user, employee_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only HR marks a range of days. Ask for each day you need corrected.",
+            detail=(
+                "Your own attendance goes to your manager. Ask for each day you need corrected."
+                if permissions.is_hr(user)
+                else "Only HR marks a range of days. Ask for each day you need corrected."
+            ),
         )
     if not marking and kind not in ADVANCE_KINDS:
         raise HTTPException(
@@ -1358,10 +1458,14 @@ async def raise_regularisation_range(
         employee_id, {}
     )
     created: list[AttendanceRegularisation] = []
-    cursor = start
-    while cursor <= end:
-        day = cursor
-        cursor += timedelta(days=1)
+    if days is not None and not marking:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Picked days can only be marked; ask for a range instead.",
+        )
+    picked = sorted({d for d in days if start <= d <= end}) if days is not None else None
+    every_day = [start + timedelta(days=n) for n in range((end - start).days + 1)]
+    for day in picked if picked is not None else every_day:
         if resolver.resolve(employee_id, day).is_off(day) or day in holidays:
             continue
         if marking and recorded.get(day) in (requested_status, AttendanceStatus.ON_LEAVE):

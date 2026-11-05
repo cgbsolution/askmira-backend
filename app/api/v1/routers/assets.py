@@ -17,9 +17,10 @@ and the rest are never parsed as an asset id.
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from pydantic import BaseModel
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.assets import AssetRequestStatus, AssetStatus
@@ -47,6 +48,7 @@ from app.schemas.assets import (
     ReminderResult,
     ReturnIn,
 )
+from app.services.assets import received
 from app.services.assets import service as assets
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -55,6 +57,35 @@ HR_ROLES = (UserRole.ADMIN, UserRole.SUB_ADMIN)
 
 _hr = [Depends(require_roles(*HR_ROLES))]
 _managers = [Depends(require_roles(*HR_ROLES, line_managers=True))]
+
+
+class ReceivedAdd(BaseModel):
+    #: The asset category for AskMira's own register; ignored for the helpdesk's.
+    category_id: uuid.UUID | None = None
+
+
+@router.get("/received", dependencies=_hr)
+async def received_equipment(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Equipment ProcureFlow received in the last 90 days, and what is in the register."""
+    return await received.list_received(session, user)
+
+
+@router.post("/received/{receipt_ref}/add", dependencies=_hr)
+async def add_received(
+    receipt_ref: str,
+    payload: ReceivedAdd,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Add each unit of a received line to the asset register, once."""
+    return await received.add_to_register(
+        session,
+        user,
+        receipt_ref=receipt_ref[:128],
+        category_id=payload.category_id,
+        request=request,
+    )
 
 
 async def _asset_read(session, user, asset_id: uuid.UUID) -> AssetRead:

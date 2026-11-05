@@ -26,13 +26,11 @@ from app.models.audit import AuditAction
 from app.models.org import LegalEntity
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import audit
+from app.services import audit, uploads
 from app.services.documents.letterhead_pdf import LetterheadArt
 from app.services.storage import StorageError, get_storage
-from app.services.storage.sniff import FileRejectedError, validate_upload
 
 __all__ = [
-    "IMAGE_MAX_BYTES",
     "SAMPLE_LETTER",
     "LetterheadSettings",
     "art_for",
@@ -48,7 +46,6 @@ __all__ = [
 ]
 
 _SETTINGS_KEY = "letterhead"
-IMAGE_MAX_BYTES = 1024 * 1024
 _IMAGE_TYPES = {"image/png", "image/jpeg"}
 _HEX = r"^#[0-9a-fA-F]{6}$"
 
@@ -202,18 +199,18 @@ async def save_settings(
 async def save_image(
     session: AsyncSession, user: User, kind: ImageKind, data: bytes, *, request: Request | None
 ) -> StoredLetterhead:
-    """Store a letterhead logo or a signature (PNG or JPEG, 1 MB)."""
-    try:
-        sniffed = validate_upload(data, max_bytes=IMAGE_MAX_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-    if sniffed.mime_type not in _IMAGE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"The {kind} has to be a PNG or JPEG image.",
-        )
+    """Store a letterhead logo or a signature (PNG or JPEG, within the workspace's
+    upload limit), scaled to a size that prints crisply."""
+    accepted = await uploads.accept_for_tenant(
+        session,
+        user.tenant_id,
+        data,
+        profile=uploads.LOGO,
+        types=_IMAGE_TYPES,
+        wrong_type=f"The {kind} has to be a PNG or JPEG image.",
+        reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+    sniffed, data = accepted.kind, accepted.data
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "letterhead", sniffed.extension)
     try:

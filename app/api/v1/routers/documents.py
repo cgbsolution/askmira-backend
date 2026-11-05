@@ -37,6 +37,7 @@ from app.schemas.documents import (
     DocumentUpdate,
     DocumentVerify,
 )
+from app.services import uploads
 from app.services.documents import vault
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -104,7 +105,7 @@ async def upload(
 ) -> DocumentRead:
     """Upload a PDF, PNG or JPEG. Type is read from the bytes; the name is ignored."""
     # One byte past the limit is enough to know it is over the limit.
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await vault.upload_document(
         session,
         user,
@@ -184,7 +185,7 @@ async def upload_mine(
 ) -> DocumentRead:
     """Add a document to your own record. It waits for HR to verify it."""
     _ = user.employee_id  # always the caller's own record, never one named in the form
-    data = await file.read(settings.MAX_UPLOAD_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await vault.upload_own_document(
         session,
         user,

@@ -23,7 +23,13 @@ MODULE_CATALOGUE: dict[str, str] = {
 
 #: Keys of `Tenant.settings` an admin may edit here. Anything else in the bag
 #: (the break-glass account, say) has its own, audited, screen.
-EDITABLE_TENANT_SETTINGS = ("currency", "timezone", "fiscal_year_start_month", "week_start")
+EDITABLE_TENANT_SETTINGS = (
+    "currency",
+    "timezone",
+    "fiscal_year_start_month",
+    "week_start",
+    "max_upload_mb",
+)
 
 
 class TenantSettingsUpdate(BaseModel):
@@ -32,6 +38,9 @@ class TenantSettingsUpdate(BaseModel):
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
     fiscal_year_start_month: int | None = Field(default=None, ge=1, le=12)
     week_start: str | None = Field(default=None, pattern=r"^(monday|sunday|saturday)$")
+    #: The largest file anyone in the workspace can upload, in whole MB (1 to 25).
+    #: Strict: a fraction, a string or true is refused, not rounded.
+    max_upload_mb: int | None = Field(default=None, ge=1, le=25, strict=True)
 
 
 class ManagedUserRead(BaseModel):

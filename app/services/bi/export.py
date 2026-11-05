@@ -77,8 +77,10 @@ class ExportKind(str, enum.Enum):
 class Destination(str, enum.Enum):
     #: A read-only Postgres role scoped by views.
     POSTGRES_ROLE = "postgres_role"
-    #: Scheduled Parquet or CSV to the client's own storage.
+    #: CSV to the client's own S3-compatible bucket, on demand or every night.
     OBJECT_STORAGE = "object_storage"
+    #: A private feed link the client's BI tool refreshes from.
+    HTTPS_FEED = "https_feed"
 
 
 @dataclass(frozen=True, slots=True)

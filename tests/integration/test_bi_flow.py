@@ -56,8 +56,16 @@ async def make_connection(session, user, **kw):
         "name": f"warehouse-{uuid.uuid4().hex[:6]}",
         "entity_name": "fact_payslip",
         "destination": BiDestinationKind.OBJECT_STORAGE,
-        "destination_ref": "s3://acme-bi/payslips/",
+        "destination_ref": "",
         "export_role": "admin",
+        # A bucket connection is delivered, so it carries the bucket and its key.
+        "storage": {
+            "bucket": "acme-bi",
+            "region": "ap-south-1",
+            "prefix": "payslips/",
+            "access_key_id": "AKIAACMEBI0001",
+        },
+        "secret": "acme-bi-secret-key",
     }
     body.update(kw)
     result = await bi.create_connection(session, user, **body)
@@ -223,7 +231,7 @@ async def test_an_export_writes_its_audit_row_with_the_field_list(session, hr_us
     assert run.field_count == len(run.field_names)
     assert "net_pay" in run.field_names
     assert run.carries_payroll_data is True
-    assert run.destination_ref == "s3://acme-bi/payslips/"
+    assert run.destination_ref == "s3://acme-bi/payslips"
     assert run.export_role == "admin"
     assert run.initiated_by_user_id == hr_user.id
     assert run.row_count == 3

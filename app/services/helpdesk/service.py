@@ -41,7 +41,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
-from app.core.config import settings
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee
@@ -66,10 +65,10 @@ from app.schemas.helpdesk import (
     TicketDetail,
     TicketSummary,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services.helpdesk import rules
 from app.services.notifications.dispatch import notify, register_event
-from app.services.storage import FileRejectedError, StorageError, get_storage, validate_upload
+from app.services.storage import StorageError, get_storage
 
 __all__ = [
     "add_comment",
@@ -487,21 +486,9 @@ class _Stored:
     size: int
 
 
-async def _store(user: User, data: bytes, filename: str | None) -> _Stored:
-    if len(data) > settings.MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"The file is larger than the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB "
-                "limit."
-            ),
-        )
-    try:
-        kind = validate_upload(data, max_bytes=settings.MAX_UPLOAD_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
-        ) from exc
+async def _store(session: AsyncSession, user: User, data: bytes, filename: str | None) -> _Stored:
+    accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
+    kind, data = accepted.kind, accepted.data
     storage = get_storage()
     key = storage.new_key(user.tenant_id, "helpdesk", kind.extension)
     try:
@@ -738,7 +725,7 @@ async def create_ticket(
             detail="A ticket needs a subject and a description.",
         )
 
-    stored = await _store(user, file_data, file_name) if file_data else None
+    stored = await _store(session, user, file_data, file_name) if file_data else None
     try:
         now = datetime.now(UTC)
         seq = await _next_number(session, user)
@@ -1009,7 +996,7 @@ async def add_comment(
                 detail="This ticket is resolved. Reopen it if something is still wrong.",
             )
 
-    stored = await _store(user, file_data, file_name) if file_data else None
+    stored = await _store(session, user, file_data, file_name) if file_data else None
     try:
         now = datetime.now(UTC)
         comment = _comment(user, ticket, body, internal=is_internal)

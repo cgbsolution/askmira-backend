@@ -75,8 +75,9 @@ from app.schemas.expenses import (
     TravelRequestIn,
     TravelRequestRead,
 )
+from app.services import uploads
 from app.services.attendance.service import local_today
-from app.services.expenses import reads, receipt_store, receipts
+from app.services.expenses import reads, receipt_store
 from app.services.expenses import service as expenses
 
 router = APIRouter(tags=["expenses"])
@@ -328,7 +329,7 @@ async def upload_receipt(
     owner = permissions.resolve_employee(
         user, employee_id, detail="You can only upload receipts for your own claims."
     )
-    data = await file.read(receipts.MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     row = await receipt_store.store_receipt(
         session, user, employee_id=owner, data=data, filename=file.filename, request=request
     )

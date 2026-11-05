@@ -288,9 +288,7 @@ async def create_logins_for_employees(
     linked = set(
         (
             await session.scalars(
-                tenant_scoped(
-                    select(User.employee_id).where(User.employee_id.in_(ids)), User, user
-                )
+                tenant_scoped(select(User.employee_id).where(User.employee_id.in_(ids)), User, user)
             )
         ).all()
     )

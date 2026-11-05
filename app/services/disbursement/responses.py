@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 __all__ = ["MAX_RESPONSE_BYTES", "ParsedResponse", "ResponseFileError", "parse_response_csv"]
 
 #: A response file for a few thousand employees is tens of kilobytes.
-MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it
+#: can be (`uploads.CEILING_BYTES`, written out because this module is pure).
+MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 
 _REQUIRED = ("account_number", "status")
 _ALIASES = {

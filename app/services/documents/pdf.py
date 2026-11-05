@@ -227,7 +227,13 @@ def _underlay(document: bytes, letterhead: bytes) -> bytes:
     background = PdfReader(io.BytesIO(letterhead)).pages[0]
     writer = PdfWriter()
     for page in PdfReader(io.BytesIO(document)).pages:
-        writer.add_page(page).merge_page(background, over=False)
+        merged = writer.add_page(page)
+        merged.merge_page(background, over=False)
+        # Merging writes the combined page uncompressed: compressed, a letter
+        # is about a quarter of the size, in storage and as an email attachment.
+        merged.compress_content_streams()
+    # The letterhead's fonts and images, drawn on every page, are kept once.
+    writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
     # A fixed document id: the same letter is the same bytes.
     writer._ID = None
     out = io.BytesIO()

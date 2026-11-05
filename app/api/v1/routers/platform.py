@@ -167,9 +167,9 @@ async def upload_logo(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    from app.services.branding import LOGO_MAX_BYTES
+    from app.services.uploads import READ_CEILING
 
-    data = await file.read(LOGO_MAX_BYTES + 1)
+    data = await file.read(READ_CEILING)
     return await platform.upload_logo(session, user, tenant_id, data, request=request)
 
 

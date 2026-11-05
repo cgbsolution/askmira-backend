@@ -73,6 +73,8 @@ class PunchRead(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     location_label: str | None = None
+    #: The street address of the place, once it has been looked up.
+    address: str | None = None
 
 
 LocationMode = Literal["off", "optional", "required"]
@@ -90,6 +92,16 @@ class AttendanceSettings(BaseModel):
     location_mode: LocationMode = "optional"
     #: off: no photo; optional: asked for; required: a self-service punch needs one.
     photo_mode: LocationMode = "off"
+    #: Every Nth late mark in a calendar month is a half day: the Nth, the 2Nth
+    #: and so on, never the first. None: late marks cost nothing.
+    late_marks_per_half_day: int | None = Field(default=None, ge=2, le=31)
+    #: The first month the late-mark rule applies to, set by the server when the
+    #: rule is switched on or its number changes. Earlier months are not changed.
+    late_marks_rule_from: date | None = None
+    #: How many corrections (a missed punch, corrected times or status) a person
+    #: may ask for per calendar month. None: no limit. HR's own corrections and
+    #: on-duty / work-from-home requests do not count.
+    monthly_correction_limit: int | None = Field(default=None, ge=1, le=31)
 
 
 class WorkLocationPin(BaseModel):
@@ -165,6 +177,8 @@ class AttendanceDayRead(BaseModel):
     early_by_minutes: int
     overtime_minutes: int = 0
     is_regularised: bool
+    #: A present day the late-mark rule turned into a half day.
+    late_mark_half_day: bool = False
     computation_note: str | None
     #: Filled on the calendar's read (`/attendance/period`); None elsewhere.
     correction: DayCorrection | None = None
@@ -293,6 +307,10 @@ class MyAttendancePeriod(BaseModel):
     leaves: list[CalendarLeave] = Field(default_factory=list)
     #: One entry per day that has something to show; days left out are blank.
     day_tags: list[CalendarDayTag] = Field(default_factory=list)
+    #: The workspace's monthly limit on correction requests (None: no limit),
+    #: and how many this person has used in this period's month.
+    corrections_limit: int | None = None
+    corrections_used: int = 0
 
 
 class TeamMemberToday(BaseModel):
@@ -312,6 +330,8 @@ class TeamMemberToday(BaseModel):
     last_punch_outside: bool = False
     last_punch_latitude: float | None = None
     last_punch_longitude: float | None = None
+    #: The street address where the last punch was made, once looked up.
+    last_punch_address: str | None = None
     shift_name: str | None = None
     shift_start: time | None = None
     late_by_minutes: int = 0
@@ -322,6 +342,36 @@ class TeamToday(BaseModel):
     today: date
     members: list[TeamMemberToday]
     counts: dict[str, int]
+
+
+class CorrectionAllowance(BaseModel):
+    """How many corrections a person may still ask for in a month."""
+
+    month: date
+    #: The workspace's monthly limit; None means no limit.
+    limit: int | None
+    used: int
+    remaining: int | None
+
+
+class AttendanceExportRequest(BaseModel):
+    """One attendance file: which data, which dates, whose.
+
+    `employee_ids` narrows to the people ticked on screen; otherwise the
+    company, project, department and location filters apply.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["in_out", "punches", "daily", "summary"] = "in_out"
+    start: date
+    end: date
+    file_type: Literal["xlsx", "csv"] = "xlsx"
+    employee_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=5000)
+    legal_entity_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
 
 
 # ── Regularisation ──────────────────────────────────────────────────────────
@@ -369,13 +419,16 @@ class RegularisationRangeCreate(BaseModel):
     """Several days at once, one regularisation per working day.
 
     On-duty or work-from-home for anyone; `status_change` is HR marking a
-    stretch of days `requested_status` (present, half day, absent).
+    stretch of days `requested_status` (present, half day, absent). HR may
+    instead name the days picked on the calendar in `dates` — any days, not
+    only a stretch.
     """
 
     employee_id: uuid.UUID | None = None
     kind: RegularisationKind
-    start_date: date
-    end_date: date
+    start_date: date | None = None
+    end_date: date | None = None
+    dates: list[date] | None = Field(default=None, min_length=1, max_length=62)
     reason: str = Field(min_length=3, max_length=1000)
     requested_status: AttendanceStatus = AttendanceStatus.PRESENT
 
@@ -395,6 +448,17 @@ class RegularisationRangeCreate(BaseModel):
         if not value.strip():
             raise ValueError("Give a reason.")
         return value.strip()
+
+    @model_validator(mode="after")
+    def _days(self) -> RegularisationRangeCreate:
+        if self.dates:
+            if self.kind is not RegularisationKind.STATUS_CHANGE:
+                raise ValueError("Picked days can only be marked; ask for a range instead.")
+            self.dates = sorted(set(self.dates))
+            self.start_date, self.end_date = self.dates[0], self.dates[-1]
+        elif self.start_date is None or self.end_date is None:
+            raise ValueError("Give the first and last day, or pick the days.")
+        return self
 
 
 class RegularisationDecision(BaseModel):

@@ -50,7 +50,7 @@ from app.schemas.tax import (
     WindowRead,
     WindowUpsert,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services.attendance.service import local_today
 from app.services.filings import support
 from app.services.tax import form16, form16_part_a, reminders
@@ -82,7 +82,7 @@ def _resolve_employee(user, supplied: uuid.UUID | None) -> uuid.UUID:
 async def _read_upload(file: UploadFile) -> bytes:
     """At most one byte past the limit, so an oversized file is refused for its
     size without being read into memory in full."""
-    return await file.read(support.MAX_UPLOAD_BYTES + 1)
+    return await file.read(uploads.READ_CEILING)
 
 
 # ── Windows ─────────────────────────────────────────────────────────────────

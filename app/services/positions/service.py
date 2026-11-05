@@ -1057,6 +1057,124 @@ async def budget_view(
     }
 
 
+def _paise(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"))
+
+
+async def budget_room(
+    session: AsyncSession,
+    user: User,
+    *,
+    on: date | None = None,
+    department: str | None = None,
+    hires: int = 0,
+    ctc_per_hire: Decimal | None = None,
+) -> dict[str, Any]:
+    """What each headcount budget still allows this financial year, and whether `hires` fit.
+
+    The same engine that refuses a new position past its budget (`enforce_budget`)
+    answers the question before anyone asks for the seat: every seat that counts
+    against the budget, the approved positions and cost, what is left, and — with
+    `hires` — whether that many more seats at `ctc_per_hire` would be refused.
+
+    Cost here is the budgeted ceiling of each seat, the figure the budget was
+    approved against, never anyone's salary.
+    """
+    as_of = on or date.today()
+    financial_year = financial_year_label(financial_year_bounds(as_of)[0])
+    rows = await _budget_rows(session, user, financial_year=financial_year)
+    names = await _department_names(session, user)
+    wanted = (department or "").strip().lower()
+
+    def scope_of(row: HeadcountBudget) -> str:
+        if row.department_id is None:
+            return "The company"
+        return names.get(row.department_id, "A department")
+
+    if wanted:
+        # Whole name first ("sales west"), then any word of it ("engineers in
+        # engineering" finds Engineering); no match at all falls back to the company.
+        words = [w.rstrip("s") for w in wanted.split() if len(w) >= 3]
+
+        def named(row: HeadcountBudget) -> bool:
+            name = scope_of(row).lower()
+            return wanted in name or any(w and w in name for w in words)
+
+        rows = [row for row in rows if row.department_id is not None and named(row)] or [
+            row for row in rows if row.department_id is None
+        ]
+
+    hires = max(0, min(int(hires or 0), 500))
+    adding = [
+        budget_engine.Seat(code=f"New hire {n + 1}", fte=Decimal(1), budgeted_ctc_max=ctc_per_hire)
+        for n in range(hires)
+    ]
+    out: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda r: (r.department_id is None, scope_of(r).lower())):
+        counted = await _seats_in_scope(
+            session,
+            user,
+            department_id=row.department_id,
+            on=as_of,
+            filled_only=False,
+            exclude_position_id=None,
+        )
+        filled = await _seats_in_scope(
+            session,
+            user,
+            department_id=row.department_id,
+            on=as_of,
+            filled_only=True,
+            exclude_position_id=None,
+        )
+        approved_cost = Decimal(str(row.approved_cost))
+        used_fte = sum((seat.fte for seat in counted), Decimal(0))
+        used_cost = sum(
+            (seat.budgeted_ctc_max * seat.fte for seat in counted if seat.budgeted_ctc_max),
+            Decimal(0),
+        )
+        verdict = None
+        if adding:
+            verdict = budget_engine.check(
+                budget_engine.Budget(
+                    scope=scope_of(row),
+                    financial_year=financial_year,
+                    approved_positions=row.approved_positions,
+                    approved_cost=approved_cost,
+                ),
+                counted=counted,
+                adding=adding,
+                what=f"Adding {hires} {'hire' if hires == 1 else 'hires'}",
+            )
+        out.append(
+            {
+                "scope": scope_of(row),
+                "department_id": str(row.department_id) if row.department_id else None,
+                "approved_positions": row.approved_positions,
+                "positions_counted": headcount_engine.money(used_fte),
+                "positions_filled": headcount_engine.money(
+                    sum((seat.fte for seat in filled), Decimal(0))
+                ),
+                "positions_left": headcount_engine.money(
+                    Decimal(row.approved_positions) - used_fte
+                ),
+                "approved_cost": str(_paise(approved_cost)) if approved_cost > 0 else None,
+                "cost_committed": str(_paise(used_cost)) if approved_cost > 0 else None,
+                "cost_left": str(_paise(approved_cost - used_cost)) if approved_cost > 0 else None,
+                "unpriced_seats": [s.code for s in counted if s.budgeted_ctc_max is None],
+                "fits": None if verdict is None else verdict.within_budget,
+                "problems": [] if verdict is None else list(verdict.problems),
+            }
+        )
+    return {
+        "financial_year": financial_year,
+        "as_of": as_of.isoformat(),
+        "hires": hires,
+        "ctc_per_hire": str(ctc_per_hire) if ctc_per_hire is not None else None,
+        "budgets": out,
+    }
+
+
 async def vacancy_report(
     session: AsyncSession, user: User, *, on: date | None = None
 ) -> dict[str, Any]:

@@ -39,6 +39,7 @@ from app.schemas.positions import (
     ScenarioSummary,
     VacateRequest,
 )
+from app.services import budget_year as spend
 from app.services.positions import service as position_service
 from app.services.reporting.semantic import Sensitivity, may_see
 
@@ -234,6 +235,17 @@ async def occupancy(
 # ═══════════════════════════════════════════════════════════════════════════
 # Views
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/positions/budget/year",
+    dependencies=[Depends(require_roles(*HR_ROLES))],
+)
+async def budget_year(
+    user: CurrentUser, session: DbSession, on: date | None = None
+) -> dict[str, Any]:
+    """Each department's year against its budget, from AskMira and the linked products."""
+    return await spend.department_year(session, user, on=on)
 
 
 @router.get(

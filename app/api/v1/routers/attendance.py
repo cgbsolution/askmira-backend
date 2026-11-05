@@ -44,9 +44,11 @@ from app.schemas.attendance import (
     AssignmentRead,
     AttendanceDayRead,
     AttendanceExceptionReport,
+    AttendanceExportRequest,
     AttendanceSettings,
     AttendanceSettingsRead,
     AttendanceSummaryResponse,
+    CorrectionAllowance,
     KioskPinSet,
     LockRead,
     LockRequest,
@@ -78,6 +80,7 @@ from app.schemas.attendance import (
     WorkLocationCreate,
     WorkLocationRead,
 )
+from app.services import uploads
 from app.services.attendance import (
     csv_import,
     kiosk,
@@ -87,6 +90,7 @@ from app.services.attendance import (
     setup,
     shift_swaps,
 )
+from app.services.attendance import export as attendance_export
 from app.services.attendance import service as attendance_service
 from app.services.attendance.maps import MapConfigRead
 
@@ -176,7 +180,12 @@ async def list_punches(
     rows = await review.list_punches(
         session, user, employee_id=target, start=date_from, end=date_to
     )
-    return [PunchRead.model_validate(row) for row in rows]
+    found = await review.punch_addresses(session, user, rows)
+    await session.commit()  # addresses looked up for new places are kept
+    return [
+        PunchRead.model_validate(row).model_copy(update={"address": found.get(row.id)})
+        for row in rows
+    ]
 
 
 @router.post(
@@ -220,7 +229,7 @@ async def import_punch_csv(
     Validated by its bytes (size, text, UTF-8, header), not by its name or the
     content type the browser claimed. Bad rows come back with their row number.
     """
-    raw = await file.read(csv_import.MAX_BYTES + 1)
+    raw = await uploads.read_file(file, session, user.tenant_id)
     try:
         text = csv_import.decode_csv(raw)
         parsed, errors = csv_import.parse_punch_csv(
@@ -316,10 +325,67 @@ async def my_period(
     dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
 )
 async def team_today(
-    user: CurrentUser, session: DbSession, department_id: uuid.UUID | None = None
+    user: CurrentUser,
+    session: DbSession,
+    legal_entity_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
 ) -> TeamToday:
-    """Who is in, out, on leave or not in yet — a manager's team, or everyone for HR."""
-    return await review.team_today(session, user, department_id=department_id)
+    """Who is in, out, on leave or not in yet — a manager's team, or everyone for HR.
+
+    Narrowed by company, project, department and location when given.
+    """
+    result = await review.team_today(
+        session,
+        user,
+        filters=review.OrgFilters(
+            legal_entity_id=legal_entity_id,
+            project_id=project_id,
+            department_id=department_id,
+            location_id=location_id,
+        ),
+    )
+    await session.commit()  # addresses looked up for new places are kept
+    return result
+
+
+@router.post("/export", dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))])
+async def export_attendance(
+    payload: AttendanceExportRequest, user: CurrentUser, session: DbSession, request: Request
+) -> Response:
+    """Attendance for a day, week, month or range, as Excel or CSV.
+
+    Punch in and out with places, addresses and map links; every punch; the
+    day-wise status; or a summary per person. HR exports everyone, a manager
+    their reporting line. A POST because ticked people do not fit in a URL; it
+    writes nothing but the audit row and the addresses it looked up.
+    """
+    exported = await attendance_export.export_attendance(
+        session,
+        user,
+        start=payload.start,
+        end=payload.end,
+        kind=payload.kind,
+        filters=review.OrgFilters(
+            legal_entity_id=payload.legal_entity_id,
+            project_id=payload.project_id,
+            department_id=payload.department_id,
+            location_id=payload.location_id,
+        ),
+        employee_ids=payload.employee_ids,
+        file_type=payload.file_type,
+        request=request,
+    )
+    await session.commit()
+    return Response(
+        content=exported.content,
+        media_type=exported.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{exported.filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post(
@@ -424,8 +490,30 @@ async def raise_regularisation_range(
         reason=payload.reason,
         requested_status=payload.requested_status,
         request=request,
+        days=payload.dates,
     )
     return [RegularisationRead.model_validate(row) for row in records]
+
+
+@router.get("/corrections/allowance", response_model=CorrectionAllowance)
+async def correction_allowance(
+    user: CurrentUser,
+    session: DbSession,
+    on: date = Query(description="Any day of the month asked about."),
+    employee_id: uuid.UUID | None = None,
+) -> CorrectionAllowance:
+    """How many correction requests are left for that month: your own, or a report's."""
+    target = await review.viewable_employee(
+        session, user, employee_id, detail="You can only see your own or your team's attendance"
+    )
+    limit = (await setup.attendance_settings(session, user)).monthly_correction_limit
+    used = await attendance_service.corrections_used(session, user, target, on) if limit else 0
+    return CorrectionAllowance(
+        month=on.replace(day=1),
+        limit=limit,
+        used=used,
+        remaining=max(limit - used, 0) if limit else None,
+    )
 
 
 @router.get("/regularisations", response_model=list[RegularisationRead])

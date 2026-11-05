@@ -59,6 +59,7 @@ from app.schemas.expenses import (
     TeamQueue,
     TravelRequestRead,
 )
+from app.services import uploads
 from app.services.expenses import advances as advance_engine
 from app.services.expenses import receipts
 from app.services.expenses import service as expense_service
@@ -853,6 +854,6 @@ async def meta(session: AsyncSession, user: User) -> ExpenseMeta:
         currencies=list(currencies),
         city_tiers=list(CityTierEnum),
         claim_kinds=list(ClaimKindEnum),
-        receipt_max_bytes=receipts.MAX_BYTES,
+        receipt_max_bytes=await uploads.limit_bytes(session, user.tenant_id),
         receipt_types=sorted(receipts.ALLOWED_TYPES),
     )

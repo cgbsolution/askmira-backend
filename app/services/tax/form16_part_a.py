@@ -29,20 +29,19 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.form16_part_a import Form16PartA
 from app.models.user import User
-from app.services import audit
+from app.services import audit, uploads
 from app.services.storage import get_storage
-from app.services.storage.sniff import FileRejectedError, validate_upload
+from app.services.storage.sniff import FileRejectedError, size_label
 
 __all__ = [
-    "MAX_PDF_BYTES",
     "merged_pdf",
     "part_a_for",
     "upload_one",
     "upload_zip",
 ]
 
-#: One Part A PDF, and a whole TAN's ZIP.
-MAX_PDF_BYTES = settings.MAX_UPLOAD_BYTES
+#: A whole TAN's ZIP. Each PDF in it, and a single upload, is held to the
+#: workspace's upload limit.
 MAX_ZIP_BYTES = settings.MAX_ARCHIVE_BYTES
 _PAN = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
 _FY = re.compile(r"^\d{4}-\d{2}$")
@@ -56,17 +55,19 @@ def _check_year(financial_year: str) -> None:
         )
 
 
-def _check_pdf(data: bytes) -> None:
+async def _check_pdf(data: bytes, limit: int) -> bytes:
+    """The PDF to store, compressed. TRACES signs Part A digitally, and a signed
+    PDF is never rewritten (`storage.compress`), so its signature still verifies."""
     try:
-        kind = validate_upload(data, max_bytes=MAX_PDF_BYTES)
-    except FileRejectedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
-    if kind.mime_type != "application/pdf":
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Form 16 Part A must be a PDF."
+        accepted = await uploads.accept(
+            data,
+            max_bytes=limit,
+            types=("application/pdf",),
+            wrong_type="Form 16 Part A must be a PDF.",
         )
+    except FileRejectedError as exc:
+        raise uploads.rejected(exc, reject_status=status.HTTP_422_UNPROCESSABLE_ENTITY) from exc
+    return accepted.data
 
 
 async def _store(
@@ -121,7 +122,7 @@ async def upload_one(
 ) -> dict[str, Any]:
     permissions.require_hr(user, detail="Form 16 Part A is uploaded by HR.")
     _check_year(financial_year)
-    _check_pdf(data)
+    data = await _check_pdf(data, await uploads.limit_bytes(session, user.tenant_id))
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
     )
@@ -155,6 +156,7 @@ async def upload_zip(
     """Every PDF in a TRACES ZIP, matched to its person by the PAN in its name."""
     permissions.require_hr(user, detail="Form 16 Part A is uploaded by HR.")
     _check_year(financial_year)
+    limit = await uploads.limit_bytes(session, user.tenant_id)
     if len(data) > MAX_ZIP_BYTES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -182,8 +184,8 @@ async def upload_zip(
         name = info.filename.rsplit("/", 1)[-1]
         if info.is_dir() or not name.lower().endswith(".pdf"):
             continue
-        if info.file_size > MAX_PDF_BYTES:
-            skipped.append({"file": name, "reason": "Larger than the upload limit."})
+        if info.file_size > limit:
+            skipped.append({"file": name, "reason": f"Larger than the {size_label(limit)} limit."})
             continue
         match = _PAN.search(name.upper())
         if match is None:
@@ -200,9 +202,11 @@ async def upload_zip(
                 }
             )
             continue
-        content = archive.read(info)
+        # Read no further than the limit: the size a ZIP declares is not trusted.
+        with archive.open(info) as handle:
+            content = handle.read(limit + 1)
         try:
-            _check_pdf(content)
+            content = await _check_pdf(content, limit)
         except HTTPException as exc:
             skipped.append({"file": name, "reason": str(exc.detail)})
             continue

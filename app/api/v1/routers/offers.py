@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.offer import ApprovalScope, OfferComponentKind, OfferStatus
 from app.models.user import UserRole
-from app.services.hiring import approval_chain, chain_rules
+from app.services.hiring import approval_chain, chain_rules, linked_jobs
 from app.services.hiring import offers as offer_service
 from app.services.hiring import requisitions as requisition_service
 
@@ -256,7 +256,23 @@ async def decide_requisition(
         request=request,
     )
     await session.commit()
+    # Approved for good: with AnytimeHire linked, the job opens there now.
+    if result.get("status") == "open":
+        result["linked_job"] = await linked_jobs.open_job_after_approval(
+            session, user, requisition_id=requisition_id, request=request
+        )
     return result
+
+
+@router.post(
+    "/hiring/requisitions/{requisition_id}/open-linked-job",
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def open_linked_job(
+    requisition_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Open an approved requisition's job in the linked interview tool (again)."""
+    return await linked_jobs.open_job(session, user, requisition_id=requisition_id, request=request)
 
 
 # ── Offers ──────────────────────────────────────────────────────────────────

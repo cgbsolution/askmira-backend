@@ -26,8 +26,9 @@ from app.core.deps import tenant_scoped
 from app.models.attendance import AttendancePunch, PunchSource
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services import uploads
 from app.services.storage import get_storage
-from app.services.storage.sniff import FileRejectedError, validate_upload
+from app.services.storage.sniff import FileRejectedError
 
 __all__ = [
     "MAX_PHOTO_BYTES",
@@ -73,14 +74,20 @@ async def store_photo_for(tenant_id: uuid.UUID, encoded: str) -> str:
         data = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise HTTPException(status_code=422, detail="The photo could not be read.") from exc
+    # A camera frame, not a file anyone picks: its own small limit, not the
+    # workspace's upload limit. Scaled to a face's size like a profile photo.
     try:
-        kind = validate_upload(data, max_bytes=MAX_PHOTO_BYTES)
+        accepted = await uploads.accept(
+            data,
+            max_bytes=MAX_PHOTO_BYTES,
+            profile=uploads.PHOTO,
+            types=("image/jpeg", "image/png"),
+            wrong_type="The punch photo must be a JPEG or PNG.",
+        )
     except FileRejectedError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not kind.mime_type.startswith("image/"):
-        raise HTTPException(status_code=422, detail="The punch photo must be a JPEG or PNG.")
-    key = f"{tenant_id}/punch-photos/{uuid.uuid4()}{kind.extension}"
-    await get_storage().put(key, data)
+    key = f"{tenant_id}/punch-photos/{uuid.uuid4()}{accepted.kind.extension}"
+    await get_storage().put(key, accepted.data)
     return key
 
 

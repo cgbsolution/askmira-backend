@@ -33,6 +33,7 @@ __all__ = [
     "ExpoPushAdapter",
     "InAppAdapter",
     "InlineImage",
+    "MessageAction",
     "NullPushAdapter",
     "PermanentFailure",
     "SmtpEmailAdapter",
@@ -54,6 +55,19 @@ class DeliveryResult:
     provider_message_id: str
     # Some providers confirm delivery synchronously; most confirm by webhook.
     delivered: bool = False
+    # Chat apps: where the person was found (a Slack user id, a Teams chat), kept
+    # so the next message does not look them up again.
+    recipient_address: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MessageAction:
+    """A button on a chat message: Approve, Reject, or Open AskMira."""
+
+    label: str
+    url: str
+    #: "primary", "danger" or "default".
+    style: str = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +116,10 @@ class OutboundMessage:
     inline_images: tuple[InlineImage, ...] = ()
     # Email only: files sent with the message. Other channels ignore them.
     attachments: tuple[Attachment, ...] = ()
+    # Chat apps only: the buttons under the message, and where the person was
+    # found last time (None: look them up by email).
+    actions: tuple[MessageAction, ...] = ()
+    chat_address: str | None = None
 
 
 class ChannelAdapter(ABC):

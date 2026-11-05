@@ -9,7 +9,7 @@ from datetime import UTC, datetime, time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,8 +26,8 @@ from app.models.notifications import (
 )
 from app.models.user import UserRole
 from app.services.notifications import admin as notification_admin
+from app.services.notifications import chat_admin, email_admin
 from app.services.notifications import dispatch as notification_service
-from app.services.notifications import email_admin
 from app.services.notifications import feed as notification_feed
 from app.services.notifications.email_brand import BrandSettings
 
@@ -254,6 +254,71 @@ async def save_whatsapp(
 ) -> dict[str, Any]:
     return await notification_admin.save_whatsapp(
         session, user, **payload.model_dump(), request=request
+    )
+
+
+class ChatAppSave(BaseModel):
+    enabled: bool
+    #: "approvals" (requests waiting on people) or "all" (everything they are told).
+    events: str = Field(default="approvals", max_length=16)
+    #: Slack: the bot token. Teams: the bot's client secret. Null keeps the stored one.
+    secret: str | None = Field(default=None, max_length=2048)
+    #: Teams only.
+    app_id: str | None = Field(default=None, max_length=64)
+    directory_tenant_id: str | None = Field(default=None, max_length=64)
+
+
+@router.get("/admin/chat-apps", dependencies=ADMIN_ONLY)
+async def list_chat_apps(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Slack and Microsoft Teams for this workspace. Secrets are never returned."""
+    return await chat_admin.chat_apps(session, user)
+
+
+@router.put("/admin/chat-apps/{provider}", dependencies=ADMIN_ONLY)
+async def save_chat_app(
+    provider: str, payload: ChatAppSave, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await chat_admin.save(
+        session,
+        user,
+        chat_admin.provider_of(provider),
+        **payload.model_dump(),
+        request=request,
+    )
+
+
+@router.post("/admin/chat-apps/{provider}/test", dependencies=ADMIN_ONLY)
+async def test_chat_app(
+    provider: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Send the admin who asked a test message there."""
+    return await chat_admin.send_test(
+        session, user, chat_admin.provider_of(provider), request=request
+    )
+
+
+@router.delete(
+    "/admin/chat-apps/{provider}",
+    dependencies=ADMIN_ONLY,
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def remove_chat_app(
+    provider: str, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await chat_admin.remove(session, user, chat_admin.provider_of(provider), request=request)
+
+
+@router.get("/admin/chat-apps/{provider}/manifest", dependencies=ADMIN_ONLY)
+async def chat_app_manifest(provider: str, user: CurrentUser, session: DbSession) -> Response:
+    """The Slack app manifest, or the Teams app package, to install AskMira's app with."""
+    filename, media_type, body = await chat_admin.manifest(
+        session, user, chat_admin.provider_of(provider)
+    )
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

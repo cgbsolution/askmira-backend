@@ -37,7 +37,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import access_control, permissions
+from app.core import access_control
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.companion import CompanionAction, CompanionActionStatus
@@ -79,6 +79,9 @@ KINDS = (
     "procurement_decision",
     # Across products, step by step, undone on failure (order_win.py).
     "order_win",
+    # CGB Helpdesk, as the person, through its own rules (helpdesk_actions.py).
+    "helpdesk_ticket",
+    "helpdesk_work",
 )
 _PRODUCT_KINDS = frozenset(
     {"saleinx_lead", "saleinx_stage", "saleinx_decision", "procurement_decision"}
@@ -563,7 +566,10 @@ async def propose_regularisation(
     if kind == "status_change":
         figures.append({"label": "Mark as", "value": _REG_STATUSES[status_key]})
     figures.append({"label": "Reason", "value": reason[:200]})
-    hr = permissions.is_hr(user)
+    # Applied at once only for HR with nobody above them; with a manager it is a request.
+    hr = user.employee_id is not None and await attendance.applies_directly(
+        session, user, user.employee_id
+    )
     action = await _offer(
         session,
         user,
@@ -581,7 +587,7 @@ async def propose_regularisation(
             "title": "Attendance request",
             "figures": figures,
             "notes": (
-                ["As HR, your own correction is applied at once."]
+                ["You have no manager to ask, so as HR your correction is applied at once."]
                 if hr
                 else ["It goes to your approver; the day changes once it is approved."]
             ),
@@ -909,6 +915,11 @@ async def _run(
 
         return await order_win.run(session, user, action, request)
 
+    if action.kind in ("helpdesk_ticket", "helpdesk_work"):
+        from app.services.companion import helpdesk_actions
+
+        return await helpdesk_actions.carry_out(session, user, action)
+
     raise HTTPException(status_code=422, detail="This offer cannot be carried out.")
 
 
@@ -952,6 +963,16 @@ async def confirm(
         raise HTTPException(
             status_code=409,
             detail="This offer has expired. Ask again so the figures are checked afresh.",
+        )
+    if (action.payload or {}).get("waiting_for"):
+        # Held for an approval elsewhere (a Won in Saleinx): the background job
+        # makes it ready, or books it, once that approval is given.
+        raise HTTPException(
+            status_code=409,
+            detail=str(
+                (action.summary or {}).get("waiting")
+                or "This is held until the approval it waits for is given."
+            ),
         )
 
     # Marked done before the service runs: its commit then saves this together

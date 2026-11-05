@@ -187,17 +187,23 @@ def require_roles(*roles: UserRole, line_managers: bool = False):
     return _check
 
 
-def require_module(module: str):
+def require_module(module: str, *, or_linked: str | None = None):
     """Dependency factory refusing requests to a module the workspace has not switched on.
 
     The sidebar hiding a module is a convenience; this is the enforcement. A
     tenant on a plan without rewards cannot reach the rewards API by typing a URL.
+
+    `or_linked` names a product that stands in for the module: with it linked,
+    what AskMira keeps of the module (hiring's requisitions, with AnytimeHire
+    linked) works even though the module itself is off.
     """
 
     async def _module_enabled(user: CurrentUser, session: DbSession) -> None:
         from app.models.tenant import Tenant  # local: models import deps indirectly
 
         tenant = await session.get(Tenant, user.tenant_id)
+        if tenant is not None and or_linked and (tenant.linked_products or {}).get(or_linked):
+            return
         if tenant is None or not (tenant.enabled_modules or {}).get(module):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

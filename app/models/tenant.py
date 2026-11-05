@@ -77,5 +77,13 @@ class Tenant(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
         linked = (self.settings or {}).get("linked_products") or {}
         return {key: bool(on) for key, on in linked.items() if on}
 
+    @property
+    def max_upload_mb(self) -> int:
+        """The largest file anyone here can upload, in MB. An admin sets it;
+        10 until they do. Every upload screen and the app read it from the session."""
+        from app.services.uploads import limit_mb  # local: services import the models
+
+        return limit_mb(self.settings)
+
     def __repr__(self) -> str:
         return f"<Tenant {self.slug}>"

@@ -57,7 +57,7 @@ from app.models.payroll import (
 from app.models.timesheets import Project
 from app.models.user import User
 from app.schemas.payroll import EmployeeSalaryCreate, SalaryComponentAmountInput
-from app.services import audit
+from app.services import audit, uploads
 from app.services.payroll import payslip_pdf
 from app.services.payroll.history_parse import (
     DEDUCTION_KEYS,
@@ -667,9 +667,7 @@ def _build_payslip(
         amount = _q(_sum(rows, k))
         if amount != _ZERO:
             employer_total += amount
-            lines.append(
-                line(code, name, "employer_contribution", amount, _row_source(rows, k))
-            )
+            lines.append(line(code, name, "employer_contribution", amount, _row_source(rows, k)))
 
     # What reached the bank, and the steps from net salary to it.
     net_pay = _ZERO
@@ -752,7 +750,9 @@ def _build_payslip(
         (
             row.workable_days
             if row.workable_days is not None
-            else (row.days_worked or _ZERO) if row.kind == "fnf" else _ZERO
+            else (row.days_worked or _ZERO)
+            if row.kind == "fnf"
+            else _ZERO
         )
         for row in rows
     )
@@ -1560,9 +1560,7 @@ async def plan(
             issues.extend(f.issues)
             for note in f.notes:
                 month_key = _month_key(f.year, f.month) if f.year and f.month else None
-                issues.append(
-                    Issue("note", "register_layout", note, month=month_key, file=f.name)
-                )
+                issues.append(Issue("note", "register_layout", note, month=month_key, file=f.name))
 
     # The company the months were paid by.
     entities = (
@@ -1668,9 +1666,11 @@ async def plan(
     unmatched_accounts: Counter = Counter()
     for month in dated:
         mp = MonthPlan(year=month.year, month=month.month, files=month.files, run_id=uuid.uuid4())
-        mp.refused = (month.year, month.month) in taken or any(
-            i.level == "error" for i in month.issues
-        ) or any(i.level == "error" for f in month.files for i in f.issues)
+        mp.refused = (
+            (month.year, month.month) in taken
+            or any(i.level == "error" for i in month.issues)
+            or any(i.level == "error" for f in month.files for i in f.issues)
+        )
         month_plans.append(mp)
         if len(month.files) != 1:
             continue
@@ -1808,7 +1808,8 @@ async def plan(
 
 #: What one upload may hold: a register is a few hundred KB, one has 3 MB of styling.
 MAX_FILES = 60
-MAX_FILE_BYTES = 25 * 1024 * 1024
+#: The workspace's upload limit is applied as each file is read; this is the most it can be.
+MAX_FILE_BYTES = uploads.CEILING_BYTES
 
 
 async def check_files(
@@ -2230,9 +2231,7 @@ async def undo_imported_run(
 
 def _issues_of(p: ImportPlan, level: str, month: str | None = None) -> list[dict[str, Any]]:
     return [
-        i.as_dict()
-        for i in p.issues
-        if i.level == level and (month is None or i.month == month)
+        i.as_dict() for i in p.issues if i.level == level and (month is None or i.month == month)
     ]
 
 
@@ -2530,4 +2529,3 @@ def issues_xlsx(p: ImportPlan) -> bytes:
     out = io.BytesIO()
     book.save(out)
     return out.getvalue()
-

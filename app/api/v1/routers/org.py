@@ -26,7 +26,7 @@ from app.schemas.org import (
     LocationRead,
     LocationUpdate,
 )
-from app.services import custom_fields, custom_tables, projects
+from app.services import custom_fields, custom_tables, projects, uploads
 from app.services import org as org_service
 
 router = APIRouter(prefix="/org", tags=["core-hr"])
@@ -83,7 +83,7 @@ async def upload_entity_logo(
     """This company's logo: its people see it at the top of the portal and app. PNG/JPEG, 1 MB."""
     from app.services import branding
 
-    data = await file.read(branding.LOGO_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await branding.save_entity_logo(session, user, entity_id, data, request=request)
 
 
@@ -271,7 +271,7 @@ async def upload_logo(
     from app.services import branding
 
     tenant = await session.get(Tenant, user.tenant_id)
-    data = await file.read(branding.LOGO_MAX_BYTES + 1)
+    data = await uploads.read_file(file, session, user.tenant_id)
     return await branding.save_logo(session, user, tenant, data, request=request)
 
 

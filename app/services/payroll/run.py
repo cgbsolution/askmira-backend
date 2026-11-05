@@ -1659,6 +1659,11 @@ async def approve_run(
     )
     await session.commit()
     await session.refresh(run)
+    # Expense Genie claims this run paid: recorded as paid there too (retried if it is down).
+    from app.services.payroll import linked_expenses
+
+    await linked_expenses.hand_back(session, user, run)
+    await session.refresh(run)
     return run
 
 

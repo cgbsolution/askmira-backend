@@ -1889,15 +1889,33 @@ def test_the_offer_breakup_comes_from_payrolls_own_engine() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_write_breakup"
     )
+    # Payroll's own entry point: `resolve_ctc`, or `structure_breakdown`, which
+    # picks `resolve_ctc` or the template calculator by the structure's kind.
     calls_resolve = any(
         isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "resolve_ctc"
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "resolve_ctc")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "structure_breakdown")
+        )
         for node in ast.walk(write)
     )
     assert calls_resolve, (
-        "_write_breakup no longer calls resolve_ctc. Any other way of producing the "
-        "breakup is a second implementation of payroll's rule."
+        "_write_breakup no longer calls payroll's resolve_ctc / structure_breakdown. Any "
+        "other way of producing the breakup is a second implementation of payroll's rule."
+    )
+    service = ast.parse(source_of(APP / "services" / "payroll" / "service.py"))
+    dispatcher = next(
+        node
+        for node in ast.walk(service)
+        if isinstance(node, ast.FunctionDef) and node.name == "structure_breakdown"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(dispatcher)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {"resolve_ctc", "template_breakdown"} <= called, (
+        "structure_breakdown must hand every structure to payroll's own engines."
     )
 
 
@@ -13726,12 +13744,15 @@ def test_the_bi_posture_discloses_what_is_not_wired() -> None:
     posture = bi_posture()
     assert posture["not_built"]
     joined = " ".join(posture["not_built"]).lower()
-    for phrase in ("parquet", "licensed", "schedule"):
+    for phrase in ("parquet", "licensed"):
         assert phrase in joined, (
-            f"The BI posture no longer discloses {phrase!r}. Nothing delivers "
-            "an export, nothing schedules one, and no licensed dataset is "
-            "loaded."
+            f"The BI posture no longer discloses {phrase!r}. Files are CSV, not "
+            "Parquet, and no licensed dataset is loaded."
         )
+    # Delivery is built: the posture says how, and that a failure is recorded.
+    enforced = " ".join(posture["enforced"]).lower()
+    for phrase in ("bucket", "every night", "feed link", "fails"):
+        assert phrase in enforced, f"The BI posture no longer says {phrase!r}."
 
 
 # ═══════════════════════════════════════════════════════════════════════════

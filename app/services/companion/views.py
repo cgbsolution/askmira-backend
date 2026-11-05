@@ -85,7 +85,12 @@ def _card(card: dict[str, Any]) -> list[str]:
         return [scrub(card["model_view"])] if card["model_view"] else []
     kind = card.get("type")
     if kind == "notice":
-        return [f"Notice: {scrub(card.get('text'))}"]
+        lines = [f"Notice: {scrub(card.get('text'))}"]
+        # What the tool wants the model to know beyond what the person reads.
+        note = card.get("model_note")
+        if note and note != card.get("text"):
+            lines.append(f"For you: {scrub(note)}")
+        return lines
     if kind == "table":
         lines = [f"Table: {scrub(card.get('title'))} ({scrub(card.get('caption'))})"]
         if card.get("source"):

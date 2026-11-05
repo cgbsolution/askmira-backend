@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import types
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -440,3 +441,327 @@ async def test_the_roster_sent_to_the_helpdesk_has_everyone(
     roles = {person["email"]: person["role"] for person in people}
     assert roles[hr.email.lower()] == "admin"
     assert roles["anita@acme.test"] == "user"
+
+
+# ── Ask Mira raises and works helpdesk tickets ──────────────────────────────
+
+OPTIONS = {
+    "categories": [
+        {"name": "Hardware", "sub_categories": ["Laptop Issue", "Monitor"]},
+        {"name": "Network & Connectivity", "sub_categories": ["VPN Issues", "No Internet"]},
+    ],
+    "priorities": ["low", "medium", "high"],
+}
+
+
+async def _say(session: AsyncSession, user: User, words: str, *replies: Any) -> dict[str, Any]:
+    with use_backend(FakeModel(*replies)):
+        return await companion.send(session, user, companion.MessageIn(text=words), request=None)
+
+
+def _cards(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return result["messages"][1]["cards"]
+
+
+def _offer(result: dict[str, Any]) -> dict[str, Any]:
+    offers = [c for c in _cards(result) if c.get("type") == "proposal"]
+    assert offers, _cards(result)
+    return offers[-1]
+
+
+def _acts(desk: FakeHelpdesk) -> list[dict[str, Any]]:
+    return [c for c in desk.calls if c["use"] == "act"]
+
+
+def _ticket(rights: dict[str, bool], **extra: Any) -> dict[str, Any]:
+    base = {
+        "id": TICKET,
+        "ref": "3F2B1C4D",
+        "subject": "VPN drops every hour",
+        "status": "open",
+        "requester": "Uma User",
+        "assignee": "Esha Engineer",
+        "rights": {
+            "open": True,
+            "reply": False,
+            "acquire": False,
+            "close": False,
+            "hold": False,
+            "reopen": False,
+            "reassign": False,
+            **rights,
+        },
+    }
+    return {**base, **extra}
+
+
+async def test_ask_mira_offers_the_it_ticket_tools_with_the_helpdesk(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    wanted = {"raise_it_ticket", "work_it_ticket"}
+
+    async def offered() -> set[str]:
+        with use_backend(FakeModel()):
+            status = await companion.status_for(session, me)
+        return {t["key"] for t in status["tools"]}
+
+    assert wanted.isdisjoint(await offered())
+    await _link(session, tenant)
+    assert wanted <= await offered()
+
+
+async def test_an_it_ticket_is_checked_against_the_helpdesk_and_raised_only_when_confirmed(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    desk.answers[("query", "options")] = OPTIONS
+    # No priority given: Mira asks rather than picks one.
+    asked = await _say(
+        session,
+        me,
+        "My VPN keeps dropping",
+        plan(
+            "raise_it_ticket", "", subject="VPN keeps dropping", category="network", priority="none"
+        ),
+    )
+    assert "low, medium or high" in json.dumps(_cards(asked))
+    assert _acts(desk) == []
+
+    result = await _say(
+        session,
+        me,
+        "High. It drops every hour.",
+        plan(
+            "raise_it_ticket",
+            "Here it is; confirm to raise it.",
+            subject="VPN keeps dropping",
+            description="It drops every hour since Monday.",
+            category="Network",
+            sub_category="vpn",
+            priority="high",
+            location="Noida",
+        ),
+    )
+    offer = _offer(result)
+    assert offer["kind"] == "helpdesk_ticket"
+    figures = {f["label"]: f["value"] for f in offer["figures"]}
+    assert figures["Category"] == "Network & Connectivity / VPN Issues"
+    assert figures["Priority"] == "High"
+    assert _acts(desk) == []
+
+    desk.answers[("act", "create_ticket")] = {
+        "ticket": {
+            "id": TICKET,
+            "ref": "3F2B1C4D",
+            "subject": "VPN keeps dropping",
+            "status": "new",
+        }
+    }
+    done = await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    [sent] = _acts(desk)
+    assert sent["body"]["kind"] == "create_ticket"
+    assert sent["body"]["params"] == {
+        "subject": "VPN keeps dropping",
+        "description": "It drops every hour since Monday.",
+        "category": "Network & Connectivity",
+        "sub_category": "VPN Issues",
+        "priority": "high",
+        "location": "Noida",
+    }
+    assert sent["body"]["actor"]["email"] == "anita@acme.test"
+    assert "#3F2B1C4D" in json.dumps(done)
+    row = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "helpdesk_ticket"))
+    ).one()
+    assert row.changes["did"] == "create_ticket" and row.changes["via"] == "ask_mira"
+    assert "VPN" not in json.dumps(row.changes)
+
+
+async def test_working_a_ticket_offers_only_what_the_helpdesk_allows(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    desk.answers[("query", "tickets")] = {"tickets": [_ticket({})]}
+    # A requester may reply but not close.
+    desk.answers[("query", "ticket")] = {"ticket": _ticket({"reply": True})}
+    refused = await _say(
+        session,
+        me,
+        "Close #3F2B1C4D",
+        plan("work_it_ticket", "", ticket="#3F2B1C4D", ticket_action="close"),
+    )
+    assert "Only the engineer working on it or an IT admin" in json.dumps(_cards(refused))
+    assert not [c for c in _cards(refused) if c.get("type") == "proposal"]
+
+    # Hold needs a reason and 24/48/72 hours; Mira asks, never invents.
+    desk.answers[("query", "ticket")] = {
+        "ticket": _ticket({"reply": True, "hold": True, "close": True})
+    }
+    asked = await _say(
+        session, me, "Hold it", plan("work_it_ticket", "", ticket="3F2B1C4D", ticket_action="hold")
+    )
+    text = json.dumps(_cards(asked))
+    assert "Why is it going on hold" in text and "24, 48 or 72" in text
+
+    offered = await _say(
+        session,
+        me,
+        "Hold it for 48 hours, waiting for a new router",
+        plan(
+            "work_it_ticket",
+            "Confirm?",
+            ticket="#3F2B1C4D",
+            ticket_action="hold",
+            reason="Waiting for a new router",
+            hours="48",
+        ),
+    )
+    offer = _offer(offered)
+    assert offer["kind"] == "helpdesk_work"
+    assert _acts(desk) == []
+    desk.answers[("act", "hold")] = {
+        "ticket": {"id": TICKET, "ref": "3F2B1C4D", "status": "hold"},
+    }
+    await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    [sent] = _acts(desk)
+    assert sent["body"]["kind"] == "hold"
+    assert sent["body"]["params"] == {
+        "ticket_id": TICKET,
+        "reason": "Waiting for a new router",
+        "hours": 48,
+    }
+
+
+async def test_assigning_names_the_engineer_from_the_helpdesks_own_list(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    desk.answers[("query", "tickets")] = {"tickets": [_ticket({}, assignee=None)]}
+    desk.answers[("query", "ticket")] = {"ticket": _ticket({"reassign": True}, assignee=None)}
+    desk.answers[("query", "assignees")] = {
+        "staff": [
+            {"id": "e1", "name": "Esha Engineer", "email": "eng1@cgbindia.com", "role": "engineer"},
+            {"id": "a1", "name": "Arjun Admin", "email": "admin@cgbindia.com", "role": "admin"},
+        ]
+    }
+    unknown = await _say(
+        session,
+        me,
+        "Give #3F2B1C4D to Ravi",
+        plan("work_it_ticket", "", ticket="#3F2B1C4D", ticket_action="assign", engineer="Ravi"),
+    )
+    assert "Esha Engineer, Arjun Admin" in json.dumps(_cards(unknown))
+    offer = _offer(
+        await _say(
+            session,
+            me,
+            "Give #3F2B1C4D to Esha",
+            plan(
+                "work_it_ticket",
+                "Confirm?",
+                ticket="#3F2B1C4D",
+                ticket_action="assign",
+                engineer="esha",
+            ),
+        )
+    )
+    desk.answers[("act", "assign")] = {
+        "ticket": {"id": TICKET, "ref": "3F2B1C4D", "status": "open", "assignee": "Esha Engineer"}
+    }
+    done = await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    [sent] = _acts(desk)
+    assert sent["body"]["params"] == {"ticket_id": TICKET, "engineer_id": "e1"}
+    assert "with Esha Engineer" in json.dumps(done)
+
+
+async def test_two_matching_tickets_are_listed_not_guessed(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    other = "9a8b7c6d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+    desk.answers[("query", "tickets")] = {
+        "tickets": [_ticket({}), _ticket({}, id=other, ref="9A8B7C6D", subject="VPN slow")]
+    }
+    result = await _say(
+        session,
+        me,
+        "Close the VPN ticket",
+        plan("work_it_ticket", "", ticket="VPN", ticket_action="close"),
+    )
+    cards = _cards(result)
+    assert any(c.get("type") == "table" and len(c["rows"]) == 2 for c in cards)
+    assert not [c for c in cards if c.get("type") == "proposal"]
+    assert not [c for c in desk.calls if c["body"]["kind"] == "ticket"]
+
+
+async def test_a_refusal_from_the_helpdesk_is_the_answer_and_nothing_is_counted_done(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    desk: FakeHelpdesk,
+) -> None:
+    await _link(session, tenant)
+    desk.answers[("query", "tickets")] = {"tickets": [_ticket({})]}
+    desk.answers[("query", "ticket")] = {"ticket": _ticket({"acquire": True}, assignee=None)}
+    offer = _offer(
+        await _say(
+            session,
+            me,
+            "I'll take #3F2B1C4D",
+            plan("work_it_ticket", "Confirm?", ticket="#3F2B1C4D", ticket_action="acquire"),
+        )
+    )
+    # Someone else picked it up in between.
+    desk.answers[("act", "acquire")] = httpx.Response(
+        409, json={"error": "Someone has already picked up this ticket."}
+    )
+    done = await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    assert "Someone has already picked up this ticket." in json.dumps(done)
+    rows = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "helpdesk_ticket"))
+    ).all()
+    assert [r for r in rows if r.changes.get("did") == "acquire"] == []
+
+
+async def test_the_helpdesks_it_team_is_kept_so_the_menu_shows_them_the_queues(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,  # noqa: F811
+    hr: User,
+) -> None:
+    from app.services.products import service as product_service
+
+    assert product_service._keeps_members(PRODUCTS["helpdesk"])
+    assert not product_service._keeps_members(PRODUCTS["expense"])
+    await _link(session, tenant)
+    row = (
+        await session.scalars(select(ProductLink).where(ProductLink.tenant_id == tenant.id))
+    ).one()
+    # What the helpdesk's people sync answered: Anita is an engineer there.
+    row.member_roles = product_service._members(
+        {
+            "members": [
+                {"email": "Anita@Acme.test", "role": "engineer"},
+                {"email": "bad", "role": "x"},
+            ]
+        }
+    )
+    await session.commit()
+    assert await product_service.my_roles(session, me) == {"helpdesk": "engineer"}
+    # HR is not on the IT team there: nothing, whatever their role here.
+    assert await product_service.my_roles(session, hr) == {}

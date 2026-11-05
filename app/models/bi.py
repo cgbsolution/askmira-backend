@@ -76,9 +76,12 @@ class BiDestinationKind(str, enum.Enum):
     """
 
     #: A read-only Postgres role scoped by views over the exposed schema.
+    #: Kept for connections recorded before delivery was built; no longer offered.
     POSTGRES_ROLE = "postgres_role"
-    #: Scheduled Parquet or CSV to the client's own object storage.
+    #: CSV to the client's own S3-compatible bucket, on demand or every night.
     OBJECT_STORAGE = "object_storage"
+    #: A private feed link a BI tool (Power BI, Excel, Looker Studio) refreshes from.
+    HTTPS_FEED = "https_feed"
 
 
 class BiExportKind(str, enum.Enum):
@@ -140,6 +143,18 @@ class BiConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    #: Object storage: {"endpoint", "region", "bucket", "prefix", "access_key_id"}.
+    storage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: Object storage: the secret access key, encrypted with the tenant key.
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Feed link: SHA-256 of its token. The token is shown once.
+    feed_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    #: "manual", or "daily" (delivered every night at 02:00 India time).
+    schedule: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    last_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_delivery_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_bi_connections_tenant_name"),

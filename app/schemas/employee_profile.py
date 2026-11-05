@@ -212,7 +212,12 @@ class EmergencyContact(_Section):
     is_primary: bool = False
 
     _blank = field_validator(
-        "relationship_text", "phone", "alternate_phone", "landline", "email", "address",
+        "relationship_text",
+        "phone",
+        "alternate_phone",
+        "landline",
+        "email",
+        "address",
         mode="before",
     )(_strip)
 
@@ -238,8 +243,15 @@ class FamilyMember(_Section):
     remarks: str | None = Field(default=None, max_length=500)
 
     _blank = field_validator(
-        "relationship_text", "title", "occupation", "phone", "blood_group", "nationality",
-        "marital_status", "insurance_number", "remarks",
+        "relationship_text",
+        "title",
+        "occupation",
+        "phone",
+        "blood_group",
+        "nationality",
+        "marital_status",
+        "insurance_number",
+        "remarks",
         mode="before",
     )(_strip)
 
@@ -278,8 +290,14 @@ class Nominee(_Section):
     remarks: str | None = Field(default=None, max_length=500)
 
     _blank = field_validator(
-        "relationship_text", "address", "city", "country", "phone", "purpose_text",
-        "guardian_name", "remarks",
+        "relationship_text",
+        "address",
+        "city",
+        "country",
+        "phone",
+        "purpose_text",
+        "guardian_name",
+        "remarks",
         mode="before",
     )(_strip)
 
@@ -324,8 +342,18 @@ class Education(_Section):
     remarks: str | None = Field(default=None, max_length=500)
 
     _blank = field_validator(
-        "course", "stream", "specialisation", "institution", "board_or_university",
-        "year", "nature_of_course", "status", "percentage", "grade", "duration", "remarks",
+        "course",
+        "stream",
+        "specialisation",
+        "institution",
+        "board_or_university",
+        "year",
+        "nature_of_course",
+        "status",
+        "percentage",
+        "grade",
+        "duration",
+        "remarks",
         mode="before",
     )(_strip)
 

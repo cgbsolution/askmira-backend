@@ -175,6 +175,18 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "Meta's id for the organisation's own business phone number. Belongs to a "
         "company's WhatsApp account, not to a person."
     ),
+    ("bi_connections", "secret_encrypted"): (
+        "The ciphertext of the organisation's own bucket key, for BI deliveries. A "
+        "credential belonging to a company's storage account, not a person's data."
+    ),
+    ("bi_connections", "feed_token_hash"): (
+        "SHA-256 of a BI feed link's token: a credential for the organisation's own BI "
+        "tool, not about a person."
+    ),
+    ("tenant_chat_apps", "secret_encrypted"): (
+        "The ciphertext of the organisation's own Slack bot token or Teams bot secret. "
+        "A credential belonging to a company's app, not a person's data."
+    ),
     ("tenant_smtp_settings", "password_encrypted"): (
         "The ciphertext of the organisation's own mail-relay password. A "
         "credential belonging to a company's mail server, not a person's data."
@@ -251,6 +263,12 @@ TABLES: dict[str, TableClassification] = {
     "departments": _none("Organisation structure. Named by function, not by person."),
     "locations": _none("The employer's offices."),
     "work_locations": _none("Geofence definitions for those offices."),
+    "punch_addresses": _none(
+        "Street addresses of places, keyed by coordinates rounded to about 11 metres, so "
+        "attendance can show an address instead of numbers. No person, punch, time or "
+        "employee id is stored: who punched where, and when, stays in attendance_punches "
+        "(attendance data). With a person's punches gone, an address here is tied to nobody."
+    ),
     "holidays": _none("A calendar of public holidays."),
     "shifts": _none("Shift definitions — timings, grace, break rules."),
     "rosters": _none("Roster patterns."),
@@ -710,6 +728,10 @@ TABLES: dict[str, TableClassification] = {
         "communication",
         {"push_token_hash": "account_security", "push_token_encrypted": "account_security"},
     ),
+    # An Expense Genie claim paid with salary: whose, how much, in which run.
+    "linked_claim_payments": _p(EMP, "compensation"),
+    # Where a person's Slack or Teams messages go: their email and the chat address there.
+    "chat_recipients": _p(USER, "communication", {"email": "identity"}),
     "report_deliveries": _p(EMP, "communication", {"recipient_email": "identity"}),
     # ── DPDP governance (this slice's own tables) ───────────────────────────
     "consent_records": _p(EMP, "governance_record", secondary_principal=CAND),
@@ -1348,6 +1370,14 @@ TABLES: dict[str, TableClassification] = {
     ),
     "tenant_whatsapp_settings": _none(
         "A tenant's own WhatsApp Business account: a phone number id and an encrypted access token."
+    ),
+    "procured_assets": _none(
+        "Which delivered unit of purchased equipment became which asset: receipt "
+        "references and asset codes, no person."
+    ),
+    "tenant_chat_apps": _none(
+        "A tenant's own Slack app or Teams bot: its app and directory ids, an encrypted "
+        "secret, what it carries and whether it last connected."
     ),
     "tenant_smtp_settings": _none(
         "A tenant's own mail relay: host, port, an encrypted credential and the "

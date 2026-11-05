@@ -12,8 +12,10 @@ What these hold, scenario by scenario (the user's test prompts A1-C6):
 * A stage move checks Saleinx's rules before offering: margin from Qualified
   (B1), Hold's reason and revisit date (B2), one deal when several match (B3),
   a rep's Won waits for a manager (B4), a viewer only reads (B5).
-* An order win (C) is refused while its Won waits for approval (C6) or when the
-  PO does not match the team's billing (C2); otherwise its figures are worked
+* An order win (C) is held while its Won waits for approval (C6): checked now,
+  never opened early, made ready (or booked, if the workspace lets the agent
+  act) by the background job once approved, withdrawn if not; it is refused
+  when the PO does not match the team's billing (C2); otherwise its figures are worked
   out here, not by the model (C1), the positions open in AnytimeHire with one
   key each, the forecast is written to the finance provider and the deal is
   noted; the same PO again does nothing (C3); a position refused half-way
@@ -576,13 +578,112 @@ async def _orders(
     ]  # fmt: skip
 
 
-async def test_an_order_waits_while_its_won_waits_for_approval(
+async def test_an_order_is_held_while_its_won_waits_for_approval(
     session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
 ) -> None:
+    """C6: checked and held, never opened before the manager approves; then ready to book."""
+    from datetime import UTC, datetime
+
+    from app.models.companion import CompanionMessage
+    from app.services.companion import order_win
+
     await _orders(session, tenant, hr, fake, approved=False)
-    [card] = _cards(await _say(session, hr, "Kestrel has signed...", FakeModel(_order())))
-    assert card["type"] == "notice" and "waiting for a manager's approval" in card["text"]
+    offer = _offer(await _say(session, hr, "Kestrel has signed...", FakeModel(_order())))
+    assert offer["status"] == "proposed" and "waits for a manager's approval" in offer["waiting"]
+    figures = {f["label"]: f["value"] for f in offer["figures"]}
+    assert figures["Billing in all"] == "₹71,10,000"  # checked now, not later
+    # It can't be booked while held: refused, and still held.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as refused:
+        await companion.confirm_offer(session, hr, uuid.UUID(offer["action_id"]), request=None)
+    assert refused.value.status_code == 409 and "manager's approval" in refused.value.detail
+    row = await session.get(CompanionAction, uuid.UUID(offer["action_id"]))
+    assert row.status.value == "proposed"
     assert not [c for c in fake.calls if c["use"] == "act"]
+
+    # The background job: still waiting, nothing changes.
+    actor = await as_caller(session, hr)
+    tally = await order_win.resume_held(session, actor, now=datetime.now(UTC))
+    assert tally["waiting"] == 1 and tally["ready"] == 0
+    assert not [c for c in fake.calls if c["use"] == "act"]
+
+    # The manager approves the Won in Saleinx: the order is ready, and the person is told.
+    fake.deals[0]["approval_status"] = "approved"
+    tally = await order_win.resume_held(session, actor, now=datetime.now(UTC))
+    assert tally["ready"] == 1 and tally["booked"] == 0
+    assert not [c for c in fake.calls if c["use"] == "act"]  # told, not booked
+    said = (
+        await session.scalars(
+            select(CompanionMessage.text).where(CompanionMessage.role == "assistant")
+        )
+    ).all()
+    assert any("is ready" in t and "KAC-PO-2291" in t for t in said)
+    done = await companion.confirm_offer(session, hr, uuid.UUID(offer["action_id"]), request=None)
+    assert done["action"]["status"] == "done", done["action"]
+    assert len(fake.acts("interview", "job.open")) == 4
+
+
+async def test_a_held_order_is_booked_by_itself_when_the_workspace_lets_the_agent_act(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.services.autonomy import service as autonomy
+    from app.services.autonomy.catalogue import AutonomyLevel
+    from app.services.companion import order_win
+
+    await _orders(session, tenant, hr, fake, approved=False)
+    await autonomy.configure(
+        session,
+        hr,
+        action_key=order_win.BOOK_AFTER_APPROVAL,
+        autonomy=AutonomyLevel.AUTO_APPLY_WITH_NOTIFY,
+        threshold_value=None,
+        request=None,
+    )
+    offer = _offer(await _say(session, hr, "Kestrel has signed...", FakeModel(_order())))
+    fake.deals[0]["approval_status"] = "approved"
+    tally = await order_win.resume_held(
+        session, await as_caller(session, hr), now=datetime.now(UTC)
+    )
+    assert tally["booked"] == 1
+    assert len(fake.acts("interview", "job.open")) == 4
+    row = await session.get(CompanionAction, uuid.UUID(offer["action_id"]))
+    assert row.decided_via == "automation" and row.status.value == "done"
+
+
+async def test_a_held_order_is_withdrawn_when_the_won_is_not_approved(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.services.companion import order_win
+
+    await _orders(session, tenant, hr, fake, approved=False)
+    offer = _offer(await _say(session, hr, "Kestrel has signed...", FakeModel(_order())))
+    # The manager rejects the Won: Saleinx puts the deal back to Negotiation.
+    fake.deals[0].update(stage="negotiation", stage_label="Negotiation", approval_status="rejected")
+    tally = await order_win.resume_held(
+        session, await as_caller(session, hr), now=datetime.now(UTC)
+    )
+    assert tally["withdrawn"] == 1
+    row = await session.get(CompanionAction, uuid.UUID(offer["action_id"]))
+    assert row.status.value == "cancelled" and "no longer Won" in row.result["text"]
+    assert not [c for c in fake.calls if c["use"] == "act"]
+
+
+async def test_booking_checks_the_won_again(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    """Approved when offered, taken back before Confirm: nothing is opened."""
+    await _orders(session, tenant, hr, fake, approved=True)
+    offer = _offer(await _say(session, hr, "Kestrel has signed...", FakeModel(_order())))
+    fake.deals[0]["approval_status"] = "pending"
+    done = await companion.confirm_offer(session, hr, uuid.UUID(offer["action_id"]), request=None)
+    assert done["action"]["status"] == "failed"
+    assert "not Won and approved" in done["action"]["result"]["text"]
+    assert not fake.acts("interview", "job.open")
 
 
 async def test_a_po_that_does_not_match_the_team_is_refused_with_both_figures(

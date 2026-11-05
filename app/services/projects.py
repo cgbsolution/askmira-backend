@@ -214,7 +214,11 @@ async def from_departments(
             code = _unique_code(department.name, taken) if code in taken else code
             taken.add(code)
             project = await _new_project(
-                session, user, department=department, code=code, legal_entity_id=entity,
+                session,
+                user,
+                department=department,
+                code=code,
+                legal_entity_id=entity,
                 request=request,
             )
             by_key[_key(project.code)] = project

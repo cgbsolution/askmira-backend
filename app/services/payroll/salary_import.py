@@ -71,7 +71,7 @@ from app.schemas.payroll import (
     SalaryImportRead,
     SalaryImportRowRead,
 )
-from app.services import audit
+from app.services import audit, uploads
 from app.services.employee_import.fields import read_date, text
 from app.services.payroll.salary_master import revision_locks, revision_snapshot
 from app.services.payroll.service import (
@@ -83,7 +83,8 @@ from app.services.payroll.service import (
 )
 from app.services.storage import StorageError, get_storage
 
-MAX_BYTES = 5 * 1024 * 1024
+#: The workspace's upload limit is applied as the file is read; this is the most it can be.
+MAX_BYTES = uploads.CEILING_BYTES
 MAX_ROWS = 5000
 
 # ── The columns ─────────────────────────────────────────────────────────────
@@ -575,7 +576,7 @@ def _rows(data: bytes, filename: str) -> list[tuple[int, list[Any]]]:
     Instructions sheet.
     """
     if len(data) > MAX_BYTES:
-        raise _unprocessable("The file is larger than 5 MB.")
+        raise _unprocessable(f"The file is larger than {uploads.MAX_MB} MB.")
     if filename.lower().endswith(".csv"):
         try:
             decoded = data.decode("utf-8-sig")
