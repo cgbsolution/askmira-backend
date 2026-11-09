@@ -46,6 +46,7 @@ ignore = [
 # figures and expectations on one line, as the user wrote the test prompts.
 "tests/integration/test_sales_procurement_link.py" = ["F811", "E501"]
 "tests/integration/test_requisition_linked_job.py" = ["F811"]
+"tests/integration/test_companion_files_and_connect.py" = ["F811"]
 "tests/integration/test_chat_apps.py" = ["F811", "E501"]
 "tests/integration/test_bi_delivery.py" = ["E501"]
 "tests/integration/test_expense_genie_payroll.py" = ["E501"]

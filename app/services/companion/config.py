@@ -50,8 +50,9 @@ TOOL_GROUPS: dict[str, str] = {
     "timesheets and more - as line, bar, pie or donut charts with the table beside them. Each "
     "person sees only what their role may see; the AI reads figures only for groups of five or "
     "more people.",
-    "products": "Say whether the interview, expense and helpdesk tools are connected, and open "
-    "the ones this workspace has linked.",
+    "products": "Say whether the connected products (interviews, expenses, helpdesk, sales CRM, "
+    "procurement) are set up, open the ones this workspace has linked, and when one is not ready "
+    "for the person, show what to do: a Connect button for an admin, who to ask for anyone else.",
     "hiring_data": "Read jobs, candidates and interviews from the linked interview tool "
     "(HR and hiring managers; never AI scores).",
     "expense_data": "Read expense claims from the linked expense tool: a person's own, those "

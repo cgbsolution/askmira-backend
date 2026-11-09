@@ -39,6 +39,12 @@ from app.services.ai.providers import Route
 __all__ = ["OllamaBackend", "OpenAIBackend", "to_chat_messages"]
 
 
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode("ascii")
+
+
 def _get(block: Any, key: str, default: Any = None) -> Any:
     if isinstance(block, dict):
         return block.get(key, default)
@@ -271,6 +277,52 @@ class OpenAIBackend:
             output_tokens=int(usage.get("completion_tokens") or 0),
         )
 
+    async def read_images(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        images: list[tuple[str, bytes]],
+        schema: dict[str, Any],
+        max_tokens: int,
+        effort: str,
+    ) -> Completion:
+        """`complete` with pictures: each sent as a data URL beside the words."""
+        drop = (
+            frozenset({"additionalProperties"}) if self._route.provider == "gemini" else frozenset()
+        )
+        body = self._body(max_tokens=max_tokens, effort=effort)
+        parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        parts.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{_b64(data)}"},
+            }
+            for media_type, data in images
+        )
+        body["messages"] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": parts},
+        ]
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "schema": _strip_schema(schema, drop),
+                "strict": False,
+            },
+        }
+        data = await self._post(body)
+        choice = data["choices"][0]
+        self._check(choice)
+        usage = data.get("usage") or {}
+        return Completion(
+            text=str((choice.get("message") or {}).get("content") or ""),
+            model=str(data.get("model") or self._route.model),
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+        )
+
     async def step(
         self,
         *,
@@ -374,6 +426,40 @@ class OllamaBackend:
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
+                ],
+                "format": schema,
+                "options": self._options(max_tokens),
+            }
+        )
+        return Completion(
+            text=str((data.get("message") or {}).get("content") or ""),
+            model=str(data.get("model") or self._route.model),
+            input_tokens=int(data.get("prompt_eval_count") or 0),
+            output_tokens=int(data.get("eval_count") or 0),
+        )
+
+    async def read_images(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        images: list[tuple[str, bytes]],
+        schema: dict[str, Any],
+        max_tokens: int,
+        effort: str,
+    ) -> Completion:
+        """`complete` with pictures. Only a vision model (llava, qwen2.5vl…) can read them;
+        any other refuses, and that refusal is what the person is told."""
+        data = await self._post(
+            {
+                "model": self._route.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": prompt,
+                        "images": [_b64(item) for _, item in images],
+                    },
                 ],
                 "format": schema,
                 "options": self._options(max_tokens),

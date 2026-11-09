@@ -46,6 +46,7 @@ __all__ = [
     "configured",
     "current_route",
     "model_name",
+    "read_images",
     "set_route",
     "step",
     "structured",
@@ -164,6 +165,66 @@ class AnthropicBackend:
                 # feature; caching it is free when it is long enough to count.
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user}],
+                output_config={
+                    "effort": effort,
+                    "format": {"type": "json_schema", "schema": schema},
+                },
+                betas=[_FALLBACK_BETA],
+                fallbacks="default",
+            )
+        except anthropic.AuthenticationError as exc:
+            raise AiUnavailableError("The AI provider rejected this server's API key.") from exc
+        except anthropic.RateLimitError as exc:
+            raise AiUnavailableError(
+                "The AI provider is busy for this workspace. Try again in a minute."
+            ) from exc
+        except anthropic.APIStatusError as exc:
+            raise AiUnavailableError(
+                f"The AI provider returned an error ({exc.status_code}). Nothing was answered."
+            ) from exc
+        except anthropic.APIConnectionError as exc:
+            raise AiUnavailableError("The AI provider could not be reached.") from exc
+
+        if response.stop_reason == "refusal":
+            raise AiDeclinedError("The AI model declined this request.")
+        if response.stop_reason == "max_tokens":
+            raise AiUnavailableError(
+                "The answer was cut off before it was complete, so it is not shown."
+            )
+        text = next((block.text for block in response.content if block.type == "text"), "")
+        return Completion(
+            text=text,
+            model=response.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+
+    async def read_images(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        images: list[tuple[str, bytes]],
+        schema: dict[str, Any],
+        max_tokens: int,
+        effort: str,
+    ) -> Completion:
+        """`complete`, with pictures before the words: one structured answer about them."""
+        anthropic = self._anthropic
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": _b64(data)},
+            }
+            for media_type, data in images
+        ]
+        content.append({"type": "text", "text": prompt})
+        try:
+            response = await self._client.beta.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": content}],
                 output_config={
                     "effort": effort,
                     "format": {"type": "json_schema", "schema": schema},
@@ -361,6 +422,50 @@ async def structured(
     """
     completion = await _backend().complete(
         system=system, user=user, schema=schema, max_tokens=max_tokens, effort=effort
+    )
+    try:
+        return output.model_validate_json(completion.text), completion
+    except ValidationError as exc:
+        raise AiUnavailableError(
+            "The AI answer did not match the shape it was asked for, so it is not shown."
+        ) from exc
+
+
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode("ascii")
+
+
+async def read_images(
+    *,
+    system: str,
+    prompt: str,
+    images: list[tuple[str, bytes]],
+    output: type[T],
+    schema: dict[str, Any],
+    max_tokens: int = 6000,
+    effort: str = "low",
+) -> tuple[T, Completion]:
+    """`structured`, about pictures: each image is (media type, bytes), JPEG or PNG.
+
+    A provider or model that cannot look at pictures here raises
+    `AiUnavailableError` with a sentence the person can act on.
+    """
+    backend = _backend()
+    reader = getattr(backend, "read_images", None)
+    if reader is None:
+        raise AiUnavailableError(
+            "The AI model this workspace uses cannot read pictures here. Type the details, or "
+            "attach a PDF that has its text in it."
+        )
+    completion = await reader(
+        system=system,
+        prompt=prompt,
+        images=images,
+        schema=schema,
+        max_tokens=max_tokens,
+        effort=effort,
     )
     try:
         return output.model_validate_json(completion.text), completion

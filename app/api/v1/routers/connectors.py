@@ -25,6 +25,13 @@ class CompleteIn(BaseModel):
     state: str = Field(min_length=10, max_length=4000)
 
 
+class StartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Where to come back to once connected: an Ask Mira conversation. Empty: Connectors.
+    back: str | None = Field(default=None, max_length=80)
+
+
 class AddressIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,9 +46,11 @@ async def list_connectors(user: CurrentUser, session: DbSession) -> list[dict[st
 
 
 @router.post("/{product}/start")
-async def start(product: str, user: CurrentUser, session: DbSession) -> dict[str, str]:
+async def start(
+    product: str, user: CurrentUser, session: DbSession, payload: StartIn | None = None
+) -> dict[str, str]:
     """Where to send the browser to sign in to the product and press Allow."""
-    return await connectors.start(session, user, product)
+    return await connectors.start(session, user, product, back=payload.back if payload else None)
 
 
 @router.post("/{product}/complete")

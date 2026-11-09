@@ -41,6 +41,7 @@ from app.services.companion import (
     actions,
     analysis_tools,
     budget_tools,
+    connect_tools,
     data_tools,
     equipment_tools,
     helpdesk_actions,
@@ -699,7 +700,9 @@ TOOLS: dict[str, Tool] = {
                 f"Prepares a new lead in {_SALES} from what the person said or pasted, or an "
                 "update to an existing one, and offers it; the person confirms. For a new lead: "
                 "`company`, `contact_name`, `contact_title`, `contact_email`, `contact_phone`, "
-                "`deal_name` (a short name for what they want), `description` (what they want, "
+                "`deal_name` (what they want in a few words, such as 'SafeOps360 for 3 plants'; "
+                "not the company's or the contact's name: Saleinx shows it after the company's), "
+                "`description` (what they want, "
                 "in a sentence or two), `amount` (the budget in rupees: 1.2 crore is 12000000), "
                 "`decision_by` (the date they decide), `referred_by` and `source`, "
                 "`follow_up` and `follow_up_date` ('call him back this Thursday': the "
@@ -894,6 +897,21 @@ TOOLS: dict[str, Tool] = {
                 "'expense' for expense claims, 'helpdesk' for IT tickets and assets, "
                 "'saleinx' for leads and deals, 'procurement' for requisitions, orders and "
                 "invoices. Set `product`."
+            ),
+            inputs=("product",),
+        ),
+        Tool(
+            key="connect_product",
+            group="products",
+            title="Connect a product",
+            description=(
+                "When the person asks for something in a product that is not ready for them "
+                "(each message lists those), call this with `product` before you answer: "
+                "'saleinx' for leads and deals, 'helpdesk' for IT tickets and assets, 'expense' "
+                "for expense claims, 'interview' for jobs and candidates, 'procurement' for "
+                "requisitions, orders and invoices. It shows them what is missing and what to "
+                "do: an admin gets a Connect button that brings them back to this conversation, "
+                "anyone else is told who can do it. Never just say you can't, without it."
             ),
             inputs=("product",),
         ),
@@ -1406,6 +1424,9 @@ async def _run(
             )
         ], {}
 
+    if tool.key == "connect_product":
+        return await connect_tools.connect_card(session, user, str(inputs.get("product") or ""))
+
     if tool.key == "open_product":
         product = str(inputs.get("product") or "none")
         tenant = await session.get(Tenant, user.tenant_id)
@@ -1471,14 +1492,30 @@ async def _act(
             # The person's message and anything offered before it are saved
             # first: carrying out an offer commits, and a failure rolls back.
             await session.commit()
-            row = await actions.confirm(
-                session,
-                user,
-                action_id,
-                owner_id=user.id,
-                via="message",
-                request=ctx.request,
-                ctx=ctx,
-            )
+            try:
+                row = await actions.confirm(
+                    session,
+                    user,
+                    action_id,
+                    owner_id=user.id,
+                    via="message",
+                    request=ctx.request,
+                    ctx=ctx,
+                )
+            except HTTPException as exc:
+                # Refused: say so to the person in their words, and to the model
+                # plainly that nothing happened, so it never reports it as done.
+                detail = exc.detail if isinstance(exc.detail, str) else "That could not be done."
+                shown = (
+                    "Nothing was done yet: the offer is still waiting. Press its button to go "
+                    "ahead, or reply “yes”."
+                    if detail.startswith("The person")
+                    else detail
+                )
+                card = _notice(shown, "warning")
+                card["model_note"] = (
+                    f"Not done, nothing changed: {detail} Do not say it was done or saved."
+                )
+                return [card], used
         return [actions.card_for(row)], used
     return [_notice("That is not something I can do here.")], {}

@@ -41,7 +41,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
 from app.services.ai import client, governance
-from app.services.companion import actions, agent, direct, views
+from app.services.companion import actions, agent, attachments, connect_tools, direct, views
 from app.services.companion.config import (
     TOOL_GROUPS,
     CompanionConfig,
@@ -91,7 +91,8 @@ class PickIn(BaseModel):
 class MessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(min_length=1, max_length=2000)
+    #: The person's words. May be empty only when files come with them (`send`).
+    text: str = Field(default="", max_length=2000)
     conversation_id: uuid.UUID | None = None
     #: A choice clicked on an earlier answer (a person picked from a list): the
     #: tool and inputs it carries. Run without planning, as the person, and only
@@ -104,9 +105,7 @@ class MessageIn(BaseModel):
 
     @field_validator("text")
     @classmethod
-    def _not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Write a message.")
+    def _trimmed(cls, value: str) -> str:
         return value.strip()
 
 
@@ -152,8 +151,10 @@ def _message_read(
 
 
 async def _fresh(session: AsyncSession, user: User, row: CompanionMessage) -> dict[str, Any]:
-    """A message as read now: each offer on it shows what became of it."""
+    """A message as read now: each offer on it shows what became of it, and a product it
+    offered to connect says whether it is connected now."""
     cards = await actions.refresh_cards(session, user, row.cards or [], owner_id=user.id)
+    cards = await connect_tools.refresh_cards(session, user, cards)
     return _message_read(row, cards)
 
 
@@ -414,13 +415,32 @@ async def _answered(session: AsyncSession, user: User, client_ref: str) -> dict[
 
 
 async def send(
-    session: AsyncSession, user: User, payload: MessageIn, *, request: Request | None
+    session: AsyncSession,
+    user: User,
+    payload: MessageIn,
+    *,
+    request: Request | None,
+    files: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, Any]:
+    """One turn. `files` are (name, bytes) the person attached: read into words first
+    (attachments.py), shown as chips on their message, and given to the model with it."""
+    files = files or []
+    if not payload.text and not files:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Write a message."
+        )
+    if files and payload.pick is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A choice from a list can't carry files.",
+        )
     if payload.client_ref:
         earlier = await _answered(session, user, payload.client_ref)
         if earlier is not None:
             # Sent before: the same answer, and nothing runs again.
             return earlier
+    # Checked (count, type, the upload limit) before anything is saved or sent.
+    accepted = await attachments.accept_all(session, user, files) if files else []
     config = await get_config(session, user)
     ai = await _reason(session, user) is None
     await _check_limits(session, user, config, ai=ai)
@@ -434,7 +454,8 @@ async def send(
             session, user, conversation.id, owner_id=user.id, limit=CONTEXT_MESSAGES
         )
     else:
-        title = payload.text if len(payload.text) <= 80 else payload.text[:77].rstrip() + "…"
+        first = payload.text or f"File: {accepted[0].name}"
+        title = first if len(first) <= 80 else first[:77].rstrip() + "…"
         conversation = CompanionConversation(
             tenant_id=user.tenant_id, user_id=user.id, title=title, last_message_at=now
         )
@@ -466,6 +487,11 @@ async def send(
             status_code=status.HTTP_409_CONFLICT, detail="That message is being answered already."
         ) from None
 
+    # Read once, now: the words are what is kept (the files themselves never are).
+    attached = await attachments.read_all(session, user, accepted, ai=ai) if accepted else []
+    if attached:
+        mine.cards = [item.card() for item in attached]
+
     if payload.pick is not None or not ai:
         return await _send_direct(
             session,
@@ -476,9 +502,12 @@ async def send(
             payload.text,
             request=request,
             pick=payload.pick,
+            attached=attached,
         )
 
-    return await _send_ai(session, user, config, conversation, mine, history, payload, now, request)
+    return await _send_ai(
+        session, user, config, conversation, mine, history, payload, now, request, attached
+    )
 
 
 async def _send_ai(
@@ -491,6 +520,7 @@ async def _send_ai(
     payload: MessageIn,
     now: datetime,
     request: Request | None,
+    attached: list[attachments.Attachment],
 ) -> dict[str, Any]:
     """A turn the model works out with tools (agent.py)."""
     tenant = await session.get(Tenant, user.tenant_id)
@@ -509,14 +539,31 @@ async def _send_ai(
         ]
         tools = agent.narrow(
             tools,
-            payload.text,
+            " ".join([payload.text, *(item.label for item in attached)]),
             previous=previous[::-1],
             offers_open=any(offer.status is CompanionActionStatus.PROPOSED for offer in offers),
         )
-    sent = agent.user_content(payload.text, today=today, offers=offers)
+    # Products the person can't use yet, so the model offers to connect them rather
+    # than saying it can't (connect_tools.py).
+    not_ready = (
+        await connect_tools.not_ready_line(session, user)
+        if any(tool.key == "connect_product" for tool in tools)
+        else ""
+    )
+    sent = agent.user_content(
+        payload.text,
+        today=today,
+        offers=offers,
+        files=attachments.for_model(attached) if attached else "",
+        not_ready=not_ready,
+    )
     mine.transcript = sent
     await session.flush()
     attempts = injection.detect(payload.text, field="companion_message")
+    if attached:
+        attempts += injection.detect(
+            attachments.injection_text(attached), field="companion_attachment"
+        )
     ctx = actions.ToolContext(
         conversation_id=conversation.id,
         turn_started=now,
@@ -532,11 +579,12 @@ async def _send_ai(
             "categories": tuple(sorted(categories)),
             "principal_count": principals,
             "description": (
-                "A person's message to Ask Mira, the conversation so far, the tools they may "
-                "use, and the trimmed results of the lookups the model was allowed to read."
+                "A person's message to Ask Mira (with what was read from any file they "
+                "attached), the conversation so far, the tools they may use, and the trimmed "
+                "results of the lookups the model was allowed to read."
             ),
             "system": system,
-            "question": payload.text,
+            "question": payload.text or "(an attached file)",
             "started": now,
         }
 
@@ -674,13 +722,23 @@ async def _send_direct(
     *,
     request: Request | None,
     pick: PickIn | None = None,
+    attached: list[attachments.Attachment] | None = None,
 ) -> dict[str, Any]:
     """A turn planned by rule (direct.py), or a choice clicked on an earlier answer.
 
-    No model, nothing sent outside AskMira.
+    No model, nothing sent outside AskMira. A file is read only if it is a PDF
+    with its own text; what it says can't be worked with without a model, so
+    the reply says that, and the words are kept for a later turn that has one.
     """
+    attached = attached or []
     tools = await offered(session, user, config, ai=False)
-    if pick is not None:
+    if attached:
+        mine.transcript = agent.user_content(
+            text, today=_today(), offers=[], files=attachments.for_model(attached)
+        )
+    if attached and not text:
+        plan = direct.DirectPlan(reply="")
+    elif pick is not None:
         tool = TOOLS.get(pick.tool)
         if tool is None or tool.key not in {t.key for t in tools}:
             plan = direct.DirectPlan(reply="That choice is no longer available to you.")
@@ -720,12 +778,32 @@ async def _send_direct(
     cards: list[dict[str, Any]] = []
     used: dict[str, Any] = {}
     steps: list[dict[str, Any]] = []
-    shown = plan.reply or "Here is what I found."
+    said = plan.reply
     if chosen is not None:
         cards, used = await run(session, user, chosen, plan.inputs, today=_today())
         # Kept for a later turn the model answers: what was shown, as far as it may read it.
         read = agent.readable(chosen, config)
         steps = [{"tool": chosen.key, "title": chosen.title, "inputs": used, "read": read}]
+        if chosen.key == "connect_product":
+            # The card says what is missing and what to do; a line above it would repeat it.
+            said = ""
+    if attached:
+        read_any = any(item.read for item in attached)
+        cards.append(
+            {
+                "type": "notice",
+                "tone": "info",
+                "text": (
+                    "I read the file, but working with what it says needs AI, which is off for "
+                    "you here. Type the details you want me to use instead."
+                    if read_any
+                    else "I couldn't read the file without AI. Type the details instead."
+                ),
+            }
+        )
+    shown = said or "Here is what I found."
+    if cards:
+        read = agent.readable(chosen, config) if chosen is not None else True
         shown += "\n\n[What AskMira showed the person:]\n" + views.view_of(cards, allowed=read)
 
     reply = CompanionMessage(
@@ -733,7 +811,7 @@ async def _send_direct(
         conversation_id=conversation.id,
         user_id=user.id,
         role="assistant",
-        text=plan.reply,
+        text=said,
         tool=chosen.key if chosen else None,
         arguments=used or None,
         cards=cards,

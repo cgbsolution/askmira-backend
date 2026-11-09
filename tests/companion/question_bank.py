@@ -1118,12 +1118,45 @@ HAND: tuple[Case, ...] = (
     Case("raise a ticket", None, {}, reply_has="Raise a ticket"),
     Case("I want to raise a new IT ticket", None, {}, reply_has="Raise a ticket"),
     Case("open a ticket", None, {}, reply_has="Raise a ticket"),
-    # Switched off
-    Case("show open jobs", None, {}, without=("hiring_data",), reply_has="not available"),
-    Case("my expense claims", None, {}, without=("expense_data",), reply_has="not available"),
+    # Switched off, or not ready for the person: the card that says how to connect it.
+    Case(
+        "show open jobs",
+        "connect_product",
+        {"product": "interview"},
+        without=("hiring_data",),
+        reply_has="not available",
+    ),
+    Case(
+        "my expense claims",
+        "connect_product",
+        {"product": "expense"},
+        without=("expense_data",),
+        reply_has="not available",
+    ),
+    Case(
+        "my expense claims",
+        "connect_product",
+        {"product": "expense"},
+        without=("expense_data",),
+        hr=False,
+    ),
     Case("claims to approve", "my_approvals", {"kind": "expense"}, without=("expense_data",)),
     Case("my tickets", "hr_tickets", {"scope": "mine"}, without=("helpdesk_data",), hr=False),
-    Case("my tickets", None, {}, without=("helpdesk_data", "hr_helpdesk"), hr=False),
+    Case(
+        "my tickets",
+        "connect_product",
+        {"product": "helpdesk"},
+        without=("helpdesk_data", "hr_helpdesk"),
+        hr=False,
+    ),
+    # And with that card switched off too: only the words.
+    Case(
+        "show open jobs",
+        None,
+        {},
+        without=("hiring_data", "products"),
+        reply_has="not available",
+    ),
     Case("pending approvals", None, {}, without=("approvals",)),
     Case("payroll cost last month", None, {}, without=("payroll_figures",)),
 )
@@ -1366,14 +1399,28 @@ def build() -> list[Case]:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "account_forecast", inputs))
         cases.append(Case(question, REFUSED, hr=False))
-    # Named but not readable here: said so, and nothing else runs.
+    # Named but not readable here: said so, with the card that says how to connect it.
     for question in ("show deals in saleinx", "saleinx pipeline", "leads in the crm"):
-        cases.append(
-            Case(question, None, without=("sales_data",), reply_has="Reading Saleinx is not")
-        )
+        for hr in (True, False):
+            cases.append(
+                Case(
+                    question,
+                    "connect_product",
+                    {"product": "saleinx"},
+                    without=("sales_data",),
+                    hr=hr,
+                    reply_has="Reading Saleinx is not",
+                )
+            )
     for question in ("procureflow overview", "budgets in procureflow", "procurement approvals"):
         cases.append(
-            Case(question, None, without=("procurement_data",), reply_has="Reading ProcureFlow")
+            Case(
+                question,
+                "connect_product",
+                {"product": "procurement"},
+                without=("procurement_data",),
+                reply_has="Reading ProcureFlow",
+            )
         )
     # Not about ProcureFlow at all when it is not named.
     cases.append(Case("annual salary budget", "salary_totals"))

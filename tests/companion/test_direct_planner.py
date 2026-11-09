@@ -72,12 +72,17 @@ def test_words_are_matched_to_a_tool(text: str, tool: str, inputs: dict) -> None
 
 
 def test_only_an_offered_tool_is_ever_chosen() -> None:
+    # A product that is not ready: the card that says how to get it connected.
     without_hiring = [tool for tool in ALL if tool.group != "hiring_data"]
     plan = _plan("Show open jobs", without_hiring)
-    assert plan.tool is None
+    assert (plan.tool, plan.inputs) == ("connect_product", {"product": "interview"})
     assert "AnytimeHire is not available to you" in plan.reply
     without_expenses = [tool for tool in ALL if tool.group != "expense_data"]
-    assert _plan("my expense claims", without_expenses).tool is None
+    assert _plan("my expense claims", without_expenses).inputs == {"product": "expense"}
+    # With that card switched off too, only the words.
+    bare = [tool for tool in without_hiring if tool.key != "connect_product"]
+    plan = _plan("Show open jobs", bare)
+    assert plan.tool is None and "AnytimeHire is not available to you" in plan.reply
 
 
 def test_raising_a_ticket_points_to_the_form() -> None:
@@ -89,8 +94,10 @@ def test_raising_a_ticket_points_to_the_form() -> None:
     assert "HR replies on the ticket" in _plan("raise a ticket", without_helpdesk).reply
     assert _plan("my tickets", without_helpdesk).tool == "hr_tickets"
     neither = [tool for tool in without_helpdesk if tool.group != "hr_helpdesk"]
-    assert "CGB Helpdesk is not available" in _plan("raise a ticket", neither).reply
-    assert _plan("my tickets", neither).tool is None
+    plan = _plan("raise a ticket", neither)
+    assert "CGB Helpdesk is not available" in plan.reply
+    assert (plan.tool, plan.inputs) == ("connect_product", {"product": "helpdesk"})
+    assert _plan("my tickets", neither).inputs == {"product": "helpdesk"}
 
 
 def test_policy_questions_wait_for_ai() -> None:

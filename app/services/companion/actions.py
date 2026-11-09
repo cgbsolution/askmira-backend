@@ -732,6 +732,7 @@ async def propose_hr_ticket(
 _YES = re.compile(
     r"^\s*(?:yes|yeah|yep|yup|ya|haan|ha|han|ji|haan ji|ok|okay|okk|sure|confirm(?:ed)?|"
     r"go ahead|go for it|do it|please do|please|proceed|submit|send|send it|apply|"
+    r"add it|add them|add the lead|save it|save|update it|create it|book it|"
     r"apply it|approve|approve it|approve them|reject|reject it|reject them|raise it|"
     r"correct|that'?s right|right|fine|done|kar do|kardo|bhej do|theek hai|thik hai)"
     r"\b[\s\w,.!'-]*$",

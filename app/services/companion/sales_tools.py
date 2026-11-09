@@ -708,6 +708,26 @@ def _split_name(full: str) -> tuple[str, str]:
     return (parts[0], " ".join(parts[1:])) if parts else ("", "")
 
 
+#: Between a company's name and the rest: "Kestrel Foods - SafeOps360", "SafeOps360 for Kestrel".
+_JOIN = r"(?:[-:|,(\u2013\u2014]|\bfor\b|\bat\b|\bwith\b)"
+#: Words that name no deal on their own.
+_NO_NAME = frozenset({"opportunity", "deal", "lead", "new lead", "new deal", "new opportunity"})
+
+
+def _deal_name(name: str, company: str, contact: str | None, sells: list[str]) -> str:
+    """What a new deal is for, in a few words. Saleinx shows it after the company's name
+    ("Kestrel Foods - SafeOps360"), so the company, or a name that is only the contact's,
+    is left out of it; with nothing left, what it sells names it."""
+    if company:
+        known = re.escape(company.strip())
+        name = re.sub(rf"^\s*{known}(?!\w)\s*{_JOIN}?\s*", "", name, flags=re.IGNORECASE)
+        name = re.sub(rf"\s*{_JOIN}?\s*(?<!\w){known}\s*\)?\s*$", "", name, flags=re.IGNORECASE)
+    name = name.strip(" -:|,\u2013\u2014")
+    if name.lower() in _NO_NAME or (contact and name.lower() == contact.strip().lower()):
+        name = ""
+    return name or ", ".join(sells) or "New opportunity"
+
+
 async def propose_lead(
     session: AsyncSession, user: User, inputs: dict[str, Any], ctx: Any
 ) -> Result:
@@ -809,7 +829,7 @@ async def propose_lead(
     deal_in: dict[str, Any] = {}
     name = _text(inputs.get("deal_name"), 200)
     if deal is None:
-        deal_in["name"] = name or f"{company} opportunity"
+        deal_in["name"] = _deal_name(name, company, contact["name"], picked)
         figures.append({"label": "Deal", "value": deal_in["name"]})
         figures.append({"label": "Stage", "value": "Lead"})
     description = _text(inputs.get("description"), 2000)
@@ -845,9 +865,15 @@ async def propose_lead(
     if deal_in:
         params["deal"] = deal_in
     follow = _text(inputs.get("follow_up"), 280)
+    who = contact["name"] or company or (str(deal.get("title") or "") if deal else "")
+    if follow and who:
+        # A task list shows the title alone: "Call her" must still say who.
+        names = [part for part in (who.split()[0], company) if part]
+        if not any(part.lower() in follow.lower() for part in names):
+            follow = f"{follow} ({who})"
     if follow_day or follow:
         params["follow_up"] = {
-            "title": follow or f"Follow up with {contact['name'] or company or 'the lead'}",
+            "title": follow or f"Follow up with {who or 'the lead'}",
             "due_date": follow_day.isoformat() if follow_day else None,
             "type": "call" if re.search(r"\bcall|phone|ring\b", follow.lower()) else "followup",
         }

@@ -124,6 +124,9 @@ def test_every_action_is_an_offer_needing_ai() -> None:
         "approve them",
         "theek hai",
         "yes, send it!",
+        "add it as is",
+        "Add it",
+        "save it",
     ],
 )
 def test_a_plain_yes(text: str) -> None:
@@ -143,6 +146,8 @@ def test_a_plain_yes(text: str) -> None:
         "",
         "ok " + "and also " * 20,
         "nahi",
+        "add a lead for Zenith Pharma",
+        "add it but change the budget",
     ],
 )
 def test_anything_else_is_not(text: str) -> None:

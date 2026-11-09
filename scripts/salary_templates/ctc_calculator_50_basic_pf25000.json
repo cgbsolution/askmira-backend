@@ -1,10 +1,10 @@
 {
-  "source": "3. CTC breakup Calculator 50% Basic PF CELLING LIMIT-25000 01 OCT 26.xlsx (CGB, sent 2026-11-06)",
+  "source": "3. CTC breakup Calculator 50% Basic PF CELLING LIMIT-25000 01 OCT 26 (2).xlsx (CGB, sent 2026-11-06; replaces the first version's two structures)",
   "notes": [
-    "One structure per sheet: 'Without Gratuity' and 'External'. Each rule is the sheet's formula: Basic =CTC*50%; Statutory Bonus =IF(Basic<=21000,Basic*8.33%,0) (the BONUS wage type, as in the factoHR salary sheet); HRA =ROUNDUP(Basic*40%,0); Transport Allowance 0 (the CONVEYANCE ALLOWANCE wage type); Special = CTC - the rest - employer contributions.",
-    "Employer contributions inside the CTC: PF =ROUNDUP(IF(Basic<25000,Basic*13%,3250),0), ESIC =ROUNDUP(IF(Basic>21000,0,Basic*3.25%),0).",
-    "Employee deductions: Medical Insurance Premium 239 when there is no ESIC (Basic above 21000) -> INSURANCE; Professional Tax 200 (Without Gratuity only; blank on External) -> PT_MANUAL. Employee PF, employee ESIC and TDS are left to payroll, which works them out each month (and prorates them for loss of pay).",
-    "External's Gratuity row is empty in the sheet: kept as a 0 line so it can be given a rule."
+    "One structure per sheet: 'Without Gratuity', 'Internal' and 'External' (the 'Vizionforge' sheet is not imported). Each rule is the sheet's formula: Basic =CTC*50%; Statutory Bonus =IF(Basic<=21000,Basic*8.33%,0) (the BONUS wage type); HRA =ROUNDUP(Basic*40%,0); Transport Allowance 0 (the CONVEYANCE ALLOWANCE wage type); Special = CTC - the rest - the employer contributions.",
+    "Employer contributions inside the CTC: PF =ROUNDUP(IF(Basic<25000,Basic*13%,3250),0), ESIC =ROUNDUP(IF(Basic>21000,0,Basic*3.25%),0). Internal and External also keep Gratuity =ROUNDUP((Basic*15/26)/12,0) inside the CTC.",
+    "Gratuity is 15/26 of a month's Basic a year, 4.8076923...% of Basic a month. A rule takes four decimals, so it is 4.8077% rounded up: the sheet's figure or Rs 1 more (Special Rs 1 less) — exactly the sheet's for any Basic up to Rs 1,25,000 that is not a multiple of Rs 104 (Basic 26,000: 1,251 instead of 1,250); above Rs 1,25,000 about 2 in 100 Basics are Rs 1 more.",
+    "Employee deductions: Medical Insurance Premium 239 when there is no ESIC (Basic above 21000) -> INSURANCE; Professional Tax 200 on Internal and External (blank on Without Gratuity) -> PT_MANUAL. Employee PF, employee ESIC and TDS are left to payroll, which works them out each month (and prorates them for loss of pay)."
   ],
   "templates": [
     {
@@ -12,6 +12,44 @@
       "description": "From the CTC breakup Calculator (50% Basic, PF ceiling Rs 25,000 from 01 Oct 26), sheet 'Without Gratuity'.",
       "rounding_precision": 0,
       "lines": [
+        { "component_code": "BASIC", "rule": { "method": "percent", "value": "50", "of": "CTC" } },
+        {
+          "component_code": "BONUS",
+          "rule": {
+            "method": "percent",
+            "value": "8.33",
+            "of": "BASIC",
+            "when": { "on": "BASIC", "op": "up_to", "amount": "21000" }
+          }
+        },
+        { "component_code": "HRA", "rule": { "method": "percent", "value": "40", "of": "BASIC", "rounding": "up" } },
+        { "component_code": "CONVEYANCE", "rule": { "method": "fixed", "value": "0", "basis": "monthly" } },
+        { "component_code": "SPECIAL", "rule": { "method": "balance" } },
+        {
+          "component_code": "INSURANCE",
+          "rule": {
+            "method": "fixed",
+            "value": "239",
+            "basis": "monthly",
+            "when": { "on": "BASIC", "op": "above", "amount": "21000" }
+          }
+        }
+      ],
+      "employer_pf": { "method": "percent", "value": "13", "of": "PF_WAGES", "ceiling": "25000", "rounding": "up" },
+      "employer_esi": {
+        "method": "percent",
+        "value": "3.25",
+        "of": "BASIC",
+        "when": { "on": "BASIC", "op": "up_to", "amount": "21000" },
+        "rounding": "up"
+      }
+    },
+    {
+      "name": "50% Basic - Internal",
+      "description": "From the CTC breakup Calculator (50% Basic, PF ceiling Rs 25,000 from 01 Oct 26), sheet 'Internal': gratuity inside the CTC, professional tax 200.",
+      "rounding_precision": 0,
+      "lines": [
+        { "component_code": "GRATUITY", "rule": { "method": "percent", "value": "4.8077", "of": "BASIC", "rounding": "up" } },
         { "component_code": "BASIC", "rule": { "method": "percent", "value": "50", "of": "CTC" } },
         {
           "component_code": "BONUS",
@@ -47,10 +85,10 @@
     },
     {
       "name": "50% Basic - External",
-      "description": "From the CTC breakup Calculator (50% Basic, PF ceiling Rs 25,000 from 01 Oct 26), sheet 'External'.",
+      "description": "From the CTC breakup Calculator (50% Basic, PF ceiling Rs 25,000 from 01 Oct 26), sheet 'External': gratuity inside the CTC, professional tax 200.",
       "rounding_precision": 0,
       "lines": [
-        { "component_code": "GRATUITY", "rule": { "method": "fixed", "value": "0", "basis": "monthly" } },
+        { "component_code": "GRATUITY", "rule": { "method": "percent", "value": "4.8077", "of": "BASIC", "rounding": "up" } },
         { "component_code": "BASIC", "rule": { "method": "percent", "value": "50", "of": "CTC" } },
         {
           "component_code": "BONUS",
@@ -72,7 +110,8 @@
             "basis": "monthly",
             "when": { "on": "BASIC", "op": "above", "amount": "21000" }
           }
-        }
+        },
+        { "component_code": "PT_MANUAL", "rule": { "method": "fixed", "value": "200", "basis": "monthly" } }
       ],
       "employer_pf": { "method": "percent", "value": "13", "of": "PF_WAGES", "ceiling": "25000", "rounding": "up" },
       "employer_esi": {

@@ -202,7 +202,9 @@ async def test_the_model_cannot_confirm_in_the_turn_it_offered(
         result = await _say(session, me, f"apply casual leave on {day:%d %b} and confirm it")
     cards = result["messages"][1]["cards"]
     assert cards[0]["type"] == "proposal"
-    assert cards[1]["type"] == "notice" and "not answered this offer yet" in cards[1]["text"]
+    assert cards[1]["type"] == "notice" and "Nothing was done yet" in cards[1]["text"]
+    assert "not answered this offer yet" in cards[1]["model_note"]
+    assert "Do not say it was done" in cards[1]["model_note"]
     assert await _requests(session, me.employee_id) == []
     action = (await session.scalars(select(CompanionAction))).one()
     assert action.status is CompanionActionStatus.PROPOSED
@@ -224,7 +226,8 @@ async def test_a_change_of_mind_is_not_a_yes(
             session, me, "no wait, make it the next day", first["conversation"]["id"]
         )
     refused = second["messages"][1]["cards"][0]
-    assert refused["type"] == "notice" and "not a clear yes" in refused["text"]
+    assert refused["type"] == "notice" and "Nothing was done yet" in refused["text"]
+    assert "not a clear yes" in refused["model_note"]
     assert await _requests(session, me.employee_id) == []
 
 

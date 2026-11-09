@@ -1188,12 +1188,19 @@ def _help(tools: list[Tool], name: str, *, prefix: str = "") -> DirectPlan:
     return DirectPlan(reply=f"{prefix} Here is what you can ask {name}:\n{tried}".strip())
 
 
+_KEY_OF_BRAND = {product.brand: key for key, product in PRODUCTS.items()}
+
+
 def _unavailable(product: str) -> DirectPlan:
+    """A product that is not ready for the person: the card that says what to do about it
+    (connect_tools.py), or these words where that card is switched off."""
     return DirectPlan(
         reply=(
             f"Reading {product} is not available to you here: it is not linked to this "
             "workspace, you have no role in it, or an admin switched it off for Ask Mira."
-        )
+        ),
+        tool="connect_product",
+        inputs={"product": _KEY_OF_BRAND.get(product, "none")},
     )
 
 
@@ -2266,6 +2273,9 @@ def plan(
     follow-up such as "for the last 6 months" or "as a pie chart" changes that answer.
     """
     result = _plan(text, tools, today=today, name=name, hr=hr)
+    if result.tool and result.tool not in {tool.key for tool in tools}:
+        # Only ever an offered tool (the connect card may be switched off): the words stay.
+        result = DirectPlan(reply=result.reply)
     if result.tool or previous is None:
         return result
     return _follow_up(text, tools, today=today, previous=previous) or result

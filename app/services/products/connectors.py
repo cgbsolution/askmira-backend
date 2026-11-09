@@ -26,6 +26,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import re
 import secrets
 import socket
 from datetime import UTC, datetime, timedelta
@@ -172,9 +173,32 @@ async def overview(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     return [_read(p, await _link(session, user, p.key)) for p in PRODUCTS.values()]
 
 
-async def start(session: AsyncSession, user: User, product_key: str) -> dict[str, str]:
-    """Where to send the admin's browser: the product's Allow page."""
+#: Where Connect may bring the admin back to, other than Connectors: the Ask Mira
+#: conversation they pressed Connect in (companion/connect_tools.py).
+_BACK = re.compile(r"/ask-mira(\?c=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?")
+
+
+def _back(value: str | None) -> str | None:
+    if not value:
+        return None
+    if not _BACK.fullmatch(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Connect can only bring you back to Ask Mira or to Connectors.",
+        )
+    return value
+
+
+async def start(
+    session: AsyncSession, user: User, product_key: str, *, back: str | None = None
+) -> dict[str, str]:
+    """Where to send the admin's browser: the product's Allow page.
+
+    `back` is where to return once it is connected (an Ask Mira conversation);
+    without it, Connectors.
+    """
     _require_admin(user)
+    back = _back(back)
     product = _product(product_key)
     where = _where(product, await _link(session, user, product.key))
     if where is None:
@@ -209,6 +233,7 @@ async def start(session: AsyncSession, user: User, product_key: str) -> dict[str
                 "api": api_url,
                 "app": app_url,
                 "exp": int((datetime.now(UTC) + STATE_LIFETIME).timestamp()),
+                **({"b": back} if back else {}),
             }
         )
     )
@@ -332,7 +357,11 @@ async def complete(
     await session.commit()
 
     await links.sync(session, user.tenant_id, product.key, actor=user, request=request)
-    return _read(product, await _link(session, user, product.key))
+    out = _read(product, await _link(session, user, product.key))
+    # Where the admin pressed Connect, when that was an Ask Mira conversation.
+    back = data.get("b")
+    out["back"] = back if isinstance(back, str) and _BACK.fullmatch(back) else None
+    return out
 
 
 async def sync_now(

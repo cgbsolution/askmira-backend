@@ -33,6 +33,11 @@ ENDPOINTS: dict[str, str] = {
         "only within oauth.allowed_scopes for their role; the model reads a trimmed result "
         "only within the categories the DPDP register lets the model provider receive."
     ),
+    "POST /companion/messages/files": (
+        "own: the caller's own conversation (user.id), as POST /companion/messages; the files "
+        "are held to the workspace's upload limit and types, read into text (a picture by the "
+        "workspace's model only with AI on and the caller's consent) and never stored."
+    ),
     "POST /companion/actions/{action_id}/confirm": (
         "own: only an offer whose user_id is the caller's (user.id); it runs the module's own "
         "service as the caller, with that service's permission checks."
