@@ -59,7 +59,7 @@ _DATE = "dd-mmm-yyyy"
 
 _TITLE_FONT = Font(bold=True, size=14, color="1F1B16")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
-_HEADER_FILL = PatternFill("solid", fgColor="7D0712")  # AskMira maroon
+_HEADER_FILL = PatternFill("solid", fgColor="7D0712")  # AskMiraa maroon
 _GROUP_FILL = PatternFill("solid", fgColor="F3ECE6")  # Cream
 _TOTAL_FILL = PatternFill("solid", fgColor="F3ECE6")
 _LOCKED_FONT = Font(bold=True, color="1E6B3A")
@@ -190,7 +190,7 @@ async def register_xlsx(
 
     def project_of(payslip: Payslip, employee: Employee) -> str | None:
         # An imported payslip names only the project its register row named; when
-        # that matched no AskMira project, the register's own text is shown.
+        # that matched no AskMiraa project, the register's own text is shown.
         project_id = payslip_project_id(payslip, employee, imported=imported)
         if project_id is not None:
             return projects.get(project_id)

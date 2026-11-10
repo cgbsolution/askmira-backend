@@ -14,7 +14,7 @@ ENDPOINTS: dict[str, str] = {
     "POST /culture/shoutouts/draft": (
         "own: a draft for the caller to edit (user.employee_id); nothing is posted."
     ),
-    # ── Ask Mira (the AI companion) ─────────────────────────────────────────
+    # ── Ask Miraa (the AI companion) ─────────────────────────────────────────
     "GET /companion/status": (
         "own: the caller's own availability and messages sent today (user.id); the "
         "workspace's companion name and greeting are the same for everyone."

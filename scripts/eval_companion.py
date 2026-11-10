@@ -1,4 +1,4 @@
-"""Measure Ask Mira's AI planner on the question bank.
+"""Measure Ask Miraa's AI planner on the question bank.
 
 The rule-based planner is tested on every question in tests/companion (pytest).
 The AI planner can only be measured with a model, so this script sends a sample

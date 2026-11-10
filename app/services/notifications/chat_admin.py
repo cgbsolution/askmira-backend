@@ -1,8 +1,8 @@
 """Settings → Notifications → Slack and Microsoft Teams, for the workspace admin.
 
-The admin creates AskMira's app in their own Slack workspace or Microsoft 365
+The admin creates AskMiraa's app in their own Slack workspace or Microsoft 365
 tenant from the manifest given here, pastes its credentials, and chooses what
-goes there: approval requests only, or everything people are told in AskMira.
+goes there: approval requests only, or everything people are told in AskMiraa.
 Credentials are checked against Slack or Microsoft before they are kept, are
 encrypted with the tenant key, and are never returned.
 """
@@ -74,7 +74,7 @@ async def _row(session: AsyncSession, user: User, provider: Channel) -> TenantCh
 
 
 def inbound_url(provider: Channel, tenant_id: Any) -> str:
-    """Where Slack sends events, or Teams its messages, for Ask Mira in this workspace."""
+    """Where Slack sends events, or Teams its messages, for Ask Miraa in this workspace."""
     from app.core.config import settings
 
     base = (settings.PUBLIC_API_URL or settings.WEB_APP_URL or "").rstrip("/")
@@ -132,7 +132,7 @@ async def save(
 ) -> dict[str, Any]:
     """Save the app. `secret=None` keeps the stored one. Checked with the provider first.
 
-    `ask_mira` lets people message the app to ask Ask Mira. Slack then needs the
+    `ask_mira` lets people message the app to ask Ask Miraa. Slack then needs the
     app's signing secret (`signing_secret`, None keeps it), to tell its events
     from anyone else's.
     """
@@ -176,8 +176,8 @@ async def save(
     )
     if provider is Channel.SLACK and ask_mira and not has_signing:
         raise _unprocessable(
-            "Add the app's signing secret before people can ask Mira in Slack: it is how "
-            "AskMira knows a message really came from Slack."
+            "Add the app's signing secret before people can ask Miraa in Slack: it is how "
+            "AskMiraa knows a message really came from Slack."
         )
     has_secret = bool(secret) or bool(row is not None and row.secret_encrypted and secret is None)
     if enabled and not has_secret:
@@ -256,7 +256,7 @@ async def send_test(
         raise _unprocessable(f"Save {LABEL[provider]}'s details before sending a test.")
     adapter = dispatch.get_adapter(provider) or dispatch.chat_adapter(row)
     base = email_brand.portal_url()
-    actions = (MessageAction(label="Open AskMira", url=base.rstrip("/")),) if base else ()
+    actions = (MessageAction(label="Open AskMiraa", url=base.rstrip("/")),) if base else ()
     ok, error = True, None
     try:
         result = await adapter.send(
@@ -264,9 +264,9 @@ async def send_test(
                 recipient_name=user.full_name,
                 recipient_email=user.email,
                 recipient_phone=None,
-                subject="AskMira is connected",
+                subject="AskMiraa is connected",
                 body=(
-                    f"This is a test from AskMira. Approval requests will reach people here in "
+                    f"This is a test from AskMiraa. Approval requests will reach people here in "
                     f"{LABEL[provider]}, with Approve and Reject buttons."
                 ),
                 event_key="system.chat_test",

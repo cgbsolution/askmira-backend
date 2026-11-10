@@ -58,7 +58,7 @@ def _print_report(report: dict) -> None:
     print(
         f"Salary revisions: {salary['revisions_new']} new, {salary['revisions_redated']} re-dated, "
         f"{salary['revisions_deleted']} replaced; increments with an unknown date: "
-        f"{len(salary['increments_date_unknown'])}; no salary in AskMira: "
+        f"{len(salary['increments_date_unknown'])}; no salary in AskMiraa: "
         f"{len(salary['no_live_salary'])}; left as they are: {len(salary['left_as_is'])}"
     )
     print("Salary actions:", salary["actions"])

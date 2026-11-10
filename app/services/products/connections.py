@@ -4,7 +4,7 @@ A workspace whose admin connected the product from Settings → Connectors
 (products/connectors.py) has a secret of its own, issued by the product for
 that workspace alone and kept encrypted on its product link. A workspace linked
 the older way falls back to the server-wide INTERVIEW_TOOL_… / EXPENSE_TOOL_…
-settings. Every call to a product — people sync, a launch, an Ask Mira
+settings. Every call to a product — people sync, a launch, an Ask Miraa
 question — learns its target here, by workspace.
 """
 

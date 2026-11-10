@@ -144,7 +144,7 @@ def _source(title_rows: list[list[Any]], names: list[str]) -> str:
     if "employee detail report" in text or {"code series", "payroll group"} <= keys:
         return "factoHR Employee Detail report"
     if {"emp code", "first name", "local pincode"} <= keys:
-        return "AskMira template"
+        return "AskMiraa template"
     return "Spreadsheet"
 
 

@@ -1478,7 +1478,7 @@ def _notification_text(row: Announcement) -> str:
     body = " ".join(row.body.split())
     text = body if len(body) <= 400 else body[:400].rstrip() + "…"
     if row.requires_acknowledgement:
-        text += " Please read it and acknowledge it in AskMira."
+        text += " Please read it and acknowledge it in AskMiraa."
     return text
 
 

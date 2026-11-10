@@ -245,7 +245,7 @@ async def list_accounts(
 
 
 async def find_accounts(session: AsyncSession, user: User, query: str) -> list[ClientAccount]:
-    """Accounts whose code or name holds the words typed (for Ask Mira)."""
+    """Accounts whose code or name holds the words typed (for Ask Miraa)."""
     stmt = select(ClientAccount).order_by(ClientAccount.name)
     words = [w for w in re.split(r"\s+", query.strip()) if w]
     for word in words:
@@ -669,7 +669,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
     guide = book.create_sheet("Instructions")
     for line in (
         ["How to fill this sheet"],
-        ["Account code: the code of an account in AskMira (see the list below)."],
+        ["Account code: the code of an account in AskMiraa (see the list below)."],
         ["Type: Billing for an invoice raised (negative for a credit note)."],
         ["        Cost for a direct cost (travel, software, a subcontractor)."],
         ["Month: the month it belongs to, as 2026-09 or Sep 2026."],
@@ -706,7 +706,7 @@ def _sheet_rows(data: bytes, filename: str) -> list[tuple[int, list[Any]]]:
     try:
         book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:  # openpyxl raises many kinds for a bad file
-        raise _unprocessable("This is not an Excel (.xlsx) file AskMira can read.") from exc
+        raise _unprocessable("This is not an Excel (.xlsx) file AskMiraa can read.") from exc
     for sheet in book.worksheets:
         if _key(sheet.title) in {"instructions", "sample"}:
             continue
@@ -1415,7 +1415,7 @@ async def account_pnl(
     include_inactive: bool = False,
     accounts: list[ClientAccount] | None = None,
 ) -> AccountPnlRead:
-    """The P&L without the role check: callers check who may see it (Ask Mira does its own)."""
+    """The P&L without the role check: callers check who may see it (Ask Miraa does its own)."""
     start, end, months = await _period(session, user, start, end)
     if accounts is None:
         stmt = select(ClientAccount).order_by(ClientAccount.name)

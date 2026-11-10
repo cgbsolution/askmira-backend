@@ -3,7 +3,7 @@
 What these hold, scenario by scenario (the user's test prompts A1-C6):
 
 * The person's role in Saleinx and ProcureFlow is the product's own, from its
-  people sync (`member_roles`); AskMira grants none. Without one, nothing of
+  people sync (`member_roles`); AskMiraa grants none. Without one, nothing of
   that product is offered and launching it is refused.
 * A lead from a pasted note (A1) becomes one offer with what the note said — no
   close date on a Lead, the decision date in the next step, the follow-up on
@@ -107,7 +107,7 @@ def _deal(deal_id: str, company: str, name: str, stage: str, **extra: Any) -> di
 
 
 class FakeProducts:
-    """Saleinx, AnytimeHire and ProcureFlow's AskMira endpoints, checking every call."""
+    """Saleinx, AnytimeHire and ProcureFlow's AskMiraa endpoints, checking every call."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []

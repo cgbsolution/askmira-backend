@@ -1,4 +1,4 @@
-"""Ask Mira's HR and founder questions: approvals, payroll figures, joiners and exits,
+"""Ask Miraa's HR and founder questions: approvals, payroll figures, joiners and exits,
 the dates coming up, and the HR helpdesk.
 
 Each answer is read here, as the person asking, through the same rules the
@@ -249,7 +249,7 @@ async def approvals(
         open_href="/approvals",
         open_label="Open Approvals",
     )
-    # Which request each row is, for Ask Mira to name when it offers to decide one.
+    # Which request each row is, for Ask Miraa to name when it offers to decide one.
     card["refs"] = [f"{item.source}:{item.id}" for item in items[:25]]
     return [card], used
 

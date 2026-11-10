@@ -1,7 +1,7 @@
-"""Expense Genie claims paid with salary in AskMira payroll.
+"""Expense Genie claims paid with salary in AskMiraa payroll.
 
-With Expense Genie linked, approved claims there are paid in AskMira's payroll
-run like AskMira's own claims are. One row per claim is the double-pay guard:
+With Expense Genie linked, approved claims there are paid in AskMiraa's payroll
+run like AskMiraa's own claims are. One row per claim is the double-pay guard:
 a claim reference is unique per workspace, written when the run that pays it is
 approved, so no second run can pay it again. `marked_at` is when Expense Genie
 recorded the payment on its side; until then the scheduler keeps telling it.

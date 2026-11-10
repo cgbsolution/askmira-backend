@@ -1,6 +1,6 @@
-"""Ask Mira raises a requisition: "Raise the second requisition."
+"""Ask Miraa raises a requisition: "Raise the second requisition."
 
-Mira finds the department, checks its headcount budget for HR — counting the
+Miraa finds the department, checks its headcount budget for HR — counting the
 seats requisitions already ask for, and saying that only they see this check
 (a manager sees no budget) — works out the approval path the requisition will
 follow and what its approvers will be told, and offers all of it. A sub-admin's
@@ -169,7 +169,7 @@ async def propose(
 
     request = getattr(ctx, "request", None)
     # A sub-admin's hiring rights, as POST /hiring/requisitions would read them; the
-    # rest of the turn goes on with the rights of a message to Ask Mira.
+    # rest of the turn goes on with the rights of a message to Ask Miraa.
     await _as_portal(session, user, request, _PATH)
     try:
         return await _propose(session, user, inputs, ctx)

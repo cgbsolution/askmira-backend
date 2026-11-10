@@ -1,4 +1,4 @@
-"""Ask Mira files expense claims and decides the ones waiting on you, in ExpenseGenie.
+"""Ask Miraa files expense claims and decides the ones waiting on you, in ExpenseGenie.
 
 ExpenseGenie is a fake (httpx MockTransport) answering its documented
 ``categories`` and ``claims`` queries and ``claim.create`` / ``claim.decide``
@@ -359,7 +359,7 @@ async def test_a_lost_answer_is_asked_once_more_with_the_same_key(
     assert done["action"]["status"] == "done", done["action"]
     first, second = genie.acts("claim.create")
     assert first["params"]["key"] == second["params"]["key"] == f"askmira-{offer['action_id']}"
-    # Done in ExpenseGenie, and AskMira's own log says Ask Mira did it, as whom.
+    # Done in ExpenseGenie, and AskMiraa's own log says Ask Miraa did it, as whom.
     row = await session.scalar(
         select(AuditLog).where(AuditLog.entity_id == uuid.UUID(offer["action_id"]))
     )

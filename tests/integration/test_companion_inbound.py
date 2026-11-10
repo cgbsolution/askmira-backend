@@ -1,10 +1,10 @@
-"""Ask Mira from Slack, Microsoft Teams and email.
+"""Ask Miraa from Slack, Microsoft Teams and email.
 
 * Slack: an event not signed with the app's signing secret, or too old, is
   refused; the URL check is answered; a direct message from a Slack account
-  whose email is an AskMira login is answered as that person in the same DM,
+  whose email is an AskMiraa login is answered as that person in the same DM,
   and the next message continues the same conversation; anyone else is told
-  only AskMira logins are answered, and nothing runs for them.
+  only AskMiraa logins are answered, and nothing runs for them.
 * Teams: an activity without Microsoft's valid token is refused; one from
   another channel (Web Chat writes its own `from`) or another Microsoft 365
   tenant is not answered; a message is answered as the person found by their
@@ -13,10 +13,10 @@
   vouched for by its own domain (DKIM for that domain, or SPF for that same
   envelope sender) — a pass for another domain, a display name, a field sent
   twice or an unsigned Mailgun post is refused — and an offer is confirmed in
-  AskMira, never by reply. Only an admin switches it on; a new address replaces
+  AskMiraa, never by reply. Only an admin switches it on; a new address replaces
   the old one; Mailgun needs its signing key.
 * Everywhere: a suspended workspace is not answered, the two-step rule sends
-  people to AskMira, a sub-admin keeps their scope, and records of pay or leave
+  people to AskMiraa, a sub-admin keeps their scope, and records of pay or leave
   are not written into the chat.
 """
 
@@ -155,7 +155,7 @@ async def test_slack_refuses_what_it_did_not_sign_and_answers_its_url_check(
 ) -> None:
     url = f"/api/v1/companion/inbound/slack/{tenant.id}"
     body = json.dumps({"type": "url_verification", "challenge": "abc"}).encode()
-    # Not set up for Ask Mira: nothing here.
+    # Not set up for Ask Miraa: nothing here.
     assert (await client.post(url, content=body, headers=_signed(body))).status_code == 404
     await _slack_app(session, tenant)
     forged = _signed(body, secret="f" * 32)
@@ -204,7 +204,7 @@ async def test_a_slack_account_that_is_not_an_askmira_login_gets_nothing(
     with use_backend(FakeModel()):
         assert (await client.post(url, content=body, headers=_signed(body))).status_code == 200
     [posted] = slack.posted
-    assert "I can only answer people who sign in to AskMira" in posted["text"]
+    assert "I can only answer people who sign in to AskMiraa" in posted["text"]
     assert await session.scalar(select(func.count(CompanionConversation.id))) == 0
 
 
@@ -271,7 +271,7 @@ async def test_a_teams_message_is_answered_as_the_person_found_in_entra(
     monkeypatch.setattr(dispatch, "chat_adapter", lambda row: Bot())
     monkeypatch.setattr(httpx, "AsyncClient", factory)
     activity = {
-        "type": "message", "id": "act-1", "text": "<at>AskMira</at> hello",
+        "type": "message", "id": "act-1", "text": "<at>AskMiraa</at> hello",
         "serviceUrl": "https://smba.test/", "from": {"aadObjectId": aad},
         "conversation": {"id": "a:conv-1"}, "channelId": "msteams",
         "channelData": {"tenant": {"id": "1F8FAD5B-D9CB-469F-A165-70867728950E"}},
@@ -285,13 +285,13 @@ async def test_a_teams_message_is_answered_as_the_person_found_in_entra(
         == "from another Microsoft 365 tenant"
     )
     assert seen == [], "nothing is looked up for either"
-    with use_backend(FakeModel(plan(reply="Hi from Mira."))):
+    with use_backend(FakeModel(plan(reply="Hi from Miraa."))):
         outcome = await inbound.handle_teams(session, tenant.id, activity)
     assert outcome == "answered"
     graph, reply = seen
     assert graph.url.path == f"/v1.0/users/{aad}"
     assert reply.url.path == "/v3/conversations/a:conv-1/activities/act-1"
-    assert json.loads(reply.content)["text"].startswith("Hi from Mira.")
+    assert json.loads(reply.content)["text"].startswith("Hi from Miraa.")
 
 
 def _sendgrid(sender: str, *, envelope: str | None = None, spf: str = "", dkim: str = "") -> dict:
@@ -487,7 +487,7 @@ async def test_a_suspended_workspace_and_the_two_step_rule_are_kept_in_chat(
     with use_backend(FakeModel()):
         body = _dm("hello")
         assert (await client.post(url, content=body, headers=_signed(body))).status_code == 200
-    assert slack.posted[-1]["text"] == "Ask Mira isn't available for your company right now."
+    assert slack.posted[-1]["text"] == "Ask Miraa isn't available for your company right now."
     assert await session.scalar(select(func.count(CompanionConversation.id))) == 0
     row.is_active = True
     await session.commit()
@@ -539,7 +539,7 @@ def test_a_chat_reply_leaves_records_of_pay_and_leave_in_askmira() -> None:
     }  # fmt: skip
     text = channels.render("Here.", [salary, people], place="slack", conversation_id="c-1")
     assert "₹18,00,000" not in text and "Annual CTC" not in text
-    assert "kept in AskMira" in text
+    assert "kept in AskMiraa" in text
     assert "Ravi Sales · Sales" in text
     held = {
         "type": "proposal", "title": "Book PO-1", "status": "proposed",
@@ -575,4 +575,4 @@ def test_the_reply_says_how_to_confirm_in_each_place() -> None:
     assert "Reply “yes” to raise and send for approval, or “no”." in chat
     mailed = channels.render("Here it is.", [offer], place="email", conversation_id="c-1")
     assert "Reply “yes”" not in mailed
-    assert "Confirm it in AskMira: https://portal.test/ask-mira?c=c-1" in mailed
+    assert "Confirm it in AskMiraa: https://portal.test/ask-mira?c=c-1" in mailed

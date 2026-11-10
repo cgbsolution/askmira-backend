@@ -8,7 +8,7 @@ addresses, family, statutory identifiers and salary account.
 
 What it will not do:
 
-- Overwrite. An employee code already in AskMira is skipped, so a corrected
+- Overwrite. An employee code already in AskMiraa is skipped, so a corrected
   file can be imported again without touching anybody already brought in.
   One exception fills a gap and changes nothing: somebody imported when only
   the last four Aadhaar digits were kept gets the full number from the file,
@@ -17,7 +17,7 @@ What it will not do:
   under another code — the admin made when the workspace was, say — or that
   two rows share stops the row, naming who has it. `rejected` hands back
   every row left out, with its own cells and why.
-- Invent, or drop what the old system held. A value that fails AskMira's
+- Invent, or drop what the old system held. A value that fails AskMiraa's
   check (a PAN that is not a PAN, an address with no PIN code) is imported as
   typed and listed as an issue against its person, for HR to correct; only a
   missing employee code, first name or joining date stops a row, and a
@@ -27,7 +27,7 @@ What it will not do:
 
 A factoHR export's lists (qualifications, family, nominees, emergency
 contacts, past employers' tax) and its continuation rows are read by
-`groups`; its columns AskMira has no field for become custom fields on a
+`groups`; its columns AskMiraa has no field for become custom fields on a
 "factoHR" profile tab, created by an admin's import.
 """
 
@@ -276,7 +276,7 @@ class _Row:
     prior_income: list[dict[str, Any]] = field(default_factory=list)
     #: Years the sheet lists with every amount 0: nothing to record.
     prior_zero_years: int = 0
-    #: Imported as typed, but not as AskMira would have it: for HR to look at.
+    #: Imported as typed, but not as AskMiraa would have it: for HR to look at.
     issues: list[str] = field(default_factory=list)
     employee_id: uuid.UUID | None = None
 
@@ -383,7 +383,7 @@ def _distinct(parts: list[str | None]) -> list[str]:
 
 
 def _lines(parts: list[str | None]) -> tuple[str | None, str | None]:
-    """Up to three address cells as the two lines AskMira keeps, 255 characters each."""
+    """Up to three address cells as the two lines AskMiraa keeps, 255 characters each."""
     present = _distinct(parts)
     if not present:
         return None, None
@@ -747,7 +747,7 @@ def _read_row(
         "notice_period_days": notice or None,
     }
     if not row.errors:
-        # Checked as AskMira would enter it; a leaver's missing email and a code
+        # Checked as AskMiraa would enter it; a leaver's missing email and a code
         # kept as typed are already listed, so they do not stop the row here.
         checked = dict(record)
         if not checked["work_email"]:
@@ -882,7 +882,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         if zeros:
             header = table.columns_by_index[index].header
             notes.append(f"{header}: 0 for {zeros} people — recorded as not set.")
-    # The status word as the old system typed it: AskMira keeps fewer statuses
+    # The status word as the old system typed it: AskMiraa keeps fewer statuses
     # ("Withdrawn", "Suspended" and "Inactive" are all "left"), so the word
     # itself is kept on the factoHR tab and the mapping said once.
     status = table.mapping.get("status")
@@ -998,13 +998,13 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
         held = ws.emails.get(email)
         mine = row.code is not None and held is not None and held[0].upper() == row.code.upper()
         # A row already here shares the address with others from this file, said
-        # below; who else holds it in AskMira would only say it twice.
+        # below; who else holds it in AskMiraa would only say it twice.
         if held is not None and not mine and not row.skip:
             if row.leaver or email not in ws.current_emails:
-                row.issues.append(f"Email {email} is also {held[0]} ({held[1]})'s in AskMira.")
+                row.issues.append(f"Email {email} is also {held[0]} ({held[1]})'s in AskMiraa.")
             else:
                 row.errors.append(
-                    f"Email {email} is already used by {held[0]} ({held[1]}) in AskMira. If that "
+                    f"Email {email} is already used by {held[0]} ({held[1]}) in AskMiraa. If that "
                     "is the same person, it was not added again; otherwise give this row its own "
                     "email."
                 )
@@ -1037,7 +1037,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
                 new_projects.setdefault(_key(row.project), row.project)
             else:
                 row.warnings.append(
-                    f"Project '{row.project}' is not in AskMira — left blank. An admin can "
+                    f"Project '{row.project}' is not in AskMiraa — left blank. An admin can "
                     "import this file to create it."
                 )
         if row.department and _key(row.department) not in ws.departments:
@@ -1045,7 +1045,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
                 new_departments.setdefault(_key(row.department), row.department)
             else:
                 row.warnings.append(
-                    f"Department '{row.department}' is not in AskMira — left blank. "
+                    f"Department '{row.department}' is not in AskMiraa — left blank. "
                     "An admin can import this file to create it."
                 )
         if row.location and _key(row.location) not in ws.locations:
@@ -1055,12 +1055,12 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
             entity = _entity_for(row, ws)
             if not can_create:
                 row.warnings.append(
-                    f"Location '{row.location}' is not in AskMira — left blank. An admin can "
+                    f"Location '{row.location}' is not in AskMiraa — left blank. An admin can "
                     "import this file to create it."
                 )
             elif state is None:
                 row.warnings.append(
-                    f"Location '{row.location}' is not in AskMira and its state cannot be told "
+                    f"Location '{row.location}' is not in AskMiraa and its state cannot be told "
                     "— left blank. Add it under Settings → Organisation, then check again."
                 )
             elif entity is None:
@@ -1094,7 +1094,7 @@ async def _plan(session: AsyncSession, user: User, table: Table) -> _Plan:
             row.manager_code = None
         elif upper not in in_file and upper not in ws.codes:
             row.warnings.append(
-                f"Reporting Manager {code} is not in the file or in AskMira — left blank."
+                f"Reporting Manager {code} is not in the file or in AskMiraa — left blank."
             )
             row.manager_code = None
     by_code = {row.code.upper(): row for row in ready if row.code}
@@ -1267,7 +1267,7 @@ async def preview(session: AsyncSession, user: User, data: bytes, filename: str)
 
 
 #: Why a row whose code is already here was not added.
-_SKIPPED = "Emp Code is already in AskMira; that record is left as it is."
+_SKIPPED = "Emp Code is already in AskMiraa; that record is left as it is."
 
 
 async def rejected(session: AsyncSession, user: User, data: bytes, filename: str) -> bytes:
@@ -1352,7 +1352,7 @@ async def run(
             changes={"fields": custom_fields_created, "tab": g.EXTRA_TAB, "source": filename},
             summary=(
                 f"Added {len(custom_fields_created)} custom fields on the {g.EXTRA_TAB} tab for "
-                f"the columns of {filename} that AskMira has no field for"
+                f"the columns of {filename} that AskMiraa has no field for"
             ),
             request=request,
         )
@@ -1612,7 +1612,7 @@ async def run(
 
 async def issues(session: AsyncSession, user: User, data: bytes, filename: str) -> bytes:
     """Everybody the file has something to look at for, one line per point, as a
-    workbook: values imported as typed that are not as AskMira would have them,
+    workbook: values imported as typed that are not as AskMiraa would have them,
     values left out, and rows not added. Writes nothing."""
     from openpyxl import Workbook
     from openpyxl.styles import Font
@@ -1626,7 +1626,7 @@ async def issues(session: AsyncSession, user: User, data: bytes, filename: str) 
     for cell in sheet[1]:
         cell.font = Font(bold=True)
     # About the file's own values, before the import or after it (when every
-    # row is already here): a row already in AskMira lists its points too.
+    # row is already here): a row already in AskMiraa lists its points too.
     kinds = (("errors", "Not added"), ("issues", "Imported as typed"), ("warnings", "Left out"))
     for row in plan.rows:
         status = row.record.get("status")

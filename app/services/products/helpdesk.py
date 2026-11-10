@@ -3,15 +3,15 @@
 When a workspace connects CGB Helpdesk, its Helpdesk and Assets sections show
 the helpdesk's own records. The lists — the person's tickets, the queues, the
 assets they hold, the asset register — are views (views.py), read through Ask
-Mira's lookups. This module covers what a list can't: one ticket with its
+Miraa's lookups. This module covers what a list can't: one ticket with its
 conversation, the choices the Raise a ticket form offers, and the two things a
 person does from here, raising a ticket and replying on one.
 
 Both happen in the helpdesk, as the person (data.act, signed use=act); the
 helpdesk keeps the ticket and does its own notifying, exactly as when it is
-raised there. AskMira writes an audit entry for each once the helpdesk has
-done it — the change itself is the helpdesk's, so there is no AskMira
-transaction to share. Nothing is copied into AskMira, and no subject or
+raised there. AskMiraa writes an audit entry for each once the helpdesk has
+done it — the change itself is the helpdesk's, so there is no AskMiraa
+transaction to share. Nothing is copied into AskMiraa, and no subject or
 message text goes into the audit entry.
 """
 
@@ -77,7 +77,7 @@ def _ticket_id(value: str) -> str:
 
 
 def _open_in_helpdesk(ticket_id: str) -> str:
-    """The ticket in the helpdesk itself, opened through AskMira's sign-in."""
+    """The ticket in the helpdesk itself, opened through AskMiraa's sign-in."""
     return f"/launch/{PRODUCT}?to=/ticket/{ticket_id}"
 
 

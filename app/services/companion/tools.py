@@ -1,4 +1,4 @@
-"""Ask Mira's toolbox: what it can do, for whom, and what each result looks like.
+"""Ask Miraa's toolbox: what it can do, for whom, and what each result looks like.
 
 A tool is offered to a person only when all three agree: the workspace's admin
 switched its group on, the person's role holds its scope (the same scopes the
@@ -19,7 +19,7 @@ A tool that reads a linked product (AnytimeHire, ExpenseGenie, CGB Helpdesk, Sal
 ProcureFlow) is offered only when the workspace has that product linked and the
 person has a role in it; it asks the product as them (product_tools.py,
 sales_tools.py). For Saleinx and ProcureFlow that role is the product's own
-(a rep, a manager, a viewer; a requester, an approver), never AskMira's.
+(a rep, a manager, a viewer; a requester, an approver), never AskMiraa's.
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ TOOLS: dict[str, Tool] = {
                 "For admins and sub-admins: one employee's current salary (monthly and annual "
                 "gross and CTC, with wage types), leave balance, attendance this month, manager "
                 "or profile. Put the person's name or employee code in `query` and set "
-                "`person_lookup`. Leave `employee_id` empty: when several people match, AskMira "
+                "`person_lookup`. Leave `employee_id` empty: when several people match, AskMiraa "
                 "shows the person a list to pick from. Never use it for the asker's own record."
             ),
             inputs=("query", "employee_id", "person_lookup"),
@@ -219,7 +219,7 @@ TOOLS: dict[str, Tool] = {
             description=(
                 "For admins and sub-admins: the people joining in the next 30 days or who joined "
                 "in the last 30 (or `from`/`to`), and whether each already holds equipment in "
-                "the asset register (the linked helpdesk's, else AskMira's), and with "
+                "the asset register (the linked helpdesk's, else AskMiraa's), and with "
                 "ProcureFlow linked, each joiner's purchase requisition and whether it is "
                 "approved. Use it for 'which employees still need equipment assigned?' and "
                 "'which joiners still need a laptop, and is the purchase approved?'."
@@ -246,7 +246,7 @@ TOOLS: dict[str, Tool] = {
             group="approvals",
             title="Waiting on you",
             description=(
-                "What is waiting on the asker's decision across AskMira: leave, attendance "
+                "What is waiting on the asker's decision across AskMiraa: leave, attendance "
                 "corrections, timesheets, expense and travel claims, payroll runs and "
                 "adjustments, loans, requisitions and offers, resignations and clearances, "
                 "profile changes and documents. Set `kind` (leave, attendance, expense, payroll, "
@@ -309,7 +309,7 @@ TOOLS: dict[str, Tool] = {
             group="hr_helpdesk",
             title="HR helpdesk",
             description=(
-                "Tickets in AskMira's own HR helpdesk (salary queries, letters, ID cards, "
+                "Tickets in AskMiraa's own HR helpdesk (salary queries, letters, ID cards, "
                 "grievances), not IT tickets. Set `scope`: mine (tickets the asker raised), "
                 "assigned (assigned to the asker), queue (unassigned) or company (the whole "
                 "queue the asker works). Optionally `status` (new, open, in_progress, hold or "
@@ -438,7 +438,7 @@ TOOLS: dict[str, Tool] = {
             group="data_questions",
             title="Data",
             description=(
-                "Any figure, trend, comparison or breakdown over AskMira's data, drawn as a chart "
+                "Any figure, trend, comparison or breakdown over AskMiraa's data, drawn as a chart "
                 "with its table: payroll cost by month, joiners by department, leave days by "
                 "type, exits by quarter, expenses by category, helpdesk tickets, assets, "
                 "timesheet hours, recognition, client billing... Choose `dataset`, the "
@@ -651,7 +651,7 @@ TOOLS: dict[str, Tool] = {
             kind="action",
             needs_ai=True,
             description=(
-                "For HR and managers: prepares a hiring requisition in AskMira (a role to hire "
+                "For HR and managers: prepares a hiring requisition in AskMiraa (a role to hire "
                 "for, also called a position or a seat) and offers it; the person confirms, and "
                 "it is raised and sent along its approval path. `role_title`, `department` (a "
                 "manager's own if empty), `openings` (seats, default 1), `ctc_max` (the yearly "
@@ -1549,8 +1549,8 @@ async def _run(
                 "Linked products",
                 ["Product", "On this server", "This workspace", "Your access"],
                 rows,
-                caption="What Ask Mira can read for you from each product",
-                empty="No products are known to AskMira.",
+                caption="What Ask Miraa can read for you from each product",
+                empty="No products are known to AskMiraa.",
             )
         ], {}
 

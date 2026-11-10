@@ -104,7 +104,7 @@ def test_the_refusal_says_it_is_not_ours_to_unlock():
         policy.validate_policy(
             data_category_key="tax", retention_period_months=12
         )
-    assert "not a setting AskMira can unlock" in str(exc.value)
+    assert "not a setting AskMiraa can unlock" in str(exc.value)
 
 
 def test_a_tenant_can_configure_above_the_minimum():

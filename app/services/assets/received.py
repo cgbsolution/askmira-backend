@@ -1,9 +1,9 @@
-"""Equipment received through ProcureFlow, added to the asset register from AskMira.
+"""Equipment received through ProcureFlow, added to the asset register from AskMiraa.
 
 With ProcureFlow linked, its posted goods receipts (kind ``receipts``) are
 listed for HR beside the register: what came in, how many, the serial numbers,
 the landed cost and who asked for it. "Add to register" turns each unit into an
-asset — in AskMira's own register, or in CGB Helpdesk's when the helpdesk is
+asset — in AskMiraa's own register, or in CGB Helpdesk's when the helpdesk is
 linked (kind ``asset.create``, which only its IT team may do) — as a spare
 ready to hand to the joiner it was bought for. A unit added once is never added
 again (ProcuredAsset).

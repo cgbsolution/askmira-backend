@@ -6,7 +6,7 @@ platform created with the workspace — and with them everything that belongs
 to people: punches and attendance days, attendance locks, leave requests and
 balances, profiles, bank accounts, salaries (the salary master), payroll runs
 and payslips, documents, lifecycle events, onboarding and exit records,
-notifications and Ask Mira chats. The kept admin's own punches, chats and
+notifications and Ask Miraa chats. The kept admin's own punches, chats and
 notifications go too: the workspace starts empty.
 
 Settings stay: companies, locations, projects, shifts, leave types and

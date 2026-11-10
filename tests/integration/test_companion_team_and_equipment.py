@@ -1,4 +1,4 @@
-"""Ask Mira: a manager's team's IT tickets, and joiners still without equipment.
+"""Ask Miraa: a manager's team's IT tickets, and joiners still without equipment.
 
 Real database, rule-based planner (no AI). CGB Helpdesk is a fake answering
 ``tickets`` (scope team) and ``holdings``.
@@ -7,7 +7,7 @@ Real database, rule-based planner (no AI). CGB Helpdesk is a fake answering
   reports' emails; someone with no reports is told so and nothing is asked.
 * "Which employees still need equipment?" lists this month's joiners with what
   they hold: from the helpdesk's register when it is linked (asked by email),
-  else AskMira's own assignments. Only HR; the model reads counts, not names.
+  else AskMiraa's own assignments. Only HR; the model reads counts, not names.
 """
 
 from __future__ import annotations

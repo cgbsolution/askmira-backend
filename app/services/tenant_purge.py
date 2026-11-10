@@ -1,6 +1,6 @@
 """After a workspace is deleted: hand its data back, then purge it.
 
-DPDP s.8(7)(b): when the customer (the Data Fiduciary) stops using AskMira, its
+DPDP s.8(7)(b): when the customer (the Data Fiduciary) stops using AskMiraa, its
 processor must not keep the employees' data. Deleting a workspace closes it at
 once (`platform.delete`); its data then stays for `PURGE_GRACE_DAYS` so the
 super admin can download it and give it to the customer — who has to keep its
@@ -165,7 +165,7 @@ async def export_workspace(
         archive.writestr(
             "README.txt",
             io.StringIO(
-                f"AskMira export of the workspace '{tenant.name}' ({tenant.id}).\n"
+                f"AskMiraa export of the workspace '{tenant.name}' ({tenant.id}).\n"
                 f"Made {datetime.now(UTC):%Y-%m-%d %H:%M} UTC, before its scheduled purge.\n\n"
                 f"data/  one JSON file per table: {tables_written} tables, {rows_written} rows.\n"
                 f"files/ {with_files} uploaded files, at the storage key the rows refer to.\n\n"

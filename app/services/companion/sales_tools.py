@@ -1,4 +1,4 @@
-"""Ask Mira's tools for Saleinx (sales CRM) and ProcureFlow (procure-to-pay), and the forecast P&L.
+"""Ask Miraa's tools for Saleinx (sales CRM) and ProcureFlow (procure-to-pay), and the forecast P&L.
 
 Each asks the product as the person (products.data.ask / act): only the
 caller's own workspace, and only what their role *in that product* allows —
@@ -463,7 +463,7 @@ async def _procurement_budgets(
     ], {}
 
 
-# ── The prospective P&L (AskMira's own ledger) ──────────────────────────────
+# ── The prospective P&L (AskMiraa's own ledger) ──────────────────────────────
 
 
 async def _account_forecast(

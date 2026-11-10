@@ -153,7 +153,7 @@ class HistoryInputLineRead(BaseModel):
 
 class HistoryCurrentYearPayslipRead(BaseModel):
     """A payslip of the last register month's financial year with register lines:
-    AskMira's own TDS reads it as this year's pay."""
+    AskMiraa's own TDS reads it as this year's pay."""
 
     month: str
     code: str

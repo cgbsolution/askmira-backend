@@ -73,11 +73,11 @@ async def setup(demo: Demo) -> None:
         {"slug": "askmira-demo", "is_published": True,
          "hero_heading": "Build the HR platform Indian companies love",
          "hero_subheading": "Small teams, real ownership, and a culture we measure.",
-         "about_html": "<p>AskMira Demo builds culture-first HR software in Bengaluru and "
+         "about_html": "<p>AskMiraa Demo builds culture-first HR software in Bengaluru and "
                        "Mumbai.</p>",
          "privacy_notice_html": "<p>We use your application only to assess you for roles "
-                                "at AskMira Demo and keep it for two years.</p>",
-         "seo_title": "Careers at AskMira Demo"},
+                                "at AskMiraa Demo and keep it for two years.</p>",
+         "seo_title": "Careers at AskMiraa Demo"},
     )
     programmes = await priya.get("/recruiting/referral-programmes/all")
     if not programmes:

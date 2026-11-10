@@ -6,7 +6,7 @@ Settings → Notifications → Email design; they are kept in the tenant's
 settings, and every change is audited in the same transaction.
 
 `compose` is what every sending path calls — notifications, digests, candidate
-messages, the relay test — so no email leaves AskMira as a bare line of text.
+messages, the relay test — so no email leaves AskMiraa as a bare line of text.
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def _reason(audience: Audience, company: str) -> str:
     if audience == "candidate":
         return f"You are receiving this because you applied for a role at {company}."
     if audience == "admin":
-        return f"You are receiving this because you manage {company}'s AskMira workspace."
+        return f"You are receiving this because you manage {company}'s AskMiraa workspace."
     return (
         f"You are receiving this because you work at {company}. Choose what reaches you "
         "by email under My profile → Notifications."

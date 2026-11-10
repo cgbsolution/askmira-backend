@@ -230,7 +230,7 @@ GOALS = (
     ("arr", "ananya", "Reach 12 crore ARR by March 2027", "company", None, "100", "company",
      [("ARR (crore)", "number", "8.4", "12", "9.6"),
       ("Net revenue retention (%)", "percent", "104", "115", "108")]),
-    ("v5", "vikram", "Ship the AskMira v5 platform", "team", "arr", "60", "company",
+    ("v5", "vikram", "Ship the AskMiraa v5 platform", "team", "arr", "60", "company",
      [("v5 generally available", "milestone", "0", "1", None),
       ("p95 API latency (ms)", "number", "900", "400", "560")]),
     ("pipeline", "rahul", "Double the enterprise pipeline", "team", "arr", "70", "company",

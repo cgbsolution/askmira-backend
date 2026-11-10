@@ -176,7 +176,7 @@ api_router.include_router(contractors.router, dependencies=_module("payroll"))
 api_router.include_router(benefits.router, dependencies=_module("payroll"))
 api_router.include_router(ai.router)
 api_router.include_router(companion.router)
-# Slack, Teams and email deliver to Ask Mira here, each checked by its own secret.
+# Slack, Teams and email deliver to Ask Miraa here, each checked by its own secret.
 api_router.include_router(companion_inbound.router)
 api_router.include_router(mcp.router)
 api_router.include_router(oauth.router)

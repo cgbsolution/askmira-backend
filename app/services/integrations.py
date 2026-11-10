@@ -506,7 +506,7 @@ def _body(endpoint: WebhookEndpoint, delivery: WebhookDelivery) -> bytes:
     if endpoint.format is WebhookFormat.CHAT:
         data = delivery.payload.get("data") or {}
         text = data.get("summary") or delivery.event
-        return json.dumps({"text": f"AskMira: {text}"}).encode("utf-8")
+        return json.dumps({"text": f"AskMiraa: {text}"}).encode("utf-8")
     return json.dumps(delivery.payload, separators=(",", ":")).encode("utf-8")
 
 

@@ -9,7 +9,7 @@ together or not at all.
 
 Per purpose:
 
-- **ai_assistance** — the person's Ask Mira conversations and messages and their
+- **ai_assistance** — the person's Ask Miraa conversations and messages and their
   feedback on AI answers go; the AI call log keeps one line per call (when,
   which feature, which model) with the question and answer text removed.
 - **culture_analytics** — invitations not yet answered go. Answers already given

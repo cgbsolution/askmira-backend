@@ -1,4 +1,4 @@
-"""Ask Mira's data tool: the chart that fits, and only safe totals for the model.
+"""Ask Miraa's data tool: the chart that fits, and only safe totals for the model.
 
 What these hold:
 

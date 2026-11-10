@@ -62,7 +62,7 @@ class DeliveryResult:
 
 @dataclass(frozen=True, slots=True)
 class MessageAction:
-    """A button on a chat message: Approve, Reject, or Open AskMira."""
+    """A button on a chat message: Approve, Reject, or Open AskMiraa."""
 
     label: str
     url: str
@@ -329,12 +329,12 @@ def generic_push_text(event_key: str) -> tuple[str, str]:
     area = (event_key or "").split(".", 1)[0]
     return (
         _PUSH_AREAS.get(area, "You have a new update"),
-        "Open AskMira to see it.",
+        "Open AskMiraa to see it.",
     )
 
 
 class ExpoPushAdapter(ChannelAdapter):
-    """Push to the AskMira app through Expo's push service.
+    """Push to the AskMiraa app through Expo's push service.
 
     The app registers an Expo push token on sign-in; Expo relays to FCM or APNs
     with the credentials uploaded to the Expo project. A token Expo calls

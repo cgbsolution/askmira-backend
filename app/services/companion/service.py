@@ -1,10 +1,10 @@
-"""Conversations with Ask Mira, and one turn of one.
+"""Conversations with Ask Miraa, and one turn of one.
 
 A turn: today's limit, then one of two ways of answering. With AI usable
 (server configured, workspace switched it on, the person agreed, this month's
 budget left) the model holds the conversation: it calls tools, reads what they
 found, and answers or makes an offer to act (agent.py). Without it the words
-are matched to one lookup by rule (direct.py) and nothing leaves AskMira.
+are matched to one lookup by rule (direct.py) and nothing leaves AskMiraa.
 Either way every tool runs here as the person, and a reply is saved beside its
 cards. A model turn leaves its DPDP transfer (the categories the model read)
 and agent-invocation rows and an AI-action audit row; a rule turn leaves an
@@ -243,7 +243,7 @@ async def delete_conversation(
         entity_type="companion_conversation",
         entity_id=row.id,
         actor=user,
-        summary="Ask Mira conversation deleted by its owner",
+        summary="Ask Miraa conversation deleted by its owner",
         request=request,
     )
     await session.delete(row)
@@ -302,7 +302,7 @@ async def _check_limits(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
                 f"Your organisation has used this month's allowance for {config.name}. "
-                "An admin can raise it in Ask Mira settings."
+                "An admin can raise it in Ask Miraa settings."
             ),
         )
 
@@ -346,9 +346,9 @@ async def status_for(session: AsyncSession, user: User) -> dict[str, Any]:
 
 
 async def settings_view(session: AsyncSession, user: User) -> dict[str, Any]:
-    """The admin's view: the workspace's Ask Mira, its switches, and this month's use."""
+    """The admin's view: the workspace's Ask Miraa, its switches, and this month's use."""
     if not permissions.is_admin(user):
-        raise permissions.forbidden("Only an admin sets up the workspace's Ask Mira.")
+        raise permissions.forbidden("Only an admin sets up the workspace's Ask Miraa.")
     config = await get_config(session, user)
     replies = await session.scalar(
         tenant_scoped(
@@ -532,7 +532,7 @@ async def _send_ai(
     company = tenant.name if tenant else "the company"
     tools = await offered(session, user, config)
     if place == "email":
-        # An emailed "yes" can be forwarded or forged: offers are decided in AskMira.
+        # An emailed "yes" can be forwarded or forged: offers are decided in AskMiraa.
         tools = [tool for tool in tools if tool.key not in ("confirm_action", "cancel_action")]
     system = agent.system_prompt(config, company, user)
     if place in ("slack", "teams", "email"):
@@ -590,7 +590,7 @@ async def _send_ai(
             "categories": tuple(sorted(categories)),
             "principal_count": principals,
             "description": (
-                "A person's message to Ask Mira (with what was read from any file they "
+                "A person's message to Ask Miraa (with what was read from any file they "
                 "attached), the conversation so far, the tools they may use, and the trimmed "
                 "results of the lookups the model was allowed to read."
             ),
@@ -652,7 +652,7 @@ async def _send_ai(
                 "text": f"{config.name} stopped part-way: {outcome.failure}",
             }
         )
-    # A leave that could not be applied is answered in AskMira's own words, with
+    # A leave that could not be applied is answered in AskMiraa's own words, with
     # the person's balance: the model may not read the balance, so it cannot say
     # "you have only 1 day" itself, and must never say "confirm" for nothing.
     refusals = [str(c["refusal"]) for c in cards if c.get("refusal")]
@@ -683,7 +683,7 @@ async def _send_ai(
         entity_type="companion_message",
         entity_id=reply.id,
         summary=(
-            f"Ask Mira answered {user.full_name}"
+            f"Ask Miraa answered {user.full_name}"
             + (f" using {', '.join(dict.fromkeys(used))}" if used else " without a tool")
         ),
         model=outcome.model or client.model_name(),
@@ -737,7 +737,7 @@ async def _send_direct(
 ) -> dict[str, Any]:
     """A turn planned by rule (direct.py), or a choice clicked on an earlier answer.
 
-    No model, nothing sent outside AskMira. A file is read only if it is a PDF
+    No model, nothing sent outside AskMiraa. A file is read only if it is a PDF
     with its own text; what it says can't be worked with without a model, so
     the reply says that, and the words are kept for a later turn that has one.
     """
@@ -815,7 +815,7 @@ async def _send_direct(
     shown = said or "Here is what I found."
     if cards:
         read = agent.readable(chosen, config) if chosen is not None else True
-        shown += "\n\n[What AskMira showed the person:]\n" + views.view_of(cards, allowed=read)
+        shown += "\n\n[What AskMiraa showed the person:]\n" + views.view_of(cards, allowed=read)
 
     reply = CompanionMessage(
         tenant_id=user.tenant_id,
@@ -845,7 +845,7 @@ async def _send_direct(
             "arguments": used,
         },
         summary=(
-            f"Ask Mira (direct) answered {user.full_name}"
+            f"Ask Miraa (direct) answered {user.full_name}"
             + (f" with {chosen.title.lower()}" if chosen else " without a tool")
         ),
         request=request,

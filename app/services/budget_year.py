@@ -1,9 +1,9 @@
-"""Each department's year against its budget, across AskMira and the linked products.
+"""Each department's year against its budget, across AskMiraa and the linked products.
 
 One view for the questions a department head asks: how many seats and how much
 people cost were approved, what is committed, what payroll has paid so far this
 financial year, what was spent on expenses (Expense Genie when it is linked,
-else AskMira's own claims), what purchasing has committed and spent against the
+else AskMiraa's own claims), what purchasing has committed and spent against the
 department's cost centre in ProcureFlow, and where the sales pipeline stands in
 Saleinx.
 
@@ -190,7 +190,7 @@ async def _expenses(
             )
         )
     ).all()
-    return {(str(d) if d else UNMATCHED): _money(t) for d, t in rows}, "AskMira", None
+    return {(str(d) if d else UNMATCHED): _money(t) for d, t in rows}, "AskMiraa", None
 
 
 async def _purchasing(session: AsyncSession, user: User) -> dict[str, Any] | None:

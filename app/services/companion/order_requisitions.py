@@ -1,4 +1,4 @@
-"""An order win's roles as AskMira requisitions: budget confirmed, approval recorded.
+"""An order win's roles as AskMiraa requisitions: budget confirmed, approval recorded.
 
 The company loop runs order won → budget confirmed → requisition approved →
 candidate recruited. When the person names the delivery department, the order
@@ -49,7 +49,7 @@ async def plan_for(
             None,
             [
                 "No delivery department was named, so these people are not counted against a "
-                "headcount budget or raised as requisitions in AskMira."
+                "headcount budget or raised as requisitions in AskMiraa."
             ],
             None,
         )
@@ -183,7 +183,7 @@ async def _raise(
         budget_ctc_max=_yearly(Decimal(role["cost_rate"])),
         justification=(
             f"Order PO {plan['po_number']} from {plan['account']}: a {plan['months']}-month "
-            f"engagement from {start:%d %b %Y}, booked from Ask Mira."
+            f"engagement from {start:%d %b %Y}, booked from Ask Miraa."
         ),
         skills=[s for s in role.get("skills") or [] if s][:50],
         experience_min_years=int(experience[0]),

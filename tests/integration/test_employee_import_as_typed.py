@@ -1,10 +1,10 @@
 """Importing an old HR system's export as it had it: nothing dropped, every difference listed.
 
 1. A person's later rows (a second qualification, family member, nominee)
-   fold into them; lists land in the profile; columns AskMira has no field for
+   fold into them; lists land in the profile; columns AskMiraa has no field for
    become custom fields on a "factoHR" tab; columns that say nothing (the same
    for everyone, worked out by the old system, a copy of an identifier) are
-   listed with why. Values that fail AskMira's checks are kept as typed and
+   listed with why. Values that fail AskMiraa's checks are kept as typed and
    listed. A leaver may lack or share an email; two people still working here
    may not share one. The issues list says it all, person by person.
 2. What HR types into a profile afterwards is still checked as before.

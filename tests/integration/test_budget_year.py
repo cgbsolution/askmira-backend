@@ -1,11 +1,11 @@
-"""Each department's year against its budget, across AskMira and the linked products.
+"""Each department's year against its budget, across AskMiraa and the linked products.
 
 Real database; Expense Genie, ProcureFlow and Saleinx are fakes answering the
-queries AskMira already uses (summary, budgets, overview).
+queries AskMiraa already uses (summary, budgets, overview).
 
-* Without products: the headcount budget and AskMira's own approved claims by
+* Without products: the headcount budget and AskMiraa's own approved claims by
   department.
-* With Expense Genie: its approved claims added up by AskMira's own
+* With Expense Genie: its approved claims added up by AskMiraa's own
   departments, through each submitter's email.
 * A ProcureFlow cost centre with a department's name sits on that row; others
   are listed apart. The Saleinx pipeline is shown beside it, never summed in.
@@ -176,7 +176,7 @@ async def test_with_the_products_each_figure_sits_on_its_department(session, ten
 async def test_without_products_askmira_claims_and_who_may_see_payroll(session, tenant, fakes) -> None:
     admin, sales, _ = await _world(session, tenant)
     year = await spend.department_year(session, admin)
-    assert year["expenses"]["source"] == "AskMira"
+    assert year["expenses"]["source"] == "AskMiraa"
     assert year["purchasing"] is None and year["sales"] is None
     assert fakes.calls == []
 

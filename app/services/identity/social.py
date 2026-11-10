@@ -1,7 +1,7 @@
 """'Continue with Google' and 'Continue with Microsoft' on the sign-in page.
 
-Platform-level OAuth apps, registered once for AskMira (see `core/config.py`).
-They sign in somebody who **already has** an AskMira login: the provider proves
+Platform-level OAuth apps, registered once for AskMiraa (see `core/config.py`).
+They sign in somebody who **already has** an AskMiraa login: the provider proves
 an email address, and that address is looked up — one login per address across
 the platform. Nothing is created here; no login appears because somebody owns
 a Google account.
@@ -100,7 +100,7 @@ def _credentials(key: str) -> tuple[str | None, str | None]:
 
 
 def available() -> list[str]:
-    """The providers this AskMira has an OAuth app for."""
+    """The providers this AskMiraa has an OAuth app for."""
     return [key for key in PROVIDERS if _credentials(key)[0]]
 
 
@@ -125,7 +125,7 @@ async def start(session: AsyncSession, key: str, redirect_uri: str) -> str:
     if not _redirect_is_ours(redirect_uri, key):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="That return address is not AskMira's sign-in page.",
+            detail="That return address is not AskMiraa's sign-in page.",
         )
     client_id, _secret = _credentials(key)
     try:
@@ -218,7 +218,7 @@ async def complete(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                f"No AskMira login uses {email}. Ask your HR team to add you, or sign in "
+                f"No AskMiraa login uses {email}. Ask your HR team to add you, or sign in "
                 "with the email they set up for you."
             ),
         )

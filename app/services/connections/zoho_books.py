@@ -3,7 +3,7 @@
 **Connecting.** Zoho lets a company give one server access to its own books
 through a *Self Client* in the Zoho API Console: the admin creates it, generates
 a one-time code for the Books journal scopes, and pastes the client id, secret
-and code here. AskMira swaps the code for a refresh token at Zoho at once (the
+and code here. AskMiraa swaps the code for a refresh token at Zoho at once (the
 code lasts minutes), reads which Books organisations the login can reach, and
 keeps the refresh token encrypted with the tenant key. No app has to be
 registered by the platform, and nothing is kept if Zoho refuses.
@@ -199,7 +199,7 @@ async def connect(
     refresh = tokens.get("refresh_token")
     if not refresh:
         raise _bad(
-            "Zoho gave no refresh token, so AskMira could post only for the next hour. "
+            "Zoho gave no refresh token, so AskMiraa could post only for the next hour. "
             "Generate the code again (a Self Client code gives one the first time it is used)."
         )
     api = str(tokens.get("api_domain") or api).rstrip("/")

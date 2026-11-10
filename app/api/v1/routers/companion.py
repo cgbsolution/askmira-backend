@@ -1,4 +1,4 @@
-"""Ask Mira: the chat, each person's conversations, and the workspace's own setup."""
+"""Ask Miraa: the chat, each person's conversations, and the workspace's own setup."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ ADMIN_ONLY = [Depends(require_roles(UserRole.ADMIN))]
 
 @router.get("/status")
 async def companion_status(user: CurrentUser, session: DbSession) -> dict[str, Any]:
-    """Whether the caller can chat now, why not, and who the workspace's Ask Mira is."""
+    """Whether the caller can chat now, why not, and who the workspace's Ask Miraa is."""
     return await companion.status_for(session, user)
 
 
@@ -52,7 +52,7 @@ async def delete_conversation(
 async def send_message(
     payload: companion.MessageIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """One turn: the caller's message in, Ask Mira's reply and what it looked up out."""
+    """One turn: the caller's message in, Ask Miraa's reply and what it looked up out."""
     return await companion.send(session, user, payload, request=request)
 
 
@@ -102,7 +102,7 @@ async def put_settings(
 async def confirm_action(
     action_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """The caller pressed Confirm on an offer Ask Mira made them: carry it out, as them."""
+    """The caller pressed Confirm on an offer Ask Miraa made them: carry it out, as them."""
     return await companion.confirm_offer(session, user, action_id, request=request)
 
 
@@ -110,5 +110,5 @@ async def confirm_action(
 async def cancel_action(
     action_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """The caller declined an offer Ask Mira made them. Nothing is done."""
+    """The caller declined an offer Ask Miraa made them. Nothing is done."""
     return await companion.cancel_offer(session, user, action_id, request=request)

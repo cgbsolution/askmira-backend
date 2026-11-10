@@ -1,6 +1,6 @@
 """Statutory change notices, and which workspaces have been told.
 
-A **notice** is published by the platform (AskMira's own super admin, not a
+A **notice** is published by the platform (AskMiraa's own super admin, not a
 customer): a change to PF, ESI, Professional Tax, LWF or income tax, with its
 jurisdiction, the date it takes effect, the circular or notification it comes
 from, and — where the platform's statutory reviewer supplied them — the rules

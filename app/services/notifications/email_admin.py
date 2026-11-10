@@ -1,6 +1,6 @@
 """Settings → Notifications → Email design and Emails: what an admin sees and changes.
 
-Every email AskMira can send is listed — the built-in wording for each event,
+Every email AskMiraa can send is listed — the built-in wording for each event,
 and the workspace's own version where an admin wrote one — so nothing goes out
 in words the admin cannot see. Editing reuses the versioned templates in
 `admin.save_template`; "Use the built-in wording" retires the workspace's

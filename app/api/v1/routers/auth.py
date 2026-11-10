@@ -104,7 +104,7 @@ async def identify(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                "We could not find an AskMira login for that email or mobile number. "
+                "We could not find an AskMiraa login for that email or mobile number. "
                 "Check it, or ask your HR team."
             ),
         )
@@ -120,7 +120,7 @@ async def identify(
 
 @router.get("/social/providers")
 async def social_providers() -> dict[str, Any]:
-    """Which 'Continue with …' buttons this AskMira offers."""
+    """Which 'Continue with …' buttons this AskMiraa offers."""
     return {"providers": directory.social_providers()}
 
 

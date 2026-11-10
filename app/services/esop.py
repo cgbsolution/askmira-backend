@@ -9,7 +9,7 @@ on its cancellation date.
 A valuation is vested and unvested units at the latest fair value. A
 **projection** is the same arithmetic at a price the person chooses — "if a
 share were worth ₹500" — as each tranche vests: a what-if they set, not a
-forecast AskMira makes. Tax is described, not computed: the perquisite on
+forecast AskMiraa makes. Tax is described, not computed: the perquisite on
 exercise depends on the fair value on that day.
 """
 

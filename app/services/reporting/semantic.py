@@ -1102,7 +1102,7 @@ _EXPENSE_CLAIM = Entity(
     display_name="Expense claims",
     base_table="expense_claims",
     employee_column="employee_id",
-    description="One row per expense claim an employee made in AskMira.",
+    description="One row per expense claim an employee made in AskMiraa.",
     default_date="incurred_on",
     people_field="headcount",
     always=(("claim_status", "not_equals", "cancelled"),),
@@ -1151,7 +1151,7 @@ _HELPDESK_TICKET = Entity(
     base_table="helpdesk_tickets",
     employee_column="employee_id",
     description=(
-        "One row per ticket raised with HR in AskMira's helpdesk. Confidential tickets are "
+        "One row per ticket raised with HR in AskMiraa's helpdesk. Confidential tickets are "
         "never counted here."
     ),
     default_date="raised_on",

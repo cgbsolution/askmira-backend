@@ -54,9 +54,9 @@ WELCOME_LINK_LIFETIME = timedelta(days=7)
 
 register_event(
     WELCOME_EVENT,
-    "Your AskMira login for {company}",
+    "Your AskMiraa login for {company}",
     "Hi {name},\n\n"
-    "Your AskMira login at {company} has been set up by {inviter}. AskMira is where you "
+    "Your AskMiraa login at {company} has been set up by {inviter}. AskMiraa is where you "
     "punch in, apply for leave, see your payslips and raise questions with HR.\n\n"
     "Sign in at: {signin_link}\n"
     "Your login: {email}\n\n"
@@ -159,7 +159,7 @@ async def send_welcome(
     expires_at: datetime | None = None
     if tenant is not None and await _sso_only(session, target, tenant):
         password_step = (
-            f"{company} signs in with its company account, so there is no AskMira password "
+            f"{company} signs in with its company account, so there is no AskMiraa password "
             "to set: choose your company's sign-in on that page."
         )
     else:

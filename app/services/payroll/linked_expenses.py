@@ -1,9 +1,9 @@
-"""Expense Genie claims, paid with salary in AskMira payroll.
+"""Expense Genie claims, paid with salary in AskMiraa payroll.
 
 With Expense Genie linked, the payroll run asks it — as the person running
 payroll, who must be an admin there — for the claims approved and not yet paid
 (kind ``payable``). Each becomes a reimbursement line on the submitter's
-payslip: paid at cost, never taxed, exactly as AskMira's own expense claims are
+payslip: paid at cost, never taxed, exactly as AskMiraa's own expense claims are
 (inputs.ExpenseClaimProvider).
 
 The run's approval writes a `LinkedClaimPayment` per claim, unique per
@@ -70,7 +70,7 @@ async def hand_back(session: AsyncSession, user: User, run: PayrollRun) -> dict[
             {
                 "references": [row.reference for row in rows],
                 "paid_on": paid_on,
-                "note": f"Paid with salary in AskMira payroll for {period}",
+                "note": f"Paid with salary in AskMiraa payroll for {period}",
             },
         )
     except products.ProductUnavailableError as exc:

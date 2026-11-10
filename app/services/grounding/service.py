@@ -588,7 +588,7 @@ async def log_local_answer(
     tokens: int = 0,
     sub_processor_key: str | None = None,
 ) -> dict[str, Any]:
-    """Log an answer AskMira composed itself from its own records.
+    """Log an answer AskMiraa composed itself from its own records.
 
     The model decided *what* was being asked; the facts in the answer were read
     by code and never sent to the model. Its citations are the records it read,
@@ -746,7 +746,7 @@ async def invocation_log(
             for row in rows
         ],
         "not_built": (
-            "The assistant answers in AskMira only. Slack, Teams and WhatsApp "
+            "The assistant answers in AskMiraa only. Slack, Teams and WhatsApp "
             "channels are not built, so no question asked there appears here."
         ),
     }

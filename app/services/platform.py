@@ -388,7 +388,7 @@ class AdminEmailIn(BaseModel):
 
 
 #: Who a platform-made login's welcome email says set it up.
-_PLATFORM_INVITER = "the AskMira team"
+_PLATFORM_INVITER = "the AskMiraa team"
 
 
 async def _welcome(
@@ -429,7 +429,7 @@ async def _require_free_email(session: Any, email: str) -> None:
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail=(
-            f"That email already signs in to AskMira, in {holder}. Each person has one "
+            f"That email already signs in to AskMiraa, in {holder}. Each person has one "
             "login: delete that login there (Settings → Users), or use another address."
         ),
     )

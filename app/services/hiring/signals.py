@@ -9,7 +9,7 @@ a confidence, is withheld — the row is listed, the number is not. A recruiter
 cannot argue with a bare 73, and will act on it.
 
 The Fit Score is shown only beside the component round scores that back it.
-**AskMira does not compute a Fit Score.** Where one is stored it came from an
+**AskMiraa does not compute a Fit Score.** Where one is stored it came from an
 imported record, and the screen says exactly that.
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -204,7 +204,7 @@ def fit_score_view(*, fit_score: Any, presented_scores: list[dict[str, Any]]) ->
             "components": [],
             "confidence": None,
             "note": (
-                "No Fit Score is recorded for this candidate. AskMira does not compute "
+                "No Fit Score is recorded for this candidate. AskMiraa does not compute "
                 "one; the round scores below are shown on their own."
             ),
         }
@@ -234,7 +234,7 @@ def fit_score_view(*, fit_score: Any, presented_scores: list[dict[str, Any]]) ->
         ],
         "confidence": str(min(confidences)) if confidences else None,
         "note": (
-            "Stored with the imported record rather than computed by AskMira. Read it "
+            "Stored with the imported record rather than computed by AskMiraa. Read it "
             "with the round scores and their signals, never on its own."
         ),
     }

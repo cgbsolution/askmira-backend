@@ -598,8 +598,8 @@ TABLES: dict[str, TableClassification] = {
         "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
     ),
     "assistant_articles": _none("Company policy text HR wrote for the assistant to cite."),
-    # Ask Mira: a person's own conversations. The model only ever sees `text`;
-    # `cards` are what AskMira looked up and showed, and may name colleagues.
+    # Ask Miraa: a person's own conversations. The model only ever sees `text`;
+    # `cards` are what AskMiraa looked up and showed, and may name colleagues.
     "companion_conversations": _p(USER, "ai_interaction", {"title": "ai_interaction"}),
     "companion_messages": _p(
         USER,
@@ -617,7 +617,7 @@ TABLES: dict[str, TableClassification] = {
         "ai_interaction",
         {"payload": "leave", "summary": "leave", "result": "ai_interaction"},
     ),
-    # An order win Ask Mira carried out for a person: the order's figures and each step.
+    # An order win Ask Miraa carried out for a person: the order's figures and each step.
     "companion_runs": _p(
         USER, "ai_interaction", {"plan": "ai_interaction", "steps": "ai_interaction"}
     ),

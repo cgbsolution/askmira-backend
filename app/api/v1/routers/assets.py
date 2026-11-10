@@ -60,7 +60,7 @@ _managers = [Depends(require_roles(*HR_ROLES, line_managers=True))]
 
 
 class ReceivedAdd(BaseModel):
-    #: The asset category for AskMira's own register; ignored for the helpdesk's.
+    #: The asset category for AskMiraa's own register; ignored for the helpdesk's.
     category_id: uuid.UUID | None = None
 
 

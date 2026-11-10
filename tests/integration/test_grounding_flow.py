@@ -533,7 +533,7 @@ async def test_the_invocation_log_is_scoped_to_its_tenant(
 
 
 async def test_the_log_says_which_channels_it_does_not_cover(session, hr_user):
-    """The assistant answers in AskMira only; a question asked in a chat app
+    """The assistant answers in AskMiraa only; a question asked in a chat app
     would not appear here, and the log says so rather than implying it is
     complete."""
     log = await grounding.invocation_log(session, hr_user)

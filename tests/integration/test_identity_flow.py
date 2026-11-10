@@ -236,7 +236,7 @@ async def test_a_pathless_patch_carrying_a_partial_resource_works(
 async def test_a_scim_payload_claiming_admin_does_not_grant_it(
     session: AsyncSession, tenant: Tenant
 ) -> None:
-    """A corporate directory does not decide who administers AskMira."""
+    """A corporate directory does not decide who administers AskMiraa."""
     user = await scim_service.provision_user(
         session,
         tenant.id,

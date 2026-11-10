@@ -1,4 +1,4 @@
-"""Ask Mira raises a hiring requisition ("Raise the second requisition").
+"""Ask Miraa raises a hiring requisition ("Raise the second requisition").
 
 * HR's offer names the department, seats, the CTC ceiling, the budget check and
   the approvers; nothing is written until the yes. The yes raises it and sends it

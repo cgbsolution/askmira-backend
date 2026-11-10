@@ -1,9 +1,9 @@
-"""Ask Mira: which new joiners still have no equipment assigned.
+"""Ask Miraa: which new joiners still have no equipment assigned.
 
-The joiners are AskMira's: people joining in the next 30 days or who joined in
+The joiners are AskMiraa's: people joining in the next 30 days or who joined in
 the last 30 (or the window asked about). What they hold comes from the asset
 register — CGB Helpdesk's when it is linked (kind ``holdings``, by work email),
-else AskMira's own assignments. Only HR asks; names stay on the screen.
+else AskMiraa's own assignments. Only HR asks; names stay on the screen.
 
 With ProcureFlow linked (and a role there), each joiner's purchase is shown too:
 the requisition whose title names them — their employee code as a whole word,
@@ -158,7 +158,7 @@ async def joiners_equipment(
         ], used
 
     tenant = await session.get(Tenant, user.tenant_id)
-    source = "AskMira's asset register"
+    source = "AskMiraa's asset register"
     held: dict[str, int] = {}
     if tenant and (tenant.linked_products or {}).get("helpdesk"):
         source = f"{PRODUCTS['helpdesk'].brand}'s asset register"

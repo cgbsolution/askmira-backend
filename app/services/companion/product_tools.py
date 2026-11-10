@@ -1,11 +1,11 @@
-"""Ask Mira's tools that read a linked product: AnytimeHire for hiring,
+"""Ask Miraa's tools that read a linked product: AnytimeHire for hiring,
 ExpenseGenie for expense claims and CGB Helpdesk for IT tickets and assets.
 
 Each asks the product as the person (products.data.ask): only the caller's own
 workspace, and only what their role in that product shows them when they open
 it. The answer becomes cards for the screen and is never given to the model.
 
-Two house rules hold here as everywhere in AskMira:
+Two house rules hold here as everywhere in AskMiraa:
 
 * No AI score without its signals and a confidence (CLAUDE.md rule 7). The
   interview tool keeps no confidence, so no score, recommendation or fit score
@@ -301,7 +301,7 @@ def _table(
 
 
 def _job_page(ref: Any) -> str | None:
-    """A job's candidates in AnytimeHire — where its résumés are — opened through AskMira.
+    """A job's candidates in AnytimeHire — where its résumés are — opened through AskMiraa.
 
     The ref is AnytimeHire's opaque id for the job; anything else gives no link.
     """
@@ -881,14 +881,14 @@ async def _helpdesk_tickets(
         params["from"], params["to"] = _instants(days)
         used |= {"from": days[0].isoformat(), "to": days[1].isoformat()}
     if scope == "team":
-        # AskMira says who the team is: the asker's own direct reports, nobody else.
+        # AskMiraa says who the team is: the asker's own direct reports, nobody else.
         params["team_emails"] = await team_emails(session, user)
         if not params["team_emails"]:
             return [
                 {
                     "type": "notice",
                     "tone": "info",
-                    "text": "Nobody reports to you in AskMira, so there are no team tickets.",
+                    "text": "Nobody reports to you in AskMiraa, so there are no team tickets.",
                 }
             ], used
     data = await products.ask(session, user, "helpdesk", "tickets", params)

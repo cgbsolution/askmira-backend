@@ -1,6 +1,6 @@
 """The MCP endpoint: Streamable HTTP, stateless.
 
-Authenticated by an AskMira API key (`amk_…`, scoped by an admin) or an OAuth
+Authenticated by an AskMiraa API key (`amk_…`, scoped by an admin) or an OAuth
 access token (`amo_…`, acting as the person who connected the client). Without
 either, the 401 names the protected-resource metadata, which is how a connector
 such as claude.ai discovers where to send the person to sign in.
@@ -37,7 +37,7 @@ async def mcp_message(
         elif presented.startswith("amo_"):
             actor, scopes = await oauth.token_identity(session, presented)
             # What a signed-in request carries too: a sub-admin's department or location
-            # scope, read as for a message to Ask Mira.
+            # scope, read as for a message to Ask Miraa.
             from app.core.access_control import load_request_access
             from app.services.companion.actions import _HOME_PATH, _scope_for
 
@@ -45,7 +45,7 @@ async def mcp_message(
         else:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Sign in through your MCP client, or send an AskMira API key.",
+                detail="Sign in through your MCP client, or send an AskMiraa API key.",
             )
     except HTTPException as exc:
         if exc.status_code == status.HTTP_401_UNAUTHORIZED:

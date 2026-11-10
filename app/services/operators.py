@@ -261,7 +261,7 @@ async def create_grant(
     if firm is None or not firm.is_active:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No active AskMira workspace has that address.",
+            detail="No active AskMiraa workspace has that address.",
         )
     if firm.id == user.tenant_id:
         raise HTTPException(

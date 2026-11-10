@@ -254,7 +254,7 @@ def test_withdrawal_effect_is_honest_about_what_stays():
 
 def test_withdrawing_ai_consent_names_what_is_deleted():
     effect = consent.withdrawal_effect("ai_assistance")
-    assert any("Ask Mira" in item for item in effect.erased)
+    assert any("Ask Miraa" in item for item in effect.erased)
 
 
 def test_purposes_for_features_that_do_not_exist_are_gone():

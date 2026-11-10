@@ -7,7 +7,7 @@ module — the approved template registered here and linked to the event.
 Before this existed nothing in the portal created a template, so no WhatsApp
 message could ever be sent.
 
-AskMira cannot read Meta's approval state with only a phone number id, so the
+AskMiraa cannot read Meta's approval state with only a phone number id, so the
 admin records it as Meta shows it; "Send a test" proves the template, number and
 token work together before anyone relies on it.
 """
@@ -272,7 +272,7 @@ async def link_event(
     """Send `event_key` on WhatsApp with this template, or (None) stop sending it there."""
     default = dispatch.DEFAULT_TEMPLATES.get(event_key)
     if default is None:
-        raise _bad("That is not an AskMira notification.", status.HTTP_404_NOT_FOUND)
+        raise _bad("That is not an AskMiraa notification.", status.HTTP_404_NOT_FOUND)
     meta = await _one(session, user, template_id) if template_id else None
     if meta is not None and not meta.is_sendable:
         raise _bad(f"{meta.meta_name} is not approved in Meta yet, so it cannot send anything.")

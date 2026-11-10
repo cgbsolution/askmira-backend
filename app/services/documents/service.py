@@ -1333,7 +1333,7 @@ async def render_letter_pdf(
         return render_pdf(
             merged_html=merged_html,
             reference_number=reference_number,
-            letterhead=Letterhead(company_name=tenant.name if tenant else "AskMira"),
+            letterhead=Letterhead(company_name=tenant.name if tenant else "AskMiraa"),
         )
     return render_pdf(
         merged_html=merged_html,

@@ -1,6 +1,6 @@
-"""Ask Mira from Slack, Teams and email: where those places send their messages.
+"""Ask Miraa from Slack, Teams and email: where those places send their messages.
 
-No AskMira sign-in reaches these: each is checked against the workspace's own
+No AskMiraa sign-in reaches these: each is checked against the workspace's own
 secret for that place before anything is read (companion/inbound.py). The
 workspace in the path only says whose secret to check. Slack and Teams are
 answered at once and the reply follows in the background; so is email.
@@ -40,7 +40,7 @@ async def _slack(
             outcome = await inbound.handle_slack(session, tenant_id, event)
         logger.info("Slack message for workspace %s: %s", tenant_id, outcome)
     except Exception:  # the request has been answered; a failure is logged, not raised
-        logger.exception("Ask Mira could not answer a Slack message for %s", tenant_id)
+        logger.exception("Ask Miraa could not answer a Slack message for %s", tenant_id)
 
 
 async def _teams(
@@ -51,7 +51,7 @@ async def _teams(
             outcome = await inbound.handle_teams(session, tenant_id, activity)
         logger.info("Teams message for workspace %s: %s", tenant_id, outcome)
     except Exception:
-        logger.exception("Ask Mira could not answer a Teams message for %s", tenant_id)
+        logger.exception("Ask Miraa could not answer a Teams message for %s", tenant_id)
 
 
 async def _email(
@@ -67,7 +67,7 @@ async def _email(
                 outcome = await inbound.handle_email(session, tenant, fields, repeated=repeated)
                 logger.info("Email for workspace %s: %s", tenant_id, outcome)
     except Exception:
-        logger.exception("Ask Mira could not answer an email for %s", tenant_id)
+        logger.exception("Ask Miraa could not answer an email for %s", tenant_id)
 
 
 @router.post("/inbound/slack/{tenant_id}", response_model=None)

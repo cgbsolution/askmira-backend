@@ -1,4 +1,4 @@
-"""Ask Mira's general data tool: any figure over AskMira's data, as a chart.
+"""Ask Miraa's general data tool: any figure over AskMiraa's data, as a chart.
 
 `query_data` lets the model ask the report compiler for a figure — a count, a
 total, an average — over any dataset in the semantic catalogue (payslips,
@@ -156,7 +156,7 @@ _DATES = (DataType.DATE, DataType.DATETIME)
 def catalogue_text(role: str, hidden: frozenset[str] = frozenset()) -> str:
     """Every dataset this role may query, with its fields, for the tool's description.
 
-    `hidden` leaves datasets out: AskMira's own expense claims when the workspace
+    `hidden` leaves datasets out: AskMiraa's own expense claims when the workspace
     keeps its claims in the linked expense product instead.
     """
     shared = [
@@ -455,7 +455,7 @@ def _organisation_counts(
     )
 
 
-#: AskMira's own datasets that a linked product replaces, by product.
+#: AskMiraa's own datasets that a linked product replaces, by product.
 _REPLACED_BY = {"expense": "expense_claim"}
 
 

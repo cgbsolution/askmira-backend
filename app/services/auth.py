@@ -173,7 +173,7 @@ async def create_workspace(
     if await email_in_use(session, email):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="That email already signs in to AskMira. Each person has one login.",
+            detail="That email already signs in to AskMiraa. Each person has one login.",
         )
 
     tenant = Tenant(
@@ -561,8 +561,8 @@ RESET_REQUESTS_PER_HOUR = 3
 
 register_event(
     "auth.password.reset",
-    "Reset your AskMira password",
-    "Hi {name}, use this link to set a new AskMira password: {link} — it works once and "
+    "Reset your AskMiraa password",
+    "Hi {name}, use this link to set a new AskMiraa password: {link} — it works once and "
     "expires in {minutes} minutes. If you did not ask for this, ignore this email; your "
     "password has not changed.",
     preferences={Channel.EMAIL: DigestMode.IMMEDIATE},

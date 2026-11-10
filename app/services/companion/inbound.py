@@ -1,11 +1,11 @@
-"""Messages to Ask Mira from Slack, Microsoft Teams and email.
+"""Messages to Ask Miraa from Slack, Microsoft Teams and email.
 
 Each place proves the message is its own before anything is read:
 
 * **Slack** signs every event with the app's signing secret (``v0=`` HMAC-SHA256
   over ``v0:<timestamp>:<body>``); older than five minutes is refused. Only a
   direct message to the app is answered, from a person whose Slack email is an
-  active AskMira login of the workspace (``users.info``, scope users:read.email).
+  active AskMiraa login of the workspace (``users.info``, scope users:read.email).
 * **Teams** sends a Bot Framework activity with a JWT signed by Microsoft's keys
   (login.botframework.com), for this bot's app id and the activity's own
   service address. The person is found by their Entra object id in Graph.
@@ -16,9 +16,9 @@ Each place proves the message is its own before anything is read:
   A pass for some other domain proves nothing about who wrote. SendGrid Inbound
   Parse posts a fixed set of fields; Mailgun also posts every header the sender
   wrote, so its webhook signature is checked and a field sent twice is refused.
-  Nothing is confirmed by an emailed reply: the person confirms in AskMira.
+  Nothing is confirmed by an emailed reply: the person confirms in AskMiraa.
 
-Then channels.answer asks Ask Mira as that person and the reply goes back to
+Then channels.answer asks Ask Miraa as that person and the reply goes back to
 the same chat or mail thread. Slack and Teams want an answer within seconds, so
 the router acknowledges at once and this runs in the background with its own
 database session. Nobody is told whether an address belongs to anyone.
@@ -121,7 +121,7 @@ async def handle_slack(session: AsyncSession, tenant_id: uuid.UUID, event: dict[
         return "a bot's own message or an edit"
     row = await ask_mira_app(session, tenant_id, Channel.SLACK)
     if row is None:
-        return "Ask Mira is off in Slack"
+        return "Ask Miraa is off in Slack"
     adapter = dispatch.chat_adapter(row)
     try:
         info = await adapter._call("users.info", params={"user": str(event.get("user") or "")})  # type: ignore[attr-defined]
@@ -132,7 +132,7 @@ async def handle_slack(session: AsyncSession, tenant_id: uuid.UUID, event: dict[
     person = acting.user
     if person is None:
         text = acting.refusal or (
-            "I can only answer people who sign in to AskMira with the same work email as their "
+            "I can only answer people who sign in to AskMiraa with the same work email as their "
             "Slack account."
         )
     else:
@@ -151,7 +151,7 @@ async def handle_slack(session: AsyncSession, tenant_id: uuid.UUID, event: dict[
         )
     except (PermanentFailure, TransientFailure) as exc:
         return f"the answer could not be posted: {exc}"
-    return "answered" if person else "not an AskMira login"
+    return "answered" if person else "not an AskMiraa login"
 
 
 # ── Microsoft Teams ──────────────────────────────────────────────────────────
@@ -210,7 +210,7 @@ async def handle_teams(
         return "not a message"
     row = await ask_mira_app(session, tenant_id, Channel.TEAMS)
     if row is None:
-        return "Ask Mira is off in Teams"
+        return "Ask Miraa is off in Teams"
     # Only Teams vouches for the Entra id in `from` (Web Chat and Direct Line let the
     # client write it), and only the workspace's own Microsoft 365 tenant is answered.
     directory = str(((activity.get("channelData") or {}).get("tenant") or {}).get("id") or "")
@@ -241,7 +241,7 @@ async def handle_teams(
     person = acting.user
     if person is None:
         text = acting.refusal or (
-            "I can only answer people who sign in to AskMira with the same work email as their "
+            "I can only answer people who sign in to AskMiraa with the same work email as their "
             "Microsoft 365 account."
         )
     else:
@@ -265,7 +265,7 @@ async def handle_teams(
             )  # fmt: skip
     except (PermanentFailure, TransientFailure, httpx.HTTPError) as exc:
         return f"the answer could not be posted: {exc}"
-    return "answered" if person else "not an AskMira login"
+    return "answered" if person else "not an AskMiraa login"
 
 
 # ── Email ────────────────────────────────────────────────────────────────────
@@ -389,7 +389,7 @@ async def handle_email(
     *,
     repeated: frozenset[str] = frozenset(),
 ) -> str:
-    """Answer one email to the workspace's Ask Mira address (its token already checked).
+    """Answer one email to the workspace's Ask Miraa address (its token already checked).
 
     `repeated` names the fields the post carried more than once.
     """
@@ -401,7 +401,7 @@ async def handle_email(
     acting = await channels.acting_person(session, tenant.id, sender)
     person = acting.user
     if person is None and (acting.login is None or acting.suspended):
-        return "the workspace is suspended" if acting.suspended else "not an AskMira login"
+        return "the workspace is suspended" if acting.suspended else "not an AskMiraa login"
     subject = re.sub(
         r"^((re|fwd?|aw)\s*:\s*)+", "", fields.get("subject") or "", flags=re.I
     ).strip()
@@ -425,7 +425,7 @@ async def handle_email(
                 recipient_name=name,
                 recipient_email=address,
                 recipient_phone=None,
-                subject=f"Re: {subject}" if subject else "Ask Mira",
+                subject=f"Re: {subject}" if subject else "Ask Miraa",
                 body=body,
                 event_key="companion.email_reply",
             )
@@ -463,7 +463,7 @@ async def set_email(
     signing_key: str | None = None,
     request: Any = None,
 ) -> dict[str, Any]:
-    """Switch Ask Mira by email on (a new secret address, shown once) or off.
+    """Switch Ask Miraa by email on (a new secret address, shown once) or off.
 
     `provider` is the workspace's inbound mail provider (the saved one when not
     given). Mailgun also needs its HTTP webhook signing key, kept encrypted.
@@ -475,7 +475,7 @@ async def set_email(
     from app.services import audit
 
     if not permissions.is_admin(user):
-        raise permissions.forbidden("Only an admin sets up Ask Mira by email.")
+        raise permissions.forbidden("Only an admin sets up Ask Miraa by email.")
     tenant = await session.get(Tenant, user.tenant_id)
     assert tenant is not None
     saved = email_settings(tenant)
@@ -497,7 +497,7 @@ async def set_email(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Mailgun needs its HTTP webhook signing key, so AskMira can tell Mailgun's "
+                    "Mailgun needs its HTTP webhook signing key, so AskMiraa can tell Mailgun's "
                     "posts from anyone else's."
                 ),
             )
@@ -520,7 +520,7 @@ async def set_email(
         changes={
             "companion_email": {"enabled": enabled, "provider": chosen, "new_address": enabled}
         },
-        summary="Ask Mira by email "
+        summary="Ask Miraa by email "
         + ("switched on with a new address" if enabled else "switched off"),
         request=request,
     )

@@ -11,7 +11,7 @@ and `record_transfer` refuses anything else outright, so this is enforced at the
 point the data would leave rather than promised in a prompt.
 
 A question about the asker's own record — "how many casual leaves do I have
-left" — is recognised by the model and answered by AskMira itself, from its own
+left" — is recognised by the model and answered by AskMiraa itself, from its own
 tables, without those numbers going anywhere. The answer says so.
 
 Every factual sentence carries a `[[source:id]]` citation that the grounding
@@ -65,7 +65,7 @@ SOURCES = ("assistant_articles", "leave_types", "leave_policies", "holidays")
 LOOKUPS = ("none", "leave_balance", "latest_payslip", "attendance_this_month", "my_manager")
 Lookup = Literal["none", "leave_balance", "latest_payslip", "attendance_this_month", "my_manager"]
 
-SYSTEM = """You are the HR policy assistant inside AskMira, the HR system of the company the \
+SYSTEM = """You are the HR policy assistant inside AskMiraa, the HR system of the company the \
 person asking works for. They are an employee in India.
 
 Answer only from the records given to you in the message: the company's published policy \
@@ -338,7 +338,7 @@ def _days(value: Any) -> str:
 async def _lookup(
     session: AsyncSession, user: User, lookup: str, *, employee_id: uuid.UUID | None
 ) -> tuple[str, list[str], str]:
-    """Answer a question about the asker's own record, here, from AskMira's tables.
+    """Answer a question about the asker's own record, here, from AskMiraa's tables.
 
     Returns the text, the records it read, and the page to open.
     """
@@ -434,7 +434,7 @@ async def lookup_own_record(
 ) -> tuple[str, list[str], str]:
     """The caller's own record, by the employee id in their token; never sent to a model.
 
-    Returns the sentence, the records it read and the page to open. Ask Mira uses
+    Returns the sentence, the records it read and the page to open. Ask Miraa uses
     this for "how many leaves do I have", as this assistant does.
     """
     if lookup not in LOOKUPS or lookup == "none":

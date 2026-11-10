@@ -73,7 +73,7 @@ class RefusalReason(str, enum.Enum):
                 "HR team can answer or grant the access."
             ),
             RefusalReason.DATA_NOT_PROVIDED: (
-                "Your organisation has not set this up in AskMira, so I have "
+                "Your organisation has not set this up in AskMiraa, so I have "
                 "nothing to answer from. This is a gap in the data rather than "
                 "a limit on you."
             ),

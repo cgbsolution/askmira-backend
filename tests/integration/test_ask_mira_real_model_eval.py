@@ -1,6 +1,6 @@
-"""Ask Mira's eval suite against the real model: the sales, deal and order-win test prompts.
+"""Ask Miraa's eval suite against the real model: the sales, deal and order-win test prompts.
 
-Every other Ask Mira test scripts the model (FakeModel), so it proves the tools
+Every other Ask Miraa test scripts the model (FakeModel), so it proves the tools
 and the rules, never that a real model picks the right tool from a person's own
 words. This suite sends the user's test prompts (A1-C5) to the workspace's real
 model, against faked Saleinx, AnytimeHire and ProcureFlow servers, and scores
@@ -222,7 +222,7 @@ async def test_leads_and_deal_stages_with_the_real_model(
     result, out = await _turn(session, me, B1, fake)
     failures += _judge("B1", out, [
         _spec(E, "Without a margin there is no offer yet", path="offer_kind", expected="none"),
-        _spec(C, "Mira asks for the margin", path="everything", values=["margin"]),
+        _spec(C, "Miraa asks for the margin", path="everything", values=["margin"]),
     ])  # fmt: skip
     _, out = await _turn(session, me, "Margin is about 32%.", fake, result["conversation"]["id"])
     failures += _judge("B1 margin", out, [
@@ -251,7 +251,7 @@ async def test_leads_and_deal_stages_with_the_real_model(
     _, out = await _turn(session, me, B3, fake)
     failures += _judge("B3", out, [
         _spec(E, "Two deals match: no offer", path="offer_kind", expected="none"),
-        _spec(C, "Mira asks which one", path="everything", values=["Fleet Portal", "Warehouse App"]),
+        _spec(C, "Miraa asks which one", path="everything", values=["Fleet Portal", "Warehouse App"]),
     ])  # fmt: skip
 
     # B4: a rep's Won waits for a manager.

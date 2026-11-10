@@ -13,7 +13,7 @@ security-relevant steps are the ones worth having in plain sight:
   into ours.
 - **Signature verified against the provider's JWKS**, with the issuer and
   audience checked. An unverified id token is a JSON object an attacker wrote.
-- **No role or group claim is read.** Roles are assigned in AskMira. This
+- **No role or group claim is read.** Roles are assigned in AskMiraa. This
   module extracts identity only.
 """
 

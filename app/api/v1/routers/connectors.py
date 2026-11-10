@@ -28,7 +28,7 @@ class CompleteIn(BaseModel):
 class StartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    #: Where to come back to once connected: an Ask Mira conversation. Empty: Connectors.
+    #: Where to come back to once connected: an Ask Miraa conversation. Empty: Connectors.
     back: str | None = Field(default=None, max_length=80)
 
 

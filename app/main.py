@@ -1,4 +1,4 @@
-"""AskMira API entry point."""
+"""AskMiraa API entry point."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title=f"{settings.APP_NAME} API",
+    title=f"{settings.BRAND_NAME} API",
     description=(
         "Culture-analytics-first HRMS for the Indian mid-market. "
         "Auth is self-issued JWT; Supabase supplies Postgres only."
@@ -194,7 +194,7 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
 def _busy() -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content={"detail": "AskMira is busy right now. Please try again in a moment."},
+        content={"detail": "AskMiraa is busy right now. Please try again in a moment."},
         headers={"Retry-After": "5"},
     )
 

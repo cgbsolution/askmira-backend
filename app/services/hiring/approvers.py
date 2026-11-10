@@ -81,7 +81,7 @@ def can_decide_step(
                 allowed=True,
                 on_behalf_of=approver_role,
                 message=(
-                    f"'{approver_role}' is not a role anybody holds in AskMira, so this "
+                    f"'{approver_role}' is not a role anybody holds in AskMiraa, so this "
                     "step is signed by an admin on its behalf. The approval record says so."
                 ),
             )

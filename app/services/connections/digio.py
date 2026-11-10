@@ -3,7 +3,7 @@
 The admin pastes the client id and secret from their Digio dashboard (sandbox or
 production) and, optionally, the webhook secret. The credentials are checked
 against Digio before they are kept. Letters sent for signature then go out on
-this account, and Digio tells AskMira when one is signed at this workspace's own
+this account, and Digio tells AskMiraa when one is signed at this workspace's own
 webhook address — or, without a webhook, the letter's status is checked on
 request and every hour.
 """

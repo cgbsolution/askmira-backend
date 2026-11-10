@@ -3,7 +3,7 @@
 A template is wording: a subject and a few sentences with `{placeholders}`.
 This module is the envelope around it — the company's logo and colour at the
 top, the wording laid out as paragraphs and lists, a button into the portal,
-the company's own footer, and a small "Powered by AskMira" line that no tenant
+the company's own footer, and a small "Powered by AskMiraa" line that no tenant
 setting removes.
 
 Pure functions, no database: the caller resolves the brand and passes it in,
@@ -40,7 +40,7 @@ __all__ = [
     "render_email",
 ]
 
-#: AskMira Red, used until a workspace picks its own colour.
+#: AskMiraa Red, used until a workspace picks its own colour.
 DEFAULT_ACCENT = "#EB061D"
 LOGO_CID = "company-logo"
 
@@ -157,7 +157,7 @@ _INNER_STYLE = "width:100%;max-width:600px;font-family:Segoe UI,Helvetica,Arial,
 _CARD = "background:#FFFFFF;border-radius:12px;padding:32px 32px 24px 32px;"
 _H1 = "margin:0 0 20px 0;font-size:21px;line-height:29px;font-weight:700;color:#1A1110;"
 _POWERED = "margin:12px 0 0 0;font-size:11px;line-height:16px;color:#8C807B;"
-_ASKMIRA = '<span style="font-weight:600;color:#EB061D;">AskMira</span>'
+_ASKMIRA = '<span style="font-weight:600;color:#EB061D;">AskMiraa</span>'
 
 
 def _buttons(actions: tuple[EmailAction, ...], accent: str) -> str:
@@ -185,7 +185,7 @@ def render_email(
     subject: str,
     body: str,
     action_url: str | None = None,
-    action_label: str = "Open AskMira",
+    action_label: str = "Open AskMiraa",
     actions: tuple[EmailAction, ...] = (),
     reason: str | None = None,
     embed_logo: bool = True,
@@ -286,7 +286,7 @@ def render_email(
         text_parts.append(brand.footer_text.strip())
     if reason:
         text_parts.append(reason)
-    text_parts.append(f"Sent by {brand.company_name or 'your company'} · Powered by AskMira")
+    text_parts.append(f"Sent by {brand.company_name or 'your company'} · Powered by AskMiraa")
     return RenderedEmail(
         subject=subject or "",
         text="\n".join(text_parts).strip() + "\n",

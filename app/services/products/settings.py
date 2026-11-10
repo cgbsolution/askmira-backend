@@ -3,7 +3,7 @@
 Per product (INTERVIEW_TOOL_…, EXPENSE_TOOL_…, HELPDESK_TOOL_…, SALEINX_TOOL_…,
 PROCUREMENT_TOOL_…):
 
-    _API_URL  the product's backend, which AskMira calls server to server
+    _API_URL  the product's backend, which AskMiraa calls server to server
     _APP_URL  the product's web app, where Connect and a launch land
     _SECRET   optional: a server-wide secret set on both sides, for workspaces
               linked before Connectors. A workspace that connected from

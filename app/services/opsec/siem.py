@@ -22,8 +22,8 @@ client's parser drops.
 A LOG THAT SILENTLY STOPS SHIPPING IS WORSE THAN NONE
 ═══════════════════════════════════════════════════════════════════════════════
 
-Because it is trusted. A SOC with no AskMira events knows it has no AskMira
-events; a SOC whose AskMira feed died three weeks ago believes nothing has
+Because it is trusted. A SOC with no AskMiraa events knows it has no AskMiraa
+events; a SOC whose AskMiraa feed died three weeks ago believes nothing has
 happened here in three weeks, which is a much more dangerous belief.
 
 So `delivery_health` alerts on **silence** as well as on failure. A destination
@@ -422,7 +422,7 @@ def delivery_health(
             minutes_since_success=minutes_since,
             message=(
                 f"{consecutive_failures} consecutive delivery failure(s). The "
-                "client's SOC has a gap in their AskMira events and will not "
+                "client's SOC has a gap in their AskMiraa events and will not "
                 "know unless we tell them."
             ),
         )

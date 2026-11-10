@@ -1,7 +1,7 @@
 """Slack and Microsoft Teams: approvals and updates as direct messages, against a real database.
 
 Slack and Microsoft are fakes here (an httpx MockTransport answering as their
-documented APIs do); everything on AskMira's side is real.
+documented APIs do); everything on AskMiraa's side is real.
 
 * The admin's credentials are checked with the provider before they are kept,
   encrypted, never returned, and every change is audited.
@@ -185,7 +185,7 @@ async def test_a_leave_request_reaches_the_manager_in_slack_and_the_button_decid
     blocks = json.dumps(message["blocks"])
     assert "Meera Nair" in blocks
     approve = re.search(r"https://portal\.test/act/([^?\"]+)\?do=approve", blocks)
-    assert approve and "do=reject" in blocks and "Open AskMira" in blocks
+    assert approve and "do=reject" in blocks and "Open AskMiraa" in blocks
     # Email still went too.
     assert any(m.recipient_email == org["boss"].email for m in mail.sent)
 

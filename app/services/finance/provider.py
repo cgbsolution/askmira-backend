@@ -1,6 +1,6 @@
-"""The finance provider: where AskMira writes the P&L an order is expected to make.
+"""The finance provider: where AskMiraa writes the P&L an order is expected to make.
 
-When an order is won (Ask Mira's order win, companion/order_win.py), its
+When an order is won (Ask Miraa's order win, companion/order_win.py), its
 expected billing and cost, month by month, have to land in the company's
 finance layer as a *prospective* P&L — not as actuals, which only ever record
 what happened. That layer is behind one small interface, so the order win
@@ -10,7 +10,7 @@ never knows which ledger it writes to:
                              reference (a second write returns the first)
     withdraw_forecast(...)   take it back, when a later step of the order failed
 
-One provider exists: **AskMira's own ledger** — Account P&L (services/accounts),
+One provider exists: **AskMiraa's own ledger** — Account P&L (services/accounts),
 where the forecast sits beside the account's actual billing and payroll cost
 and the P&L page shows both. A ledger such as Tally does not hold forecasts:
 actual payroll already goes to Tally as a journal (payroll/journal.py), and a
@@ -167,10 +167,10 @@ def _code_from(name: str) -> str:
 
 
 class AskMiraLedger:
-    """AskMira's Account P&L: forecasts beside the actuals, per client account."""
+    """AskMiraa's Account P&L: forecasts beside the actuals, per client account."""
 
     key = "askmira"
-    name = "AskMira Account P&L"
+    name = "AskMiraa Account P&L"
 
     async def _account(
         self, session: AsyncSession, user: User, name: str
@@ -210,7 +210,7 @@ class AskMiraLedger:
             code=code,
             name=wanted[:160],
             client_name=wanted[:160],
-            notes="Opened by an order win in Ask Mira.",
+            notes="Opened by an order win in Ask Miraa.",
         )
         session.add(row)
         await session.flush()
@@ -407,11 +407,11 @@ class AskMiraLedger:
 
 
 def provider_for(session: AsyncSession, user: User) -> FinanceProvider:
-    """The finance layer this workspace writes forecasts to. Today: AskMira's own ledger."""
+    """The finance layer this workspace writes forecasts to. Today: AskMiraa's own ledger."""
     return AskMiraLedger()
 
 
-# ── Reading forecasts (the Account P&L page, Ask Mira) ───────────────────────
+# ── Reading forecasts (the Account P&L page, Ask Miraa) ───────────────────────
 
 
 async def list_forecasts(

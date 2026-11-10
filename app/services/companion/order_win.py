@@ -1,8 +1,8 @@
 """An order win: a signed order opens its positions and writes its prospective P&L.
 
-A manager (or anyone with the rights) tells Ask Mira a customer signed: the PO,
+A manager (or anyone with the rights) tells Ask Miraa a customer signed: the PO,
 its value, the months, the team with each role's billing and cost rate, and the
-recruitment cost per hire. Ask Mira then
+recruitment cost per hire. Ask Miraa then
 
 1. **checks before it offers anything** — deterministically, here, not in the
    model's head:
@@ -11,7 +11,7 @@ recruitment cost per hire. Ask Mira then
    * the PO's value matches what the team bills over the months (within
      half a percent), or it refuses and shows both figures;
    * the same PO was not booked already (one live run per PO number);
-   * the person may open jobs in AnytimeHire and write the P&L in AskMira;
+   * the person may open jobs in AnytimeHire and write the P&L in AskMiraa;
 2. **offers** the plan: the positions, and the forecast month by month with
    billing, people cost, recruitment and margin;
 3. on Confirm, **carries it out step by step** (CompanionRun), recording each:
@@ -339,7 +339,7 @@ def _run_summary(run: CompanionRun) -> str:
     parts = [f"{len(jobs)} position(s) opened in AnytimeHire"]
     raised = [s for s in run.steps if s.get("step") == "requisition" and s.get("status") == "done"]
     if raised:
-        parts.append(f"{len(raised)} requisition(s) raised in AskMira")
+        parts.append(f"{len(raised)} requisition(s) raised in AskMiraa")
     if forecast:
         parts.append(f"the prospective P&L written on {forecast.get('account', 'the account')}")
     return ", ".join(parts)
@@ -371,12 +371,12 @@ register_event(
     "companion.order.ready",
     "Your order {po_number} is ready to book",
     "{deal_title}'s Won was approved in Saleinx. Your held order {po_number} is ready: open "
-    "Ask Mira to book it (positions in AnytimeHire and the prospective P&L).",
+    "Ask Miraa to book it (positions in AnytimeHire and the prospective P&L).",
 )
 register_event(
     "companion.order.booked",
     "Order {po_number} was booked",
-    "{deal_title}'s Won was approved, so Ask Mira booked your held order {po_number}: {outcome}",
+    "{deal_title}'s Won was approved, so Ask Miraa booked your held order {po_number}: {outcome}",
 )
 register_event(
     "companion.order.withdrawn",
@@ -522,7 +522,7 @@ async def resume_held(session: AsyncSession, actor: User, *, now: datetime) -> d
 
 
 def _say_in_chat(session: AsyncSession, action: CompanionAction, text: str) -> None:
-    """A note from Ask Mira in the conversation the order came from, with its card as it is now."""
+    """A note from Ask Miraa in the conversation the order came from, with its card as it is now."""
     from app.models.companion import CompanionMessage
     from app.services.companion import actions
 
@@ -788,7 +788,7 @@ async def propose(
     if held:
         waiting = (
             f"Held: {deal.get('title')} is Won but waits for a manager's approval in Saleinx. "
-            "Nothing is opened or written until it is approved. Ask Mira checks Saleinx every "
+            "Nothing is opened or written until it is approved. Ask Miraa checks Saleinx every "
             "15 minutes and tells you the moment it is approved, so you can book it then."
         )
         plan["waiting_for"] = {
@@ -938,7 +938,7 @@ def _forecast_plan(plan: dict[str, Any], run_id: uuid.UUID) -> ForecastPlan:
         order_value=Decimal(plan["po_value"]) if plan.get("po_value") else None,
         source="order_win",
         source_ref=str(run_id),
-        notes=f"Booked from Ask Mira. Saleinx deal {plan.get('deal_id')}.",
+        notes=f"Booked from Ask Miraa. Saleinx deal {plan.get('deal_id')}.",
     )
 
 
@@ -1080,7 +1080,7 @@ async def run(
         entity_id=booking.id,
         actor=user,
         changes={"kind": "order_win", "po_number": plan["po_number"], "figures": plan["figures"]},
-        summary=f"Ask Mira started booking PO {plan['po_number']} for {plan['account']}",
+        summary=f"Ask Miraa started booking PO {plan['po_number']} for {plan['account']}",
         request=request,
     )
     await session.commit()
@@ -1242,7 +1242,7 @@ async def run(
         else f"{len(jobs)} position(s) opened in AnytimeHire ({figures['hires']} hires)"
     )
     note = (
-        f"Order booked from AskMira: PO {plan['po_number']}, {plan['months']} months from "
+        f"Order booked from AskMiraa: PO {plan['po_number']}, {plan['months']} months from "
         f"{date.fromisoformat(plan['start_date']):%d %b %Y}. {staffed}. Prospective P&L: billing "
         f"{inr(Decimal(figures['billing']))}, cost {inr(Decimal(figures['cost']))}, margin "
         f"{inr(Decimal(figures['margin']))} ({figures['margin_pct']}%)."

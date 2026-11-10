@@ -21,7 +21,7 @@ RowOutcome = Literal["ready", "skip", "error"]
 class ImportColumn(BaseModel):
     #: As in the file; a repeated name carries its group ("Local Address > City").
     header: str
-    #: The AskMira field it fills.
+    #: The AskMiraa field it fills.
     field: str
     section: str
 
@@ -54,7 +54,7 @@ class ImportRow(BaseModel):
     errors: list[str]
     #: Values left out of an imported row, each with its reason.
     warnings: list[str]
-    #: Values imported as typed that are not as AskMira would have them (a PAN
+    #: Values imported as typed that are not as AskMiraa would have them (a PAN
     #: that fails its check, an address with no PIN code), for HR to correct.
     issues: list[str] = []
     #: Set once imported.
@@ -63,14 +63,14 @@ class ImportRow(BaseModel):
 
 class ImportPreview(BaseModel):
     filename: str
-    #: "factoHR Employee Detail report", "AskMira template" or "Spreadsheet".
+    #: "factoHR Employee Detail report", "AskMiraa template" or "Spreadsheet".
     source: str
     header_row: int
     total_rows: int
     #: Rows that will be added: people working here and people who have left.
     ready_current: int
     ready_leavers: int
-    #: Employee codes already in AskMira: left as they are.
+    #: Employee codes already in AskMiraa: left as they are.
     skipped: int
     errors: int
     with_warnings: int
@@ -79,7 +79,7 @@ class ImportPreview(BaseModel):
     continuation_rows: int = 0
     #: Points about the whole file, said once ("Company: … recorded under …").
     notes: list[str] = []
-    #: Columns AskMira has no field for, kept as custom fields on the "factoHR" tab.
+    #: Columns AskMiraa has no field for, kept as custom fields on the "factoHR" tab.
     new_custom_fields: list[str] = []
     #: Columns with data that are not kept, and why.
     columns_not_kept: list[ImportColumnNotKept] = []

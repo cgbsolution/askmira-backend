@@ -1,4 +1,4 @@
-"""Thousands of questions people ask Ask Mira, each checked against what it must do.
+"""Thousands of questions people ask Ask Miraa, each checked against what it must do.
 
 The bank (question_bank.py) holds the questions: admins, sub-admins and founders
 asking about people, payroll, approvals, hiring, expenses and the helpdesk, and

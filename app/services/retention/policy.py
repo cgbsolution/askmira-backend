@@ -208,7 +208,7 @@ def validate_policy(
         raise PolicyError(
             f"{cat.name} has to be kept for at least {floor} months — "
             f"{cat.retention.statutory_reference} requires it. You asked for "
-            f"{retention_period_months}. This is not a setting AskMira can "
+            f"{retention_period_months}. This is not a setting AskMiraa can "
             "unlock: the obligation is on your organisation, and shortening it "
             "here would not move it."
         )

@@ -3,7 +3,7 @@ expense tool).
 
 The product keeps its own copy of the company and its people; this row says
 which of its organisations is this workspace, and how the last people sync went.
-While a link is active, the product replaces the matching AskMira module for
+While a link is active, the product replaces the matching AskMiraa module for
 that workspace — the portal shows a launcher instead of the built-in pages.
 """
 
@@ -56,6 +56,6 @@ class ProductLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
     organization_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     #: For a product whose roles are its own (Saleinx, ProcureFlow): each linked
     #: person's role there, by login email, as the product said at the last
-    #: people sync. AskMira never grants these; it reads them to know what to
+    #: people sync. AskMiraa never grants these; it reads them to know what to
     #: offer a person, and the product checks the person again on every call.
     member_roles: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

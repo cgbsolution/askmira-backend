@@ -53,15 +53,15 @@ def test_wording_is_escaped_and_laid_out() -> None:
 
 def test_the_email_carries_the_brand_and_the_platform_line() -> None:
     rendered = render_email(
-        brand(logo=PNG), subject="Your payslip is ready", body="It is in AskMira."
+        brand(logo=PNG), subject="Your payslip is ready", body="It is in AskMiraa."
     )
     assert "#0A7B83" in rendered.html
     assert f'src="cid:{LOGO_CID}"' in rendered.html
     assert rendered.images == (InlineImage(cid=LOGO_CID, data=PNG, mime_type="image/png"),)
     assert "Regards,<br>People team" in rendered.html
     assert "Acme Technologies, Bengaluru" in rendered.html
-    assert "Powered by" in rendered.html and "AskMira" in rendered.html
-    assert "Powered by AskMira" in rendered.text
+    assert "Powered by" in rendered.html and "AskMiraa" in rendered.html
+    assert "Powered by AskMiraa" in rendered.text
     assert rendered.text.startswith("Your payslip is ready")
 
 
@@ -110,7 +110,7 @@ def test_a_danger_button_is_outlined_so_it_never_looks_like_the_red_primary() ->
 def test_one_portal_button_unless_the_wording_has_its_own_link() -> None:
     plain = render_email(brand(), subject="S", body="Something happened.", action_url="https://p")
     assert 'href="https://p"' in plain.html
-    assert "Open AskMira: https://p" in plain.text
+    assert "Open AskMiraa: https://p" in plain.text
 
     reset = render_email(
         brand(), subject="S", body="Use https://p/reset?t=1 to reset.", action_url="https://p"
@@ -131,7 +131,7 @@ def test_approval_buttons_replace_the_portal_button() -> None:
     )
     assert "https://p/act/t?do=approve" in rendered.html
     assert "https://p/act/t?do=reject" in rendered.html
-    assert ">Open AskMira<" not in rendered.html
+    assert ">Open AskMiraa<" not in rendered.html
     assert "Approve: https://p/act/t?do=approve" in rendered.text
 
 
@@ -182,7 +182,7 @@ async def test_smtp_sends_text_and_branded_html_with_the_logo_inline() -> None:
     assert parsed.get_content_type() == "multipart/alternative"
     plain = parsed.get_body(preferencelist=("plain",))
     html_part = parsed.get_body(preferencelist=("html",))
-    assert "Powered by AskMira" in plain.get_content()
+    assert "Powered by AskMiraa" in plain.get_content()
     assert "cid:company-logo" in html_part.get_content()
     images = [part for part in parsed.walk() if part.get_content_type() == "image/png"]
     assert len(images) == 1

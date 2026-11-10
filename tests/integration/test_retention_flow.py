@@ -102,7 +102,7 @@ async def test_a_tenant_cannot_configure_below_the_statutory_minimum(session, hr
         )
     assert exc.value.status_code == 400
     assert "96 months" in exc.value.detail
-    assert "not a setting AskMira can unlock" in exc.value.detail
+    assert "not a setting AskMiraa can unlock" in exc.value.detail
 
     count = (
         await session.execute(select(func.count()).select_from(RetentionPolicyRow))

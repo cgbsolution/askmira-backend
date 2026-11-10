@@ -1,4 +1,4 @@
-"""Ask Mira as a conversation: several steps a turn, offers the person confirms, trends.
+"""Ask Miraa as a conversation: several steps a turn, offers the person confirms, trends.
 
 What these hold:
 
@@ -8,7 +8,7 @@ What these hold:
   approval chain and an audit row marked "via ask_mira";
 - the model cannot confirm in the turn it made the offer, nor on a message that
   is not a yes; a decided, expired or someone else's offer cannot be confirmed;
-- a manager approves a waiting request through Mira, and it is decided by the
+- a manager approves a waiting request through Miraa, and it is decided by the
   leave module's own `decide`;
 - the model reads a tool's result only when the DPDP register lets the model
   provider receive every category in it, and the workspace has not switched
@@ -176,7 +176,7 @@ async def test_leave_is_offered_and_sent_only_when_the_person_says_yes(
     assert request.start_date == day and request.total_days == Decimal(1)
     action = (await session.scalars(select(CompanionAction))).one()
     assert action.status is CompanionActionStatus.DONE and action.decided_via == "message"
-    # The leave module's own audit row, marked as raised through Ask Mira.
+    # The leave module's own audit row, marked as raised through Ask Miraa.
     row = (
         await session.scalars(select(AuditLog).where(AuditLog.entity_type == "leave_request"))
     ).one()
@@ -252,7 +252,7 @@ async def test_leave_beyond_the_balance_is_not_offered(
     card = reply["cards"][0]
     assert card["type"] == "record" and card["title"] == "This leave cannot be applied"
     assert (await session.scalars(select(CompanionAction))).all() == []
-    # Mira says how many days can be taken, in AskMira's words; never "confirm".
+    # Miraa says how many days can be taken, in AskMiraa's words; never "confirm".
     have = re.search(
         r"You have only (\S+) days? of Casual Leave, so you can apply for", reply["text"]
     )

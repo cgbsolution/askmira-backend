@@ -32,12 +32,12 @@ ENDPOINTS: dict[str, str] = {
         "the product's role rule refuses anyone it does not admit."
     ),
     "GET /products/{product}/views/{view}": (
-        "scoped:role_in: only someone AskMira gives a role in the linked product is answered; "
+        "scoped:role_in: only someone AskMiraa gives a role in the linked product is answered; "
         "the product is asked as them (identity from the token, workspace from tid), answers "
         "only what that role there may see, and a page's fixed scope cannot be widened."
     ),
     "GET /products/helpdesk/ticket-options": (
-        "scoped:_ask: through products.data, which answers only someone AskMira gives a role "
+        "scoped:_ask: through products.data, which answers only someone AskMiraa gives a role "
         "in the linked helpdesk; it is asked as the caller (identity from the token, workspace "
         "from tid) and offers only their own assets."
     ),

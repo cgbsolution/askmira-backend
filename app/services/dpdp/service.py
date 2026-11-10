@@ -1406,7 +1406,7 @@ async def tenant_compliance_surface(
     return {
         "roles": {
             "data_fiduciary": "The tenant. They decide why and how data is processed.",
-            "data_processor": "AskMira. We process it on their instructions.",
+            "data_processor": "AskMiraa. We process it on their instructions.",
             "note": (
                 "The obligations under the Act sit with the Data Fiduciary. This "
                 "page is how they are discharged through this product; it is not "
@@ -1442,7 +1442,7 @@ async def tenant_compliance_surface(
             "languages fall back to English and say so.",
             "Every AI call records its transfer to the model provider, but the "
             "provider's zero-data-retention and processing agreement are settings on "
-            "the API account that AskMira cannot verify from here.",
+            "the API account that AskMiraa cannot verify from here.",
             "The lawful-basis mapping has not been reviewed by counsel.",
         ],
     }

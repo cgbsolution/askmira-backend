@@ -1,4 +1,4 @@
-"""Ask Mira's lookups about people: one person's record, and the company's headcount.
+"""Ask Miraa's lookups about people: one person's record, and the company's headcount.
 
 Two audiences, two rules:
 
@@ -89,7 +89,7 @@ async def may_view(session: AsyncSession, user: User, area: str) -> bool:
 
     Admins may. A sub-admin may unless their rights in that area (their own,
     else their role's) take viewing away. Employees and managers may not: Ask
-    Mira answers them about themselves only.
+    Miraa answers them about themselves only.
     """
     if user.role is UserRole.SUPER_ADMIN or permissions.is_admin(user):
         return True

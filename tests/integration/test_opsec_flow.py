@@ -215,7 +215,7 @@ async def test_a_broken_delivery_raises_an_alert(session, hr_user):
     entry = broken["alerting"][0]
     assert entry["state"] == "failing"
     assert entry["consecutive_failures"] == 3
-    assert "gap in their AskMira events" in entry["message"]
+    assert "gap in their AskMiraa events" in entry["message"]
 
     await session.refresh(destination)
     assert destination.health_state is DeliveryStateEnum.FAILING

@@ -180,13 +180,13 @@ async def prepare_batch(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found")
     if run.origin == RUN_ORIGIN_IMPORTED:
         # The salaries were paid by the previous payroll, which made its own bank
-        # file. A second file from AskMira would pay everybody that month again.
+        # file. A second file from AskMiraa would pay everybody that month again.
         system = (run.import_details or {}).get("system") or "factoHR"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"This month was imported from {system} as paid; its salaries were paid from "
-                f"{system}. AskMira makes no bank file for it: a second file would pay "
+                f"{system}. AskMiraa makes no bank file for it: a second file would pay "
                 "everyone again."
             ),
         )
@@ -1147,7 +1147,7 @@ NOTICE_TEMPLATES = {
         "{failed_count} salary credit(s) failed",
         "The bank did not credit {failed_count} salary payment(s) totalling {failed_total} "
         "in the disbursement for {period}. Reasons: {reasons}. Review them and issue a "
-        "supplementary batch in AskMira.",
+        "supplementary batch in AskMiraa.",
     ),
 }
 

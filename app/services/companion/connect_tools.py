@@ -1,8 +1,8 @@
 """Products not ready for a person yet, and how to get them ready from the chat.
 
-Ask Mira works in the products a workspace connects (catalogue.PRODUCTS). A tool
+Ask Miraa works in the products a workspace connects (catalogue.PRODUCTS). A tool
 for a product that is not ready for the person (not connected, switched off,
-connected but they are not a member there) is not offered, so on its own Mira
+connected but they are not a member there) is not offered, so on its own Miraa
 could only say "I can't". Instead every message tells the model which products
 are not ready and why, and `connect_product` shows the person what to do, on a
 card: an admin gets a Connect button that starts Settings → Connectors' own
@@ -48,7 +48,7 @@ HOLDS = {
     "saleinx": "leads, deals and the sales pipeline",
     "procurement": "requisitions, purchase orders, invoices and budgets",
 }
-#: What Ask Mira can do there once it is ready.
+#: What Ask Miraa can do there once it is ready.
 CAN_DO = {
     "interview": "show jobs, candidates and interviews",
     "expense": "show claims, totals and what waits for approval",
@@ -61,7 +61,7 @@ _WHY = {
     SWITCHED_OFF: "linked but switched off for this workspace",
     NOT_MEMBER: "connected, but the person is not a member there",
     NO_ROLE: "not part of the person's role",
-    NOT_ON_SERVER: "not available on this AskMira server",
+    NOT_ON_SERVER: "not available on this AskMiraa server",
     OPERATOR: "not open to the platform operator",
 }
 
@@ -175,7 +175,7 @@ async def connect_card(session: AsyncSession, user: User, key: str) -> tuple[lis
             {
                 "type": "notice",
                 "tone": "info",
-                "text": f"Which product do you mean? Ask Mira works with {names}.",
+                "text": f"Which product do you mean? Ask Miraa works with {names}.",
             }
         ], {}
     product = PRODUCTS[key]
@@ -238,8 +238,8 @@ async def connect_card(session: AsyncSession, user: User, key: str) -> tuple[lis
     else:
         title = f"{brand} can't be connected on this server yet"
         text = (
-            f"This AskMira server doesn't know where {brand} is yet, or can't keep its key "
-            "safely. Ask your AskMira provider to set it up."
+            f"This AskMiraa server doesn't know where {brand} is yet, or can't keep its key "
+            "safely. Ask your AskMiraa provider to set it up."
         )
 
     view = f"Card shown to the person, under your reply: {title}. "

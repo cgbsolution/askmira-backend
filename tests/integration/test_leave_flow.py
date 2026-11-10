@@ -527,7 +527,7 @@ async def test_approval_is_refused_once_the_balance_is_gone(session: AsyncSessio
             year=START.year,
             kind="debit",
             days=Decimal(22),
-            reason="Leave taken before AskMira",
+            reason="Leave taken before AskMiraa",
         ),
     )
     inbox = await leave_service.approvals_inbox(session, org["boss"])

@@ -4,7 +4,7 @@ Thin: parse, authorise, delegate, serialise. Who may see what lives in
 `app.services.hiring.visibility`; the approval rules in
 `app.services.hiring.approvers`.
 
-Blocking gate (FS-HIR-02, M1): AskMira does not compute a Fit Score. A stored
+Blocking gate (FS-HIR-02, M1): AskMiraa does not compute a Fit Score. A stored
 one is only ever returned beside the round scores and signals that back it, and
 proctoring notes are reported as observations — see
 `app.services.hiring.signals` and `tests/hiring/test_scoring_gate.py`.

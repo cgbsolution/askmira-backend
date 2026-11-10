@@ -1,10 +1,10 @@
-"""Ask Mira's tools over MCP, for a person who connected Claude or ChatGPT as themselves.
+"""Ask Miraa's tools over MCP, for a person who connected Claude or ChatGPT as themselves.
 
-* With ``mira:use`` the person's own Ask Mira lookups are listed (mira_*), only
+* With ``mira:use`` the person's own Ask Miraa lookups are listed (mira_*), only
   those whose results carry no one's personal record; an API key gets none.
-* A lookup answers with the text Ask Mira's model reads, is audited and is in
+* A lookup answers with the text Ask Miraa's model reads, is audited and is in
   the transfer register.
-* An action only prepares: the offer waits in a new Ask Mira conversation, the
+* An action only prepares: the offer waits in a new Ask Miraa conversation, the
   assistant gets its link, and nothing changes until the person confirms there.
 * With AI switched off nothing is answered.
 """
@@ -60,7 +60,7 @@ async def test_a_person_gets_their_own_ask_mira_lookups_and_prepare_tools(
     # Results that carry a person's record never go to an outside assistant.
     assert not names & {"mira_employee_record", "mira_my_record", "mira_payroll_summary"}
     assert not names & {"mira_confirm_action", "mira_cancel_action"}
-    # Without the scope, none of Ask Mira's.
+    # Without the scope, none of Ask Miraa's.
     without = await _names(session, hr, SCOPES - {"mira:use"})
     assert not {n for n in without if n.startswith("mira_")}
 
@@ -121,7 +121,7 @@ async def test_an_action_is_only_prepared_and_waits_for_the_person_in_askmira(
     conversation = await session.get(CompanionConversation, action.conversation_id)
     assert conversation.user_id == hr.id and str(conversation.id) in text
 
-    # The person confirms it in AskMira; only then is it raised.
+    # The person confirms it in AskMiraa; only then is it raised.
     done = await companion.confirm_offer(session, hr, action.id, request=None)
     assert done["action"]["status"] == "done", done["action"]
     requisition = await session.scalar(select(Requisition))

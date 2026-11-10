@@ -2,7 +2,7 @@
 
 The bucket is a fake S3 endpoint (httpx MockTransport) that checks each request
 carries a Signature Version 4 header for the saved key; the signing itself is
-checked against AWS's published examples. Everything on AskMira's side is real.
+checked against AWS's published examples. Everything on AskMiraa's side is real.
 
 * A delivery writes a dated CSV and latest.csv, as the admin who set it up,
   records an export run with the field list and an audit row, and keeps no

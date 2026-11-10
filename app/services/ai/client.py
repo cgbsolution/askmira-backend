@@ -1,4 +1,4 @@
-"""The one place AskMira calls a language model.
+"""The one place AskMiraa calls a language model.
 
 Every feature asks for one structured answer: a JSON object validated against a
 schema the feature wrote. Free text never flows from the model straight to a
@@ -10,7 +10,7 @@ nothing was answered (not configured, unreachable, cut off, malformed);
 `AiDeclinedError` means the model refused. Neither is ever papered over with a
 guessed answer.
 
-One feature holds a conversation instead: Ask Mira calls `step` in a loop,
+One feature holds a conversation instead: Ask Miraa calls `step` in a loop,
 with tools, and runs each tool the model asks for itself (companion/agent.py).
 A step's content goes back to the model unchanged on the next step of the same
 turn — that is what keeps the model's reasoning valid across tool calls.
@@ -133,7 +133,7 @@ class Backend(Protocol):
         effort: str,
     ) -> Completion: ...
 
-    # Optional: only Ask Mira holds a conversation. A backend without `step`
+    # Optional: only Ask Miraa holds a conversation. A backend without `step`
     # answers single questions only (see `step` below).
 
 

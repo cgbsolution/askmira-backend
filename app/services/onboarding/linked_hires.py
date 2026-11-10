@@ -7,7 +7,7 @@ email, phone, the job's title, its department and location (matched to this
 workspace's own by name). Someone already in the directory, by email, is not
 listed again.
 
-Only HR is answered (AnytimeHire gives contact details to AskMira's admins
+Only HR is answered (AnytimeHire gives contact details to AskMiraa's admins
 only); the list is asked for live, as the person, and kept nowhere.
 """
 

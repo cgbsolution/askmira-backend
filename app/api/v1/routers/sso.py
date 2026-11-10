@@ -51,7 +51,7 @@ LOGIN_ATTEMPT_TTL = timedelta(minutes=10)
 class ProviderCreate(BaseModel):
     """No role or group attribute mapping — deliberately.
 
-    Roles are assigned in AskMira. Offering a field for an IdP role claim would
+    Roles are assigned in AskMiraa. Offering a field for an IdP role claim would
     invite exactly the escalation path this design refuses.
     """
 
@@ -300,7 +300,7 @@ async def oidc_callback(
 ) -> AuthResponse:
     """Complete an OIDC login and mint our own tokens.
 
-    The tokens returned here are AskMira's, carrying the role AskMira assigned.
+    The tokens returned here are AskMiraa's, carrying the role AskMiraa assigned.
     Nothing from the provider's claims influences that.
     """
     attempt = await session.scalar(select(SsoLoginAttempt).where(SsoLoginAttempt.state == state))
@@ -466,7 +466,7 @@ async def _complete_login(
     last_name: str | None,
     employee_code: str | None,
 ) -> AuthResponse:
-    """Provision or find the user, then mint AskMira's own tokens."""
+    """Provision or find the user, then mint AskMiraa's own tokens."""
     try:
         user = await sso_service.provision_user(
             session,
@@ -503,7 +503,7 @@ async def _complete_login(
 
     return AuthResponse(
         company=company,
-        # The role in this token is the one AskMira holds, never one the IdP
+        # The role in this token is the one AskMiraa holds, never one the IdP
         # asserted.
         access_token=create_access_token(
             user_id=str(user.id), tenant_id=str(user.tenant_id), role=user.role.value

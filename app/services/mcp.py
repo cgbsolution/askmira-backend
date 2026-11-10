@@ -1,4 +1,4 @@
-"""AskMira as an MCP server (AI-04): read-only tools for Claude and other clients.
+"""AskMiraa as an MCP server (AI-04): read-only tools for Claude and other clients.
 
 ═══════════════════════════════════════════════════════════════════════════════
 WHAT IT IS
@@ -12,7 +12,7 @@ the client sends it as a Bearer token. Claude Code, for example:
     claude mcp add --transport http askmira https://<host>/api/v1/mcp \\
         --header "Authorization: Bearer amk_..."
 
-Or a person adds AskMira as a connector (claude.ai, ChatGPT) by its URL alone:
+Or a person adds AskMiraa as a connector (claude.ai, ChatGPT) by its URL alone:
 the client discovers the OAuth server, the person signs in and approves, and
 the tools then act as that person, within the read scopes their role allows
 (`app.services.oauth`).
@@ -33,7 +33,7 @@ India. So, as for every AI feature: nothing is answered while the workspace has
 AI switched off, a person who has not agreed to the AI purpose on My privacy is
 left out of every answer (`ai_context_retrieval`), and each call that returns
 people is recorded in the cross-border transfer register (`mcp_client`).
-Ask Mira, inside the app, calls the same handlers without that filter: it shows
+Ask Miraa, inside the app, calls the same handlers without that filter: it shows
 the result to the person asking and sends none of it to a model.
 """
 
@@ -65,11 +65,11 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MAX_RANGE_DAYS = 93
 
 INSTRUCTIONS = (
-    "AskMira is an HR system for a company in India. These tools read its people "
+    "AskMiraa is an HR system for a company in India. These tools read its people "
     "directory, departments, locations, approved leave and attendance, and, for a person "
-    "who connected as themselves, Ask Mira's lookups (mira_*: budgets, deals and pipeline, "
+    "who connected as themselves, Ask Miraa's lookups (mira_*: budgets, deals and pipeline, "
     "procurement, expense totals, joiners, the prospective P&L) as that person's own access "
-    "allows. Ask Mira's actions only prepare: the person confirms each in AskMira, from the "
+    "allows. Ask Miraa's actions only prepare: the person confirms each in AskMiraa, from the "
     "link returned. Nothing returns pay, bank, tax, health or leave reasons."
 )
 
@@ -162,7 +162,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "scope": "attendance:read",
         "description": (
             "Per person over a date range: days present, absent, on leave, half days and "
-            "late arrivals, from the attendance AskMira has judged."
+            "late arrivals, from the attendance AskMiraa has judged."
         ),
         "inputSchema": _date_range_schema("At most 93 days."),
         "annotations": _read_only("Attendance summary"),
@@ -424,7 +424,7 @@ _HANDLERS = {
 async def run_tool(
     session: AsyncSession, actor: User, name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
-    """One read tool, run as `actor`. Ask Mira calls the same tools through here.
+    """One read tool, run as `actor`. Ask Miraa calls the same tools through here.
 
     The FRD's single gateway (5.10, 7.1): the in-app companion and outside agents
     read through the same handlers, so neither has a wider view than the other.
@@ -467,7 +467,7 @@ async def handle(
             {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "askmira", "title": "AskMira HR", "version": "1.0.0"},
+                "serverInfo": {"name": "askmira", "title": "AskMiraa HR", "version": "1.0.0"},
                 "instructions": INSTRUCTIONS,
             },
         )

@@ -216,7 +216,7 @@ async def ingest_application(
             duplicate=False,
             note=(
                 f"No requisition matches {raw.board} job '{raw.external_job_id}'. The "
-                "posting may have been created outside AskMira; nothing was created, "
+                "posting may have been created outside AskMiraa; nothing was created, "
                 "because an application filed against the wrong role is worse than one "
                 "held back."
             ),

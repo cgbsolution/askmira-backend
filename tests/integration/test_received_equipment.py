@@ -1,9 +1,9 @@
-"""Equipment received through ProcureFlow, added to the asset register from AskMira.
+"""Equipment received through ProcureFlow, added to the asset register from AskMiraa.
 
 Real database; ProcureFlow (``receipts``) and CGB Helpdesk (``asset.create``)
 are fakes.
 
-* Each accepted unit becomes an asset — in AskMira's register, with its serial,
+* Each accepted unit becomes an asset — in AskMiraa's register, with its serial,
   cost, vendor and date — and adding the line again adds nothing.
 * With the helpdesk linked, the units go to its register through its own
   action, and are remembered the same way.

@@ -4,7 +4,7 @@
 builds everything in memory — one locked, published REGULAR run per month, one
 payslip per person per month, and the person's salary revisions dated from the
 registers — then checks it: every payslip must add up the way the PDF checks it,
-every register row must belong to an AskMira employee, no month may already have
+every register row must belong to an AskMiraa employee, no month may already have
 a run. `apply` writes it in one transaction with its audit rows; `undo_imported_run`
 removes one imported month again.
 
@@ -225,7 +225,7 @@ def _present(rows: list[RegisterRow], key: str) -> bool:
     return any(row.money(key) is not None for row in rows)
 
 
-#: Client text in the registers that names an AskMira project differently.
+#: Client text in the registers that names an AskMiraa project differently.
 _ACCOUNT_ALIASES = {"cgbinternal": "internal"}
 
 
@@ -439,7 +439,7 @@ def _code_key(code: str) -> str:
 def _match_people(
     months: list[RegisterMonth], people: list[Person], issues: list[Issue]
 ) -> tuple[dict[str, Person], dict[str, Any]]:
-    """Register code → AskMira person: by code, else by name and joining date."""
+    """Register code → AskMiraa person: by code, else by name and joining date."""
     by_code = {_code_key(p.code): p for p in people}
     by_name: dict[str, list[Person]] = defaultdict(list)
     for p in people:
@@ -475,7 +475,7 @@ def _match_people(
                 Issue(
                     "note",
                     "mapped_by_name",
-                    f"Register code {code} is AskMira {person.code} ({person.name}): same name "
+                    f"Register code {code} is AskMiraa {person.code} ({person.name}): same name "
                     "and joining date.",
                     code=code,
                 )
@@ -487,7 +487,7 @@ def _match_people(
             Issue(
                 "error",
                 "unmatched_person",
-                f"{code} ({name or 'no name'}) is not an AskMira employee"
+                f"{code} ({name or 'no name'}) is not an AskMiraa employee"
                 + (" (more than one has that name and joining date)" if candidates else "")
                 + f"; {len(rows)} register row(s). Add the person or correct the code.",
                 code=code,
@@ -1136,7 +1136,7 @@ def _segments(
         start = max(person.joined, span_start)
         if start > seen_end:
             first.notes.append(
-                f"AskMira's joining date {person.joined.isoformat()} is after the first register "
+                f"AskMiraa's joining date {person.joined.isoformat()} is after the first register "
                 f"with this person ({_label(*first_seen)}); dated from that register"
             )
             start = seen_start
@@ -1438,7 +1438,7 @@ async def _plan_salaries(
                 Issue(
                     "note",
                     "no_live_salary",
-                    f"{person.code}: no salary in AskMira; {len(segments)} revision(s) recorded "
+                    f"{person.code}: no salary in AskMiraa; {len(segments)} revision(s) recorded "
                     "from the registers.",
                     code=person.code,
                 )
@@ -1653,7 +1653,7 @@ async def plan(
                         "(imported earlier); it is not imported again. Undo that import first "
                         "if it must be replaced."
                         if origin == RUN_ORIGIN_IMPORTED
-                        else "(computed in AskMira); a month AskMira paid is never imported."
+                        else "(computed in AskMiraa); a month AskMiraa paid is never imported."
                     ),
                     month=_month_key(year, month),
                 )
@@ -1720,7 +1720,7 @@ async def plan(
                     Issue(
                         "warning",
                         "other_company",
-                        f"{person.code} belongs to another company in AskMira but is in the "
+                        f"{person.code} belongs to another company in AskMiraa but is in the "
                         f"{mp.label} register.",
                         month=mp.key,
                         code=person.code,
@@ -1732,7 +1732,7 @@ async def plan(
                     Issue(
                         "note",
                         "outside_employment",
-                        f"{person.code}: paid in {mp.label}, after the AskMira exit date "
+                        f"{person.code}: paid in {mp.label}, after the AskMiraa exit date "
                         f"{person.exited.isoformat()} (a 26th-25th client cycle, or a late "
                         "settlement).",
                         month=mp.key,
@@ -1744,7 +1744,7 @@ async def plan(
                     Issue(
                         "note",
                         "outside_employment",
-                        f"{person.code}: paid in {mp.label}, before the AskMira joining date "
+                        f"{person.code}: paid in {mp.label}, before the AskMiraa joining date "
                         f"{person.joined.isoformat()} (a rehire, or a joining date to check).",
                         month=mp.key,
                         code=person.code,
@@ -1755,7 +1755,7 @@ async def plan(
             Issue(
                 "note",
                 "project_unmatched",
-                f"Client/project '{account}' ({count} payslips) is no AskMira project; those "
+                f"Client/project '{account}' ({count} payslips) is no AskMiraa project; those "
                 "payslips have no project (the register's text is kept on them).",
             )
         )
@@ -2185,7 +2185,7 @@ async def undo_imported_run(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Only a month imported from factoHR can be undone this way. A run AskMira "
+                "Only a month imported from factoHR can be undone this way. A run AskMiraa "
                 "computed follows its own lifecycle."
             ),
         )
@@ -2323,7 +2323,7 @@ def preview(p: ImportPlan) -> dict[str, Any]:
     }
 
     # Payslips of the last register month's financial year that carry register
-    # lines: AskMira's own TDS will read them as this year's pay.
+    # lines: AskMiraa's own TDS will read them as this year's pay.
     current_fy: list[dict[str, Any]] = []
     if p.months:
         last = p.months[-1]

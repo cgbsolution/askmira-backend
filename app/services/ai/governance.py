@@ -70,7 +70,7 @@ _MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
 #: Each feature an admin can switch off on its own, and what it does.
 FEATURES: dict[str, str] = {
     "companion": (
-        "Ask Mira: a chat that answers from policy, the people directory, leave and the "
+        "Ask Miraa: a chat that answers from policy, the people directory, leave and the "
         "asker's own record, as the asker."
     ),
     "assistant": "Employees ask policy questions and get cited answers.",

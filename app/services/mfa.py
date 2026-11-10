@@ -102,8 +102,10 @@ async def begin_setup(session: AsyncSession, user: User) -> dict[str, Any]:
     await session.flush()
     return {
         "secret": secret,
-        "otpauth_uri": totp.provisioning_uri(secret, account=user.email, issuer=settings.APP_NAME),
-        "issuer": settings.APP_NAME,
+        "otpauth_uri": totp.provisioning_uri(
+            secret, account=user.email, issuer=settings.BRAND_NAME
+        ),
+        "issuer": settings.BRAND_NAME,
         "account": user.email,
     }
 

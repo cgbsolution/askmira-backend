@@ -1,9 +1,9 @@
-"""CGB Helpdesk linked to a workspace: its tickets and assets in the portal and in Ask Mira.
+"""CGB Helpdesk linked to a workspace: its tickets and assets in the portal and in Ask Miraa.
 
 What these hold: the helpdesk is read for the caller's own workspace and as the
-caller (a signed `query` token bound to the body), with the role AskMira gives
+caller (a signed `query` token bound to the body), with the role AskMiraa gives
 them there (HR "admin", everyone else "user"); raising a ticket and replying
-go as signed `act` tokens, never `query`; each is audited in AskMira without
+go as signed `act` tokens, never `query`; each is audited in AskMiraa without
 the subject or the message; a refusal from the helpdesk reaches the person in
 its own words and with its own status; nothing is asked when the helpdesk is
 not linked; and the Helpdesk and Assets pages fix whose records they show.
@@ -255,7 +255,7 @@ async def test_the_register_and_ticket_lists_page_through_the_helpdesk(
     assert card["page"] == {"number": 2, "size": 50, "total": 1604}
     assert card["caption"].endswith("51 to 100 of 1604 assets")
 
-    # No page given (Ask Mira, a first visit): the first rows, and no pager.
+    # No page given (Ask Miraa, a first visit): the first rows, and no pager.
     first = await views.render(session, hr, "helpdesk", "register", {})
     params = desk.calls[-1]["body"]["params"]
     assert params["offset"] == 0 and "page" not in first["cards"][0]
@@ -443,7 +443,7 @@ async def test_the_roster_sent_to_the_helpdesk_has_everyone(
     assert roles["anita@acme.test"] == "user"
 
 
-# ── Ask Mira raises and works helpdesk tickets ──────────────────────────────
+# ── Ask Miraa raises and works helpdesk tickets ──────────────────────────────
 
 OPTIONS = {
     "categories": [
@@ -521,7 +521,7 @@ async def test_an_it_ticket_is_checked_against_the_helpdesk_and_raised_only_when
 ) -> None:
     await _link(session, tenant)
     desk.answers[("query", "options")] = OPTIONS
-    # No priority given: Mira asks rather than picks one.
+    # No priority given: Miraa asks rather than picks one.
     asked = await _say(
         session,
         me,
@@ -602,7 +602,7 @@ async def test_working_a_ticket_offers_only_what_the_helpdesk_allows(
     assert "Only the engineer working on it or an IT admin" in json.dumps(_cards(refused))
     assert not [c for c in _cards(refused) if c.get("type") == "proposal"]
 
-    # Hold needs a reason and 24/48/72 hours; Mira asks, never invents.
+    # Hold needs a reason and 24/48/72 hours; Miraa asks, never invents.
     desk.answers[("query", "ticket")] = {
         "ticket": _ticket({"reply": True, "hold": True, "close": True})
     }

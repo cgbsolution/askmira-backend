@@ -141,7 +141,7 @@ _ROLE = {
     UserRole.SUB_ADMIN: "Sub-admin",
     UserRole.EMPLOYEE: "Employee",
 }
-#: State and union-territory names by the code AskMira stores.
+#: State and union-territory names by the code AskMiraa stores.
 _STATES = {
     "AN": "Andaman & Nicobar Islands", "AP": "Andhra Pradesh", "AR": "Arunachal Pradesh",
     "AS": "Assam", "BR": "Bihar", "CH": "Chandigarh", "CG": "Chhattisgarh",
@@ -1106,7 +1106,7 @@ def _xlsx(plan: _Plan, ctx: _Context, people: list[_Person]) -> bytes:
         last = get_column_letter(len(plan.headers))
         sheet.auto_filter.ref = f"A1:{last}{len(people) + 1}"
 
-    fill = PatternFill("solid", fgColor="7D0712")  # AskMira maroon
+    fill = PatternFill("solid", fgColor="7D0712")  # AskMiraa maroon
     font = Font(bold=True, color="FFFFFF")
     wrap = Alignment(vertical="center", wrap_text=True)
     header_row = []

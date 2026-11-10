@@ -180,7 +180,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     "payroll.payslip.published": (
         "Your payslip for {period} is ready",
-        "Your payslip for {period} is available in AskMira.",
+        "Your payslip for {period} is available in AskMiraa.",
     ),
     "payroll.run.failed": (
         "Payroll run failed for {period}",
@@ -192,7 +192,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     "documents.letter.issued": (
         "A document is ready for you",
-        "Your {category} letter ({reference_number}) is available in AskMira.",
+        "Your {category} letter ({reference_number}) is available in AskMiraa.",
     ),
     "system.announcement": ("{title}", "{message}"),
 }
@@ -974,7 +974,7 @@ async def _chat_fields(
         logger.warning("Approval buttons could not be built for %s", notification.id, exc_info=True)
     base = email_brand.portal_url()
     if base:
-        actions = (*actions, MessageAction(label="Open AskMira", url=base.rstrip("/")))
+        actions = (*actions, MessageAction(label="Open AskMiraa", url=base.rstrip("/")))
     kept = await session.scalar(
         select(ChatRecipient).where(
             tenant_filter(ChatRecipient, notification.tenant_id),
@@ -1120,7 +1120,7 @@ async def send_digests(session: AsyncSession, tenant_id: uuid.UUID) -> int:
             event_key="system.digest.daily",
             channel=Channel.EMAIL,
             payload={"count": len(digest.items)},
-            rendered_subject=f"Your AskMira digest — {len(digest.items)} update(s)",
+            rendered_subject=f"Your AskMiraa digest — {len(digest.items)} update(s)",
             rendered_body=f"Here is what happened:\n\n{lines}",
             status=NotificationStatus.QUEUED,
         )

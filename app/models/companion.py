@@ -1,4 +1,4 @@
-"""Ask Mira: each person's conversations with their workspace's AI companion.
+"""Ask Miraa: each person's conversations with their workspace's AI companion.
 
 A conversation belongs to one person in one workspace and to nobody else:
 nobody, not HR, not an admin, reads another person's chat. Messages are only
@@ -8,7 +8,7 @@ did along the way stays in the audit log, which is insert-only (FS-AIT-01).
 A message from the companion keeps three things apart:
 
 - `text` is what the model wrote, shown to the person;
-- `cards` are what AskMira looked up and showed, as this person, from its own
+- `cards` are what AskMiraa looked up and showed, as this person, from its own
   tables — the record behind every figure the model states;
 - `transcript` is the turn as the model saw it: which tools it called, with
   what, and the trimmed view of each result it read (companion/views.py —
@@ -96,7 +96,7 @@ class CompanionMessage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: The tool the companion used for this answer, and with what.
     tool: Mapped[str | None] = mapped_column(String(48), nullable=True)
     arguments: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    #: What AskMira showed: tables, a policy answer, a report. Display only.
+    #: What AskMiraa showed: tables, a policy answer, a report. Display only.
     cards: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     #: The model call that planned this answer (agent_invocations), when there was one.
     invocation_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -123,7 +123,7 @@ class CompanionActionStatus(str, enum.Enum):
 
 
 class CompanionAction(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """Something Ask Mira offered to do for the person, waiting on their say.
+    """Something Ask Miraa offered to do for the person, waiting on their say.
 
     `payload` is what will be done, as the module's own service reads it;
     `summary` is what the person was shown. Confirming runs the service as the
@@ -177,7 +177,7 @@ class CompanionRunStatus(str, enum.Enum):
 
 
 class CompanionRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """One multi-step job Ask Mira carried out across products, after the person confirmed.
+    """One multi-step job Ask Miraa carried out across products, after the person confirmed.
 
     An order win opens positions in the interview tool, then writes the
     prospective P&L, then notes the CRM deal. Each step is recorded here as it

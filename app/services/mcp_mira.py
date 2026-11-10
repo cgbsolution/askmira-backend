@@ -1,21 +1,21 @@
-"""Ask Mira's tools over MCP, for a person who connected Claude or ChatGPT.
+"""Ask Miraa's tools over MCP, for a person who connected Claude or ChatGPT.
 
 The MCP server's own tools (mcp.py) read the directory, leave and attendance.
-These add Ask Mira's lookups and actions, for a person connected through OAuth
-(never an API key: Ask Mira acts as a person, with their rights in AskMira and in
+These add Ask Miraa's lookups and actions, for a person connected through OAuth
+(never an API key: Ask Miraa acts as a person, with their rights in AskMiraa and in
 each linked product), with the scope ``mira:use``.
 
-* **Lookups** are the same code Ask Mira runs (tools.run), as the person, and
-  return the same text Ask Mira's own model reads (views.view_of) — and only
+* **Lookups** are the same code Ask Miraa runs (tools.run), as the person, and
+  return the same text Ask Miraa's own model reads (views.view_of) — and only
   for lookups whose results are business records and counts (budgets, deals,
   pipeline, procurement, expense totals, joiner counts, P&L forecast): their
   DPDP categories must be ones the "AI assistants you connect" sub-processor is
   registered to receive, and the people in them never travel by name.
-* **Actions** only prepare. The offer is saved in a new Ask Mira conversation,
+* **Actions** only prepare. The offer is saved in a new Ask Miraa conversation,
   exactly as in the app, and the assistant is given its link: the person opens
-  AskMira and presses Confirm there. Nothing is changed from outside.
+  AskMiraa and presses Confirm there. Nothing is changed from outside.
 
-Both need the workspace's AI on and Ask Mira's tool group on; every call is in
+Both need the workspace's AI on and Ask Miraa's tool group on; every call is in
 the audit log, and every lookup that answered is in the transfer register.
 """
 
@@ -50,9 +50,9 @@ async def _offered(session: AsyncSession, actor: User) -> list[Any]:
     out = []
     for tool in await tools.offered(session, actor, config, ai=True):
         if tool.group == "actions" or tool.feature:
-            continue  # confirming happens in AskMira; feature tools answer with a model of ours
+            continue  # confirming happens in AskMiraa; feature tools answer with a model of ours
         if tool.kind == "read" and not (config.ai_reads_results and set(tool.reads) <= _SAFE):
-            # The workspace's "Let Mira read what it looks up" switch holds for an outside
+            # The workspace's "Let Miraa read what it looks up" switch holds for an outside
             # assistant too: with it off, no lookup result is handed to one.
             continue
         out.append(tool)
@@ -78,7 +78,7 @@ async def list_tools(session: AsyncSession, actor: User, scopes: frozenset[str])
                 "title": ("Prepare: " if prepare else "") + tool.title,
                 "description": tool.description
                 + (
-                    " Over MCP this only prepares it: the person confirms it in AskMira, from "
+                    " Over MCP this only prepares it: the person confirms it in AskMiraa, from "
                     "the link returned. Nothing changes until they do."
                     if prepare
                     else ""
@@ -102,7 +102,7 @@ def _text(text: str, *, error: bool = False) -> dict[str, Any]:
 async def call(
     session: AsyncSession, actor: User, scopes: frozenset[str], name: str, arguments: dict
 ) -> dict[str, Any] | None:
-    """Run one Ask Mira tool for an MCP client; None when `name` is not one of these."""
+    """Run one Ask Miraa tool for an MCP client; None when `name` is not one of these."""
     if not name.startswith(PREFIX):
         return None
     from app.services.ai import governance
@@ -111,17 +111,17 @@ async def call(
     from app.services.companion.service import _today
 
     if SCOPE not in scopes or not _is_person(actor):
-        return _text("Connect as yourself, with Ask Mira allowed, to use this tool.", error=True)
+        return _text("Connect as yourself, with Ask Miraa allowed, to use this tool.", error=True)
     if not (await governance.get_settings(session, actor)).enabled:
         return _text(
             "AI features are switched off for this workspace, so an outside AI assistant cannot "
-            "use Ask Mira. An admin can switch them on in Settings → AI.",
+            "use Ask Miraa. An admin can switch them on in Settings → AI.",
             error=True,
         )
     key = name.removeprefix(PREFIX)
     tool = next((t for t in await _offered(session, actor) if t.key == key), None)
     if tool is None:
-        return _text(f"Ask Mira's {key} is not available to you here.", error=True)
+        return _text(f"Ask Miraa's {key} is not available to you here.", error=True)
     inputs = companion_tools.coerce(tool, arguments)
     now = datetime.now(UTC)
 
@@ -153,7 +153,7 @@ async def call(
             link = f"{(settings.WEB_APP_URL or '').rstrip('/')}/ask-mira?c={conversation.id}"
             reply = (
                 f"Prepared, not done. The person must open {link} and press "
-                f"“{offers[0].get('confirm_label') or 'Confirm'}” in AskMira; nothing changes "
+                f"“{offers[0].get('confirm_label') or 'Confirm'}” in AskMiraa; nothing changes "
                 "until they do. The offer expires in two hours."
             )
         else:
@@ -179,7 +179,7 @@ async def call(
         purpose_key="ai_assistance",
         category_keys=tuple(sorted(set(tool.reads) - {"ai_interaction"})) or ("organisational",),
         principal_count=0,
-        description=f"Ask Mira's {key} answered an outside AI assistant over MCP.",
+        description=f"Ask Miraa's {key} answered an outside AI assistant over MCP.",
         commit=False,
     )
     await session.commit()
@@ -200,6 +200,6 @@ async def _audit(
         entity_type="mcp_tool",
         actor_user_id=actor.id,
         actor_type="mcp_agent",
-        summary=(f"MCP: Ask Mira {'prepared' if prepared else 'ran'} {key} for {actor.full_name}"),
+        summary=(f"MCP: Ask Miraa {'prepared' if prepared else 'ran'} {key} for {actor.full_name}"),
         ai_context={"tool": PREFIX + key, "arguments": json.loads(json.dumps(used, default=str))},
     )

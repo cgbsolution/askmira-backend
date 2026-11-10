@@ -1,8 +1,8 @@
-"""Ask Mira without a model: the person's words matched to one tool, by rule.
+"""Ask Miraa without a model: the person's words matched to one tool, by rule.
 
 Used whenever the AI planner cannot be: the server has no AI provider, the
 workspace switched AI off, or the person has not agreed to it. Nothing leaves
-AskMira in this mode: the message is matched here, the tool runs here as the
+AskMiraa in this mode: the message is matched here, the tool runs here as the
 person (tools.run), and the result is shown as cards, as with the model.
 
 Only the tools that need no model of their own are offered here (tools.offered
@@ -237,7 +237,7 @@ def normalise(text: str) -> str:
     words = re.sub(r"\bwho's\b", "who is", words)
     words = re.sub(r"\bwhat's\b", "what is", words)
     words = re.sub(r"\bhow's\b", "how is", words)
-    words = re.sub(r"\b(hey|hi|hello|dear|ok|okay) (mira|askmira|ask mira)\b", " ", words)
+    words = re.sub(r"\b(hey|hi|hello|dear|ok|okay) (miraa?|askmiraa?|ask miraa?)\b", " ", words)
     words = " ".join(_TYPOS.get(w, w) for w in words.split())
     for pattern, meaning in _PHRASES:
         words = re.sub(pattern, meaning, words)
@@ -256,7 +256,7 @@ _LEAD_IN = re.compile(
 )
 _GREETING_LEAD = re.compile(
     r"^(hi+|hello|hey|hlo|namaste|namaskar|good (morning|afternoon|evening)|thanks|"
-    r"thank you|ok|okay|dear|mira)( mira)?\.?\s+"
+    r"thank you|ok|okay|dear|miraa?)( miraa?)?\.?\s+"
 )
 
 
@@ -592,7 +592,9 @@ _STOP = {
     "progress",
     "cgb",
     "askmira",
+    "askmiraa",
     "mira",
+    "miraa",
     "hey",
     "hi",
     "hello",
@@ -1133,7 +1135,7 @@ _GREETING = re.compile(
     r"^(hi+|hello|hey|hlo|helo|namaste|namaskar|good (morning|afternoon|evening)|thanks|"
     r"thank you|thank u|thanks a lot|ok|okay|cool|great|help|menu|start|"
     r"what can you do|what can i ask|what do you do|who are you|how can you help( me)?)"
-    r"( so much| very much| a lot)?( mira)?( you)?$"
+    r"( so much| very much| a lot)?( miraa?)?( you)?$"
 )
 
 
@@ -1197,7 +1199,7 @@ def _unavailable(product: str) -> DirectPlan:
     return DirectPlan(
         reply=(
             f"Reading {product} is not available to you here: it is not linked to this "
-            "workspace, you have no role in it, or an admin switched it off for Ask Mira."
+            "workspace, you have no role in it, or an admin switched it off for Ask Miraa."
         ),
         tool="connect_product",
         inputs={"product": _KEY_OF_BRAND.get(product, "none")},
@@ -1638,7 +1640,7 @@ _SALES_DROP = (
 
 #: ProcureFlow, the procure-to-pay system, by name.
 _PROCURE_NAME = (r"procure ?flow", r"procurement\b", r"p2p\b", r"procure.to.pay")
-#: Which document a question is about. Bare "requisitions" are AskMira's hiring
+#: Which document a question is about. Bare "requisitions" are AskMiraa's hiring
 #: requisitions unless ProcureFlow is named.
 _PROCURE_DOCS: tuple[tuple[str, tuple[str, ...], bool], ...] = (
     ("purchase_orders", (r"purchase orders?\b",), False),
@@ -2263,7 +2265,7 @@ def plan(
     tools: list[Tool],
     *,
     today: date,
-    name: str = "Mira",
+    name: str = "Miraa",
     hr: bool = False,
     previous: tuple[str, dict[str, Any]] | None = None,
 ) -> DirectPlan:
@@ -2282,7 +2284,7 @@ def plan(
 
 
 def _plan(
-    text: str, tools: list[Tool], *, today: date, name: str = "Mira", hr: bool = False
+    text: str, tools: list[Tool], *, today: date, name: str = "Miraa", hr: bool = False
 ) -> DirectPlan:
     """Match the person's message to one of `tools`, or reply with what can be asked.
 
@@ -2449,7 +2451,7 @@ def _plan(
     if chosen:
         return chosen
 
-    # What is waiting on my decision, across AskMira.
+    # What is waiting on my decision, across AskMiraa.
     approval = _has(words, *_APPROVAL) and not _has(
         words,
         r"my (own )?(leave|expense|claim)s? (request|application|claim)s? status",
@@ -2491,7 +2493,7 @@ def _plan(
         if chosen:
             return chosen
         return DirectPlan(
-            reply="Approvals are not switched on for Ask Mira here. They are all under Approvals."
+            reply="Approvals are not switched on for Ask Miraa here. They are all under Approvals."
         )
 
     # Policy questions need a model of their own.
@@ -2533,7 +2535,7 @@ def _plan(
         if chosen is not None:
             if chosen.tool and chosen.tool not in offered:
                 return pick(chosen.tool, chosen.reply, **chosen.inputs) or _help(
-                    tools, name, prefix="That is not switched on for Ask Mira here."
+                    tools, name, prefix="That is not switched on for Ask Miraa here."
                 )
             return chosen
 
@@ -2552,7 +2554,7 @@ def _plan(
         if chosen:
             return chosen
         if hr:
-            return DirectPlan(reply="Payroll figures are not switched on for Ask Mira here.")
+            return DirectPlan(reply="Payroll figures are not switched on for Ask Miraa here.")
     payroll_words = _has(words, *_PAYROLL) or (
         _has(words, *_SALARY_TOTALS) and (paid_out or bool(when["from"]))
     )
@@ -2570,9 +2572,9 @@ def _plan(
         if chosen:
             return chosen
         if hr:
-            return DirectPlan(reply="Payroll figures are not switched on for Ask Mira here.")
+            return DirectPlan(reply="Payroll figures are not switched on for Ask Miraa here.")
 
-    # HR helpdesk tickets (AskMira's own helpdesk).
+    # HR helpdesk tickets (AskMiraa's own helpdesk).
     hr_ticket = _has(words, *_HR_TICKETS)
     it_ticket = _has(words, *_IT_TICKETS) and not hr_ticket
     if hr_ticket or (it_ticket and "helpdesk_tickets" not in offered and "hr_tickets" in offered):
@@ -2633,7 +2635,7 @@ def _plan(
         if chosen:
             return chosen
         if hr_ticket:
-            return DirectPlan(reply="The HR helpdesk is not switched on for Ask Mira here.")
+            return DirectPlan(reply="The HR helpdesk is not switched on for Ask Miraa here.")
 
     # Expenses (ExpenseGenie).
     if _has(

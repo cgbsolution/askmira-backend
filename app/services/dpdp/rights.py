@@ -493,7 +493,7 @@ def reconcile_erasure(
                             f"{cat.retention.statutory_reference} requires your "
                             f"employer to hold it for {cat.retention.months} "
                             "months. This is not a decision your employer or "
-                            "AskMira can waive on request. It will be deleted "
+                            "AskMiraa can waive on request. It will be deleted "
                             "after that date."
                         ),
                         retained_until=ends,

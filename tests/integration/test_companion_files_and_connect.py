@@ -1,4 +1,4 @@
-"""Ask Mira reading attached files, and offering to connect a product that is not ready.
+"""Ask Miraa reading attached files, and offering to connect a product that is not ready.
 
 What these hold:
 
@@ -17,7 +17,7 @@ What these hold:
   there) is listed for the model with every message, and connect_product shows
   the person what to do: Connect for an admin, who to ask for anyone else. In
   quick-lookup mode the same card answers.
-* Connect started in a conversation comes back to it, and only to Ask Mira.
+* Connect started in a conversation comes back to it, and only to Ask Miraa.
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ async def test_a_linkedin_screenshot_is_read_asked_about_and_offered_as_a_lead(
     )
     assert reading is not None and reading.outcome is InvocationOutcome.ANSWERED
 
-    # She adds what the file did not show; Mira offers the lead; nothing is sent yet.
+    # She adds what the file did not show; Miraa offers the lead; nothing is sent yet.
     lead = plan(
         "save_lead",
         "Here is the lead. Confirm and I'll add it.",

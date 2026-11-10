@@ -99,7 +99,7 @@ register_event(
     "onboarding.plan.started",
     "Welcome to {company}, {first_name}",
     "Your onboarding checklist is ready: {task_count} task(s) around your joining date of "
-    "{joining_date}, {before_joining} of them before day one. Open My onboarding in AskMira "
+    "{joining_date}, {before_joining} of them before day one. Open My onboarding in AskMiraa "
     "to get started.",
     preferences=_EMAIL_AND_APP,
 )

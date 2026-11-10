@@ -1,7 +1,7 @@
 """OpenAI, Gemini and Ollama behind the same two calls as Claude.
 
-AskMira keeps a conversation in one shape everywhere: Anthropic-style messages
-(text, tool_use and tool_result blocks), which is how Ask Mira stores and
+AskMiraa keeps a conversation in one shape everywhere: Anthropic-style messages
+(text, tool_use and tool_result blocks), which is how Ask Miraa stores and
 replays it. A backend here translates that shape at its edge, both ways, so
 the agent, the tools and the saved conversations never depend on which
 provider a workspace chose — and a workspace can switch provider mid-way
@@ -11,7 +11,7 @@ through a conversation without breaking its history.
   through Google's OpenAI-compatible endpoint.
 - `OllamaBackend` speaks Ollama's own /api/chat, because only that one lets a
   request raise the context window; Ollama's default (a few thousand tokens)
-  would silently cut Ask Mira's tool list and history short.
+  would silently cut Ask Miraa's tool list and history short.
 
 A response's blocks go back unchanged within a turn, exactly as for Claude.
 Gemini attaches a signature to each tool call that it checks on the next step;

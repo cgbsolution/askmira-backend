@@ -56,8 +56,8 @@ __all__ = [
     "token_identity",
 ]
 
-#: What the MCP tools may do. Nothing here writes: Ask Mira's actions only prepare,
-#: and the person confirms them in AskMira.
+#: What the MCP tools may do. Nothing here writes: Ask Miraa's actions only prepare,
+#: and the person confirms them in AskMiraa.
 ALL_SCOPES = ("employees:read", "org:read", "leave:read", "attendance:read", "mira:use")
 SCOPE_LABELS = {
     "employees:read": "Search the employee directory (names, titles, teams, work email)",
@@ -65,8 +65,8 @@ SCOPE_LABELS = {
     "leave:read": "See who is out, and when",
     "attendance:read": "See attendance summaries for a date range",
     "mira:use": (
-        "Use Ask Mira's lookups as you (budgets, deals, procurement, expense totals) and "
-        "prepare actions that you confirm in AskMira"
+        "Use Ask Miraa's lookups as you (budgets, deals, procurement, expense totals) and "
+        "prepare actions that you confirm in AskMiraa"
     ),
 }
 CODE_LIFETIME = timedelta(minutes=10)
@@ -225,7 +225,7 @@ async def authorize(
         entity_type="oauth_consent",
         actor=user,
         changes={"client": client.client_name, "scopes": scopes},
-        summary=f"Allowed {client.client_name} to read AskMira as {user.full_name}",
+        summary=f"Allowed {client.client_name} to read AskMiraa as {user.full_name}",
         request=request,
     )
     await session.commit()
@@ -360,7 +360,7 @@ async def token_identity(session: AsyncSession, token: str) -> tuple[User, froze
         # As for a signed-in request (deps.get_current_user): suspended means nobody acts.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This workspace has been suspended. Contact AskMira support.",
+            detail="This workspace has been suspended. Contact AskMiraa support.",
         )
     user.has_reports = await has_direct_reports(session, user)
     grant.last_used_at = now

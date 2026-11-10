@@ -1,4 +1,4 @@
-"""The parts of an HR system's export that hold lists, and the columns AskMira has no field for.
+"""The parts of an HR system's export that hold lists, and the columns AskMiraa has no field for.
 
 factoHR's Employee Detail report puts a person's lists — qualifications,
 family, nominees, emergency contacts, past employers' tax figures — in column
@@ -6,14 +6,14 @@ groups, one entry per row. A person with two qualifications takes two rows:
 the second repeats only the Emp Code and Full Name and fills the group again
 (a continuation row). `continuations` folds those rows into their person.
 
-Every other column with something in it that no AskMira field takes is kept as
+Every other column with something in it that no AskMiraa field takes is kept as
 a custom field on the person's "factoHR" profile tab (`extra_columns`), so
 nothing the old system held is lost. Left out, and listed with the reason:
 columns the old system works out on the day of the export (age, length of
 service), columns that say the same thing for every person, and columns that
 repeat another column word for word.
 
-Pure: no database. Values are read as typed; a value AskMira would check (a
+Pure: no database. Values are read as typed; a value AskMiraa would check (a
 date that is not a date) is kept as text rather than dropped.
 """
 
@@ -198,7 +198,7 @@ _RELATIONSHIP_WORDS = {
 
 
 def relationship(value: str | None) -> tuple[str, str | None]:
-    """AskMira's relationship, and the source's word when it is not one of ours."""
+    """AskMiraa's relationship, and the source's word when it is not one of ours."""
     if value is None:
         return "other", None
     key = re.sub(r"[\s_\-]+", " ", value.lower()).strip()
@@ -279,7 +279,7 @@ def nominees(table: Table, rows: Rows) -> Entries:
             kind = _text(cells, block, "nominationtype") or _text(cells, block, "nomination type")
             purpose, purpose_text = _NOMINATION.get((kind or "").lower().strip(), ("other", kind))
             if purpose == "other":
-                # Not a nomination AskMira keeps a list for: a dependant all the same.
+                # Not a nomination AskMiraa keeps a list for: a dependant all the same.
                 purpose, purpose_text = "insurance", kind or "Not stated"
             relation, relation_text = relationship(_text(cells, block, "relation"))
             remarks = [_text(cells, block, "remarks")]
@@ -336,7 +336,7 @@ def emergency_contacts(table: Table, rows: Rows) -> Entries:
     return out
 
 
-#: factoHR's course names to AskMira's levels; the course itself is kept as typed.
+#: factoHR's course names to AskMiraa's levels; the course itself is kept as typed.
 _LEVELS = {
     "post graduate": "postgraduate",
     "postgraduate": "postgraduate",
@@ -422,7 +422,7 @@ def _money(value: Any) -> Decimal | None:
 
 
 def _fy(text: str | None) -> str | None:
-    """factoHR's "2024-2025" as AskMira writes it: "2024-25"."""
+    """factoHR's "2024-2025" as AskMiraa writes it: "2024-25"."""
     match = re.fullmatch(r"(\d{4})\s*-\s*(\d{2}|\d{4})", text or "")
     if not match:
         return None
@@ -638,13 +638,13 @@ def section_leftovers(table: Table, rows: Rows) -> list[NotKept]:
                 "the sheet; upload them under Documents."
             )
         elif group == "past employee history":
-            why = f"No AskMira field for it; every value is 0 or empty: {shown}."
+            why = f"No AskMiraa field for it; every value is 0 or empty: {shown}."
             if any(_amount(v) for v in values):
                 why = f"Kept in the year's remarks where not 0: {shown}."
         elif len(values) == 1:
             why = f"factoHR's own flag, the same on every entry: {shown}."
         else:
-            why = f"No AskMira field for it: {shown}."
+            why = f"No AskMiraa field for it: {shown}."
         out.append(NotKept(header, why))
     return out
 

@@ -1,7 +1,7 @@
 """Slack and Microsoft Teams: a person's notifications as direct chat messages.
 
 Each workspace connects its own app — a Slack app in its Slack workspace, a
-Teams bot in its Microsoft 365 tenant — and AskMira messages each person
+Teams bot in its Microsoft 365 tenant — and AskMiraa messages each person
 directly, found by their work email. Approval requests carry the same signed
 Approve and Reject buttons as the approval email (approvals.email_actions):
 each names one approver and one request, so a forwarded message decides
@@ -97,8 +97,8 @@ class SlackAdapter(ChannelAdapter):
     """A direct message from the workspace's own Slack app (bot token, xoxb-…).
 
     The app needs the bot scopes `chat:write`, `users:read` and
-    `users:read.email` — the manifest AskMira gives the admin asks for exactly
-    those. Buttons are links (to AskMira's signed approval pages), so the app
+    `users:read.email` — the manifest AskMiraa gives the admin asks for exactly
+    those. Buttons are links (to AskMiraa's signed approval pages), so the app
     needs no interactivity endpoint.
     """
 
@@ -135,7 +135,7 @@ class SlackAdapter(ChannelAdapter):
         "account_inactive": "The Slack app was removed or its token revoked. Reinstall it.",
         "missing_scope": (
             "The Slack app is missing a permission. It needs chat:write, users:read and "
-            "users:read.email — create it from AskMira's manifest."
+            "users:read.email — create it from AskMiraa's manifest."
         ),
         "user_disabled": "This person's Slack account is deactivated.",
     }
@@ -227,17 +227,17 @@ class SlackAdapter(ChannelAdapter):
 def slack_manifest(portal_url: str | None, events_url: str | None = None) -> dict[str, Any]:
     """The Slack app manifest: api.slack.com → Create an app → From a manifest.
 
-    With `events_url` (Ask Mira on in Slack) people may message the app, and Slack
+    With `events_url` (Ask Miraa on in Slack) people may message the app, and Slack
     sends each direct message there.
     """
     manifest: dict[str, Any] = {
         "display_information": {
-            "name": "AskMira",
-            "description": "Approvals and updates from AskMira, your HR workspace.",
+            "name": "AskMiraa",
+            "description": "Approvals and updates from AskMiraa, your HR workspace.",
             "background_color": "#7d0712",
         },
         "features": {
-            "bot_user": {"display_name": "AskMira", "always_online": True},
+            "bot_user": {"display_name": "AskMiraa", "always_online": True},
             "app_home": {
                 "home_tab_enabled": False,
                 "messages_tab_enabled": True,
@@ -263,12 +263,12 @@ def slack_manifest(portal_url: str | None, events_url: str | None = None) -> dic
     if portal_url:
         reads = (
             "It reads each person's email, to find them, and the direct messages people send "
-            "the app, to answer them as Ask Mira; nothing else in Slack."
+            "the app, to answer them as Ask Miraa; nothing else in Slack."
             if events_url
             else "It reads nothing in Slack except each person's email, to find them."
         )
         manifest["display_information"]["long_description"] = (
-            "AskMira sends each person the approvals waiting on them and the updates they "
+            "AskMiraa sends each person the approvals waiting on them and the updates they "
             f"chose, with buttons that open {portal_url.rstrip('/')}. {reads}"
         )
     return manifest
@@ -317,8 +317,8 @@ class TeamsAdapter(ChannelAdapter):
     The admin registers a single-tenant Azure Bot in their Microsoft 365
     tenant, gives its app registration the Microsoft Graph application
     permission `User.Read.All` (to find each person by email), and installs the
-    AskMira Teams app — the package AskMira gives them — for their people.
-    AskMira then signs in as the bot (client credentials), finds the person,
+    AskMiraa Teams app — the package AskMiraa gives them — for their people.
+    AskMiraa then signs in as the bot (client credentials), finds the person,
     opens a one-to-one conversation and posts an Adaptive Card.
     """
 
@@ -437,7 +437,7 @@ class TeamsAdapter(ChannelAdapter):
             raise TransientFailure(f"Teams returned {response.status_code}; will retry.")
         if response.status_code in (401, 403, 404):
             raise PermanentFailure(
-                "Teams would not open a chat with this person. Install the AskMira app for "
+                "Teams would not open a chat with this person. Install the AskMiraa app for "
                 "them (Teams admin centre → Setup policies → Installed apps)."
             )
         payload = response.json() if response.content else {}
@@ -480,7 +480,7 @@ class TeamsAdapter(ChannelAdapter):
             raise TransientFailure(f"Teams returned {response.status_code}; will retry.")
         if response.status_code >= 400:
             raise PermanentFailure(
-                "Teams did not take the message. If the AskMira app was removed for this "
+                "Teams did not take the message. If the AskMiraa app was removed for this "
                 f"person, install it again ({response.status_code})."
             )
         payload = response.json() if response.content else {}
@@ -540,17 +540,17 @@ def teams_package(app_id: str, portal_url: str | None) -> bytes:
         # Stable per bot, so uploading it again updates the same app.
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"askmira-teams:{app_id}")),
         "developer": {
-            "name": "AskMira",
+            "name": "AskMiraa",
             "websiteUrl": site,
             "privacyUrl": f"{site}/privacy",
             "termsOfUseUrl": f"{site}/terms",
         },
-        "name": {"short": "AskMira", "full": "AskMira HR"},
+        "name": {"short": "AskMiraa", "full": "AskMiraa HR"},
         "description": {
-            "short": "Approvals and updates from AskMira.",
+            "short": "Approvals and updates from AskMiraa.",
             "full": (
-                "AskMira sends each person the approvals waiting on them and the updates they "
-                "chose, with buttons that open AskMira. It reads nothing in Teams."
+                "AskMiraa sends each person the approvals waiting on them and the updates they "
+                "chose, with buttons that open AskMiraa. It reads nothing in Teams."
             ),
         },
         "icons": {"color": "color.png", "outline": "outline.png"},

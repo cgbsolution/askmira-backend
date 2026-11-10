@@ -8,7 +8,7 @@ This is the question every security reviewer asks, so the answer is written
 where the code is rather than in a document nobody opens.
 
 When the corporate directory de-provisions a user — a SCIM DELETE, or a PATCH
-setting `active` to false — AskMira:
+setting `active` to false — AskMiraa:
 
   DOES:
     - mark the `User` inactive, so no new session can be established
@@ -171,7 +171,7 @@ def to_scim_user(user: User) -> dict[str, Any]:
     """Render a user in SCIM shape.
 
     `roles` is deliberately omitted. Exposing it would invite a directory to
-    write it back, and roles are assigned in AskMira.
+    write it back, and roles are assigned in AskMiraa.
     """
     given, _, family = (user.full_name or "").partition(" ")
     return {
@@ -287,7 +287,7 @@ async def provision_user(
             "email": email,
             "source": "scim",
             "role_assigned": UserRole.EMPLOYEE.value,
-            "note": "Role assigned by AskMira; any roles attribute in the payload is ignored",
+            "note": "Role assigned by AskMiraa; any roles attribute in the payload is ignored",
         },
         summary=f"SCIM provisioned {email}",
     )

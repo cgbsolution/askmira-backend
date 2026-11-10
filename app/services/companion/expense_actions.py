@@ -1,6 +1,6 @@
-"""Ask Mira in ExpenseGenie: file a claim from a receipt, decide claims waiting on you.
+"""Ask Miraa in ExpenseGenie: file a claim from a receipt, decide claims waiting on you.
 
-Filing: Mira reads a receipt the person attached (or what they typed) and offers
+Filing: Miraa reads a receipt the person attached (or what they typed) and offers
 the claim line by line, checked first against ExpenseGenie's own list for this
 person (kind ``categories``): the workspace's categories, which need a bill,
 and their grade's cap on each — on each bill, so lines of one invoice are added
@@ -9,7 +9,7 @@ claimed once. On the person's yes ExpenseGenie files it as them (products.act,
 kind ``claim.create``) with the same rules as its own app — it goes to their
 manager, a category that needs the bill stays a draft until the original is
 attached there — keyed by the offer, so a retry never files twice (one retry is
-made when the answer was lost on the way). AskMira never keeps the receipt.
+made when the answer was lost on the way). AskMiraa never keeps the receipt.
 
 Deciding: what waits on the person in ExpenseGenie (kind ``claims``, scope
 approvals) is listed in the offer, on the screen only; on the yes each is
@@ -252,7 +252,7 @@ async def propose_claim(
     if bills:
         notes.append(
             f"{', '.join(bills)} needs the bill: the claim stays a draft in {BRAND} until you "
-            "attach it there and send it. AskMira does not keep the receipt."
+            "attach it there and send it. AskMiraa does not keep the receipt."
         )
     action = await actions._offer(
         session,

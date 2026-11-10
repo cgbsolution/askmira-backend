@@ -168,10 +168,10 @@ async def channel_status(session: AsyncSession, user: User) -> list[dict[str, An
             "channel": Channel.PUSH.value,
             "state": "live" if devices else "not_delivered",
             "summary": (
-                f"Sent through Expo's push service to the AskMira app, on {devices} phone(s) "
+                f"Sent through Expo's push service to the AskMiraa app, on {devices} phone(s) "
                 "signed in."
                 if devices
-                else "No phone has the AskMira app signed in yet, so nothing is pushed. "
+                else "No phone has the AskMiraa app signed in yet, so nothing is pushed. "
                 "A push preference is saved for when one is."
             ),
         },
@@ -529,9 +529,9 @@ async def test_smtp(
         raise _bad_request("Save and enable this workspace's mail relay before testing it.")
 
     adapter, source = await dispatch.email_adapter_for(session, user.tenant_id)
-    subject = "AskMira mail relay test"
+    subject = "AskMiraa mail relay test"
     body = (
-        "This is a test message from AskMira. If you can read it, this workspace's mail "
+        "This is a test message from AskMiraa. If you can read it, this workspace's mail "
         "relay delivers, in the email design set under Settings → Notifications."
     )
     ok, error = True, None

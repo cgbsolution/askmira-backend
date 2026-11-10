@@ -359,7 +359,7 @@ PURPOSES: dict[str, Purpose] = {
             stops=("ai_companion_queries", "ai_context_retrieval"),
             sub_processors=AI_PROVIDERS,
             withdrawal_erases=(
-                "Your Ask Mira conversations",
+                "Your Ask Miraa conversations",
                 "Feedback you gave on AI answers",
                 "The questions and answers kept in the AI call log",
             ),

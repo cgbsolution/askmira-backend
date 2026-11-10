@@ -7,7 +7,7 @@ non-statutory deductions, company contributions and provisions.
 
 Offered on the Salary master when a workspace has no salary structure yet, or
 lacks some of these wage types. It only adds, with one exception: a wage type
-still carrying the name AskMira's earlier default gave it ("Basic salary") is
+still carrying the name AskMiraa's earlier default gave it ("Basic salary") is
 renamed to the template's ("BASIC SALARY"). A name the workspace chose itself is
 never touched, and the structure is created only when no active one exists.
 
@@ -65,7 +65,7 @@ class _Spec:
     esi: bool = False
     order: int = 0
     in_structure: bool = False
-    #: Names AskMira's earlier default gave this code; renamed to `name`.
+    #: Names AskMiraa's earlier default gave this code; renamed to `name`.
     old_names: tuple[str, ...] = ()
 
 

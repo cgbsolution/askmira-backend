@@ -196,7 +196,7 @@ async def test_the_design_is_saved_audited_and_previewed(session, org) -> None:
     assert "Meera Nair asked for Earned Leave from 5 Nov 2026." in shown["html"]
     assert "#7A3E9D" in shown["html"]
     assert "Warm regards,<br>People team" in shown["html"]
-    assert "Powered by AskMira" in shown["text"]
+    assert "Powered by AskMiraa" in shown["text"]
 
     audit = await session.scalar(select(AuditLog).where(AuditLog.entity_type == "email_branding"))
     assert audit is not None and audit.changes["after"]["accent_colour"] == "#7A3E9D"
@@ -217,7 +217,7 @@ async def test_sent_email_is_branded(session, org, mail) -> None:
     assert message.html and "Acme Technologies" in message.html
     assert "People team" in message.html
     assert "Closed on Friday for Diwali." in message.body
-    assert "Powered by AskMira" in message.body
+    assert "Powered by AskMiraa" in message.body
 
 
 # ── Approve or reject from the email ───────────────────────────────────────
@@ -305,4 +305,4 @@ async def test_no_buttons_when_switched_off_or_two_step_is_required(session, org
     await leave_service.apply(session, org["meera"], _payload(org))
     html = next(m.html for m in reversed(mail.sent) if m.recipient_email == org["boss"].email)
     assert "/act/" not in html
-    assert ">Open AskMira<" in html
+    assert ">Open AskMiraa<" in html

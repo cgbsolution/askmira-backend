@@ -1,6 +1,6 @@
 """TDS for a year that began on another payroll.
 
-A company that moves to AskMira in September paid April to August on its old
+A company that moves to AskMiraa in September paid April to August on its old
 payroll. The run must count those months as income — at the salary structure —
 or it sees part of a year, finds it under the rebate limit and deducts nothing.
 Their tax was deducted on the old payroll; it is taken at the year's steady
@@ -95,7 +95,7 @@ async def test_a_month_paid_here_is_not_counted_twice(session: AsyncSession, org
 
     september = await _computed(session, org, 9)
     slip = await _slip(session, september.id, org["meera_emp"].id)
-    # AskMira began in August: April-July only, and August from its payslip.
+    # AskMiraa began in August: April-July only, and August from its payslip.
     assert slip.tds_working["projection"]["earlier_months_from_salary_structure"] == 4
     # (120,000 - 40,000 assumed - 10,000 deducted in August) over seven months.
     assert Decimal(str(slip.tds)) == Decimal("10000.00")
@@ -104,7 +104,7 @@ async def test_a_month_paid_here_is_not_counted_twice(session: AsyncSession, org
 async def test_a_month_after_the_company_started_here_is_not_assumed(
     session: AsyncSession, org
 ) -> None:
-    """A gap after the company's first AskMira run was not paid on another payroll."""
+    """A gap after the company's first AskMiraa run was not paid on another payroll."""
     await _approved_rules(session, org)
     april = await _computed(session, org, 4)
     await run_service.approve_run(session, org["checker"], april.id)
@@ -221,7 +221,7 @@ async def test_a_first_salary_after_the_first_month_does_not_stand_in_for_earlie
 ) -> None:
     """A consultant on the books since 2020 is put on payroll from 1 October.
 
-    September is the company's first AskMira run and leaves them out (no
+    September is the company's first AskMiraa run and leaves them out (no
     salary on its last day). Their April-August were not salary on another
     payroll, so October's TDS must not assume them: that would tax 11 months
     of pay for a person paid 6.

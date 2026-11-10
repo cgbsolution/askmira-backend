@@ -1,8 +1,8 @@
-"""AskMira's calls to a product's backend.
+"""AskMiraa's calls to a product's backend.
 
     POST /integrations/askmira/organizations   create or adopt this company's organisation
     POST /integrations/askmira/users/sync      the full list of people who should have access
-    POST /integrations/askmira/query           a read-only question for one person (Ask Mira)
+    POST /integrations/askmira/query           a read-only question for one person (Ask Miraa)
     POST /integrations/askmira/act             something one person does there (a helpdesk ticket)
     POST /integrations/askmira/connect/token   swap a one-time connect code for a secret
     POST /integrations/askmira/connect/revoke  the workspace disconnected

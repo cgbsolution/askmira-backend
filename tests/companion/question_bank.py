@@ -1,4 +1,4 @@
-"""The questions people ask Ask Mira, and what each must be answered with.
+"""The questions people ask Ask Miraa, and what each must be answered with.
 
 Every case is a message, who asks it (an admin/sub-admin, or an employee), and
 what the rule-based planner (direct.py) must do: run one tool with these inputs,
@@ -55,7 +55,7 @@ WRAPPERS = (
     "i want to know {q}",
     "could you check {q}",
     "{q} pls",
-    "Hi Mira {q}",
+    "Hi Miraa {q}",
     "{q} ??",
 )
 #: For messages read from their first word ("open …", "raise …").
@@ -384,7 +384,7 @@ APPROVALS = (
     ("my approvels", "none"),
 )
 
-#: Expense approvals: ExpenseGenie when linked, else AskMira's approvals inbox.
+#: Expense approvals: ExpenseGenie when linked, else AskMiraa's approvals inbox.
 EXPENSE_APPROVALS = (
     "claims to approve",
     "expense claims waiting for my approval",
@@ -975,7 +975,7 @@ GREETINGS = (
     "who are you",
     "hii",
     "ok",
-    "Hi Mira!",
+    "Hi Miraa!",
     "thanks a lot",
     "how can you help me",
 )
@@ -1465,7 +1465,7 @@ def build() -> list[Case]:
         for text in _wrapped(question, LIGHT):
             cases.append(Case(text, "query_data", inputs, hr=False))
     # Expense claims are asked of ExpenseGenie when it is linked: the company's for
-    # HR, only their own for anybody else. Not linked, AskMira's own claims.
+    # HR, only their own for anybody else. Not linked, AskMiraa's own claims.
     for question, scope, start in (
         ("expense claims trend", "company", "2025-11-01"),
         ("expense trend for the last 3 months", "company", "2026-08-01"),

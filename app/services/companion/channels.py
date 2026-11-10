@@ -1,28 +1,28 @@
-"""Ask Mira from Slack, Microsoft Teams and email: the part they share.
+"""Ask Miraa from Slack, Microsoft Teams and email: the part they share.
 
 A message arrives in one of those places from someone the place vouches for
 (Slack's signed event, Microsoft's signed activity, an email its own domain
 vouched for). Each inbound module checks that first. Here:
 
-* the person is the AskMira login with that work email in that workspace,
+* the person is the AskMiraa login with that work email in that workspace,
   active, in a workspace that is not suspended — nobody else is ever answered,
   and nothing says whether an address exists. Whom the workspace's two-step
   rule covers, or whose role is held to its allowed networks, is asked to use
-  AskMira itself: neither can be proved from a chat or a mail server. The rest
+  AskMiraa itself: neither can be proved from a chat or a mail server. The rest
   is what a signed-in request carries, including a sub-admin's department or
   location scope;
-* the message goes to Ask Mira exactly as if typed in the app
+* the message goes to Ask Miraa exactly as if typed in the app
   (companion.send): the same consent, AI switch, daily limit, tools, rights and
   audit. Consecutive messages in one chat continue one conversation (recent
   conversations keep their place's label in the title);
 * the reply is rendered as plain text for the place: the answer, then each
   card in a line or a few — tables cut to their first rows, offers with their
   figures and how to confirm. A card from a lookup of pay, leave, attendance or
-  other personal records is not written out: it says the result is in AskMira.
-  Slack and Teams confirm by the person replying "yes" (Ask Mira's own typed-yes
+  other personal records is not written out: it says the result is in AskMiraa.
+  Slack and Teams confirm by the person replying "yes" (Ask Miraa's own typed-yes
   check: the offer must be from an earlier message of that conversation); email
   never confirms by reply — the tools are not offered and a confirm is refused —
-  it links to AskMira, because an email can be forwarded or forged.
+  it links to AskMiraa, because an email can be forwarded or forged.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ CONTINUES_FOR = timedelta(hours=12)
 TABLE_ROWS = 10
 #: What a reply in Slack, Teams or an email body may carry (DPDP categories, see the
 #: "chat_apps" and email sub-processors): who people are and business records. A card
-#: from a lookup that reads anything else (pay, leave, attendance…) stays in AskMira.
+#: from a lookup that reads anything else (pay, leave, attendance…) stays in AskMiraa.
 CARRIED = frozenset({"identity", "organisational", "ai_interaction", "communication"})
 
 
@@ -78,7 +78,7 @@ class Acting:
     user: User | None = None
     #: The login with that email, also when refused (so an email can say why).
     login: User | None = None
-    #: Said instead of an answer; None means the generic "only AskMira logins".
+    #: Said instead of an answer; None means the generic "only AskMiraa logins".
     refusal: str | None = None
     suspended: bool = False
 
@@ -103,7 +103,7 @@ async def acting_person(session: AsyncSession, tenant_id: uuid.UUID, email: str)
     The same refusals a portal request meets (deps.get_current_user): a suspended
     or deleted workspace, and the workspace's session policy. Then the person's
     direct reports and a sub-admin's department or location scope, as for a
-    message typed in Ask Mira.
+    message typed in Ask Miraa.
     """
     from app.core.access_control import load_request_access
     from app.models.opsec import TenantSessionPolicy
@@ -113,7 +113,7 @@ async def acting_person(session: AsyncSession, tenant_id: uuid.UUID, email: str)
     tenant = await session.get(Tenant, tenant_id)
     if tenant is None or not tenant.is_active or tenant.deleted_at is not None:
         return Acting(
-            refusal="Ask Mira isn't available for your company right now.", suspended=True
+            refusal="Ask Miraa isn't available for your company right now.", suspended=True
         )
     user = await login_by_email(session, tenant_id, email)
     if user is None:
@@ -126,7 +126,7 @@ async def acting_person(session: AsyncSession, tenant_id: uuid.UUID, email: str)
             login=user,
             refusal=(
                 "Your company requires two-step sign-in, which a chat or an email can't prove, "
-                "so ask me in AskMira itself."
+                "so ask me in AskMiraa itself."
             ),
         )
     if (
@@ -139,7 +139,7 @@ async def acting_person(session: AsyncSession, tenant_id: uuid.UUID, email: str)
             login=user,
             refusal=(
                 "Your role can only be used from your company's allowed networks, so ask me in "
-                "AskMira itself."
+                "AskMiraa itself."
             ),
         )
     user.has_reports = await has_direct_reports(session, user)
@@ -176,7 +176,7 @@ def _cell(value: Any) -> str:
 def carried(card: dict[str, Any]) -> bool:
     """Whether this card may be written out in a chat or an email.
 
-    AskMira's own notices and the offers the person asked for are (an offer must
+    AskMiraa's own notices and the offers the person asked for are (an offer must
     say what it will do for a reply to mean anything, as an approval email does).
     A lookup's record or table only when its tool reads nothing beyond CARRIED.
     """
@@ -196,7 +196,7 @@ def render(text: str, cards: list[dict[str, Any]], *, place: str, conversation_i
         if not carried(card):
             title = str(card.get("title") or "The result")
             lines.append(
-                f"{title}: it holds personal records, so it is kept in AskMira, not sent "
+                f"{title}: it holds personal records, so it is kept in AskMiraa, not sent "
                 f"{'by email' if place == 'email' else 'here'}. Open the conversation to see it."
             )
             continue
@@ -210,7 +210,7 @@ def render(text: str, cards: list[dict[str, Any]], *, place: str, conversation_i
                 lines.append(" · ".join(columns))
             lines += ["• " + " · ".join(_cell(c) for c in row) for row in rows[:TABLE_ROWS]]
             if len(rows) > TABLE_ROWS:
-                lines.append(f"…and {len(rows) - TABLE_ROWS} more in AskMira.")
+                lines.append(f"…and {len(rows) - TABLE_ROWS} more in AskMiraa.")
         elif kind == "record":
             lines.append(str(card.get("title") or ""))
             lines += [f"• {f.get('label')}: {f.get('value')}" for f in card.get("figures") or []]
@@ -229,7 +229,7 @@ def render(text: str, cards: list[dict[str, Any]], *, place: str, conversation_i
             elif status == "proposed":
                 if place == "email":
                     lines.append(
-                        f"Nothing is done yet. Confirm it in AskMira: "
+                        f"Nothing is done yet. Confirm it in AskMiraa: "
                         f"{_portal(f'/ask-mira?c={conversation_id}')}"
                     )
                 else:
@@ -242,19 +242,19 @@ def render(text: str, cards: list[dict[str, Any]], *, place: str, conversation_i
             for cite in card.get("citations") or []:
                 lines.append(f"• {cite.get('title') or cite.get('document') or ''}".strip())
         elif kind == "chart":
-            lines.append(f"{card.get('title')}: open AskMira to see the chart.")
+            lines.append(f"{card.get('title')}: open AskMiraa to see the chart.")
         elif kind in ("launch", "own_record", "connect"):
             target = card.get("href") or card.get("open") or "/settings/connectors"
             words = card.get("text") or card.get("name") or ""
             lines.append(f"{words} {_portal(str(target))}".strip())
-    lines.append(f"Open this conversation in AskMira: {_portal(f'/ask-mira?c={conversation_id}')}")
+    lines.append(f"Open this conversation in AskMiraa: {_portal(f'/ask-mira?c={conversation_id}')}")
     return "\n".join(line for line in lines if line is not None).strip()
 
 
 async def _record_transfer(
     session: AsyncSession, user: User, cards: list[dict[str, Any]], *, place: str
 ) -> None:
-    """The reply leaves AskMira for Slack, Teams or the mail relay: in the register."""
+    """The reply leaves AskMiraa for Slack, Teams or the mail relay: in the register."""
     from app.services.companion.tools import TOOLS
     from app.services.dpdp import service as dpdp_service
 
@@ -270,17 +270,17 @@ async def _record_transfer(
         purpose_key="ai_assistance",
         category_keys=tuple(sorted(categories)),
         principal_count=1,
-        description=f"Ask Mira's answer to {user.full_name}, sent by {LABELS[place]}.",
+        description=f"Ask Miraa's answer to {user.full_name}, sent by {LABELS[place]}.",
     )
 
 
 async def answer(session: AsyncSession, user: User, text: str, *, place: str, thread: str) -> Reply:
-    """Ask Mira, as the person, in this chat's conversation; the reply as plain text."""
+    """Ask Miraa, as the person, in this chat's conversation; the reply as plain text."""
     from app.services.companion import service as companion
 
     words = " ".join((text or "").split())[:2000]
     if not words:
-        return Reply(text="Send me a question, and I'll look it up as you in AskMira.")
+        return Reply(text="Send me a question, and I'll look it up as you in AskMiraa.")
     conversation_id = await _conversation(session, user, place, thread)
     try:
         turn = await companion.send(
@@ -292,7 +292,7 @@ async def answer(session: AsyncSession, user: User, text: str, *, place: str, th
         )
     except HTTPException as exc:  # a refusal (daily limit, AI off…): its own words
         detail = exc.detail
-        return Reply(text=str(detail) if isinstance(detail, str) else "Ask Mira could not answer.")
+        return Reply(text=str(detail) if isinstance(detail, str) else "Ask Miraa could not answer.")
     conversation = turn["conversation"]
     new_id = uuid.UUID(str(conversation["id"]))
     if conversation_id is None:

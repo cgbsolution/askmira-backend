@@ -177,7 +177,7 @@ def _not_found() -> HTTPException:
 
 
 def is_imported(run: PayrollRun) -> bool:
-    """Loaded as paid by the previous payroll, not worked out by AskMira."""
+    """Loaded as paid by the previous payroll, not worked out by AskMiraa."""
     return run.origin == RUN_ORIGIN_IMPORTED
 
 
@@ -1378,7 +1378,7 @@ async def acknowledge_variance(
     refuse_if_imported(
         run,
         cannot_be="reviewed",
-        why="Its figures are the ones paid there; AskMira checked no variances on it.",
+        why="Its figures are the ones paid there; AskMiraa checked no variances on it.",
     )
     if run.status is not PayrollRunStatus.PENDING_REVIEW:
         raise HTTPException(
@@ -2114,14 +2114,14 @@ async def _earlier_months_from_structure(
 ) -> tuple[dict[uuid.UUID, PriorPay], list[str]]:
     """Months of the year paid on the previous payroll, at the salary structure.
 
-    A company that moves to AskMira mid-year paid April onwards on its old
+    A company that moves to AskMiraa mid-year paid April onwards on its old
     payroll. Without those months the projection sees part of a year, finds the
     income under the rebate limit and deducts no tax at all. Counted at the
     salary in force in each month (as the employee's own projection counts
     them), the year's tax is right; `tds.compute_monthly_tds` takes their tax
     as deducted at the year's steady rate, and the notice says so.
 
-    Only months before this company's first AskMira run of the year: a later
+    Only months before this company's first AskMiraa run of the year: a later
     month somebody was not paid here (a hold, a gap) was not paid elsewhere.
     """
     period = (run.period_year, run.period_month)
@@ -2177,7 +2177,7 @@ async def _earlier_months_from_structure(
             fy_end=fy_end,
             skip=paid.get(employee.id, set()),
             before=period,
-            # A first salary starting after the company's first AskMira month
+            # A first salary starting after the company's first AskMiraa month
             # does not stand in for months before it: they were not salary.
             assume_by=date(*period, calendar.monthrange(*period)[1]),
         )

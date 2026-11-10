@@ -7,7 +7,7 @@ anyone is authenticated, so these lookups are not tenant-scoped: the login
 establishes the tenant. Every other query in the product is scoped as usual.
 
 What it gives away, and why that is acceptable: that an address or number has
-an AskMira login, and which company it belongs to — the same thing the company
+an AskMiraa login, and which company it belongs to — the same thing the company
 name on a payslip or an offer letter says. The lookup is rate-limited per
 connection so it cannot be used to sweep a list, and it never says anything
 about the person beyond that.
@@ -175,5 +175,5 @@ async def branding(session: AsyncSession, tenant: Tenant) -> Branding:
 def suspended() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="This workspace has been suspended. Contact AskMira support.",
+        detail="This workspace has been suspended. Contact AskMiraa support.",
     )

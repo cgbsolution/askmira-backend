@@ -1,4 +1,4 @@
-"""What Ask Mira can do for a person, and the rule that it never does it unasked.
+"""What Ask Miraa can do for a person, and the rule that it never does it unasked.
 
 Every action is two steps:
 
@@ -95,7 +95,7 @@ KINDS = (
 _PRODUCT_KINDS = frozenset(
     {"saleinx_lead", "saleinx_stage", "saleinx_decision", "procurement_decision"}
 )
-#: Carried out in a linked product, which keeps its own history: AskMira's audit log
+#: Carried out in a linked product, which keeps its own history: AskMiraa's audit log
 #: gets a row of its own when one succeeds, as it does when one fails or is declined.
 _ELSEWHERE = _PRODUCT_KINDS | {
     "expense_claim",
@@ -257,7 +257,7 @@ async def _offer(
                 entity_id=old.id,
                 actor=user,
                 changes={"kind": kind, "status": "cancelled", "via": "replaced"},
-                summary=f"Ask Mira's offer ({kind.replace('_', ' ')}) replaced by a newer one",
+                summary=f"Ask Miraa's offer ({kind.replace('_', ' ')}) replaced by a newer one",
                 request=ctx.request,
             )
     action = CompanionAction(
@@ -472,14 +472,14 @@ async def propose_leave(
                 "note": " ".join([*preview.problems, *notes]),
                 "open": "/time",
                 "open_label": "Open Time off",
-                # Said to the person as Mira's answer (service._send_ai), whatever
+                # Said to the person as Miraa's answer (service._send_ai), whatever
                 # the model wrote: it may not read the balance, so it cannot say it.
                 "refusal": refusal,
                 # What the model is told. No figure in it: the balance is the
                 # person's leave record, which the provider may not receive.
                 "model_note": (
                     "NOT OFFERED. This leave could not be applied, so nothing was prepared and "
-                    "there is nothing to confirm. Do not ask the person to confirm. AskMira "
+                    "there is nothing to confirm. Do not ask the person to confirm. AskMiraa "
                     "tells them why, with their balance, under your reply. If they want fewer "
                     "days or another leave type, ask which and use apply_leave again."
                 ),
@@ -715,7 +715,7 @@ async def propose_decision(
         if queue not in EMAIL_QUEUES:
             problems.append(
                 "A payroll, loan, settlement or hiring decision is made on its own page in "
-                "AskMira, where it asks for your password."
+                "AskMiraa, where it asks for your password."
             )
             continue
         _source, entry = await _waiting_item(session, user, queue, item_id)
@@ -1027,7 +1027,7 @@ async def confirm(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "A reply by email never confirms an offer. The person confirms it in AskMira, "
+                    "A reply by email never confirms an offer. The person confirms it in AskMiraa, "
                     "from the link in the email."
                 ),
             )
@@ -1080,7 +1080,7 @@ async def confirm(
         # A refusal in the service's own words; anything else (a value a check refused,
         # the database) is said plainly and logged, and nothing is left half-done.
         if not isinstance(exc, HTTPException):
-            logger.exception("Ask Mira could not carry out offer %s (%s)", action_id, action.kind)
+            logger.exception("Ask Miraa could not carry out offer %s (%s)", action_id, action.kind)
         await _undo(session, user, savepoint)
         action = await _locked(session, user, action_id, owner_id=owner_id)
         detail = (
@@ -1100,7 +1100,7 @@ async def confirm(
             entity_id=action.id,
             actor=user,
             changes={"kind": action.kind, "status": "failed", "reason": detail},
-            summary=f"Ask Mira could not carry out a {action.kind.replace('_', ' ')}",
+            summary=f"Ask Miraa could not carry out a {action.kind.replace('_', ' ')}",
             request=request,
         )
         await session.commit()
@@ -1116,7 +1116,7 @@ async def confirm(
     action.decided_via = via
     action.result = result
     if action.kind in _ELSEWHERE:
-        # The product keeps its own history; AskMira's log says Ask Mira did it, as whom.
+        # The product keeps its own history; AskMiraa's log says Ask Miraa did it, as whom.
         product = _PRODUCT_OF.get(action.kind, "a linked product")
         await audit.record(
             session,
@@ -1133,7 +1133,7 @@ async def confirm(
                 "reference": (result or {}).get("reference"),
                 "outcome": str((result or {}).get("text") or "")[:500],
             },
-            summary=f"Ask Mira carried out a {action.kind.replace('_', ' ')} in {product}",
+            summary=f"Ask Miraa carried out a {action.kind.replace('_', ' ')} in {product}",
             request=request,
         )
     await session.commit()
@@ -1170,7 +1170,7 @@ async def cancel(
         entity_id=action.id,
         actor=user,
         changes={"kind": action.kind, "status": "cancelled", "via": via},
-        summary=f"Ask Mira's offer ({action.kind.replace('_', ' ')}) declined by its owner",
+        summary=f"Ask Miraa's offer ({action.kind.replace('_', ' ')}) declined by its owner",
         request=request,
     )
     await session.commit()

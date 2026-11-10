@@ -1,16 +1,16 @@
-"""The signed assertions AskMira hands a product.
+"""The signed assertions AskMiraa hands a product.
 
 Five kinds, all HS256 with the product's own secret, all good for 60 seconds:
 
-* **provision** — sent as the Bearer token on AskMira's server-to-server calls
+* **provision** — sent as the Bearer token on AskMiraa's server-to-server calls
   that change the product (the organisation, the roster). `bh` is the SHA-256
   of the exact request body, so a captured token can't be replayed with a
   different body.
 * **query** — the same shape, for a read-only question asked on behalf of one
-  person (Ask Mira). A separate `use`, so a query token can never provision
+  person (Ask Miraa). A separate `use`, so a query token can never provision
   and a provisioning token can never read.
 * **act** — the same shape again, for something one person does in the product
-  from AskMira (raise a helpdesk ticket, reply on one). Its own `use`, so a
+  from AskMiraa (raise a helpdesk ticket, reply on one). Its own `use`, so a
   read can never write; the product accepts each `jti` once, so a captured
   request can't be carried out twice.
 * **revoke** — sent when a workspace's admin disconnects the product from

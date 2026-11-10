@@ -553,7 +553,7 @@ async def test_an_application_for_an_unknown_job_is_held_back_not_misfiled(
         session, hr_user, _raw(external_job_id="POSTED-ELSEWHERE"), now=NOW
     )
     assert outcome.application is None
-    assert "outside AskMira" in outcome.note
+    assert "outside AskMiraa" in outcome.note
 
 
 async def test_a_batch_counts_each_branch_separately(

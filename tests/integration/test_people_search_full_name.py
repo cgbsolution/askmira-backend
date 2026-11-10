@@ -2,7 +2,7 @@
 
 Names are stored as first and last name; a search for "Meera Nair" used to
 match neither column and found nobody, in the directory, the people pickers
-and Ask Mira alike.
+and Ask Miraa alike.
 """
 
 from __future__ import annotations

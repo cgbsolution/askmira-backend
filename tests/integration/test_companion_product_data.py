@@ -7,9 +7,9 @@ What these hold:
   between two) and the answers are added up exactly;
 - the admin sees who submitted how much and the months as charts; the model
   reads monthly totals over five or more claimants and never a name;
-- an employee is never shown the company's claims: refused in AskMira before
+- an employee is never shown the company's claims: refused in AskMiraa before
   the product is asked;
-- with ExpenseGenie linked, AskMira's own (empty) expense claims are not
+- with ExpenseGenie linked, AskMiraa's own (empty) expense claims are not
   offered as an answer;
 - a product that does not yet send who-submitted says so, rather than nothing.
 """

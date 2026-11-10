@@ -1,4 +1,4 @@
-"""Ask Mira's actions on CGB Helpdesk tickets: raise one, and work one.
+"""Ask Miraa's actions on CGB Helpdesk tickets: raise one, and work one.
 
 `raise_it_ticket` prepares an IT ticket from what the person said (a laptop
 that won't start, a VPN that drops), checked against the helpdesk's own
@@ -12,7 +12,7 @@ those the person can see there, reads what the helpdesk lets *them* do on it
 
 Nothing happens until the person confirms (actions.py). Then the helpdesk does
 it, as them (`products.data.act`, signed `use=act`), with its own notifications
-and emails; its refusal comes back in its own words. AskMira writes an audit
+and emails; its refusal comes back in its own words. AskMiraa writes an audit
 entry with the ticket's reference and what was done — no subject, message or
 reason text, which stay in the helpdesk.
 """
@@ -424,7 +424,7 @@ async def carry_out(session: AsyncSession, user: User, action: CompanionAction) 
         entity_id=_id(ticket_id),
         actor=user,
         changes={"product": PRODUCT, "ticket": ref, "did": kind, "via": "ask_mira"},
-        summary=f"{_LABEL.get(kind, 'Raised')} {BRAND} ticket #{ref} through Ask Mira",
+        summary=f"{_LABEL.get(kind, 'Raised')} {BRAND} ticket #{ref} through Ask Miraa",
         request=None,
     )
     return {

@@ -1,6 +1,6 @@
-"""Where AskMira writes money it expects, as opposed to money that moved.
+"""Where AskMiraa writes money it expects, as opposed to money that moved.
 
-provider.py   the finance provider interface, and AskMira's own ledger
+provider.py   the finance provider interface, and AskMiraa's own ledger
               (Account P&L forecasts) as its one implementation
 """
 

@@ -84,12 +84,12 @@ _EXPIRY_TEMPLATES: dict[Channel, tuple[str, str]] = {
     Channel.IN_APP: (
         "{points} points expire on {expires_on}",
         "{points} of your recognition points expire on {expires_on}. Redeem them "
-        "before then in AskMira. {disclosure}",
+        "before then in AskMiraa. {disclosure}",
     ),
     Channel.EMAIL: (
-        "Your AskMira points expire on {expires_on}",
+        "Your AskMiraa points expire on {expires_on}",
         "{points} of your recognition points expire on {expires_on}. You can redeem "
-        "them in AskMira until then. {disclosure}",
+        "them in AskMiraa until then. {disclosure}",
     ),
 }
 

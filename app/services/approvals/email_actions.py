@@ -242,10 +242,10 @@ async def _resolve(
         claims = decode_token(token, expected_type="email_action")
     except jwt.ExpiredSignatureError as exc:
         raise _gone(
-            "This link has expired. Open AskMira to decide; the request is in your Approvals."
+            "This link has expired. Open AskMiraa to decide; the request is in your Approvals."
         ) from exc
     except jwt.InvalidTokenError as exc:
-        raise _gone("This link is not valid. Open AskMira to decide.") from exc
+        raise _gone("This link is not valid. Open AskMiraa to decide.") from exc
 
     queue = str(claims.get("q") or "")
     try:
@@ -253,9 +253,9 @@ async def _resolve(
         item_id = uuid.UUID(str(claims.get("i")))
         tenant_id = uuid.UUID(str(claims.get("tid")))
     except ValueError as exc:
-        raise _gone("This link is not valid. Open AskMira to decide.") from exc
+        raise _gone("This link is not valid. Open AskMiraa to decide.") from exc
     if queue not in EMAIL_QUEUES:
-        raise _gone("This kind of request is decided in AskMira. Open your Approvals.")
+        raise _gone("This kind of request is decided in AskMiraa. Open your Approvals.")
 
     user = await session.get(User, user_id)
     tenant = await session.get(Tenant, tenant_id)
@@ -265,12 +265,12 @@ async def _resolve(
         raise _gone("This workspace is not active.")
     issued = claims.get("iat")
     if user.tokens_valid_from and issued and int(issued) < int(user.tokens_valid_from.timestamp()):
-        raise _gone("You were signed out everywhere since this email was sent. Open AskMira.")
+        raise _gone("You were signed out everywhere since this email was sent. Open AskMiraa.")
     chosen = await email_brand.get_settings(session, tenant_id)
     if not chosen.approve_from_email:
-        raise _gone("Your company decides requests in AskMira, not from email. Open Approvals.")
+        raise _gone("Your company decides requests in AskMiraa, not from email. Open Approvals.")
     if await _two_step_applies(session, user):
-        raise _gone("Your company requires two-step sign-in, so decide this in AskMira.")
+        raise _gone("Your company requires two-step sign-in, so decide this in AskMiraa.")
 
     # The rest of the context a signed-in request carries.
     from app.core.access_control import load_request_access

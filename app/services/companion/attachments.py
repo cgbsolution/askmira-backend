@@ -1,10 +1,10 @@
-"""Files a person attaches to a message for Ask Mira: pictures and PDFs, read into words.
+"""Files a person attaches to a message for Ask Miraa: pictures and PDFs, read into words.
 
-Ask Mira works with words, so a file is read into words first, and only those
+Ask Miraa works with words, so a file is read into words first, and only those
 words are kept. The file itself is never stored:
 
 - A PDF that carries its own text (most PDFs made on a computer) is read here,
-  page by page. Nothing leaves AskMira to read it.
+  page by page. Nothing leaves AskMiraa to read it.
 - A picture (a screenshot of a LinkedIn profile, a photo of a visiting card or
   of an error on screen) or a scanned PDF is read by the workspace's own AI
   model, the provider that holds the conversation. That is a model call like
@@ -54,7 +54,7 @@ __all__ = [
 #: Files on one message.
 MAX_FILES = 3
 TYPES = ("image/png", "image/jpeg", "application/pdf")
-WRONG_TYPE = "Ask Mira reads pictures (PNG or JPEG) and PDFs. Attach one of those."
+WRONG_TYPE = "Ask Miraa reads pictures (PNG or JPEG) and PDFs. Attach one of those."
 #: Pages of a PDF whose text is read.
 MAX_PDF_PAGES = 20
 #: Pages of a scanned PDF sent to the model as pictures.
@@ -108,7 +108,7 @@ _CONTACT_LABEL = {
     "profile_url": "Profile link",
 }
 
-READ_SYSTEM = """You read files that people attach in a chat with Ask Mira, the work \
+READ_SYSTEM = """You read files that people attach in a chat with Ask Miraa, the work \
 assistant of a company in India. You are given one file as one or more pictures.
 
 - `text`: every piece of text you can see, in reading order, exactly as written: names, \
@@ -339,7 +339,7 @@ async def _see(
         "categories": CATEGORIES,
         "principal_count": 1,
         "description": (
-            "A file the person attached to a message to Ask Mira (a picture or a scanned page), "
+            "A file the person attached to a message to Ask Miraa (a picture or a scanned page), "
             "read into text for the conversation."
         ),
         "system": READ_SYSTEM,
@@ -418,7 +418,7 @@ async def _read_one(
     found.kind = reading.kind if reading.kind in KINDS else "other"
     if found.kind == "identity_document":
         found.problem = (
-            "This looks like an identity document. Ask Mira doesn't use those; add it under "
+            "This looks like an identity document. Ask Miraa doesn't use those; add it under "
             "My profile → Documents instead."
         )
         return found

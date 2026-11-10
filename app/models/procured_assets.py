@@ -1,7 +1,7 @@
-"""Equipment delivered through ProcureFlow and added to an asset register from AskMira.
+"""Equipment delivered through ProcureFlow and added to an asset register from AskMiraa.
 
 One row per unit added: the ProcureFlow goods-receipt line and the unit's number
-(`source_ref`, unique per workspace), which register it went to (AskMira's own,
+(`source_ref`, unique per workspace), which register it went to (AskMiraa's own,
 or CGB Helpdesk's when that is linked) and the asset it became there. So a
 delivery shows as added, and the same unit is never added twice.
 """

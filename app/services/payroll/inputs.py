@@ -1333,7 +1333,7 @@ class ExpenseClaimProvider(InputProvider):
 
 # ── Expense Genie claims (with Expense Genie linked) ────────────────────────
 #
-# Approved, unpaid claims there are paid with salary like AskMira's own claims;
+# Approved, unpaid claims there are paid with salary like AskMiraa's own claims;
 # the approval records each one (LinkedClaimPayment) so no run pays it twice, and
 # linked_expenses.hand_back tells Expense Genie.
 

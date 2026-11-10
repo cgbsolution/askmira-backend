@@ -64,6 +64,6 @@ def test_new_secrets_are_distinct_and_decodable() -> None:
 
 
 def test_the_provisioning_uri_names_issuer_and_account() -> None:
-    uri = totp.provisioning_uri("ABC", account="priya@acme.in", issuer="AskMira")
-    assert uri.startswith("otpauth://totp/AskMira%3Apriya%40acme.in?")
-    assert "issuer=AskMira" in uri and "secret=ABC" in uri
+    uri = totp.provisioning_uri("ABC", account="priya@acme.in", issuer="AskMiraa")
+    assert uri.startswith("otpauth://totp/AskMiraa%3Apriya%40acme.in?")
+    assert "issuer=AskMiraa" in uri and "secret=ABC" in uri

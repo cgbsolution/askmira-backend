@@ -77,7 +77,11 @@ def test_every_adapter_implements_the_whole_interface(adapter_class) -> None:
     adapter = adapter_class(FakeTransport())
     assert isinstance(adapter, JobBoardAdapter)
     for method in (
-        "publish_job", "update_job", "close_job", "fetch_applications", "fetch_resume",
+        "publish_job",
+        "update_job",
+        "close_job",
+        "fetch_applications",
+        "fetch_resume",
     ):
         assert callable(getattr(adapter, method)), method
     assert adapter.board
@@ -128,9 +132,7 @@ def test_an_unmatched_title_falls_back_and_warns_about_it() -> None:
 def test_too_many_key_skills_are_trimmed_and_reported() -> None:
     """Naukri rejects an over-long skills list; it does not truncate it."""
     adapter = NaukriAdapter(FakeTransport())
-    payload, warnings = adapter.build_payload(
-        _spec(skills=tuple(f"Skill{i}" for i in range(30)))
-    )
+    payload, warnings = adapter.build_payload(_spec(skills=tuple(f"Skill{i}" for i in range(30))))
     assert len(payload["keySkills"]) == MAX_KEY_SKILLS
     assert any(str(MAX_KEY_SKILLS) in w for w in warnings)
 
@@ -226,15 +228,22 @@ async def test_resdex_searches_when_the_subscription_is_on() -> None:
 
 async def test_naukri_applications_normalise_into_our_shape() -> None:
     transport = FakeTransport(
-        (200, {"applications": [{
-            "applicationId": "A1",
-            "candidateName": " Rohit Verma ",
-            "email": " ROHIT@example.test ",
-            "mobile": "+91 98765 43210",
-            "currentCtc": "1400000",
-            "noticePeriod": "2 Months",
-            "someFieldWeNeverMapped": "kept anyway",
-        }]}),
+        (
+            200,
+            {
+                "applications": [
+                    {
+                        "applicationId": "A1",
+                        "candidateName": " Rohit Verma ",
+                        "email": " ROHIT@example.test ",
+                        "mobile": "+91 98765 43210",
+                        "currentCtc": "1400000",
+                        "noticePeriod": "2 Months",
+                        "someFieldWeNeverMapped": "kept anyway",
+                    }
+                ]
+            },
+        ),
     )
     adapter = NaukriAdapter(transport)
     [application] = await adapter.fetch_applications("NKR-99", CREDS)
@@ -250,15 +259,27 @@ async def test_naukri_applications_normalise_into_our_shape() -> None:
 
 @pytest.mark.parametrize(
     "written,expected",
-    [("Immediate", 0), ("15 Days", 15), ("2 Months", 60), ("3 Month", 90), ("", None),
-     ("whenever", None)],
+    [
+        ("Immediate", 0),
+        ("15 Days", 15),
+        ("2 Months", 60),
+        ("3 Month", 90),
+        ("", None),
+        ("whenever", None),
+    ],
 )
 async def test_naukri_notice_period_free_text_becomes_a_number(written, expected) -> None:
     """Drop-rate by notice period (slice 36) needs a number. Anything
     unparseable stays None — a wrong number in a report is worse than a gap."""
     transport = FakeTransport(
-        (200, {"applications": [{"applicationId": "A1", "email": "a@b.test",
-                                 "noticePeriod": written}]})
+        (
+            200,
+            {
+                "applications": [
+                    {"applicationId": "A1", "email": "a@b.test", "noticePeriod": written}
+                ]
+            },
+        )
     )
     [application] = await NaukriAdapter(transport).fetch_applications("J", CREDS)
     assert application.notice_period_days == expected
@@ -387,6 +408,22 @@ async def test_bad_linkedin_app_credentials_say_so() -> None:
     adapter = LinkedInAdapter(FakeTransport((401, {"error": "invalid_client"})))
     with pytest.raises(BoardPermanentFailure, match="client id and secret"):
         await adapter.publish_job(_spec(apply_url="https://hr.example/a"), LI_CREDS)
+
+
+async def test_a_cached_linkedin_token_is_never_reused_with_a_different_secret() -> None:
+    """The token cache is keyed on the secret as well as the client id. Keyed on
+    the client id alone, a wrong secret (or another workspace typing the same
+    client id) posted on the token the right secret had earned. Found in local
+    QA on 2026-11-10."""
+    adapter, transport = _linkedin((200, {"elements": [{"id": "t1", "status": 202}]}))
+    await adapter.publish_job(_spec(apply_url="https://hr.example/a"), LI_CREDS)
+
+    wrong = BoardCredentials(username="li-client", secret="not-the-secret", extras=LI_CREDS.extras)
+    transport.responses.append((401, {"error": "invalid_client"}))
+    with pytest.raises(BoardPermanentFailure, match="client id and secret"):
+        await adapter.update_job("REQ-001", _spec(apply_url="https://hr.example/a"), wrong)
+    assert transport.calls[-1][1] == "https://www.linkedin.com/oauth/v2/accessToken"
+    assert transport.calls[-1][2]["client_secret"] == "not-the-secret"
 
 
 def test_linkedin_parses_its_own_webhook() -> None:

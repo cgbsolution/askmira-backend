@@ -553,8 +553,8 @@ async def test_arrears_never_recompute_or_diff_an_imported_month(
     )
     computed, _ = await _computed_run(session, tenant, legal_entity, employee, year=2026, month=3)
     before = _fingerprint(imported_slip)
-    # Attendance is locked from March, AskMira's first month. February was paid on
-    # factoHR and has no AskMira attendance at all.
+    # Attendance is locked from March, AskMiraa's first month. February was paid on
+    # factoHR and has no AskMiraa attendance at all.
     session.add(
         AttendancePeriodLock(
             tenant_id=tenant.id,
@@ -596,7 +596,7 @@ async def test_arrears_never_recompute_or_diff_an_imported_month(
         effective_from=date(2026, 2, 1),
     )
     periods = [arrear.period for arrear in per_employee[str(employee.id)]]
-    assert periods == ["2026-03"], "only AskMira's own month is recomputed"
+    assert periods == ["2026-03"], "only AskMiraa's own month is recomputed"
     assert {a.source_run_id for a in per_employee[str(employee.id)]} == {str(computed.id)}
 
     skipped = await arrears_service.imported_periods(
@@ -921,7 +921,7 @@ async def test_form16_for_a_year_paid_on_factohr_says_it_was_issued_there(
     assert factohr["tds_deducted"] == "1500.00"  # 3 x 500 as deducted on factoHR
     assert factohr["taxable_income"] is None
 
-    # AskMira's own year is unchanged: not ready until it ends.
+    # AskMiraa's own year is unchanged: not ready until it ends.
     own = years["2026-27"]
     assert own["status"] == "not_ready" and own["issued_by"] is None
     assert "Issued by your previous payroll" not in own["reason"]
@@ -937,10 +937,10 @@ async def test_a_year_still_running_or_finished_in_askmira_is_not_issued_elsewhe
     legal_entity: LegalEntity,
     employee: Employee,
 ) -> None:
-    """factoHR issued Form 16 only for years that ended before AskMira ran payroll.
+    """factoHR issued Form 16 only for years that ended before AskMiraa ran payroll.
 
-    A year still running, or one the company finished in AskMira after moving
-    mid-year, is AskMira's to issue on the imported months plus its own.
+    A year still running, or one the company finished in AskMiraa after moving
+    mid-year, is AskMiraa's to issue on the imported months plus its own.
     """
     from app.services.attendance.service import local_today
 

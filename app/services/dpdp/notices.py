@@ -137,7 +137,7 @@ _FRAMING: dict[Language, dict[str, str]] = {
     Language.ENGLISH: {
         "title": "How your information is used",
         "intro": (
-            "This tells you what information about you is held in AskMira, what "
+            "This tells you what information about you is held in AskMiraa, what "
             "it is used for, and why. Where you have a choice, it is marked."
         ),
         "consent_heading": "Where you have a choice",
@@ -165,7 +165,7 @@ _FRAMING: dict[Language, dict[str, str]] = {
     Language.HINDI: {
         "title": "आपकी जानकारी का उपयोग कैसे किया जाता है",
         "intro": (
-            "यह बताता है कि AskMira में आपके बारे में कौन सी जानकारी रखी जाती है, "
+            "यह बताता है कि AskMiraa में आपके बारे में कौन सी जानकारी रखी जाती है, "
             "उसका उपयोग किस लिए होता है, और क्यों। जहाँ आपके पास विकल्प है, वह "
             "चिह्नित है।"
         ),

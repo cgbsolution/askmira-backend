@@ -74,7 +74,7 @@ class BenchmarkSource(str, enum.Enum):
     """Where a benchmark came from. Always shown.
 
     A client comparing against our own aggregated base is comparing against
-    other AskMira customers, which is a specific and possibly unrepresentative
+    other AskMiraa customers, which is a specific and possibly unrepresentative
     population. A licensed dataset has its own methodology and its own
     limitations. Presenting them identically hides both.
     """

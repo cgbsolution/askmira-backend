@@ -519,7 +519,7 @@ def test_the_sub_processor_register_names_where_data_really_goes():
 def test_a_push_notification_says_what_kind_of_thing_is_waiting_and_nothing_more():
     title, body = generic_push_text("leave.request_submitted")
     assert title == "A leave update"
-    assert body == "Open AskMira to see it."
+    assert body == "Open AskMiraa to see it."
     assert generic_push_text("unknown.event")[0] == "You have a new update"
 
 

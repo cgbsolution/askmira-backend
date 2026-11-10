@@ -111,13 +111,13 @@ class InputNoticeRead(BaseModel):
     message: str
 
 
-#: `computed`: AskMira worked the run out. `imported`: loaded as paid by the
+#: `computed`: AskMiraa worked the run out. `imported`: loaded as paid by the
 #: previous payroll (factoHR), figures as paid there and never recomputed.
 RunOrigin = Literal["computed", "imported"]
 
 
 class RunImportSummaryRead(BaseModel):
-    """Where an imported run came from. Null on a run AskMira computed."""
+    """Where an imported run came from. Null on a run AskMiraa computed."""
 
     system: str
     files: list[str] = Field(default_factory=list)
@@ -373,7 +373,7 @@ class RegisterRowRead(BaseModel):
     #: On an imported payslip, only the project the register named: never today's.
     project_id: uuid.UUID | None = None
     project_name: str | None = None
-    #: Imported payslips whose register account matched no AskMira project: the
+    #: Imported payslips whose register account matched no AskMiraa project: the
     #: Client/Project text as the register had it. Null otherwise.
     register_client: str | None = None
     working_days: Money

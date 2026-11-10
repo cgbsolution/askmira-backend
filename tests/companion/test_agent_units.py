@@ -1,4 +1,4 @@
-"""Ask Mira's agent parts that need no database: what the model may read, the
+"""Ask Miraa's agent parts that need no database: what the model may read, the
 typed-yes rule, the conversation replay, and the P&L arithmetic."""
 
 from __future__ import annotations

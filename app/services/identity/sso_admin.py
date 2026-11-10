@@ -27,7 +27,7 @@ from app.services.identity import scim as scim_service
 __all__ = ["create_token", "list_tokens", "revoke_token", "update_provider"]
 
 #: Provider fields an admin may change after creation. There is no role or
-#: group attribute here, deliberately: roles are assigned in AskMira.
+#: group attribute here, deliberately: roles are assigned in AskMiraa.
 UPDATABLE = (
     "name",
     "enabled",

@@ -619,7 +619,7 @@ async def generate_arrear_ecr(
                     "ARREAR_WAGES_UNRECORDED",
                     employee.employee_code,
                     "epf_wages",
-                    "These arrears were computed before AskMira recorded the PF wages they "
+                    "These arrears were computed before AskMiraa recorded the PF wages they "
                     f"revise ({', '.join(unrecorded)}), so their arrear wages are not known "
                     "here. Prepare this member's arrear ECR line from the arrear batch.",
                 )

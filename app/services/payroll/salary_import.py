@@ -134,7 +134,7 @@ _FIXED: dict[str, str] = {
     "employee name": NAME, "name": NAME,
 }  # fmt: skip
 
-#: The old system's wage-type names, mapped to AskMira's standard codes.
+#: The old system's wage-type names, mapped to AskMiraa's standard codes.
 _OLD_NAMES: dict[str, str] = {
     "basic salary": "BASIC", "basic": "BASIC",
     "house rent allowance": "HRA", "hra": "HRA",
@@ -158,7 +158,7 @@ _TEMPLATE_ONLY = frozenset(
                 "GRATUITY_PROVISION"}
 )  # fmt: skip
 
-_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMira Red
+_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMiraa Red
 _REQUIRED_FILL = PatternFill("solid", fgColor="F8A01A")  # Marigold
 _INFO_FILL = PatternFill("solid", fgColor="E9E1DC")  # Cream, darker: not read
 _GROUP_ORDER = {group: index for index, group in enumerate(WageGroup)}
@@ -305,7 +305,7 @@ async def template(session: AsyncSession, user: User) -> bytes:
         "One row is one salary revision. Rows without CTC TOTAL or any amount are skipped, so",
         "the listed people can stay: fill only the rows you want to change.",
         "",
-        f"{CODE} (required): as in AskMira.",
+        f"{CODE} (required): as in AskMiraa.",
         f"{WEF} (required): the date the salary applies from, e.g. 01-Apr-2026.",
         f"{BASIS} (required): Yearly, Monthly, Weekly, Daily or Hourly. Every amount on the",
         "    row is read in it (a week is 1/52 of a year; a month has 26 working days of",
@@ -354,7 +354,7 @@ def _header_row(sheet: Any, headers: list[str], required: set[str], not_read: se
             cell.comment = Comment(
                 "Deducted instead of what payroll works out, for this person. "
                 "Leave empty to let payroll work it out.",
-                "AskMira",
+                "AskMiraa",
             )
         else:
             cell.fill, cell.font = _HEADER_FILL, Font(bold=True, color="FFFFFF")
@@ -405,7 +405,7 @@ def _master_header(sheet: Any, headers: list[str]) -> None:
         cell.font = Font(bold=True, size=12)
         cell.alignment = Alignment(horizontal="center")
         if header in _MASTER_NOTES:
-            note = Comment(_MASTER_NOTES[header], "AskMira")
+            note = Comment(_MASTER_NOTES[header], "AskMiraa")
             note.width, note.height = 144, 79
             cell.comment = note
         sheet.column_dimensions[get_column_letter(index)].width = (
@@ -586,7 +586,7 @@ def _rows(data: bytes, filename: str) -> list[tuple[int, list[Any]]]:
     try:
         book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:  # openpyxl raises many kinds for a bad file
-        raise _unprocessable("This is not an Excel (.xlsx) or CSV file AskMira can read.") from exc
+        raise _unprocessable("This is not an Excel (.xlsx) or CSV file AskMiraa can read.") from exc
     for sheet in book.worksheets:
         if _key(sheet.title) in {"sample", "instructions"}:
             continue

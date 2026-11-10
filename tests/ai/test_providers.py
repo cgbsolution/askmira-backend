@@ -2,14 +2,14 @@
 
 What these hold:
 
-- a conversation kept in AskMira's one shape (text, tool_use, tool_result) is
+- a conversation kept in AskMiraa's one shape (text, tool_use, tool_result) is
   sent to a chat API as system, user, assistant-with-tool-calls and tool
   messages, in that order, and a reply's tool calls come back in the same shape;
 - reasoning blocks from another provider are never replayed, and Gemini's
   signature on a tool call goes back as it came;
 - a cut-off answer, a refusal, a rejected key and an unknown model are reported
   in words, never answered with a guess;
-- Ollama is asked for a context window large enough for Ask Mira's tools;
+- Ollama is asked for a context window large enough for Ask Miraa's tools;
 - a workspace may only name a public https address for its Ollama server;
 - a route never prints its key.
 """

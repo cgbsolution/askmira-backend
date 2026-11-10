@@ -1,4 +1,4 @@
-"""Ask Mira's department budget answers: what a headcount budget still allows.
+"""Ask Miraa's department budget answers: what a headcount budget still allows.
 
 "Can Sales afford two more people at 9 lakh?" is the question the positions
 module already answers when someone creates a seat: it refuses a seat past the
@@ -95,7 +95,7 @@ async def department_budget(
             session, user, department, answer["financial_year"], today
         )}], used  # fmt: skip
 
-    # The same year's spend from AskMira and the linked products, beside each budget.
+    # The same year's spend from AskMiraa and the linked products, beside each budget.
     from app.services import budget_year as spend
 
     try:
@@ -103,7 +103,7 @@ async def department_budget(
         spent = {row["department_id"]: row for row in year["departments"]}
         expense_source = year["expenses"]["source"]
     except Exception:  # a product that cannot answer never hides the budget itself
-        spent, expense_source = {}, "AskMira"
+        spent, expense_source = {}, "AskMiraa"
 
     cards: list[dict[str, Any]] = []
     if department and all(b["department_id"] is None for b in budgets):

@@ -235,7 +235,7 @@ _ADVICE: dict[str, tuple[str, ...]] = {
         "If your PAN was involved, check your Form 26AS for entries you do not recognise.",
     ),
     "account_security": (
-        "Change your AskMira password now.",
+        "Change your AskMiraa password now.",
         "If you used the same password anywhere else, change it there too.",
     ),
     "health": (
@@ -316,7 +316,7 @@ def notification_to_principals(
 
     body = (
         f"We are writing to tell you that some information about you held in "
-        f"AskMira was exposed. We found out on "
+        f"AskMiraa was exposed. We found out on "
         f"{became_aware_at.strftime('%d %B %Y at %H:%M')}.\n\n"
         f"What happened\n{what_happened.strip()}\n\n"
         f"What of yours was involved\n{listed}\n\n"

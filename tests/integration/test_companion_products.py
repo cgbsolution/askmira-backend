@@ -1,4 +1,4 @@
-"""Ask Mira reading the linked products: AnytimeHire (hiring) and ExpenseGenie (expenses).
+"""Ask Miraa reading the linked products: AnytimeHire (hiring) and ExpenseGenie (expenses).
 
 What these hold: a product tool is offered only where the workspace has the
 product linked and configured and the person has a role in it; the product is
@@ -136,7 +136,7 @@ async def _say(session: AsyncSession, user: User, text: str) -> dict[str, Any]:
 
 @pytest.fixture
 async def hr(session: AsyncSession, hr_user: User, me: User) -> User:  # noqa: F811
-    """HR, with Ask Mira on (the `me` fixture switches it on) and consent given."""
+    """HR, with Ask Miraa on (the `me` fixture switches it on) and consent given."""
     await _consent(session, hr_user.tenant_id, hr_user.id)
     return await as_caller(session, hr_user)
 

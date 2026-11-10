@@ -5,7 +5,7 @@ An account is a client engagement the company bills. Its P&L for a month is
     billed - (people cost mapped to it + its other direct costs)
 
 - **Billed** is entered by HR or finance (one row per invoice, or one per month),
-  typed or uploaded from Excel. AskMira does not invoice; it records what the
+  typed or uploaded from Excel. AskMiraa does not invoice; it records what the
   invoicing system raised.
 - **People cost** is what payroll actually paid: each payslip's cost to company
   (`payslips.employer_cost`), shared out by the person's mapping. A mapping says
@@ -20,7 +20,7 @@ Money is Numeric throughout.
 
 A **forecast** is the prospective side: what a signed order is expected to bill
 and cost, month by month, before any of it has happened (an order win from Ask
-Mira writes one). It is kept apart from the entries on purpose — an entry is
+Miraa writes one). It is kept apart from the entries on purpose — an entry is
 something that happened, so entries still refuse future months — and the P&L
 shows the two side by side. A forecast is withdrawn, never deleted: the order
 it came from may be undone, and its trail stays.
@@ -189,9 +189,9 @@ class AccountForecast(Base, UUIDMixin, TenantMixin, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     #: The order's reference, such as the customer's PO number.
     reference: Mapped[str] = mapped_column(String(120), nullable=False)
-    #: Where it came from: "order_win" (Ask Mira) or "manual".
+    #: Where it came from: "order_win" (Ask Miraa) or "manual".
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
-    #: The Ask Mira run, or the CRM deal, it came from.
+    #: The Ask Miraa run, or the CRM deal, it came from.
     source_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     #: The first month it covers (always the 1st).
     start_month: Mapped[date] = mapped_column(Date, nullable=False)

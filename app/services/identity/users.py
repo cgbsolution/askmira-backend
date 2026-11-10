@@ -180,7 +180,7 @@ async def create_user(
 
     if await email_in_use(session, email):
         raise _bad_request(
-            "That email already signs in to AskMira. Each person has one login; use "
+            "That email already signs in to AskMiraa. Each person has one login; use "
             "another address."
         )
 
@@ -322,7 +322,7 @@ async def create_logins_for_employees(
         elif email in claimed:
             reason = "Another selected employee has the same work email."
         elif await email_in_use(session, email):
-            reason = "This email already signs in to AskMira, and each person has one login."
+            reason = "This email already signs in to AskMiraa, and each person has one login."
         if reason:
             outcomes.append(outcome.model_copy(update={"reason": reason}))
             continue
@@ -775,7 +775,7 @@ async def follow_work_email(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"{new} already signs in to AskMira as another login, and each person has one "
+                f"{new} already signs in to AskMiraa as another login, and each person has one "
                 "login. Use a different email, or delete that login first."
             ),
         )

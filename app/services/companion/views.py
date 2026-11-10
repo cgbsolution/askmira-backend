@@ -218,7 +218,7 @@ def view_of(cards: list[dict[str, Any]], *, allowed: bool) -> str:
             return " ".join(_offer_state(c) for c in offers) + " " + HIDDEN
         if any(c.get("type") == "notice" and c.get("tone") == "warning" for c in cards):
             return (
-                "Not done, nothing changed: AskMira refused this or needs something more from "
+                "Not done, nothing changed: AskMiraa refused this or needs something more from "
                 "the person, and says what under your reply. Do not say anything was done, "
                 "sent or saved."
             )

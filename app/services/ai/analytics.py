@@ -40,7 +40,7 @@ AGENT_KEY = "analytics_questions"
 
 _OPERATORS = [op.value for op in Operator]
 
-SYSTEM = """You turn an HR reporting question into a report definition for AskMira's report \
+SYSTEM = """You turn an HR reporting question into a report definition for AskMiraa's report \
 compiler. You never see data; you choose what the report should compute.
 
 The catalogue in the message lists each entity and its fields: key, type, whether it can be \

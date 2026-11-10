@@ -211,7 +211,7 @@ async def check_public_url(url: str) -> str:
     if not infos or any(_blocked(info[4][0]) for info in infos):
         raise UnsafeAddressError(
             f"{host} is a private or local address, which this server will not call for a "
-            "workspace. Use your server's public https address, or ask the AskMira operator "
+            "workspace. Use your server's public https address, or ask the AskMiraa operator "
             "to set OLLAMA_BASE_URL on the server."
         )
     return url

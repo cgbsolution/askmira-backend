@@ -641,7 +641,7 @@ class StandardSetupRead(BaseModel):
     """What setting up the standard wage types added."""
 
     components_added: list[str]
-    #: Wage types still under AskMira's earlier default names, now the template's.
+    #: Wage types still under AskMiraa's earlier default names, now the template's.
     components_renamed: list[str] = Field(default_factory=list)
     structure_name: str | None
     #: Why the structure was not created, when the workspace's own wage types

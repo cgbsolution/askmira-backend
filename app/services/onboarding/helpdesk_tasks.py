@@ -75,13 +75,13 @@ def _description(employee: Employee, joining: date, tasks: list[OnboardingTask])
         + (f" as {employee.designation}" if employee.designation else "")
         + ".",
         "",
-        "IT tasks from their onboarding checklist in AskMira:",
+        "IT tasks from their onboarding checklist in AskMiraa:",
     ]
     for task in tasks:
         lines.append(f"- {task.title} (due {task.due_date:%d %b %Y})")
         if task.description:
             lines.append(f"  {task.description.strip()[:300]}")
-    lines += ["", "Raised by AskMira when HR started the onboarding."]
+    lines += ["", "Raised by AskMiraa when HR started the onboarding."]
     return "\n".join(lines)[:5000]
 
 

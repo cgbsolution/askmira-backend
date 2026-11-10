@@ -137,7 +137,7 @@ async def _closed_runs(
 
     A month imported as paid by the previous payroll is never among them: its
     payslips are what factoHR paid, worked out by factoHR's rules, and diffing
-    them against AskMira's recomputation would invent a difference (see
+    them against AskMiraa's recomputation would invent a difference (see
     `imported_periods`, which names those months instead).
     """
     return list(
@@ -212,7 +212,7 @@ async def _months_paid_elsewhere(
     """(year, month) the entity's payroll for which exists only as imported runs.
 
     Nothing in such a month is recomputed, so its attendance need not be locked
-    (history imported from factoHR has no AskMira attendance at all).
+    (history imported from factoHR has no AskMiraa attendance at all).
     """
     if legal_entity_id is None:
         return set()
@@ -245,7 +245,7 @@ async def _guard_revision(
     """The three refusals, checked before anything is computed.
 
     A month the company paid on the previous payroll (imported as paid, with no
-    AskMira run of its own) is not recomputed, so it needs no attendance lock.
+    AskMiraa run of its own) is not recomputed, so it needs no attendance lock.
     """
     if employee.date_of_joining and effective_from < employee.date_of_joining:
         raise HTTPException(

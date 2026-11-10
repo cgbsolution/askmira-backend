@@ -1,4 +1,4 @@
-"""Ask Mira's HR and founder answers, end to end against a real database.
+"""Ask Miraa's HR and founder answers, end to end against a real database.
 
 Asked the way a person types them, with no AI configured (the rule-based
 planner): who joined and left, a month's payroll, the salary bill, birthdays

@@ -1,7 +1,7 @@
-"""OAuth 2.1 for the MCP server, so AskMira can be added as a connector.
+"""OAuth 2.1 for the MCP server, so AskMiraa can be added as a connector.
 
 A connector (claude.ai, ChatGPT) registers itself as a public client, sends the
-person to AskMira to sign in and approve, and gets tokens that act as that
+person to AskMiraa to sign in and approve, and gets tokens that act as that
 person, limited to the read scopes they approved and their role allows.
 
 Only hashes of codes and tokens are stored. A client is not tenant-scoped: it

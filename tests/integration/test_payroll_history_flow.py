@@ -7,11 +7,11 @@ with ROUNDED) for nine people chosen so that every rule runs once:
   CHD23-102 Bala    increment in Feb; live = new rate → old rate inserted, live re-dated
   CHD23-103 Chitra  active, live differs from every register rate → later increment, warned
   CHD23-104 Dev     left in Feb, live differs → register rates inserted, live deleted
-  CHD23-105 Esha    joined Jan-10, no salary in AskMira → inserted from her joining date
+  CHD23-105 Esha    joined Jan-10, no salary in AskMiraa → inserted from her joining date
   CHD23-106 Farah   live starts after her last register while still employed → kept
   CHD23-107 Gopal   mid-month change in Feb, new rate's row listed first → old rate first
   CHD23-108 Hari    Feb: main "Hold" zero-pay row + F&F row → one payslip, adjustment 439
-  CDL24-565 Kushal  not an AskMira code; AB0024 has his name and joining date → mapped
+  CDL24-565 Kushal  not an AskMiraa code; AB0024 has his name and joining date → mapped
 
 Gates: one locked, published, imported run per month whose totals are its
 payslips'; every payslip adds up as the PDF checks it; TDS is never a line;
@@ -517,7 +517,7 @@ async def test_a_month_with_a_computed_run_is_refused(
     plan = await _plan(session, hr_user)
     errors = [i for i in plan.issues if i.level == "error"]
     assert [(i.category, i.month) for i in errors] == [("month_already_run", "2024-02")]
-    assert "computed in AskMira" in errors[0].message
+    assert "computed in AskMiraa" in errors[0].message
     assert not (await history_import.apply(session, hr_user, plan)).applied
     assert await session.scalar(select(func.count(Payslip.id))) == 0
 

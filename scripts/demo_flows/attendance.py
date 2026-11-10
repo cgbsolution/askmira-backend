@@ -19,7 +19,7 @@ from .time_off import HISTORY, current_rows, daterange, ist
 
 FLOW = "attendance"
 IST = ZoneInfo("Asia/Kolkata")
-#: The financial year's first day: the whole year's payroll is in AskMira.
+#: The financial year's first day: the whole year's payroll is in AskMiraa.
 START = date(2026, 4, 1)
 LOCKED_MONTHS = tuple((2026, month) for month in range(4, 10))
 

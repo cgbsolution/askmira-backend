@@ -152,7 +152,7 @@ async def test_the_last_approval_opens_the_job_in_anytimehire(
         "Run demos with the solutions team",
     ]
     assert sent["actor"]["email"] == second.email
-    # No budget figures leave AskMira with the job.
+    # No budget figures leave AskMiraa with the job.
     assert "800000" not in str(params) and "1100000" not in str(params)
 
     await session.refresh(requisition)

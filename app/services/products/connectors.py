@@ -2,13 +2,13 @@
 
 Like "Sign in with…", started here and allowed there:
 
-1. start     The admin presses Connect. AskMira makes a PKCE verifier and a
+1. start     The admin presses Connect. AskMiraa makes a PKCE verifier and a
              state (encrypted: workspace, admin, product, verifier, addresses,
              expiry) and sends the browser to the product's /connect/askmira.
 2.           An admin of the organisation in the product signs in there and
              presses Allow; the product sends the browser back to
              /settings/connectors/callback with a one-time code.
-3. complete  AskMira's server swaps the code and the verifier — which never left
+3. complete  AskMiraa's server swaps the code and the verifier — which never left
              this server — for a secret the product issued for this workspace
              alone, keeps it encrypted on the workspace's product link, and
              sends the workspace's people across.
@@ -70,27 +70,27 @@ STATE_LIFETIME = timedelta(minutes=15)
 DESCRIPTIONS = {
     "interview": (
         "Hiring and interviews. Your HR and hiring managers open it without a second "
-        "login; jobs, candidates and interviews show under Hiring and in Ask Mira."
+        "login; jobs, candidates and interviews show under Hiring and in Ask Miraa."
     ),
     "expense": (
         "Expense claims. Everyone opens it without a second login; their claims, "
-        "approvals and totals show under Expenses and in Ask Mira."
+        "approvals and totals show under Expenses and in Ask Miraa."
     ),
     "helpdesk": (
         "IT tickets and assets. Everyone raises and follows tickets and sees the assets "
         "they hold under Helpdesk and Assets, without a second login; HR sees the "
         "company's tickets and assets, the IT team what the helpdesk shows them, and "
-        "Ask Mira can read them."
+        "Ask Miraa can read them."
     ),
     "saleinx": (
-        "Sales CRM. Members open it without a second login, and Ask Mira reads and "
+        "Sales CRM. Members open it without a second login, and Ask Miraa reads and "
         "updates their leads and deals with their own Saleinx access: a rep's Won still "
         "waits for a manager. Saleinx's admins decide who is a member and their role; "
         "a member who leaves here is switched off there."
     ),
     "procurement": (
         "Procure-to-pay. People with a ProcureFlow account open it without a second "
-        "login, and Ask Mira shows their requisitions, approvals, purchase orders, "
+        "login, and Ask Miraa shows their requisitions, approvals, purchase orders, "
         "invoices and budgets, and decides approvals for them. ProcureFlow's admins "
         "decide who has an account and its role."
     ),
@@ -173,7 +173,7 @@ async def overview(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     return [_read(p, await _link(session, user, p.key)) for p in PRODUCTS.values()]
 
 
-#: Where Connect may bring the admin back to, other than Connectors: the Ask Mira
+#: Where Connect may bring the admin back to, other than Connectors: the Ask Miraa
 #: conversation they pressed Connect in (companion/connect_tools.py).
 _BACK = re.compile(r"/ask-mira(\?c=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?")
 
@@ -184,7 +184,7 @@ def _back(value: str | None) -> str | None:
     if not _BACK.fullmatch(value):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Connect can only bring you back to Ask Mira or to Connectors.",
+            detail="Connect can only bring you back to Ask Miraa or to Connectors.",
         )
     return value
 
@@ -194,7 +194,7 @@ async def start(
 ) -> dict[str, str]:
     """Where to send the admin's browser: the product's Allow page.
 
-    `back` is where to return once it is connected (an Ask Mira conversation);
+    `back` is where to return once it is connected (an Ask Miraa conversation);
     without it, Connectors.
     """
     _require_admin(user)
@@ -204,7 +204,7 @@ async def start(
     if where is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"This AskMira server does not know where {product.brand} is yet.",
+            detail=f"This AskMiraa server does not know where {product.brand} is yet.",
         )
     if not can_encrypt():
         # The key the product issues must be stored encrypted; without a server
@@ -212,8 +212,8 @@ async def start(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "This AskMira server cannot store connection keys safely yet: its "
-                "SECRET_ENCRYPTION_KEY is not set. Ask your AskMira provider to set it."
+                "This AskMiraa server cannot store connection keys safely yet: its "
+                "SECRET_ENCRYPTION_KEY is not set. Ask your AskMiraa provider to set it."
             ),
         )
     tenant = await session.get(Tenant, user.tenant_id)
@@ -277,7 +277,7 @@ def _refused(brand: str, exc: client.ProductError) -> HTTPException:
     elif exc.status == 409 and exc.detail:
         detail = exc.detail
     elif exc.status is None:
-        detail = f"AskMira could not reach {brand}. Try again in a minute."
+        detail = f"AskMiraa could not reach {brand}. Try again in a minute."
     else:
         detail = f"{brand} refused the connection: {exc.detail or exc}"
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail[:300])
@@ -358,7 +358,7 @@ async def complete(
 
     await links.sync(session, user.tenant_id, product.key, actor=user, request=request)
     out = _read(product, await _link(session, user, product.key))
-    # Where the admin pressed Connect, when that was an Ask Mira conversation.
+    # Where the admin pressed Connect, when that was an Ask Miraa conversation.
     back = data.get("b")
     out["back"] = back if isinstance(back, str) and _BACK.fullmatch(back) else None
     return out
@@ -379,7 +379,7 @@ async def sync_now(
 async def disconnect(
     session: AsyncSession, user: User, product_key: str, *, request: Request | None
 ) -> dict[str, Any]:
-    """Disconnect: the product forgets this workspace's secret, and AskMira drops it too."""
+    """Disconnect: the product forgets this workspace's secret, and AskMiraa drops it too."""
     _require_admin(user)
     product = _product(product_key)
     row = await _link(session, user, product.key)
@@ -392,7 +392,7 @@ async def disconnect(
         try:
             await client.revoke(target, product.key, user.tenant_id)
         except client.ProductError:
-            # AskMira drops the secret below, and only AskMira held it: nothing can use it.
+            # AskMiraa drops the secret below, and only AskMiraa held it: nothing can use it.
             told = False
     row.status = links.DISABLED
     row.secret_encrypted = None
@@ -426,10 +426,10 @@ def _resolves_public(hostname: str) -> bool:
 
 
 async def _clean_address(value: str, what: str) -> str:
-    """A web address AskMira's server may call. In production: https, on the public internet.
+    """A web address AskMiraa's server may call. In production: https, on the public internet.
 
-    An admin's address is called from AskMira's own server, so it must not be a
-    way to reach machines inside AskMira's network.
+    An admin's address is called from AskMiraa's own server, so it must not be a
+    way to reach machines inside AskMiraa's network.
     """
     text = (value or "").strip().rstrip("/")
     parsed = urlparse(text)
@@ -458,7 +458,7 @@ async def _clean_address(value: str, what: str) -> str:
         if not public:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"The {what} must be a public address AskMira can find on the internet.",
+                detail=f"The {what} must be a public address AskMiraa can find on the internet.",
             )
     return text
 

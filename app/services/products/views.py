@@ -6,11 +6,11 @@ Hiring, Helpdesk or Assets section shows that product's own records — the
 person's claims, what waits on their approval, jobs, candidates, interviews,
 tickets, the assets they hold — instead of a lone launcher.
 
-Nothing is copied into AskMira. Each page asks the product as the person, with
-the same lookups Ask Mira uses (companion.product_tools): the caller's own
+Nothing is copied into AskMiraa. Each page asks the product as the person, with
+the same lookups Ask Miraa uses (companion.product_tools): the caller's own
 workspace only, only what their role there shows them, the same wording rules
 (no AI scores, proctoring outcomes as observations), money as decimal strings.
-The answer comes back as cards for the screen, as in Ask Mira.
+The answer comes back as cards for the screen, as in Ask Miraa.
 
 A view fixes what the page is (whose claims, which list); the person may only
 narrow it with a status, a search and a date range, and turn its pages.

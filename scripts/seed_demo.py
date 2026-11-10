@@ -54,7 +54,7 @@ from app.schemas.auth import LoginRequest
 from app.services import audit
 
 TENANT_SLUG = "askmira-demo"
-TENANT_NAME = "AskMira Demo"
+TENANT_NAME = "AskMiraa Demo"
 DOMAIN = "askmira-demo.com"
 
 #: Every module switched on, so each role can be checked across the whole
@@ -76,7 +76,7 @@ class Person:
     role: UserRole
     email: str
     full_name: str
-    #: None for super_admin, which is AskMira staff and has no employee record.
+    #: None for super_admin, which is AskMiraa staff and has no employee record.
     employee_code: str | None
     department: str | None
     designation: str | None
@@ -150,7 +150,7 @@ async def get_or_create_org(session, tenant: Tenant):
     )
     if entity is None:
         entity = LegalEntity(
-            tenant_id=tenant.id, name="AskMira Demo Pvt Ltd", code="DEMO"
+            tenant_id=tenant.id, name="AskMiraa Demo Pvt Ltd", code="DEMO"
         )
         session.add(entity)
         await session.flush()

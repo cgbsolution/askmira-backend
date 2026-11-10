@@ -327,7 +327,7 @@ def test_no_identity_model_has_a_role_attribute_mapping() -> None:
     overlap = declared & forbidden
     assert not overlap, (
         f"{', '.join(sorted(overlap))} would create a path from an IdP claim to a "
-        "role. Roles are assigned in AskMira, so the claim must have nowhere to land."
+        "role. Roles are assigned in AskMiraa, so the claim must have nowhere to land."
     )
 
 

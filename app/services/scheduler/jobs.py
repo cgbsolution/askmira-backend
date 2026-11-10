@@ -33,7 +33,7 @@ def system_actor(tenant_id) -> User:
     return User(
         tenant_id=tenant_id,
         email="scheduler@system.askmira.invalid",
-        full_name="AskMira scheduler",
+        full_name="AskMiraa scheduler",
         role=UserRole.ADMIN,
         is_active=True,
         password_hash="!",
@@ -955,7 +955,7 @@ JOBS: tuple[Job, ...] = (
         key="companion.held_orders",
         name="Held orders waiting for approval",
         description=(
-            "Checks each order Ask Mira is holding until its deal's Won is approved in "
+            "Checks each order Ask Miraa is holding until its deal's Won is approved in "
             "Saleinx. Approved: the person is told it is ready to book (or, if the workspace "
             "lets the order agent act, it is booked and they are told). No longer Won: the "
             "order is withdrawn and they are told. Does nothing when no order is held."

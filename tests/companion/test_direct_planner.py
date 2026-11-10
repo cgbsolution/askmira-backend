@@ -1,4 +1,4 @@
-"""Ask Mira's rule-based planner: the words a person types, matched to one tool."""
+"""Ask Miraa's rule-based planner: the words a person types, matched to one tool."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def test_raising_a_ticket_points_to_the_form() -> None:
         plan = _plan(text)
         assert plan.tool is None and "Raise a ticket" in plan.reply
     without_helpdesk = [tool for tool in ALL if tool.group != "helpdesk_data"]
-    # Without the IT helpdesk, a ticket is raised in AskMira's own HR helpdesk.
+    # Without the IT helpdesk, a ticket is raised in AskMiraa's own HR helpdesk.
     assert "HR replies on the ticket" in _plan("raise a ticket", without_helpdesk).reply
     assert _plan("my tickets", without_helpdesk).tool == "hr_tickets"
     neither = [tool for tool in without_helpdesk if tool.group != "hr_helpdesk"]

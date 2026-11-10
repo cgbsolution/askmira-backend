@@ -1,7 +1,7 @@
 """Help writing a shoutout (REC-04).
 
 The sender's notes and, if they chose one, the company value go to the model.
-The colleague's name does not: the model writes `{name}` and AskMira puts the
+The colleague's name does not: the model writes `{name}` and AskMiraa puts the
 name in afterwards, here. Names are identity data, which the model provider is
 not registered to receive.
 

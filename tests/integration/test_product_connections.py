@@ -289,7 +289,7 @@ async def test_the_admin_can_change_where_the_product_is(
     assert back["custom_address"] is False and back["api_url"] == API
     assert (await connections.endpoint(session, "interview", tenant.id)).api_url == API
 
-    # In production: https only, and never an address inside AskMira's own network.
+    # In production: https only, and never an address inside AskMiraa's own network.
     monkeypatch.setattr(connectors.settings, "ENVIRONMENT", "production")
     for bad in ("http://new-api.anytimehire.test", "https://localhost", "https://127.0.0.1:8000"):
         with pytest.raises(HTTPException) as refused:

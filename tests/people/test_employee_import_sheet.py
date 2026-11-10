@@ -158,7 +158,7 @@ def test_the_template_reads_back_as_the_template():
     assert book["Employees"].max_row == 1
 
     table = read_table(content, "template.xlsx")
-    assert table.source == "AskMira template"
+    assert table.source == "AskMiraa template"
     template_fields = {field.key for field in f.FIELDS if field.template}
     assert template_fields <= set(table.mapping)
     assert table.unused == []

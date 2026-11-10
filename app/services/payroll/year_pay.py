@@ -192,7 +192,7 @@ async def year_pay(
             latest_pt = (period, _d(payslip.professional_tax))
 
     # ── Months payroll ran without paying them ──────────────────────────────
-    # From the company's first approved AskMira month to its latest, a month
+    # From the company's first approved AskMiraa month to its latest, a month
     # with no payslip was not paid (no salary then, or not employed): it is
     # not income. Months before that were the previous payroll's.
     first_here, last_here = await _regular_months(session, user, employee, fy_start, fy_end)
@@ -298,8 +298,8 @@ async def months_from_structure(
     little tax, which the employer answers for.
 
     `assume_by` limits that to a later record starting by that day: the end of
-    the company's first AskMira month. A salary loaded when the company moved
-    to AskMira stands in for the months its old payroll paid; one that starts
+    the company's first AskMiraa month. A salary loaded when the company moved
+    to AskMiraa stands in for the months its old payroll paid; one that starts
     after that month is a first salary (a consultant put on payroll, say), and
     the months before it were not salary at all.
 

@@ -17,7 +17,7 @@ What is checked, and why each matters:
 4. **NotBefore / NotOnOrAfter.** An expired assertion is a captured one.
 5. **Replay.** Even inside its window, an assertion id may be consumed once.
    Enforced by the caller against `SamlAssertionSeen`.
-6. **No role claims are read.** Deliberately. Roles are assigned in AskMira; an
+6. **No role claims are read.** Deliberately. Roles are assigned in AskMiraa; an
    IdP asserting `role=admin` must not make anyone an admin. This module does
    not extract group or role attributes at all.
 """

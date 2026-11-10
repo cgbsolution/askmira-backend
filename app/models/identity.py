@@ -8,7 +8,7 @@ Invariants:
 1. Secrets are encrypted at rest. `IdentityProvider.client_secret_encrypted`,
    `ScimToken.token_hash` and `DeviceIntegration.push_token_hash` never hold
    plaintext. The column names say so, and a test greps for violations.
-2. **An IdP role claim never grants a role.** Roles are assigned in AskMira.
+2. **An IdP role claim never grants a role.** Roles are assigned in AskMiraa.
    There is deliberately no `role_attribute` column: an IdP that claims a user
    is an admin must not make them one, and the cleanest way to guarantee that
    is to have nowhere to put the claim.
@@ -74,7 +74,7 @@ class IdentityProvider(Base, UUIDMixin, TenantMixin, TimestampMixin):
     Google Workspace.
 
     Note what is **absent**: there is no attribute mapping for roles or groups.
-    Roles are assigned inside AskMira. An IdP asserting `role=admin` must not
+    Roles are assigned inside AskMiraa. An IdP asserting `role=admin` must not
     escalate anyone, and the surest way to hold that line is to give the claim
     nowhere to land.
     """

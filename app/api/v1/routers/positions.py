@@ -244,7 +244,7 @@ async def occupancy(
 async def budget_year(
     user: CurrentUser, session: DbSession, on: date | None = None
 ) -> dict[str, Any]:
-    """Each department's year against its budget, from AskMira and the linked products."""
+    """Each department's year against its budget, from AskMiraa and the linked products."""
     return await spend.department_year(session, user, on=on)
 
 

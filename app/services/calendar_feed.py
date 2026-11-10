@@ -216,7 +216,7 @@ async def render_feed(session: AsyncSession, token: str) -> str:
         "PRODID:-//AskMira//Holidays and leave//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
-        f"X-WR-CALNAME:{_escape(f'AskMira — {tenant.name}' if tenant else 'AskMira')}",
+        f"X-WR-CALNAME:{_escape(f'AskMiraa — {tenant.name}' if tenant else 'AskMiraa')}",
         "X-WR-TIMEZONE:Asia/Kolkata",
         "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
         "X-PUBLISHED-TTL:PT6H",

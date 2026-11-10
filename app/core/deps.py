@@ -90,7 +90,7 @@ async def get_current_user(
     if not workspace_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This workspace has been suspended. Contact AskMira support.",
+            detail="This workspace has been suspended. Contact AskMiraa support.",
         )
 
     # A token minted before a forced logout or password change is dead.
@@ -194,7 +194,7 @@ def require_module(module: str, *, or_linked: str | None = None):
     tenant on a plan without rewards cannot reach the rewards API by typing a URL.
 
     `or_linked` names a product that stands in for the module: with it linked,
-    what AskMira keeps of the module (hiring's requisitions, with AnytimeHire
+    what AskMiraa keeps of the module (hiring's requisitions, with AnytimeHire
     linked) works even though the module itself is off.
     """
 

@@ -1,4 +1,4 @@
-"""Ask Mira's department budget answers, against a real database.
+"""Ask Miraa's department budget answers, against a real database.
 
 "Can Sales afford two more hires at 9 lakh?" is answered by the same engine that
 refuses a seat past its budget: the figures must match what creating the seat

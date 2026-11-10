@@ -1,4 +1,4 @@
-"""Choosing the AI provider, and asking any figure of AskMira's data, on Postgres.
+"""Choosing the AI provider, and asking any figure of AskMiraa's data, on Postgres.
 
 What these hold:
 

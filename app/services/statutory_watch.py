@@ -1,6 +1,6 @@
 """Statutory change notices: published once by the platform, acted on per workspace.
 
-- Only AskMira's super admin publishes or withdraws a notice.
+- Only AskMiraa's super admin publishes or withdraws a notice.
 - A workspace sees the notices for the national levies and for the states it
   has locations in, each as:
     * `in_place` — an approved rule-set version of that type and jurisdiction

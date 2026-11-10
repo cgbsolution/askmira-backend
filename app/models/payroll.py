@@ -148,7 +148,7 @@ class RoundingMode(str, enum.Enum):
     FLOOR = "floor"
 
 
-#: `PayrollRun.origin`: worked out by AskMira, or loaded as paid elsewhere.
+#: `PayrollRun.origin`: worked out by AskMiraa, or loaded as paid elsewhere.
 RUN_ORIGIN_COMPUTED = "computed"
 RUN_ORIGIN_IMPORTED = "imported"
 RUN_ORIGINS = (RUN_ORIGIN_COMPUTED, RUN_ORIGIN_IMPORTED)
@@ -610,7 +610,7 @@ class PayrollRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
     included_sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     #: Why a supplementary run was opened — shown on the run and in the audit.
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    #: "computed" — AskMira worked it out. "imported" — a month paid on the
+    #: "computed" — AskMiraa worked it out. "imported" — a month paid on the
     #: previous payroll system, loaded as it was paid (figures as typed, never
     #: recomputed): no rule set, attendance or inputs were applied to it.
     origin: Mapped[str] = mapped_column(

@@ -113,7 +113,7 @@ class PriorPay:
     tds_deducted: Decimal = ZERO
     months_on_record: int = 0
     #: Earlier months of the year paid on the previous payroll (before the
-    #: company's first AskMira run), counted at the salary structure. Their tax
+    #: company's first AskMiraa run), counted at the salary structure. Their tax
     #: is taken as deducted at the year's steady monthly rate.
     months_from_structure: int = 0
 
@@ -207,7 +207,7 @@ def compute_monthly_tds(context: TdsContext, figures: MonthFigures) -> TdsResult
     projection = project(without_one_off, context.rules)
 
     rounding = str(context.rules.get("tds_rounding", "nearest_rupee"))
-    # Months paid on the previous payroll had tax deducted there; AskMira has no
+    # Months paid on the previous payroll had tax deducted there; AskMiraa has no
     # record of how much. Taken at the year's steady rate (the liability spread
     # over every month of the year worked), the remaining months deduct that
     # same rate rather than the whole year's tax again.

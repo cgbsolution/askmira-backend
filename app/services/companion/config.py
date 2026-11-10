@@ -1,4 +1,4 @@
-"""Each workspace's own Ask Mira: what its admin decides.
+"""Each workspace's own Ask Miraa: what its admin decides.
 
 Kept in the workspace's settings under "companion". Nothing here can widen what
 the companion may read: tools still run as the person asking, and a tool the
@@ -45,7 +45,7 @@ TOOL_GROUPS: dict[str, str] = {
     "attendance": "Show attendance summaries (HR only).",
     "org": "List departments and office locations (admins and sub-admins).",
     "reports": "Answer counting and reporting questions with the report builder.",
-    "data_questions": "Answer any figure, trend or breakdown over AskMira's data - payroll cost "
+    "data_questions": "Answer any figure, trend or breakdown over AskMiraa's data - payroll cost "
     "by month, leave by type, exits by department, expenses, helpdesk tickets, assets, "
     "timesheets and more - as line, bar, pie or donut charts with the table beside them. Each "
     "person sees only what their role may see; the AI reads figures only for groups of five or "
@@ -60,7 +60,7 @@ TOOL_GROUPS: dict[str, str] = {
     "helpdesk_data": "Read IT tickets and assets from the linked helpdesk: a person's own tickets "
     "and the assets they hold, IT staff's queues, and the company's tickets and asset register "
     "for helpdesk admins.",
-    "actions_leave": "Apply for leave or withdraw it for the person: Mira checks the balance, "
+    "actions_leave": "Apply for leave or withdraw it for the person: Miraa checks the balance, "
     "holidays and overlaps, shows what it will send and to whom, and sends it for the normal "
     "approval only when they confirm. Needs AI.",
     "actions_attendance": "Raise a missed punch, a status correction, on duty or work from home "
@@ -102,7 +102,7 @@ class CompanionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: What people call it: up to three words of letters and digits.
-    name: str = Field(default="Mira", min_length=2, max_length=32)
+    name: str = Field(default="Miraa", min_length=2, max_length=32)
     #: Shown when a conversation starts.
     greeting: str = Field(default="", max_length=300)
     #: What the admin wants it to know about the company: tone, contacts, terms.
@@ -126,7 +126,7 @@ class CompanionConfig(BaseModel):
     def _plain_name(cls, value: str) -> str:
         value = " ".join(value.split())
         if not _NAME.match(value):
-            raise ValueError('Use up to three words of letters and digits, like "Mira".')
+            raise ValueError('Use up to three words of letters and digits, like "Miraa".')
         return value
 
     @field_validator("greeting", "company_notes")
@@ -150,14 +150,19 @@ def group_on(config: CompanionConfig, group: str) -> bool:
 async def get_config(session: AsyncSession, user: User) -> CompanionConfig:
     tenant = await session.get(Tenant, user.tenant_id)
     raw = ((tenant.settings or {}).get("companion") or {}) if tenant else {}
-    return CompanionConfig.model_validate(raw) if raw else CompanionConfig()
+    config = CompanionConfig.model_validate(raw) if raw else CompanionConfig()
+    # "Mira" was the default before the brand became AskMiraa; a workspace that
+    # saved its settings then gets the new name. Any other name it chose stays.
+    if config.name == "Mira":
+        config.name = "Miraa"
+    return config
 
 
 async def set_config(
     session: AsyncSession, user: User, payload: CompanionConfig, *, request: Request | None
 ) -> CompanionConfig:
     if not permissions.is_admin(user):
-        raise permissions.forbidden("Only an admin sets up the workspace's Ask Mira.")
+        raise permissions.forbidden("Only an admin sets up the workspace's Ask Miraa.")
     tenant = await session.get(Tenant, user.tenant_id)
     before = await get_config(session, user)
     settings = dict(tenant.settings or {})
@@ -179,7 +184,7 @@ async def set_config(
             "before": before.model_dump(mode="json"),
             "after": payload.model_dump(mode="json"),
         },
-        summary=f"Ask Mira settings changed: {', '.join(sorted(changed)) or 'nothing'}",
+        summary=f"Ask Miraa settings changed: {', '.join(sorted(changed)) or 'nothing'}",
         request=request,
     )
     await session.commit()

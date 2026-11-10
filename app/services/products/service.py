@@ -393,9 +393,9 @@ async def sync(
 def _keeps_members(product: Product) -> bool:
     """Products whose people sync says who is who there.
 
-    Saleinx and ProcureFlow decide each person's role, so AskMira keeps it. The
+    Saleinx and ProcureFlow decide each person's role, so AskMiraa keeps it. The
     helpdesk names its IT team (engineers and admins) among the people sent, so
-    the portal can show them the ticket queues; AskMira still gives no one a
+    the portal can show them the ticket queues; AskMiraa still gives no one a
     role there.
     """
     return product.roles_from_product or product.key == "helpdesk"

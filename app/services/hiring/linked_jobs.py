@@ -1,6 +1,6 @@
 """An approved requisition opens its job in the linked interview tool (AnytimeHire).
 
-With AnytimeHire linked, recruiting happens there; AskMira keeps what comes
+With AnytimeHire linked, recruiting happens there; AskMiraa keeps what comes
 before it — the requisition, its budget check and its approval chain. When the
 last approver signs, the job is opened in AnytimeHire as that approver
 (products.act, use=act, kind ``job.open``), with the requisition's id as its
@@ -8,7 +8,7 @@ key, so asking twice gives back the job opened the first time and never a
 second one.
 
 The approval itself is committed first and never undone by the tool: a role
-approved in AskMira stays approved whether or not AnytimeHire answered. What
+approved in AskMiraa stays approved whether or not AnytimeHire answered. What
 happened is kept on the requisition — the job's reference there, or the tool's
 own words — and HR or the hiring manager can try again from the requisition.
 """
@@ -71,7 +71,7 @@ def job_params(
     note = " ".join(
         part
         for part in (
-            f"AskMira requisition {requisition.code}.",
+            f"AskMiraa requisition {requisition.code}.",
             (requisition.justification or "").strip()[:1500],
         )
         if part

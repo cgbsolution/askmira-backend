@@ -1,6 +1,6 @@
-"""Reading a linked product's records for one person: what Ask Mira shows.
+"""Reading a linked product's records for one person: what Ask Miraa shows.
 
-AskMira asks the product server to server (client.query), signed with that
+AskMiraa asks the product server to server (client.query), signed with that
 product's own secret, on behalf of the person asking:
 
     POST /integrations/askmira/query
@@ -8,7 +8,7 @@ product's own secret, on behalf of the person asking:
 
 * The tenant is always the caller's own (`user.tenant_id`, from the JWT's `tid`),
   never a value from a request or from a model.
-* The role is the one AskMira gives the person in that product
+* The role is the one AskMiraa gives the person in that product
   (catalogue.role_for). The product checks it against its own record as well,
   and answers only for the organisation linked to this workspace.
 * The workspace's link is read through tenant_scoped(). A product that is not
@@ -18,7 +18,7 @@ What comes back is shown to the person who asked. It is never sent to a model.
 
 `act` is the one way to change something in a product from here — a helpdesk
 ticket raised or answered in the portal — and is signed separately (use=act),
-so nothing read-only can ever write. It is never offered to Ask Mira's model.
+so nothing read-only can ever write. It is never offered to Ask Miraa's model.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ async def role_in(session: AsyncSession, user: User, product_key: str) -> str | 
     None when the product is unknown or not configured on this server, when the
     caller is an outside operator acting in this workspace (they have no account
     in the product), when the workspace has no active link to it, or when the
-    person's AskMira role gives them no role there.
+    person's AskMiraa role gives them no role there.
     """
     product = PRODUCTS.get(product_key)
     if product is None or await endpoint(session, product_key, user.tenant_id) is None:
@@ -138,7 +138,7 @@ def _explain(brand: str, exc: client.ProductError) -> str:
         )
     if exc.status == 401:
         return (
-            f"{brand} did not accept AskMira's request. "
+            f"{brand} did not accept AskMiraa's request. "
             "Your admin can connect it again from Settings → Connectors."
         )
     if exc.status in (409, 422) and exc.detail:
@@ -177,7 +177,7 @@ async def act(
     """Do one thing in the product as `user` (raise a helpdesk ticket); its answer, as it gave it.
 
     Same checks as `ask`: the caller's own workspace, its active link, the role
-    AskMira gives them there. The product checks the person again itself.
+    AskMiraa gives them there. The product checks the person again itself.
     """
     product = PRODUCTS[product_key]
     role = await role_in(session, user, product_key)

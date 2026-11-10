@@ -1,4 +1,4 @@
-"""Settings → Integrations: every outside system AskMira exchanges data with.
+"""Settings → Integrations: every outside system AskMiraa exchanges data with.
 
 One row per integration family — the same list as the sales deck's integration
 catalogue — each stating, plainly:
@@ -85,9 +85,9 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Banks",
             "data": "Payroll salary files in the bank's format",
             "status": "available",
-            "direction": "AskMira → bank (a file HR uploads to the bank's corporate portal)",
+            "direction": "AskMiraa → bank (a file HR uploads to the bank's corporate portal)",
             "frequency": "Each payroll run, on demand",
-            "auth": "None in AskMira — the upload happens in the bank's own portal",
+            "auth": "None in AskMiraa — the upload happens in the bank's own portal",
             "limitations": (
                 "A file, not a direct bank API. Other banks use the generic NEFT format. "
                 "The bank's response file is read back to mark each payment paid or failed."
@@ -113,7 +113,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Accounting",
             "data": "Payroll journals posted to your books",
             "status": "available",
-            "direction": "AskMira → books",
+            "direction": "AskMiraa → books",
             "frequency": "Each approved payroll run",
             "auth": (
                 "Tally: none (XML file imported in Tally). Zoho Books: your Zoho login (OAuth), "
@@ -149,10 +149,10 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Statutory",
             "data": "Statutory files generated from the payroll run",
             "status": "available",
-            "direction": "AskMira → government portals (files HR uploads)",
+            "direction": "AskMiraa → government portals (files HR uploads)",
             "frequency": "Monthly (ECR, ESI, PT), half-yearly or yearly (LWF), quarterly (24Q), "
             "yearly (Form 16)",
-            "auth": "None in AskMira — uploaded on EPFO, ESIC, the state PT site and TRACES",
+            "auth": "None in AskMiraa — uploaded on EPFO, ESIC, the state PT site and TRACES",
             "limitations": (
                 "Files, not a direct filing API: the government portals take uploads only. "
                 "LWF comes as the state register with employee and employer shares. Form 16 "
@@ -177,11 +177,11 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Attendance devices",
             "data": "Biometric and kiosk punches",
             "status": "configurable",
-            "direction": "Device → AskMira",
+            "direction": "Device → AskMiraa",
             "frequency": "Live, as the device pushes (ADMS); kiosk punches at once",
             "auth": "A per-device token, or the device's serial number when switched on for it",
             "limitations": (
-                "The device must reach AskMira over the internet (ADMS push). No commands or "
+                "The device must reach AskMiraa over the internet (ADMS push). No commands or "
                 "user lists are sent to a device. A silent device is flagged."
             ),
             "state": "connected" if devices else "needs_setup",
@@ -203,7 +203,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Identity",
             "data": "Sign-in and user provisioning",
             "status": "configurable",
-            "direction": "Identity provider → AskMira",
+            "direction": "Identity provider → AskMiraa",
             "frequency": "At each sign-in; SCIM as your directory changes",
             "auth": "OIDC or SAML with your identity provider; a SCIM bearer token",
             "limitations": (
@@ -243,7 +243,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Job boards",
             "data": "Job posting from one place",
             "status": "configurable",
-            "direction": "AskMira → board; applicants back through the careers page or webhook",
+            "direction": "AskMiraa → board; applicants back through the careers page or webhook",
             "frequency": "On posting; Naukri refreshed weekly; Indeed reads the feed daily",
             "auth": (
                 "LinkedIn: your partner API token. Naukri: the API key and address from your "
@@ -283,7 +283,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "status": "available",
             "direction": (
                 "Interviews: both ways (free/busy read, invitations written). Holidays and "
-                "leave: AskMira → calendar by subscription"
+                "leave: AskMiraa → calendar by subscription"
             ),
             "frequency": (
                 "Interviews live, as they are planned, moved or cancelled; the holiday and "
@@ -333,7 +333,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "Messaging",
             "data": "Messages and notifications",
             "status": "available",
-            "direction": "AskMira → people",
+            "direction": "AskMiraa → people",
             "frequency": "As events happen; daily digests where people choose them",
             "auth": "Email: built in, or your own SMTP. WhatsApp: your Meta business number "
             "and token",
@@ -397,7 +397,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "eSign",
             "data": "Aadhaar eSign on letters",
             "status": "configurable",
-            "direction": "AskMira → Digio (letter); Digio → AskMira (signed copy)",
+            "direction": "AskMiraa → Digio (letter); Digio → AskMiraa (signed copy)",
             "frequency": "Per letter; status by webhook, or checked hourly",
             "auth": "Your Digio client id and secret (sandbox or production)",
             "limitations": (
@@ -426,9 +426,9 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "key": "mcp",
             "integration": "Claude, ChatGPT (MCP)",
             "category": "External AI",
-            "data": "Ask Mira tools over MCP",
+            "data": "Ask Miraa tools over MCP",
             "status": "available",
-            "direction": "AI assistant → AskMira (read)",
+            "direction": "AI assistant → AskMiraa (read)",
             "frequency": "When the assistant asks",
             "auth": "OAuth sign-in from the assistant, or a read-only API key",
             "limitations": (
@@ -439,7 +439,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "detail": (
                 f"{_plural(grants, 'assistant')} signed in"
                 if grants
-                else "Add AskMira as a connector in Claude or ChatGPT"
+                else "Add AskMiraa as a connector in Claude or ChatGPT"
             ),
             "href": "/settings?tab=integrations",
         }
@@ -454,7 +454,7 @@ async def catalogue(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "category": "BI",
             "data": "Nightly files or a feed",
             "status": "available",
-            "direction": "AskMira → your BI tool or bucket",
+            "direction": "AskMiraa → your BI tool or bucket",
             "frequency": "Nightly at 02:00 India time, or whenever the BI tool refreshes",
             "auth": "A private feed link, or your bucket's access key (S3-compatible)",
             "limitations": (

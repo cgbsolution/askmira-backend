@@ -1002,7 +1002,7 @@ EVENT_UNCLAIMED = "payroll.reimbursement.unclaimed"
 NOTICE_TEMPLATES = {
     EVENT_UNCLAIMED: (
         "{unclaimed} of your {component} entitlement is unclaimed",
-        "{warning} Submit bills in AskMira before {year_end}.",
+        "{warning} Submit bills in AskMiraa before {year_end}.",
     ),
 }
 

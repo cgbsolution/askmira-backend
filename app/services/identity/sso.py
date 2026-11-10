@@ -185,7 +185,7 @@ async def provision_user(
     )
     if elsewhere is not None:
         raise SsoError(
-            "This email already signs in to another AskMira workspace, so an account "
+            "This email already signs in to another AskMiraa workspace, so an account "
             "cannot be created for it here. Contact your admin."
         )
 
@@ -198,7 +198,7 @@ async def provision_user(
         # rejects a malformed hash.
         password_hash="!sso-no-password",
         full_name=full_name,
-        # Least privilege on creation, always. Roles are assigned in AskMira.
+        # Least privilege on creation, always. Roles are assigned in AskMiraa.
         role=UserRole.EMPLOYEE,
         is_active=True,
         is_email_verified=True,
@@ -221,7 +221,7 @@ async def provision_user(
             "email": email,
             "provider": provider.name,
             "role_assigned": UserRole.EMPLOYEE.value,
-            "note": "Role assigned by AskMira, not by the identity provider",
+            "note": "Role assigned by AskMiraa, not by the identity provider",
         },
         summary=f"Provisioned {email} on first sign-in via {provider.name}",
         request=request,

@@ -249,7 +249,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             key="ollama",
             name="Ollama (a model server you run)",
             service=(
-                "An open model running on a server the workspace or the AskMira operator "
+                "An open model running on a server the workspace or the AskMiraa operator "
                 "runs, when a workspace admin chooses Ollama in Settings → AI."
             ),
             location=ProcessingLocation.UNSPECIFIED,
@@ -283,13 +283,13 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             safeguards=(
                 "Google Workspace Data Processing Amendment",
                 "Sent over TLS; payslips and documents are never attached, only linked",
-                "Ask Mira's answers by email leave out lookups of pay, leave, attendance and "
-                "other personal records: those stay in AskMira, behind sign-in",
+                "Ask Miraa's answers by email leave out lookups of pay, leave, attendance and "
+                "other personal records: those stay in AskMiraa, behind sign-in",
             ),
             what_is_sent=(
                 "The recipient's name and email address and the message text, which "
                 "can name a colleague, a leave date or an approval; and, when a workspace "
-                "switches on Ask Mira by email, the person's question and Ask Mira's answer."
+                "switches on Ask Miraa by email, the person's question and Ask Miraa's answer."
             ),
         ),
         _s(
@@ -297,8 +297,8 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             name="Slack and Microsoft Teams",
             service=(
                 "Delivers the notifications a workspace sends to Slack or Teams, and, when "
-                "its admin switches Ask Mira on there, carries people's direct messages to "
-                "Ask Mira and its answers."
+                "its admin switches Ask Miraa on there, carries people's direct messages to "
+                "Ask Miraa and its answers."
             ),
             location=ProcessingLocation.OUTSIDE_INDIA,
             country="United States (Slack and Microsoft do not pin a region by default)",
@@ -306,13 +306,13 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             is_optional=True,
             safeguards=(
                 "Connected per workspace by its admin, with its own app and secrets",
-                "Ask Mira answers only the AskMira login with the same work email, as themselves",
+                "Ask Miraa answers only the AskMiraa login with the same work email, as themselves",
                 "Lookups of pay, leave, attendance and other personal records are not written "
-                "into the chat: the reply links to AskMira",
-                "Each Ask Mira reply is recorded as a transfer",
+                "into the chat: the reply links to AskMiraa",
+                "Each Ask Miraa reply is recorded as a transfer",
             ),
             what_is_sent=(
-                "Notification text; and the person's question, Ask Mira's answer, its offers, "
+                "Notification text; and the person's question, Ask Miraa's answer, its offers, "
                 "and lookups of people and business records."
             ),
         ),
@@ -402,7 +402,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             name="AnytimeHire, ExpenseGenie and CGB Helpdesk",
             service=(
                 "CGB's linked products. When a workspace admin connects one, a "
-                "daily people sync keeps its user list in step with AskMira."
+                "daily people sync keeps its user list in step with AskMiraa."
             ),
             location=ProcessingLocation.UNSPECIFIED,
             country="Hosting region not recorded",
@@ -421,7 +421,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             key="vercel",
             name="Vercel",
             service=(
-                "Serves the web app and passes every request from a browser to the AskMira server."
+                "Serves the web app and passes every request from a browser to the AskMiraa server."
             ),
             location=ProcessingLocation.UNSPECIFIED,
             country="Function region not pinned to India",
@@ -431,8 +431,8 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
         ),
         _s(
             key="app_server",
-            name="AskMira application server host",
-            service="Runs the AskMira server that every request reaches.",
+            name="AskMiraa application server host",
+            service="Runs the AskMiraa server that every request reaches.",
             location=ProcessingLocation.UNSPECIFIED,
             country="Region not recorded",
             categories_permitted=tuple(CATEGORIES),
@@ -443,9 +443,9 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             key="mcp_client",
             name="AI assistants your admin connects (Claude, ChatGPT and others)",
             service=(
-                "When an admin connects an AI assistant to AskMira, it can read the "
+                "When an admin connects an AI assistant to AskMiraa, it can read the "
                 "people directory, approved leave and attendance counts; a person who "
-                "connects it as themselves can also use Ask Mira's lookups of business "
+                "connects it as themselves can also use Ask Miraa's lookups of business "
                 "records (budgets, deals, procurement, expense totals, joiner counts)."
             ),
             location=ProcessingLocation.UNSPECIFIED,
@@ -457,7 +457,7 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "Works only while the workspace has AI switched on",
                 "People who said no to AI on My privacy are left out of every answer",
                 "Read-only; never pay, bank, statutory identifiers, health or leave reasons",
-                "Ask Mira's actions only prepare: the person confirms each in AskMira",
+                "Ask Miraa's actions only prepare: the person confirms each in AskMiraa",
                 "Every call is audited and recorded as a transfer",
             ),
             what_is_sent=(

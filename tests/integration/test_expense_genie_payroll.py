@@ -1,4 +1,4 @@
-"""Expense Genie claims paid with salary in AskMira payroll, against a real database.
+"""Expense Genie claims paid with salary in AskMiraa payroll, against a real database.
 
 Expense Genie is a fake (httpx MockTransport) answering its documented
 ``payable`` query and ``claims.paid`` action; the payroll run is real.

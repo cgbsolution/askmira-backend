@@ -1,6 +1,6 @@
 """Messages to candidates: an outbox, because a candidate has no login.
 
-Every other notification in AskMira goes to a user. A candidate is not one, so
+Every other notification in AskMiraa goes to a user. A candidate is not one, so
 the hiring emails — application received, interview booked, the offer is
 ready, and the decision when it is no — are queued here against the
 candidate and delivered by a job through the tenant's own mail relay.
@@ -76,7 +76,7 @@ class CandidateMessage(Base, UUIDMixin, TenantMixin, TimestampMixin):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    #: Who wrote it; None for one AskMira sent on a hiring event.
+    #: Who wrote it; None for one AskMiraa sent on a hiring event.
     sent_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

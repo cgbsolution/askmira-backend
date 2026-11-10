@@ -1,6 +1,6 @@
 """The home page's quick links: the workspace's own, set by an admin.
 
-A link is a label and either a path inside AskMira ("/time") or an https
+A link is a label and either a path inside AskMiraa ("/time") or an https
 address (the intranet, the travel desk). Anything else — javascript:, data:,
 plain http — is refused, because every employee clicks these.
 """

@@ -352,7 +352,7 @@ async def test_a_deactivated_record_does_not_hold_its_email(client, session, ten
     rows = (await client.post(f"{API}/preview", headers=headers, **_upload(data))).json()["rows"]
     assert rows[0]["outcome"] == "ready", rows[0]
     assert rows[0]["issues"] == [
-        "Email shravani.sangle@example.com is also DEMO029 ([TEST]Shravani)'s in AskMira."
+        "Email shravani.sangle@example.com is also DEMO029 ([TEST]Shravani)'s in AskMiraa."
     ]
 
 

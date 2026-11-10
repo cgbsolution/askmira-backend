@@ -1114,7 +1114,7 @@ async def budget_room(
     place of `hires` at `ctc_per_hire`: an order's roles each at its own cost.
     `requisitions` also counts the requisitions in flight that no position stands
     for (raised, open or on hold) as seats already asked for, at their CTC ceilings
-    — what Ask Mira says before one more is raised. Positions alone otherwise.
+    — what Ask Miraa says before one more is raised. Positions alone otherwise.
 
     Cost here is the budgeted ceiling of each seat, the figure the budget was
     approved against, never anyone's salary.

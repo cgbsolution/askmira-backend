@@ -115,7 +115,7 @@ async def create_user(
     """Provision a user.
 
     Any `roles` attribute in the payload is ignored. A corporate directory
-    does not get to decide who is an administrator in AskMira.
+    does not get to decide who is an administrator in AskMiraa.
     """
     try:
         token = await scim_service.authenticate_token(session, authorization)
@@ -175,7 +175,7 @@ async def list_groups(
     """Groups are advertised but empty, on purpose.
 
     A directory group would be a natural place to map roles from, and roles are
-    assigned in AskMira. Returning an empty list satisfies clients that probe
+    assigned in AskMiraa. Returning an empty list satisfies clients that probe
     for the endpoint without creating a path from directory membership to
     privilege here.
     """

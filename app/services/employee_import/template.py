@@ -22,7 +22,7 @@ from app.services.employee_import.fields import FIELDS
 #: Rows the drop-downs cover.
 _ROWS = 2000
 
-_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMira Red
+_HEADER_FILL = PatternFill("solid", fgColor="EB061D")  # AskMiraa Red
 _REQUIRED_FILL = PatternFill("solid", fgColor="F8A01A")  # Marigold
 _SECTION_FILL = PatternFill("solid", fgColor="F9EFE8")  # Cream
 
@@ -75,7 +75,8 @@ def build_template(custom: list[CustomFieldDefinition]) -> bytes:
         "Dates as DD-MM-YYYY. Reporting Manager is the manager's Emp Code.",
         "Somebody who has left: Status Inactive and their Leaving Date.",
         "An export from factoHR (Employee Detail report) can be uploaded as it is.",
-        "Employee codes already in AskMira are skipped, so a corrected file can be imported again.",
+        "Employee codes already in AskMiraa are skipped, so a corrected file can be"
+        " imported again.",
     ):
         guide.append([line])
     guide.append([])

@@ -266,7 +266,7 @@ class ChatAppSave(BaseModel):
     #: Teams only.
     app_id: str | None = Field(default=None, max_length=64)
     directory_tenant_id: str | None = Field(default=None, max_length=64)
-    #: People may ask Ask Mira by messaging the app.
+    #: People may ask Ask Miraa by messaging the app.
     ask_mira: bool = False
     #: Slack only: the app's signing secret, to check events are Slack's. Null keeps it.
     signing_secret: str | None = Field(default=None, max_length=128)
@@ -315,7 +315,7 @@ async def remove_chat_app(
 
 @router.get("/admin/chat-apps/{provider}/manifest", dependencies=ADMIN_ONLY)
 async def chat_app_manifest(provider: str, user: CurrentUser, session: DbSession) -> Response:
-    """The Slack app manifest, or the Teams app package, to install AskMira's app with."""
+    """The Slack app manifest, or the Teams app package, to install AskMiraa's app with."""
     filename, media_type, body = await chat_admin.manifest(
         session, user, chat_admin.provider_of(provider)
     )

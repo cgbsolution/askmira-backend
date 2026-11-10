@@ -1,9 +1,9 @@
 """What each column of an employee spreadsheet means, and how its values are read.
 
-One catalogue serves three jobs: matching a sheet's headers — the AskMira
+One catalogue serves three jobs: matching a sheet's headers — the AskMiraa
 template's, or another HR system's export as it comes (factoHR's Employee
 Detail report is the one this was built against) — reading each value into
-AskMira's shape, and writing the template. Headers match whatever their case
+AskMiraa's shape, and writing the template. Headers match whatever their case
 and spacing. Where an export repeats a header under different groups
 ("Address" under Local Address and again under Permanent Address), the alias
 names the group too: `"local address > address"`.
@@ -28,7 +28,7 @@ SECTIONS = ("Basic details", "Job details", "Personal", "Address", "Statutory", 
 @dataclass(frozen=True)
 class Field:
     key: str
-    #: The header in AskMira's template. factoHR's own wording wherever there is one.
+    #: The header in AskMiraa's template. factoHR's own wording wherever there is one.
     label: str
     section: str
     #: Normalised headers that mean this field, most specific first.
@@ -641,7 +641,7 @@ def _lookup(raw: Any, table: dict[str, str], what: str, allowed: str) -> str | N
     key = re.sub(r"[\s_\-]+", " ", value.lower()).strip()
     if key in table:
         return table[key]
-    raise ValueError(f"'{value}' is not a {what} AskMira knows ({allowed})")
+    raise ValueError(f"'{value}' is not a {what} AskMiraa knows ({allowed})")
 
 
 _GENDER = {
@@ -708,7 +708,7 @@ def read_employment_type(raw: Any) -> str | None:
 
 
 #: Where a person stands, as an export words it. "left" means they have gone
-#: and need a leaving date; AskMira has no "suspended", so a suspended person
+#: and need a leaving date; AskMiraa has no "suspended", so a suspended person
 #: who has a leaving date is recorded as having left.
 _STATUS = {
     "active": "active",
@@ -841,7 +841,7 @@ def manager_code(raw: Any) -> str | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 #: State and union-territory names, with the misspellings exports carry,
-#: to the codes AskMira stores.
+#: to the codes AskMiraa stores.
 STATE_NAMES: dict[str, str] = {
     "andaman and nicobar islands": "AN",
     "andaman and nicobar": "AN",

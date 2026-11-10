@@ -47,7 +47,7 @@ def _protected_resource(request: Request) -> dict[str, Any]:
         "authorization_servers": [base],
         "scopes_supported": list(oauth.ALL_SCOPES),
         "bearer_methods_supported": ["header"],
-        "resource_name": "AskMira HR",
+        "resource_name": "AskMiraa HR",
     }
 
 

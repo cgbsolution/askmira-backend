@@ -1,6 +1,6 @@
 """The FS-HIR-02 blocking gate: Fit Score parity and proctoring wording.
 
-**Finding.** AskMira does not compute a Fit Score anywhere. `Candidate.fit_score`
+**Finding.** AskMiraa does not compute a Fit Score anywhere. `Candidate.fit_score`
 is a stored column (carried from imported AnytimeHire records) and nothing in
 `app/` assigns it. So the carried-over parity defect — identical Fit Scores
 despite a spread in AI Round Scores — cannot occur in this codebase today; what

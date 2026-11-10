@@ -27,6 +27,7 @@ account (LinkedIn approves these) is needed for a live run.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -62,8 +63,15 @@ EMPLOYMENT_TYPES = {
     "temporary": "TEMPORARY",
 }
 
-#: client id → (access token, monotonic time it stops being reused).
-_TOKENS: dict[str, tuple[str, float]] = {}
+#: (client id, secret digest) → (access token, monotonic time it stops being reused).
+#: Keyed on the secret too: a token is reused only by whoever presents the same
+#: secret. Keyed on the client id alone, a wrong secret, or another workspace
+#: typing the same client id, would post on a token it never earned.
+_TOKENS: dict[tuple[str, str], tuple[str, float]] = {}
+
+
+def _token_key(client_id: str, secret: str) -> tuple[str, str]:
+    return client_id, hashlib.sha256(secret.encode()).hexdigest()
 
 
 class LinkedInAdapter(JobBoardAdapter):
@@ -95,7 +103,8 @@ class LinkedInAdapter(JobBoardAdapter):
                 "LinkedIn needs the partner app's client id (Username) and client secret "
                 "(Secret). Nothing was sent."
             )
-        cached = _TOKENS.get(client_id)
+        key = _token_key(client_id, credentials.secret)
+        cached = _TOKENS.get(key)
         if cached and cached[1] > time.monotonic():
             return cached[0]
         code, body = await self._transport.request(
@@ -118,7 +127,7 @@ class LinkedInAdapter(JobBoardAdapter):
             )
         lifetime = float(body.get("expires_in") or 1800)
         # Reuse it, as LinkedIn asks, until a minute before it lapses.
-        _TOKENS[client_id] = (str(token), time.monotonic() + max(lifetime - 60, 30))
+        _TOKENS[key] = (str(token), time.monotonic() + max(lifetime - 60, 30))
         return str(token)
 
     async def _headers(self, credentials: BoardCredentials) -> dict[str, str]:

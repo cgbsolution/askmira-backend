@@ -1,4 +1,4 @@
-"""Ask Mira's trend questions: payroll cost and headcount month by month, and account P&L.
+"""Ask Miraa's trend questions: payroll cost and headcount month by month, and account P&L.
 
 Each answer is a series a person can read twice — a chart and the table under
 it — and the model reads the same figures to say what changed and why. The

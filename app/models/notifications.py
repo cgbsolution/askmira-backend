@@ -382,7 +382,7 @@ class TenantWhatsAppSettings(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
 
 class PushDevice(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """A phone the AskMira app is signed in on, and the push token it registered.
+    """A phone the AskMiraa app is signed in on, and the push token it registered.
 
     One token belongs to one person at a time: a phone that changes hands
     re-registers, and the token moves to whoever signed in last. A token Expo
@@ -411,7 +411,7 @@ class PushDevice(Base, UUIDMixin, TenantMixin, TimestampMixin):
 class ChatEvents(str, enum.Enum):
     #: Requests waiting on the person, with Approve and Reject buttons.
     APPROVALS = "approvals"
-    #: Everything the person is told in AskMira.
+    #: Everything the person is told in AskMiraa.
     ALL = "all"
 
 
@@ -419,8 +419,8 @@ class TenantChatApp(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """This workspace's own Slack app or Microsoft Teams bot.
 
     The customer creates the app in their own Slack workspace or Microsoft 365
-    tenant (AskMira gives them the manifest) and pastes its credentials here.
-    AskMira then messages each person directly, found by their work email, and
+    tenant (AskMiraa gives them the manifest) and pastes its credentials here.
+    AskMiraa then messages each person directly, found by their work email, and
     approval requests carry the same signed Approve and Reject buttons as the
     approval email. Secrets are encrypted with the tenant key and never returned.
     """
@@ -440,7 +440,7 @@ class TenantChatApp(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Teams only: the bot's Microsoft app (client) id and the Microsoft 365 tenant id.
     app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     directory_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    #: People may ask Ask Mira here by messaging the app (companion/inbound_*.py).
+    #: People may ask Ask Miraa here by messaging the app (companion/inbound_*.py).
     ask_mira: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
