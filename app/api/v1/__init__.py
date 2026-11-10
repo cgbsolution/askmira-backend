@@ -16,9 +16,11 @@ from app.api.v1.routers import (
     autonomy,
     benefits,
     bi,
+    calendar_feed,
     calibration,
     careers,
     companion,
+    companion_inbound,
     company_documents,
     competency,
     connectors,
@@ -47,6 +49,7 @@ from app.api.v1.routers import (
     gst,
     helpdesk,
     hiring,
+    integrations_hub,
     interviews,
     learning,
     leave,
@@ -173,6 +176,8 @@ api_router.include_router(contractors.router, dependencies=_module("payroll"))
 api_router.include_router(benefits.router, dependencies=_module("payroll"))
 api_router.include_router(ai.router)
 api_router.include_router(companion.router)
+# Slack, Teams and email deliver to Ask Mira here, each checked by its own secret.
+api_router.include_router(companion_inbound.router)
 api_router.include_router(mcp.router)
 api_router.include_router(oauth.router)
 api_router.include_router(operators.router)
@@ -182,5 +187,7 @@ api_router.include_router(demo_requests.public_router)
 api_router.include_router(bi.public_router)
 api_router.include_router(products.router)
 api_router.include_router(connectors.router)
+api_router.include_router(integrations_hub.router)
+api_router.include_router(calendar_feed.router)
 api_router.include_router(public_workspaces.router)
 api_router.include_router(email_actions.router)

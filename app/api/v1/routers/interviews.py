@@ -261,6 +261,23 @@ async def calendar_authorize(provider: CalendarProviderKind, user: CurrentUser) 
 
 
 @router.post(
+    "/interviews/calendar/callback",
+    dependencies=[Depends(require_roles(*PANEL_ROLES))],
+)
+async def calendar_callback_any(
+    payload: CalendarCallback, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Finish a calendar sign-in. Google and Microsoft return only `code` and
+    `state`; the provider is in the state AskMira signed."""
+    provider = calendar_oauth.provider_in_state(payload.state)
+    result = await calendar_oauth.complete_connection(
+        session, user, provider, code=payload.code, state=payload.state
+    )
+    await session.commit()
+    return result
+
+
+@router.post(
     "/interviews/calendar/{provider}/callback",
     dependencies=[Depends(require_roles(*PANEL_ROLES))],
 )

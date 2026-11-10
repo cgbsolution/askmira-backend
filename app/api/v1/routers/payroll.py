@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
@@ -34,6 +35,7 @@ from app.schemas.payroll_run import (
     RunOrigin,
     VarianceAcknowledge,
 )
+from app.services.connections import zoho_books
 from app.services.payroll import journal as journal_service
 from app.services.payroll import payslips as payslip_service
 from app.services.payroll import register_xlsx as register_xlsx_service
@@ -178,6 +180,28 @@ async def save_ledger_mappings(
         session, user, [m.model_dump() for m in payload.mappings], request=request
     )
     return [LedgerMappingRead(**row) for row in rows]
+
+
+@router.get("/runs/{run_id}/journal/zoho-books")
+async def zoho_books_posting(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Whether this run is already in Zoho Books, and whether it can be posted there."""
+    return await zoho_books.run_posting_status(session, user, run_id)
+
+
+@router.post("/runs/{run_id}/journal/zoho-books")
+async def post_to_zoho_books(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    by_department: bool = False,
+) -> dict[str, Any]:
+    """Post the approved run's journal straight into the connected Zoho Books, once."""
+    return await zoho_books.post_run(
+        session, user, run_id, by_department=by_department, request=request
+    )
 
 
 @router.get("/runs/{run_id}/journal")

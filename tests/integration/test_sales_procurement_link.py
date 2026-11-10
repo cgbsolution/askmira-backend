@@ -908,3 +908,132 @@ async def test_connectors_find_saleinx_and_procureflow_at_their_own_domains(
             )
     finally:
         product_settings.reset_cache()
+
+
+# ── The order's roles as requisitions (budget confirmed, approval recorded) ──
+
+
+async def _delivery(session: AsyncSession, tenant: Tenant, *, budget: bool = True) -> Any:
+    from datetime import date
+
+    from app.models.offer import ApprovalChainRule, ApprovalScope
+    from app.models.org import Department
+    from app.models.position import HeadcountBudget
+    from app.services.reporting.ranges import financial_year_bounds, financial_year_label
+
+    department = Department(tenant_id=tenant.id, name="Delivery", code="DEL")
+    session.add(department)
+    await session.flush()
+    session.add(
+        ApprovalChainRule(
+            tenant_id=tenant.id, scope=ApprovalScope.REQUISITION, sequence=1,
+            approver_role="hr", label="HR head", ctc_min=0, ctc_max=None, grades=[],
+            only_when_over_band=False, is_active=True,
+        )
+    )  # fmt: skip
+    if budget:
+        session.add(
+            HeadcountBudget(
+                tenant_id=tenant.id,
+                financial_year=financial_year_label(financial_year_bounds(date.today())[0]),
+                department_id=department.id,
+                approved_positions=20,
+                approved_cost=Decimal("30000000"),
+            )
+        )
+    await session.commit()
+    return department
+
+
+async def test_an_order_for_a_department_confirms_its_budget_and_raises_linked_requisitions(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    from app.models.hiring import Requisition, RequisitionStatus
+
+    await _orders(session, tenant, hr, fake, approved=True)
+    department = await _delivery(session, tenant)
+    order = {**_order(), "department": "delivery"}
+    offer = _offer(await _say(session, hr, "Kestrel signed, for Delivery", FakeModel(order)))
+    notes = " ".join(offer["notes"])
+    assert "Inside Delivery's FY" in notes and "these 5 people fit" in notes, notes
+    assert "Only you see this check" in notes
+    assert "raised as a requisition for Delivery" in notes and "HR head." in notes
+    assert "opens in AnytimeHire once it is approved" in notes
+    assert "The approvers will also be told:" in notes
+    assert "positions withdrawn" not in notes, "no position is opened before approval"
+    assert await session.scalar(select(func.count(Requisition.id))) == 0  # nothing before yes
+
+    done = await companion.confirm_offer(session, hr, uuid.UUID(offer["action_id"]), request=None)
+    assert done["action"]["status"] == "done", done["action"]
+    rows = (await session.scalars(select(Requisition).order_by(Requisition.code))).all()
+    assert len(rows) == 4
+    assert all(r.department_id == department.id for r in rows)
+    assert all(r.status is RequisitionStatus.PENDING_APPROVAL for r in rows)
+    # No job is open until its requisition is approved: a refused role is never recruited.
+    assert fake.jobs == {}
+    assert all(r.linked_job_ref is None for r in rows)
+    assert sum(r.openings for r in rows) == 5
+    assert all("KAC-PO-2291" in (r.justification or "") for r in rows)
+    assert all((r.description or "").startswith("Work: Pune, Hybrid.") for r in rows)
+    text = done["action"]["result"]["text"]
+    assert "waiting for approval" in text and "once approved" in text
+
+
+async def test_a_failed_order_cancels_the_requisitions_it_raised(
+    session: AsyncSession,
+    tenant: Tenant,
+    hr: User,
+    fake: FakeProducts,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.models.hiring import Requisition, RequisitionStatus
+    from app.services.finance import provider
+
+    await _orders(session, tenant, hr, fake, approved=True)
+    await _delivery(session, tenant)
+    order = {**_order(), "department": "Delivery"}
+    offer = _offer(await _say(session, hr, "Kestrel signed", FakeModel(order)))
+
+    async def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise HTTPException(status_code=409, detail="the ledger is closed")
+
+    monkeypatch.setattr(provider.AskMiraLedger, "write_forecast", refuse)
+    done = await companion.confirm_offer(session, hr, uuid.UUID(offer["action_id"]), request=None)
+    assert done["action"]["status"] == "failed"
+    rows = (await session.scalars(select(Requisition))).all()
+    assert len(rows) == 4 and all(r.status is RequisitionStatus.CANCELLED for r in rows)
+    assert fake.jobs == {}
+
+
+async def test_an_unknown_delivery_department_is_asked_about(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    await _orders(session, tenant, hr, fake, approved=True)
+    await _delivery(session, tenant, budget=False)
+    order = {**_order(), "department": "Marketing"}
+    [card] = _cards(await _say(session, hr, "Kestrel signed", FakeModel(order)))
+    assert card["type"] == "notice" and "no department “Marketing”" in card["text"]
+    assert "Delivery" in card["text"]
+
+
+async def test_an_order_asked_again_with_a_department_replaces_its_offer(
+    session: AsyncSession, tenant: Tenant, hr: User, fake: FakeProducts
+) -> None:
+    from app.models.companion import CompanionAction, CompanionActionStatus
+
+    await _orders(session, tenant, hr, fake, approved=True)
+    await _delivery(session, tenant)
+    first = await _say(session, hr, "Kestrel signed", FakeModel(_order()))
+    without = _offer(first)
+    assert any("not counted against a headcount budget" in n for n in without["notes"])
+    here = {"conversation_id": uuid.UUID(first["conversation"]["id"])}
+    same = _offer(await _say(session, hr, "book it", FakeModel(_order()), **here))
+    assert same["action_id"] == without["action_id"], "asked again as it was: the same offer"
+    changed = {**_order(), "department": "Delivery"}
+    again = _offer(await _say(session, hr, "raise them for Delivery", FakeModel(changed), **here))
+    assert again["action_id"] != without["action_id"]
+    assert any("requisition for Delivery" in n for n in again["notes"])
+    old = await session.get(CompanionAction, uuid.UUID(without["action_id"]))
+    assert old is not None and old.status is CompanionActionStatus.CANCELLED

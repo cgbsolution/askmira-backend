@@ -33,7 +33,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 __all__ = [
     "DigioProvider",
@@ -145,7 +145,9 @@ class NoopProvider(SignatureProvider):
 
     async def get_status(self, request_id: str) -> SignatureStatus:
         if request_id not in self._documents:
-            raise SignatureError(f"Unknown signature request {request_id}")
+            # Sent by an earlier stand-in, whose memory is gone. It signed
+            # nothing, so the honest answer is "not signed yet".
+            return SignatureStatus(request_id=request_id, state="requested")
         return SignatureStatus(request_id=request_id, state="signed", signed_at=datetime.now(UTC))
 
     async def download_signed(self, request_id: str) -> bytes:
@@ -170,27 +172,92 @@ class NoopProvider(SignatureProvider):
 
 
 class DigioProvider(SignatureProvider):
-    """Digio adapter.
+    """Digio adapter: Aadhaar eSign on the workspace's own Digio account.
 
     Digio is Indian, Aadhaar-eSign capable, and materially cheaper than
-    DocuSign for this market.
+    DocuSign for this market. Each workspace connects its own account (Settings
+    → Integrations), sandbox or production; the deployment-wide account in the
+    environment is the fallback.
 
-    **Unverified against a live account.** The endpoints and payload shapes
-    below follow Digio's published API, but no request in this class has been
-    executed against a real sandbox. Before launch: obtain credentials, run the
-    full send -> sign -> webhook -> download cycle, and correct whatever differs.
-    Treat this as a scaffold with the right shape, not as working integration.
+    The request asks Digio to email the signer the signing link
+    (`notify_signers`, `send_sign_link`): without them the document waits at
+    Digio and the employee is never told it exists.
+
+    **Shapes follow Digio's published v2 API and are exercised against a
+    double.** Run one send → sign → webhook → download cycle on a sandbox
+    account before calling it verified.
     """
 
     name = "digio"
     BASE_URL = "https://api.digio.in"
+    #: Where each Digio environment lives.
+    ENVIRONMENTS: ClassVar[dict[str, str]] = {
+        "production": "https://api.digio.in",
+        "sandbox": "https://ext.digio.in:444",
+    }
 
-    def __init__(self, client_id: str, client_secret: str, webhook_secret: str) -> None:
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        webhook_secret: str,
+        *,
+        base_url: str | None = None,
+        transport: Any = None,
+    ) -> None:
         if not client_id or not client_secret:
             raise SignatureError("Digio requires a client id and secret")
         self._client_id = client_id
         self._client_secret = client_secret
         self._webhook_secret = webhook_secret
+        self._base_url = (base_url or self.BASE_URL).rstrip("/")
+        # An httpx transport, injected only by tests.
+        self._transport = transport
+
+    def _client(self, timeout: float = 30):
+        import httpx
+
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=timeout,
+            auth=(self._client_id, self._client_secret),
+            transport=self._transport,
+        )
+
+    async def check_credentials(self) -> None:
+        """Raise SignatureError unless Digio accepts these credentials.
+
+        Asks for a document that cannot exist, so nothing is created. Digio
+        answers a wrong id or secret with "Invalid API credentials" — as a 403,
+        or (seen on both sandbox and production, 2026-11-09) as a **500** with
+        code SYSTEM_ERROR — so the answer's words decide, not only its status.
+        Any other answer Digio gives in its own JSON means it authenticated the
+        request and merely has no such document.
+        """
+        import httpx
+
+        try:
+            async with self._client(timeout=15) as client:
+                response = await client.get("/v2/client/document/DIDASKMIRACHECK")
+        except httpx.HTTPError as exc:
+            raise SignatureError(f"Could not reach Digio ({type(exc).__name__}).") from exc
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        message = str(body.get("message") or "") if isinstance(body, dict) else ""
+        code = str(body.get("code") or "") if isinstance(body, dict) else ""
+        if (
+            response.status_code in (401, 403)
+            or code == "INVALID_API_CREDENTIALS"
+            or "credential" in message.lower()
+        ):
+            raise SignatureError(
+                "Digio refused these credentials. Check the client id and secret, and that "
+                "they belong to the environment chosen (sandbox or production)."
+            )
+        if response.status_code >= 500 and not code:
+            raise SignatureError(f"Digio returned {response.status_code}; try again shortly.")
 
     async def send_for_signature(
         self,
@@ -219,14 +286,18 @@ class DigioProvider(SignatureProvider):
             ],
             "expire_in_days": 15,
             "display_on_page": "all",
+            # Digio emails the signer the link; without these nobody is told.
+            "notify_signers": True,
+            "send_sign_link": True,
         }
 
-        async with httpx.AsyncClient(base_url=self.BASE_URL, timeout=30) as client:
-            response = await client.post(
-                "/v2/client/document/uploadpdf",
-                json=payload,
-                auth=(self._client_id, self._client_secret),
-            )
+        try:
+            async with self._client() as client:
+                response = await client.post("/v2/client/document/uploadpdf", json=payload)
+        except httpx.HTTPError as exc:
+            raise SignatureError(
+                f"Could not reach Digio ({type(exc).__name__}). Nothing was sent."
+            ) from exc
         if response.status_code >= 400:
             raise SignatureError(
                 f"Digio rejected the signature request ({response.status_code}): "
@@ -234,50 +305,58 @@ class DigioProvider(SignatureProvider):
             )
 
         body = response.json()
+        parties = body.get("signing_parties") or [{}]
         return SignatureRequest(
             provider=self.name,
             request_id=body["id"],
-            signing_url=body.get("signing_parties", [{}])[0].get("signature_url"),
+            signing_url=parties[0].get("signature_url") if parties else None,
         )
 
     async def get_status(self, request_id: str) -> SignatureStatus:
         import httpx
 
-        async with httpx.AsyncClient(base_url=self.BASE_URL, timeout=30) as client:
-            response = await client.get(
-                f"/v2/client/document/{request_id}",
-                auth=(self._client_id, self._client_secret),
-            )
+        try:
+            async with self._client() as client:
+                response = await client.get(f"/v2/client/document/{request_id}")
+        except httpx.HTTPError as exc:
+            raise SignatureError(f"Could not reach Digio ({type(exc).__name__}).") from exc
         if response.status_code >= 400:
             raise SignatureError(f"Digio status check failed ({response.status_code})")
 
         body = response.json()
+        state = str(body.get("agreement_status", "requested")).lower()
+        signed = state in {"completed", "signed"}
         return SignatureStatus(
             request_id=request_id,
-            state=str(body.get("agreement_status", "requested")).lower(),
+            state="signed" if signed else state,
+            signed_at=datetime.now(UTC) if signed else None,
         )
 
     async def download_signed(self, request_id: str) -> bytes:
         import httpx
 
-        async with httpx.AsyncClient(base_url=self.BASE_URL, timeout=60) as client:
-            response = await client.get(
-                f"/v2/client/document/download?document_id={request_id}",
-                auth=(self._client_id, self._client_secret),
-            )
+        try:
+            async with self._client(timeout=60) as client:
+                response = await client.get(
+                    "/v2/client/document/download", params={"document_id": request_id}
+                )
+        except httpx.HTTPError as exc:
+            raise SignatureError(f"Could not reach Digio ({type(exc).__name__}).") from exc
         if response.status_code >= 400:
             raise SignatureError(f"Digio download failed ({response.status_code})")
         return response.content
 
     def verify_webhook(self, *, raw_body: bytes, headers: dict[str, str]) -> bool:
+        supplied = _header(headers, "x-digio-checksum") or _header(headers, "x-digio-signature")
         return _verify_hmac_sha256(
-            raw_body=raw_body,
-            secret=self._webhook_secret,
-            supplied=_header(headers, "x-digio-signature"),
+            raw_body=raw_body, secret=self._webhook_secret, supplied=supplied
         )
 
     def parse_webhook(self, payload: dict[str, Any]) -> SignatureStatus:
         entity = payload.get("entities", {}).get("document", payload)
+        if isinstance(payload.get("payload"), dict):
+            # Digio's event envelope: {"event": ..., "payload": {"document": {...}}}
+            entity = payload["payload"].get("document", entity)
         state = str(entity.get("agreement_status", "")).lower()
         return SignatureStatus(
             request_id=entity.get("id", ""),

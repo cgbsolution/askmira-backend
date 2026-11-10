@@ -247,6 +247,37 @@ async def _seats_in_scope(
     return [_seat(row) for row in rows]
 
 
+#: Requisitions that ask for seats not yet in a position: raised, approved (open) or paused.
+_IN_FLIGHT = ("pending_approval", "open", "on_hold")
+
+
+async def _requisition_seats(
+    session: AsyncSession, user: User, *, department_id: uuid.UUID | None
+) -> list[budget_engine.Seat]:
+    """One seat per opening of each requisition in flight that no position stands for.
+
+    A requisition against a position is that position's seat, counted already.
+    """
+    from app.models.hiring import Requisition, RequisitionStatus
+
+    stmt = select(Requisition.code, Requisition.openings, Requisition.budget_ctc_max).where(
+        Requisition.position_id.is_(None),
+        Requisition.status.in_([RequisitionStatus(s) for s in _IN_FLIGHT]),
+    )
+    if department_id is not None:
+        stmt = stmt.where(Requisition.department_id == department_id)
+    rows = (await session.execute(tenant_scoped(stmt, Requisition, user))).all()
+    return [
+        budget_engine.Seat(
+            code=f"{code} seat {n + 1}",
+            fte=Decimal(1),
+            budgeted_ctc_max=Decimal(str(ceiling)) if ceiling is not None else None,
+        )
+        for code, openings, ceiling in rows
+        for n in range(max(int(openings or 0), 0))
+    ]
+
+
 async def _budget_rows(
     session: AsyncSession, user: User, *, financial_year: str
 ) -> list[HeadcountBudget]:
@@ -1069,6 +1100,8 @@ async def budget_room(
     department: str | None = None,
     hires: int = 0,
     ctc_per_hire: Decimal | None = None,
+    seats: list[tuple[int, Decimal | None]] | None = None,
+    requisitions: bool = False,
 ) -> dict[str, Any]:
     """What each headcount budget still allows this financial year, and whether `hires` fit.
 
@@ -1076,6 +1109,12 @@ async def budget_room(
     answers the question before anyone asks for the seat: every seat that counts
     against the budget, the approved positions and cost, what is left, and — with
     `hires` — whether that many more seats at `ctc_per_hire` would be refused.
+
+    `seats` asks about several roles at once, each (how many, its CTC ceiling), in
+    place of `hires` at `ctc_per_hire`: an order's roles each at its own cost.
+    `requisitions` also counts the requisitions in flight that no position stands
+    for (raised, open or on hold) as seats already asked for, at their CTC ceilings
+    — what Ask Mira says before one more is raised. Positions alone otherwise.
 
     Cost here is the budgeted ceiling of each seat, the figure the budget was
     approved against, never anyone's salary.
@@ -1104,11 +1143,17 @@ async def budget_room(
             row for row in rows if row.department_id is None
         ]
 
-    hires = max(0, min(int(hires or 0), 500))
+    asked = [(max(0, int(count or 0)), ctc) for count, ctc in seats] if seats else []
+    if asked:
+        hires = min(sum(count for count, _ in asked), 500)
+    else:
+        hires = max(0, min(int(hires or 0), 500))
+        asked = [(hires, ctc_per_hire)]
     adding = [
-        budget_engine.Seat(code=f"New hire {n + 1}", fte=Decimal(1), budgeted_ctc_max=ctc_per_hire)
-        for n in range(hires)
-    ]
+        budget_engine.Seat(code=f"New hire {n + 1}", fte=Decimal(1), budgeted_ctc_max=ctc)
+        for count, ctc in asked
+        for n in range(count)
+    ][:500]
     out: list[dict[str, Any]] = []
     for row in sorted(rows, key=lambda r: (r.department_id is None, scope_of(r).lower())):
         counted = await _seats_in_scope(
@@ -1133,6 +1178,14 @@ async def budget_room(
             (seat.budgeted_ctc_max * seat.fte for seat in counted if seat.budgeted_ctc_max),
             Decimal(0),
         )
+        asked_for = (
+            await _requisition_seats(session, user, department_id=row.department_id)
+            if requisitions
+            else []
+        )
+        asked_cost = sum(
+            (seat.budgeted_ctc_max for seat in asked_for if seat.budgeted_ctc_max), Decimal(0)
+        )
         verdict = None
         if adding:
             verdict = budget_engine.check(
@@ -1142,7 +1195,7 @@ async def budget_room(
                     approved_positions=row.approved_positions,
                     approved_cost=approved_cost,
                 ),
-                counted=counted,
+                counted=[*counted, *asked_for],
                 adding=adding,
                 what=f"Adding {hires} {'hire' if hires == 1 else 'hires'}",
             )
@@ -1164,6 +1217,12 @@ async def budget_room(
                 "unpriced_seats": [s.code for s in counted if s.budgeted_ctc_max is None],
                 "fits": None if verdict is None else verdict.within_budget,
                 "problems": [] if verdict is None else list(verdict.problems),
+                # Counted only when asked (`requisitions`): seats requisitions ask for.
+                "requisition_seats": len(asked_for),
+                "requisition_cost": str(_paise(asked_cost)) if asked_for else None,
+                "seats_left": headcount_engine.money(
+                    Decimal(row.approved_positions) - used_fte - len(asked_for)
+                ),
             }
         )
     return {

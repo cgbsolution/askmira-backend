@@ -178,6 +178,17 @@ class NaukriAdapter(JobBoardAdapter):
     #: for. Declared here so nothing outside this file has to know it.
     default_refresh_interval_days = DEFAULT_REFRESH_INTERVAL_DAYS
 
+    #: Naukri issues the recruiter-API address with the API agreement, so there
+    #: is no default: it is the account's `api_base_url` setting, on naukri.com.
+    BASE_URL = None
+    API_HOSTS = ("naukri.com",)
+    LABEL = "Naukri"
+    CONNECTION_NOTE = (
+        "Posts, refreshes and closes through Naukri's recruiter API. Naukri gives the API "
+        "address and key with the API agreement: put the key in Secret and "
+        "api_base_url=https://…naukri.com in Settings."
+    )
+
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
 
@@ -352,7 +363,13 @@ class NaukriAdapter(JobBoardAdapter):
             warnings=tuple(warnings),
         )
 
-    async def close_job(self, external_job_id: str, credentials: BoardCredentials) -> None:
+    async def close_job(
+        self,
+        external_job_id: str,
+        credentials: BoardCredentials,
+        *,
+        spec: JobSpec | None = None,
+    ) -> None:
         code, body = await self._transport.request(
             "POST", f"/v1/jobs/{external_job_id}/close", headers=self._headers(credentials)
         )

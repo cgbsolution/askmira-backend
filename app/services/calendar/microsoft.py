@@ -64,6 +64,11 @@ INTERVAL_MINUTES = 30
 
 class MicrosoftCalendarAdapter(CalendarAdapter):
     provider = CalendarProvider.MICROSOFT
+    #: Where the live transport sends this adapter's relative paths, and the only
+    #: hosts it may call with the interviewer's token.
+    BASE_URL = "https://graph.microsoft.com"
+    API_HOSTS = ("graph.microsoft.com",)
+    LABEL = "Microsoft 365 calendar"
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport

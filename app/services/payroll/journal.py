@@ -60,6 +60,7 @@ __all__ = [
     "build_journal",
     "export_journal",
     "mapping_status",
+    "prepare_journal",
     "save_mappings",
     "serialise",
 ]
@@ -494,22 +495,16 @@ async def save_mappings(
     return await mapping_status(session, user)
 
 
-async def export_journal(
-    session: AsyncSession,
-    user: User,
-    run_id: uuid.UUID,
-    *,
-    fmt: str,
-    by_department: bool = False,
-    request: Request | None = None,
-) -> tuple[str, str, str]:
-    """(content, media type, file name) for an approved run's journal. Audited."""
+async def prepare_journal(
+    session: AsyncSession, user: User, run_id: uuid.UUID, *, by_department: bool = False
+) -> tuple[PayrollRun, list[JournalLine], VoucherMeta]:
+    """An approved run's balanced journal lines and voucher details, or a 409 saying why not.
+
+    Shared by every way out — the file exports and posting straight into the books —
+    so each refuses the same things: an imported month, an empty run, an unmapped
+    line, a journal that does not balance.
+    """
     permissions.require_hr(user, detail="The payroll journal is payroll's.")
-    if fmt not in JournalFormat.ALL:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Unknown format '{fmt}'. Choose csv, tally or zoho.",
-        )
     run = await _approved_run(session, user, run_id)
     if run.origin == RUN_ORIGIN_IMPORTED:
         system = (run.import_details or {}).get("system") or "factoHR"
@@ -551,6 +546,26 @@ async def export_journal(
         ),
         company_name=company,
     )
+    return run, lines, meta
+
+
+async def export_journal(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    fmt: str,
+    by_department: bool = False,
+    request: Request | None = None,
+) -> tuple[str, str, str]:
+    """(content, media type, file name) for an approved run's journal. Audited."""
+    permissions.require_hr(user, detail="The payroll journal is payroll's.")
+    if fmt not in JournalFormat.ALL:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown format '{fmt}'. Choose csv, tally or zoho.",
+        )
+    run, lines, meta = await prepare_journal(session, user, run_id, by_department=by_department)
     content, media_type, extension = serialise(fmt, lines, meta)
     await audit.record(
         session,

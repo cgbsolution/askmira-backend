@@ -66,8 +66,11 @@ MAX_RANGE_DAYS = 93
 
 INSTRUCTIONS = (
     "AskMira is an HR system for a company in India. These tools read its people "
-    "directory, departments, locations, approved leave and attendance. They cannot "
-    "change anything, and they never return pay, bank, tax, health or leave reasons."
+    "directory, departments, locations, approved leave and attendance, and, for a person "
+    "who connected as themselves, Ask Mira's lookups (mira_*: budgets, deals and pipeline, "
+    "procurement, expense totals, joiners, the prospective P&L) as that person's own access "
+    "allows. Ask Mira's actions only prepare: the person confirms each in AskMira, from the "
+    "link returned. Nothing returns pay, bank, tax, health or leave reasons."
 )
 
 
@@ -471,6 +474,8 @@ async def handle(
     if method == "ping":
         return _result(request_id, {})
     if method == "tools/list":
+        from app.services import mcp_mira
+
         return _result(
             request_id,
             {
@@ -485,11 +490,18 @@ async def handle(
                     for name, spec in TOOLS.items()
                     if spec["scope"] in scopes
                 ]
+                + await mcp_mira.list_tools(session, actor, scopes)
             },
         )
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        if isinstance(name, str) and isinstance(arguments, dict):
+            from app.services import mcp_mira
+
+            answered = await mcp_mira.call(session, actor, scopes, name, arguments)
+            if answered is not None:
+                return _result(request_id, answered)
         spec = TOOLS.get(name) if isinstance(name, str) else None
         if spec is None:
             return _error(request_id, -32602, f"No tool named {name!r}.")

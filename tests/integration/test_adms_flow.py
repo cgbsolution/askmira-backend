@@ -108,6 +108,13 @@ async def test_a_device_pushes_through_its_token_address(
         ).all()
     )
     assert count == 2
+    # ...and the unknown code is parked once, not once per re-send.
+    parked_rows = (
+        await session.scalars(
+            select(DevicePunchException).where(DevicePunchException.employee_code == "UNKNOWN")
+        )
+    ).all()
+    assert len(parked_rows) == 1
 
     other = await client.post(
         f"{base}/cdata", params={"SN": SERIAL, "table": "OPERLOG"}, content="OPLOG 4\t0\n"

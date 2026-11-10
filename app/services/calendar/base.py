@@ -63,6 +63,7 @@ class Transport(Protocol):
         *,
         json: dict | None = None,
         headers: dict | None = None,
+        form: dict | None = None,
     ) -> tuple[int, dict[str, Any]]: ...
 
 

@@ -84,6 +84,7 @@ class Transport(Protocol):
         *,
         json: dict | None = None,
         headers: dict | None = None,
+        form: dict | None = None,
     ) -> tuple[int, dict[str, Any]]: ...
 
 
@@ -115,6 +116,8 @@ class JobSpec:
     skills: tuple[str, ...] = ()
     location: str = ""
     state_code: str | None = None
+    #: The location's city, when it is recorded; `location` is the office's name.
+    city: str = ""
     experience_min_years: int | None = None
     experience_max_years: int | None = None
     ctc_min: Decimal | None = None
@@ -189,6 +192,23 @@ class JobBoardAdapter(ABC):
     #: than none.
     rate_limit_per_minute: int = 30
 
+    #: The board's API address, and the only hosts a login may be sent to. None
+    #: when the board issues the address with its API agreement: then it comes
+    #: from the account's `api_base_url` setting, and must be on one of
+    #: `API_HOSTS`.
+    BASE_URL: str | None = None
+    API_HOSTS: tuple[str, ...] = ()
+    #: The board's name in messages.
+    LABEL: str = "the job board"
+    #: False for a board that reads a feed from us: nothing is sent to it, so no
+    #: login is needed to list jobs there.
+    NEEDS_SECRET: bool = True
+    #: True for a board that reads a feed from us; such a board's class has a
+    #: `render_feed(jobs, publisher=, publisher_url=)` that builds it.
+    FEED: bool = False
+    #: What HR is told about connecting this board, plainly.
+    CONNECTION_NOTE: str = ""
+
     @abstractmethod
     async def publish_job(self, spec: JobSpec, credentials: BoardCredentials) -> PublishResult: ...
 
@@ -198,7 +218,14 @@ class JobBoardAdapter(ABC):
     ) -> PublishResult: ...
 
     @abstractmethod
-    async def close_job(self, external_job_id: str, credentials: BoardCredentials) -> None: ...
+    async def close_job(
+        self,
+        external_job_id: str,
+        credentials: BoardCredentials,
+        *,
+        spec: JobSpec | None = None,
+    ) -> None:
+        """Take the job down. `spec` is the job itself, for a board that closes by re-posting."""
 
     @abstractmethod
     async def fetch_applications(

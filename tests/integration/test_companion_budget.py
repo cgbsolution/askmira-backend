@@ -184,4 +184,6 @@ async def test_another_workspace_budget_is_never_read(session, tenant) -> None:
     )
     reply = await _ask(session, stranger, "headcount budget for sales west")
     assert not [c for c in reply["cards"] if c.get("type") == "record"]
-    assert "No headcount budget is set" in " ".join(c.get("text", "") for c in reply["cards"])
+    said = " ".join(c.get("text", "") for c in reply["cards"])
+    # Another workspace's department is not one here at all.
+    assert "There is no department called" in said or "No headcount budget is set" in said

@@ -120,3 +120,51 @@ class WebhookDelivery(Base, UUIDMixin, TenantMixin, TimestampMixin):
     last_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TenantConnection(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """One workspace's own account at an outside service: e-sign, accounting.
+
+    One row per (workspace, kind). `settings` holds what is not secret (the
+    environment, an organisation id, the data centre); `secret_encrypted` holds
+    the credentials as JSON, encrypted with the tenant key and never returned —
+    the admin screen is told only that they are stored. A connection is checked
+    against the service before it is saved; `last_error` keeps the service's own
+    words when a later call fails, so a lapsed account is visible on the page.
+    """
+
+    __tablename__ = "tenant_connections"
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tenant_connection_kind"),)
+
+    #: Which service: "esign_digio", "books_zoho".
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Who the service says this account is (an organisation name), for the page.
+    account_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    configured_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class CalendarFeedToken(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """One person's private calendar-subscription link (an .ics address).
+
+    The link is the credential — calendar apps cannot sign in — so only its
+    SHA-256 is kept, it is shown once, and making a new one revokes the old.
+    """
+
+    __tablename__ = "calendar_feed_tokens"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_calendar_feed_token_hash"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Also the approved leave of the person's direct reports, as "On leave".
+    include_team: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

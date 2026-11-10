@@ -26,6 +26,7 @@ from app.services.jobboards.base import (
 from app.services.jobboards.indeed import IndeedAdapter
 from app.services.jobboards.linkedin import LinkedInAdapter
 from app.services.jobboards.naukri import NaukriAdapter
+from app.services.outbound_http import HttpsTransport, TransportConfigError, resolve_base_url
 
 __all__ = [
     "AdapterUnavailable",
@@ -73,7 +74,12 @@ def adapter_class(board: JobBoard) -> type | None:
     return _BUILDERS.get(board)
 
 
-def get_adapter(board: JobBoard, transport: Transport | None = None) -> JobBoardAdapter:
+def get_adapter(
+    board: JobBoard,
+    transport: Transport | None = None,
+    *,
+    credentials: BoardCredentials | None = None,
+) -> JobBoardAdapter:
     """The adapter for one board.
 
     Raises rather than returning `None`, because every caller of this would have
@@ -89,11 +95,23 @@ def get_adapter(board: JobBoard, transport: Transport | None = None) -> JobBoard
             f"'{board.value}' is not an external job board. Applications arrive from it "
             "rather than being published to it, so there is nothing to post."
         )
+    if transport is None and builder.FEED:
+        # A feed board is read by the board; nothing is sent to it.
+        return builder(None)
     if transport is None:
-        raise AdapterUnavailable(
-            f"No HTTP transport is configured for {board.value}. This deployment cannot "
-            "reach the board — nothing was posted, and nothing is queued."
-        )
+        # Production: the live HTTPS transport, bound to the board's own address
+        # (or the one the board issued with the API agreement, on its own hosts).
+        override = (credentials.extras.get("api_base_url") if credentials else None) or None
+        try:
+            base = resolve_base_url(
+                builder.BASE_URL,
+                str(override) if override else None,
+                builder.API_HOSTS,
+                label=builder.LABEL,
+            )
+            transport = HttpsTransport(base, allowed_hosts=builder.API_HOSTS, label=builder.LABEL)
+        except TransportConfigError as exc:
+            raise AdapterUnavailable(str(exc)) from exc
     return builder(transport)
 
 
@@ -105,6 +123,12 @@ def credentials_for(account: JobBoardAccount, tenant_id: uuid.UUID) -> BoardCred
     response, or an error report, and this one can post jobs in the client's
     name and read their entire resume database.
     """
+    builder = _BUILDERS.get(account.board)
+    if not account.credentials_encrypted and builder is not None and not builder.NEEDS_SECRET:
+        # A feed board: nothing is sent to it, so there is no login to decrypt.
+        return BoardCredentials(
+            username=account.username or "", secret="", extras=dict(account.settings or {})
+        )
     if not account.credentials_encrypted:
         raise AdapterUnavailable(
             f"The {account.board.value} account has no credentials stored. Nothing was "

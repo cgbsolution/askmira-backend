@@ -219,8 +219,10 @@ TOOLS: dict[str, Tool] = {
             description=(
                 "For admins and sub-admins: the people joining in the next 30 days or who joined "
                 "in the last 30 (or `from`/`to`), and whether each already holds equipment in "
-                "the asset register (the linked helpdesk's, else AskMira's). Use it for 'which "
-                "employees still need equipment assigned?'."
+                "the asset register (the linked helpdesk's, else AskMira's), and with "
+                "ProcureFlow linked, each joiner's purchase requisition and whether it is "
+                "approved. Use it for 'which employees still need equipment assigned?' and "
+                "'which joiners still need a laptop, and is the purchase approved?'."
             ),
             inputs=("from", "to"),
             hr_only=True,
@@ -578,8 +580,9 @@ TOOLS: dict[str, Tool] = {
                 "attendance corrections, timesheets, shift swaps, overtime, expense and travel "
                 "claims, asset requests. Look them up with my_approvals first and put their "
                 "refs in `refs` (comma separated), `decision` approve or reject, and `note` if "
-                "the person gave one. Payroll, loans, settlements and hiring are decided in "
-                "the portal. The person confirms."
+                "the person gave one. Payroll, loans, settlements and hiring requisitions are "
+                "decided in the portal (a requisition in Hiring): say so, and never say you "
+                "approved or sent one. The person confirms."
             ),
             inputs=("refs", "decision", "note"),
             reads=("identity", "leave", "attendance"),
@@ -597,6 +600,80 @@ TOOLS: dict[str, Tool] = {
             ),
             inputs=("category", "subject", "description"),
             reads=("ai_interaction",),
+        ),
+        Tool(
+            key="file_expense_claim",
+            group="actions_expense",
+            product="expense",
+            title="Expense claim",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Files the asker's own expense claim in {_EXPENSE}, from a receipt or bill they "
+                "attached or what they typed, and offers it; the person confirms. "
+                "`claim_title` (what it was for, short) and `claim_lines`: one entry per bill "
+                "with `category` (the workspace's category that fits; the tool lists them if it "
+                "is not one), `amount` (rupees exactly as the bill or the person writes it: "
+                "never move, drop or add a decimal point or a digit), `date` (the bill's, "
+                "YYYY-MM-DD), `vendor`, `invoice_number` and `description`. Use only what the "
+                "bill shows and the person says. One bill is one line: never split a bill to "
+                "get under a cap. It checks the category, the person's grade cap and bills "
+                "claimed before; it goes to their manager."
+            ),
+            inputs=("claim_title", "claim_lines"),
+            # The offer only repeats what the person gave; their own claim.
+            reads=("ai_interaction",),
+        ),
+        Tool(
+            key="decide_expense_claims",
+            group="actions_expense",
+            product="expense",
+            title="Decide expense claims",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Offers to approve or reject the expense claims waiting on the asker in "
+                f"{_EXPENSE}: all of them, or those whose title, category or submitter matches "
+                "`query` (words, like a name and what it was for). `decision` approve or "
+                "reject, and `note` (required to reject: the reason the submitter reads). When "
+                "the person asks to approve or reject claims, call this at once: it finds and "
+                "lists them in the offer itself, so don't look them up with expense_claims "
+                "first or ask which. They confirm."
+            ),
+            inputs=("query", "decision", "note"),
+            # The offer lists other people's claims and amounts: on screen only.
+            reads=("compensation", "identity"),
+        ),
+        Tool(
+            key="raise_requisition",
+            group="actions_hiring",
+            title="Requisition",
+            kind="action",
+            needs_ai=True,
+            description=(
+                "For HR and managers: prepares a hiring requisition in AskMira (a role to hire "
+                "for, also called a position or a seat) and offers it; the person confirms, and "
+                "it is raised and sent along its approval path. `role_title`, `department` (a "
+                "manager's own if empty), `openings` (seats, default 1), `ctc_max` (the yearly "
+                "CTC ceiling per hire in rupees, as said: '10 lakh'), `justification` (why the "
+                "role is needed, in their words), optional `employment_type`, `grade` and "
+                "`joining_by`. Call it only when the person asks to raise or open one, never to "
+                "answer a question (about budgets, headcount or what a role would cost): the "
+                "offer is a real request they can send. HR sees the department's headcount "
+                "budget in the offer; a manager does not, and the approvers judge it. A purchase "
+                "requisition (goods, a laptop, a vendor) is ProcureFlow's, not this."
+            ),
+            inputs=(
+                "role_title",
+                "department",
+                "openings",
+                "ctc_max",
+                "justification",
+                "employment_type",
+                "grade",
+                "joining_by",
+            ),
+            reads=("ai_interaction", "organisational"),
         ),
         Tool(
             key="raise_it_ticket",
@@ -791,7 +868,10 @@ TOOLS: dict[str, Tool] = {
                 "`recruitment_cost_per_hire`, and `roles`: one entry per role with `title`, "
                 "`count`, `experience` ('4 to 6', '8+'), `allocation` (per cent of full time, "
                 "100 unless said), `bill_rate` and `cost_rate` (rupees a month at full time) "
-                "and `skills`. Never work out the totals yourself: repeat the tool's figures."
+                "and `skills`. Set `department` to the delivery team the people will sit in "
+                "when the person names it: the people are then checked against its headcount "
+                "budget and each role is raised as a requisition there, linked to its position. "
+                "Never work out the totals yourself: repeat the tool's figures."
             ),
             inputs=(
                 "deal",
@@ -804,6 +884,7 @@ TOOLS: dict[str, Tool] = {
                 "work_mode",
                 "recruitment_cost_per_hire",
                 "roles",
+                "department",
             ),
         ),
         Tool(
@@ -1050,6 +1131,33 @@ INPUTS: dict[str, dict[str, Any]] = {
         },
         "description": "One entry per role the order needs.",
     },
+    # Expense claims (ExpenseGenie)
+    "claim_title": {"type": "string", "description": "What the claim is for, short."},
+    "claim_lines": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "amount": {"type": "string"},
+                "date": {"type": "string"},
+                "vendor": {"type": "string"},
+                "invoice_number": {"type": "string"},
+                "description": {"type": "string"},
+            },
+        },
+        "maxItems": 20,
+        "description": "One entry per bill on the claim.",
+    },
+    # Requisitions
+    "role_title": {"type": "string", "description": "The role to hire for, like Sales Executive."},
+    "department": {"type": "string", "description": "The department's name, or empty."},
+    "openings": {"type": "string", "description": "How many seats, like 1 or 2."},
+    "ctc_max": {"type": "string", "description": "Yearly CTC ceiling per hire, like 10 lakh."},
+    "justification": {"type": "string", "description": "Why the role is needed, or empty."},
+    "employment_type": {"type": "string", "enum": ["full_time", "part_time", "contract", "intern"]},
+    "grade": {"type": "string", "description": "The grade, or empty."},
+    "joining_by": {"type": "string", "description": "When they should join, YYYY-MM-DD, or empty."},
     # ProcureFlow
     "document": {"type": "string", "enum": list(sales_tools.PROCUREMENT_DOCUMENTS)},
     "doc_status": {
@@ -1146,20 +1254,29 @@ def coerce(tool: Tool, raw: dict[str, Any]) -> dict[str, Any]:
             continue
         if spec.get("type") == "array":
             items = value if isinstance(value, list) else ([] if value in (None, "") else [value])
+            # One more than the input allows is kept, so the tool can say "at most 20"
+            # rather than quietly dropping what was asked for.
+            keep = int(spec.get("maxItems") or 9) + 1
             if spec["items"].get("type") == "object":
                 out[name] = [
-                    {str(k)[:40]: str(v)[:200] for k, v in item.items()}
-                    for item in items[:10]
+                    {str(k)[:40]: str(v)[:500] for k, v in item.items()}
+                    for item in items[:keep]
                     if isinstance(item, dict)
-                ] + [str(item)[:200] for item in items[:10] if isinstance(item, str)]
+                ] + [str(item)[:200] for item in items[:keep] if isinstance(item, str)]
             else:
-                out[name] = [str(item).strip()[:100] for item in items[:10] if str(item).strip()]
+                out[name] = [str(item).strip()[:100] for item in items[:keep] if str(item).strip()]
             continue
         text = "" if value is None else str(value).strip()[:2000]
         if "enum" in spec and text not in spec["enum"]:
             text = "none" if "none" in spec["enum"] else spec["enum"][0]
         out[name] = text
     return out
+
+
+async def _raises_requisitions(session: AsyncSession, user: User) -> bool:
+    from app.services.companion import requisition_tools
+
+    return await requisition_tools.available_to(session, user)
 
 
 def _launchable(user: User, linked: dict[str, bool]) -> list[str]:
@@ -1194,6 +1311,8 @@ async def offered(
         if tool.product and not product_roles.get(tool.product):
             continue
         if tool.key == "open_product" and not launchable:
+            continue
+        if tool.key == "raise_requisition" and not await _raises_requisitions(session, user):
             continue
         if tool.needs_ai and not ai:
             continue
@@ -1240,18 +1359,29 @@ async def run(
     today: date,
     ctx: actions.ToolContext | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Run one tool as `user`. Returns the cards and the inputs it actually used."""
+    """Run one tool as `user`. Returns the cards and the inputs it actually used.
+
+    Each card is stamped with the tool it came from (`from_tool`), so a place that
+    may carry only some kinds of record (a Slack reply) can tell them apart.
+    """
     try:
         if tool.kind == "action":
             if ctx is None:
                 return [_notice("That can only be done in a conversation.")], {}
-            return await _act(session, user, tool, inputs, ctx)
-        return await _run(session, user, tool, inputs, today=today)
+            cards, used = await _act(session, user, tool, inputs, ctx)
+        else:
+            cards, used = await _run(session, user, tool, inputs, today=today)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "That could not be done."
-        return [_notice(detail, "warning")], {}
+        cards, used = [_notice(detail, "warning")], {}
     except (mcp.ToolError, ValueError) as exc:
-        return [_notice(str(exc), "warning")], {}
+        cards, used = [_notice(str(exc), "warning")], {}
+    except ArithmeticError:  # a number no check expected (decimal NaN): asked again, not a 500
+        text = "One of the amounts or numbers isn't valid. Say it again."
+        cards, used = [_notice(text, "warning")], {}
+    for card in cards:
+        card.setdefault("from_tool", tool.key)
+    return cards, used
 
 
 async def _run(
@@ -1458,6 +1588,18 @@ async def _act(
         return await actions.propose_decision(session, user, inputs, ctx)
     if tool.key == "raise_hr_ticket":
         return await actions.propose_hr_ticket(session, user, inputs, ctx)
+    if tool.key == "file_expense_claim":
+        from app.services.companion import expense_actions
+
+        return await expense_actions.propose_claim(session, user, inputs, ctx)
+    if tool.key == "decide_expense_claims":
+        from app.services.companion import expense_actions
+
+        return await expense_actions.propose_decision(session, user, inputs, ctx)
+    if tool.key == "raise_requisition":
+        from app.services.companion import requisition_tools
+
+        return await requisition_tools.propose(session, user, inputs, ctx)
     if tool.key == "raise_it_ticket":
         return await helpdesk_actions.propose_raise(session, user, inputs, ctx)
     if tool.key == "work_it_ticket":

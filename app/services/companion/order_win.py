@@ -26,6 +26,9 @@ Money is Decimal throughout; nothing here is a float.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -35,7 +38,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -53,6 +56,8 @@ from app.services.documents.indian_numbers import group_indian
 from app.services.finance import ForecastLineIn, ForecastPlan, ForecastWritten, provider_for
 from app.services.notifications.dispatch import register_event
 from app.services.products import data as products
+
+logger = logging.getLogger("askmira.companion.order_win")
 
 __all__ = [
     "OrderFigures",
@@ -332,6 +337,9 @@ def _run_summary(run: CompanionRun) -> str:
         (s for s in run.steps if s.get("step") == "forecast" and s.get("status") == "done"), None
     )
     parts = [f"{len(jobs)} position(s) opened in AnytimeHire"]
+    raised = [s for s in run.steps if s.get("step") == "requisition" and s.get("status") == "done"]
+    if raised:
+        parts.append(f"{len(raised)} requisition(s) raised in AskMira")
     if forecast:
         parts.append(f"the prospective P&L written on {forecast.get('account', 'the account')}")
     return ", ".join(parts)
@@ -612,12 +620,16 @@ async def propose(
         card = _notice(text, "warning" if earlier.status is not CompanionRunStatus.DONE else "info")
         card["model_note"] = text
         return [card], used
-    # The same order already waiting on the person's say in this conversation.
+    # The same order already waiting on the person's say in this conversation: asked
+    # again as it was, that offer; asked with a change ("raise them for Delivery"), a
+    # new offer that replaces it (actions._offer `replaces`).
+    asked = _fingerprint(inputs)
     waiting = await session.scalar(
         tenant_scoped(
             select(CompanionAction).where(
                 CompanionAction.kind == "order_win",
                 CompanionAction.user_id == user.id,
+                CompanionAction.conversation_id == ctx.conversation_id,
                 CompanionAction.status == CompanionActionStatus.PROPOSED,
                 CompanionAction.expires_at > datetime.now(UTC),
             ),
@@ -625,7 +637,11 @@ async def propose(
             user,
         )
     )
-    if waiting is not None and (waiting.payload or {}).get("po_number") == po:
+    if (
+        waiting is not None
+        and (waiting.payload or {}).get("po_number") == po
+        and (waiting.payload or {}).get("_asked") == asked
+    ):
         return [actions.card_for(waiting)], used
 
     # The deal: Won and approved in Saleinx.
@@ -691,10 +707,19 @@ async def propose(
         card["model_note"] = mismatch
         return [card], used
 
+    from app.services.companion import order_requisitions
+
+    department, department_notes, question = await order_requisitions.plan_for(
+        session, user, str(inputs.get("department") or ""), roles
+    )
+    if question is not None:
+        return [question], used
+
     account = " ".join(str(inputs.get("client") or deal.get("company") or deal.get("name")).split())
     location = " ".join(str(inputs.get("location") or "").split())[:120] or "Not stated"
     mode = " ".join(str(inputs.get("work_mode") or "").split())[:40] or "Not stated"
     plan = {
+        "_asked": asked,
         "po_number": po,
         "po_value": f"{po_value}" if po_value is not None else None,
         "deal_id": deal.get("id"),
@@ -706,6 +731,7 @@ async def propose(
         "location": location,
         "work_mode": mode,
         "per_hire": f"{per_hire}",
+        "department": department,
         "roles": [
             {
                 "title": r.title,
@@ -732,7 +758,12 @@ async def propose(
     }
     span = _months_label(start.replace(day=1), months)
     notes = [
-        f"Positions open in AnytimeHire as {location}, {mode}: "
+        (
+            f"Positions open in AnytimeHire as {location}, {mode}, each once its requisition "
+            "is approved: "
+            if department
+            else f"Positions open in AnytimeHire as {location}, {mode}: "
+        )
         + "; ".join(
             f"{r.title} ({r.count} opening{'s' if r.count > 1 else ''}, "
             f"{r.experience[0]} to {r.experience[1]} years)"
@@ -741,6 +772,7 @@ async def propose(
         f"The prospective P&L goes on the account “{account}” for {span}; recruitment "
         f"({figures.hires} hires at {inr(per_hire)} each) in the first month.",
     ]
+    notes.extend(department_notes)
     if po_value is None:
         notes.append(
             f"No PO value was given: the P&L uses the team's billing, {inr(figures.billing)}."
@@ -748,8 +780,9 @@ async def propose(
     else:
         notes.append(f"The PO's {inr(po_value)} matches the team's billing.")
     notes.append(
-        "If any step fails, the steps before it are undone: positions withdrawn, the "
-        "forecast taken back."
+        "If any step fails, the steps before it are undone: "
+        + ("requisitions cancelled, " if department else "positions withdrawn, ")
+        + "the forecast taken back."
     )
     waiting = None
     if held:
@@ -769,6 +802,7 @@ async def propose(
         user,
         ctx,
         kind="order_win",
+        replaces=f"po:{key}",
         payload=plan,
         summary={
             "title": f"Book PO {po}: {deal.get('title')}",
@@ -837,6 +871,14 @@ async def _record(
         summary=summary,
         request=request,
     )
+
+
+def _fingerprint(inputs: dict[str, Any]) -> str:
+    """What the person asked for, to tell the same request again from a changed one."""
+    keys = ("po_number", "po_value", "start_date", "months", "roles", "department",
+            "recruitment_cost_per_hire", "deal", "client", "location", "work_mode")  # fmt: skip
+    asked = {key: inputs.get(key) for key in keys}
+    return hashlib.sha256(json.dumps(asked, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def _job_params(plan: dict[str, Any], index: int, role: dict[str, Any]) -> dict[str, Any]:
@@ -928,6 +970,31 @@ async def _undo(
             except HTTPException as exc:
                 stuck.append(f"the P&L forecast ({exc.detail})")
                 _step(run, {"step": "undo_forecast", "status": "failed", "detail": str(exc.detail)})
+        elif entry.get("step") == "requisition":
+            from app.services.companion import order_requisitions
+
+            savepoint = await session.begin_nested()
+            try:
+                await order_requisitions.cancel(
+                    session,
+                    user,
+                    entry["requisition_id"],
+                    f"Order {run.plan['po_number']}: a later step failed",
+                    request,
+                )
+                _step(
+                    run,
+                    {
+                        "step": "undo_requisition",
+                        "status": "done",
+                        "label": f"Requisition {entry.get('code')} cancelled",
+                    },
+                )
+            except (HTTPException, ValueError, SQLAlchemyError) as exc:
+                await savepoint.rollback()
+                detail = exc.detail if isinstance(exc, HTTPException) else "it could not be changed"
+                stuck.append(f"the requisition {entry.get('code')} ({detail})")
+                _step(run, {"step": "undo_requisition", "status": "failed", "detail": str(detail)})
         elif entry.get("step") == "job" and not entry.get("existing"):
             try:
                 answer = await products.act(
@@ -1020,8 +1087,49 @@ async def run(
     run_id = booking.id
 
     failure: str | None = None
-    # 1. The positions, one per role.
+    # 1. Each role. With a delivery department: a requisition there, sent for approval,
+    #    whose position opens in AnytimeHire once it is approved (hiring/linked_jobs.py),
+    #    so nobody recruits for a role its approvers turned down. Without one, the
+    #    position opens at once.
     for index, role in enumerate(plan["roles"], start=1):
+        if plan.get("department"):
+            from app.services.companion import order_requisitions
+
+            savepoint = await session.begin_nested()
+            try:
+                raised = await order_requisitions.raise_for_role(
+                    session, user, plan, role, None, request
+                )
+            except (HTTPException, ValueError, SQLAlchemyError) as exc:
+                # A refusal, a value a check refused, or the database (two codes at once):
+                # this step is rolled back, said, and everything before it undone.
+                if not isinstance(exc, HTTPException):
+                    logger.exception("Order %s: a requisition step failed", plan["po_number"])
+                await savepoint.rollback()
+                detail = (
+                    str(exc.detail)
+                    if isinstance(exc, HTTPException)
+                    else "it did not pass a check. Try again in a moment."
+                )
+                booking = await session.get(CompanionRun, run_id) or booking
+                failure = f"The requisition for “{role['title']}” could not be raised: {detail}"
+                _step(booking, {"step": "requisition", "status": "failed", "detail": detail})
+                await session.commit()
+                break
+            booking = await session.get(CompanionRun, run_id) or booking
+            _step(
+                booking, {"step": "requisition", "status": "done", "title": role["title"], **raised}
+            )
+            await _record(
+                session,
+                user,
+                booking,
+                f"Order {plan['po_number']}: requisition {raised['code']} raised for "
+                f"{role['title']}",
+                request,
+            )
+            await session.commit()
+            continue
         params = _job_params(plan, index, role)
         try:
             answer = await products.act(session, user, "interview", "job.open", params)
@@ -1123,11 +1231,19 @@ async def run(
 
     # 3. A note on the deal (a courtesy: its failure is said, not undone).
     jobs = [s for s in booking.steps if s.get("step") == "job" and s.get("status") == "done"]
+    asked_for = [
+        s for s in booking.steps if s.get("step") == "requisition" and s.get("status") == "done"
+    ]
     figures = plan["figures"]
+    staffed = (
+        f"{len(asked_for)} requisition(s) raised for {plan['department']['name']}; each opens "
+        f"in AnytimeHire once approved ({figures['hires']} hires)"
+        if plan.get("department")
+        else f"{len(jobs)} position(s) opened in AnytimeHire ({figures['hires']} hires)"
+    )
     note = (
         f"Order booked from AskMira: PO {plan['po_number']}, {plan['months']} months from "
-        f"{date.fromisoformat(plan['start_date']):%d %b %Y}. {len(jobs)} position(s) opened in "
-        f"AnytimeHire ({figures['hires']} hires). Prospective P&L: billing "
+        f"{date.fromisoformat(plan['start_date']):%d %b %Y}. {staffed}. Prospective P&L: billing "
         f"{inr(Decimal(figures['billing']))}, cost {inr(Decimal(figures['cost']))}, margin "
         f"{inr(Decimal(figures['margin']))} ({figures['margin_pct']}%)."
     )
@@ -1155,12 +1271,34 @@ async def run(
     await session.commit()
 
     forecast = next(s for s in booking.steps if s.get("step") == "forecast")
-    text = (
-        f"PO {plan['po_number']} is booked. {len(jobs)} position(s) are open in AnytimeHire for "
-        f"{figures['hires']} hires, and the prospective P&L is on “{forecast.get('account')}”: "
+    pnl = (
+        f"the prospective P&L is on “{forecast.get('account')}”: "
         f"billing {inr(Decimal(figures['billing']))}, cost {inr(Decimal(figures['cost']))}, margin "
         f"{inr(Decimal(figures['margin']))} ({figures['margin_pct']}%)."
     )
+    if asked_for:
+        codes = ", ".join(str(s.get("code")) for s in asked_for)
+        sent = all(s.get("submitted") for s in asked_for)
+        text = (
+            f"PO {plan['po_number']} is booked: {pnl} Requisitions "
+            f"{codes} are raised for {plan['department']['name']}"
+            + (
+                " and waiting for approval; each opens its position in AnytimeHire once approved."
+                if sent
+                else " as drafts: send them for approval in Hiring, and each opens its "
+                "position in AnytimeHire once approved."
+            )
+        )
+        flagged = [s for s in asked_for if s.get("told")]
+        if flagged:
+            text += " The approvers are told: " + " ".join(dict.fromkeys(
+                str(s["told"]) for s in flagged
+            ))  # fmt: skip
+    else:
+        text = (
+            f"PO {plan['po_number']} is booked. {len(jobs)} position(s) are open in AnytimeHire "
+            f"for {figures['hires']} hires, and {pnl}"
+        )
     if warning:
         text += " " + warning
     return {

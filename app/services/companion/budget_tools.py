@@ -29,7 +29,7 @@ def rupees_in(text: Any) -> Decimal | None:
     """A rupee amount as typed ("9 lakh", "₹12,00,000", "1.2 cr", "900000"), or None."""
     raw = str(text or "").strip().lower().replace(",", "").replace("₹", "")
     raw = re.sub(r"\s*(per annum|a year|per year|each|p\.?a\.?)$", "", raw)
-    raw = re.sub(r"^(rs\.?|inr)\s*", "", raw).replace(" ", "")
+    raw = re.sub(r"^(rs\.?|inr)\s*", "", raw).replace(" ", "").removesuffix("/-")
     if not raw:
         return None
     scale = Decimal(1)
@@ -44,13 +44,17 @@ def rupees_in(text: Any) -> Decimal | None:
                 break
         if scale != 1:
             break
+    # Digits with at most one point: "nan", "inf", "1e5" and "-5" are not amounts anyone types.
+    if not re.fullmatch(r"\d+(\.\d+)?|\.\d+", raw):
+        return None
     try:
-        value = Decimal(raw) * scale
+        value = (Decimal(raw) * scale).quantize(Decimal("0.01"))
     except InvalidOperation:
         return None
+    # Compared after rounding to the paisa: "0.001" is ₹0, not an amount.
     if value <= 0 or value > Decimal("1e11"):
         return None
-    return value.quantize(Decimal("0.01"))
+    return value
 
 
 def _inr(value: str | None) -> str:
@@ -71,7 +75,14 @@ async def department_budget(
         hires = 0
     ctc = rupees_in(inputs.get("amount"))
     answer = await positions.budget_room(
-        session, user, on=today, department=department or None, hires=hires, ctc_per_hire=ctc
+        session,
+        user,
+        on=today,
+        department=department or None,
+        hires=hires,
+        ctc_per_hire=ctc,
+        # Seats requisitions already ask for count: "fits" must not ignore them.
+        requisitions=True,
     )
     used = {
         k: v
@@ -80,16 +91,9 @@ async def department_budget(
     }
     budgets = answer["budgets"]
     if not budgets:
-        return [
-            {
-                "type": "notice",
-                "tone": "info",
-                "text": (
-                    f"No headcount budget is set for {answer['financial_year']} yet. An admin "
-                    "sets one under Employees → Positions → Budget."
-                ),
-            }
-        ], used
+        return [{"type": "notice", "tone": "info", "text": await _none_for(
+            session, user, department, answer["financial_year"], today
+        )}], used  # fmt: skip
 
     # The same year's spend from AskMira and the linked products, beside each budget.
     from app.services import budget_year as spend
@@ -126,6 +130,19 @@ async def department_budget(
                 {"label": "Committed on positions", "value": _inr(budget["cost_committed"])},
                 {"label": "Cost left", "value": _inr(budget["cost_left"])},
             ]
+        asked = int(budget.get("requisition_seats") or 0)
+        if asked:
+            figures += [
+                {"label": "Asked for in requisitions", "value": f"{asked} seat(s)"},
+                {"label": "Seats left after them", "value": budget["seats_left"]},
+            ]
+            if budget.get("requisition_cost") is not None:
+                figures.append(
+                    {
+                        "label": "Requisitions' CTC ceilings",
+                        "value": _inr(budget["requisition_cost"]),
+                    }
+                )
         row = spent.get(budget["department_id"]) if budget["department_id"] else None
         spend_figures: list[dict[str, str]] = []
         if row is not None:
@@ -149,12 +166,19 @@ async def department_budget(
                     }
                 )
         note = None
+        counted = (
+            f", counting the {asked} seat(s) already asked for in requisitions" if asked else ""
+        )
         if budget["fits"] is True:
             per = f" at {_inr(answer['ctc_per_hire'])} a year each" if ctc else ""
             fits = "hire fits" if hires == 1 else "hires fit"
-            note = f"{hires} more {fits}{per} inside this budget."
+            note = f"{hires} more {fits}{per} inside this budget{counted}."
         elif budget["fits"] is False:
-            note = " ".join(budget["problems"])
+            note = " ".join(budget["problems"]) + (
+                f" (That counts the {asked} seat(s) already asked for in requisitions.)"
+                if asked
+                else ""
+            )
         elif budget["unpriced_seats"]:
             note = (
                 f"{len(budget['unpriced_seats'])} position(s) have no budgeted CTC ceiling, so "
@@ -193,3 +217,25 @@ async def department_budget(
             }
         )
     return cards, used
+
+
+async def _none_for(
+    session: AsyncSession, user: User, department: str, year: str, today: date
+) -> str:
+    """Why there is no budget to show: no such department, none for it, or none at all."""
+    if department:
+        from app.services.companion import requisition_tools
+
+        found = requisition_tools._match(
+            await requisition_tools._departments(session, user), department
+        )
+        if not found:
+            return f"There is no department called “{department}”."
+        everywhere = await positions.budget_room(session, user, on=today)
+        named = sorted({b["scope"] for b in everywhere["budgets"]})
+        others = f" Budgets are set for: {', '.join(named)}." if named else ""
+        return f"{found[0].name} has no headcount budget for {year}.{others}"
+    return (
+        f"No headcount budget is set for {year} yet. An admin sets one under Employees → "
+        "Positions → Budget."
+    )

@@ -32,11 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.candidate_comms import CandidateMessage, CandidateMessageStatus
 from app.models.hiring import Candidate, CandidateStage, Requisition
 from app.models.interview import Interview, InterviewMode
+from app.models.notifications import WhatsAppTemplate
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
@@ -438,6 +439,19 @@ def _withdraw(row: CandidateMessage, reason: str) -> None:
     row.secret_link_encrypted = None
 
 
+async def _whatsapp_language(
+    session: AsyncSession, tenant_id: uuid.UUID, meta_name: str | None
+) -> str | None:
+    """The language the workspace registered this Meta template in."""
+    if not meta_name:
+        return None
+    return await session.scalar(
+        select(WhatsAppTemplate.locale).where(
+            tenant_filter(WhatsAppTemplate, tenant_id), WhatsAppTemplate.meta_name == meta_name
+        )
+    )
+
+
 def _backoff(attempt: int) -> timedelta:
     return timedelta(minutes=min(2 ** (attempt - 1), 60))
 
@@ -550,6 +564,13 @@ async def deliver_due(
                     **email_fields,
                     whatsapp_template_name=message.whatsapp_template_name,
                     whatsapp_parameters=parameters if is_whatsapp else None,
+                    whatsapp_language=(
+                        await _whatsapp_language(
+                            session, actor.tenant_id, message.whatsapp_template_name
+                        )
+                        if is_whatsapp
+                        else None
+                    ),
                 )
             )
         except PermanentFailure as exc:

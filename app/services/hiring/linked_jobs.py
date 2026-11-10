@@ -130,6 +130,10 @@ async def _open(
     try:
         answer = await products.act(session, user, PRODUCT, "job.open", params)
     except products.ProductUnavailableError as exc:
+        if exc.status == 403 and requisition.linked_job_error:
+            # This person may not open jobs there: their answer, never in place of the
+            # reason the job did not open for whoever approved it.
+            return {"opened": False, "error": str(exc)[:2000]}
         requisition.linked_job_error = str(exc)[:2000]
         await audit.record(
             session,
@@ -220,6 +224,11 @@ async def open_job(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"{BRAND} is not linked to this workspace.",
+        )
+    if await products.role_in(session, user, PRODUCT) not in ("admin", "recruiter"):
+        # The job is opened as the person, and only its admins and recruiters open jobs there.
+        raise permissions.forbidden(
+            f"Opening jobs in {BRAND} is for its admins and recruiters. Ask HR to try again."
         )
     if requisition.status is not RequisitionStatus.OPEN:
         raise HTTPException(

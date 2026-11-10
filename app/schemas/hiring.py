@@ -161,6 +161,8 @@ class RequisitionDetail(RequisitionSummary):
     linked_job_ref: str | None = None
     linked_job_at: datetime | None = None
     linked_job_error: str | None = None
+    #: Whether this person can try opening it there again (its admins and recruiters only).
+    can_open_job: bool = False
 
 
 class PendingDecision(BaseModel):

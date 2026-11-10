@@ -68,6 +68,12 @@ TOOL_GROUPS: dict[str, str] = {
     "actions_approvals": "Approve or reject leave, attendance, timesheet, shift swap, overtime, "
     "expense, travel and asset requests waiting on the person, when they confirm. Payroll, "
     "loans, settlements and hiring stay in the portal. Needs AI.",
+    "actions_expense": "File the person's own expense claim from a receipt they attach, checked "
+    "against the expense tool's categories and their grade's cap, and approve or reject the "
+    "claims waiting on them there, when they confirm. Needs AI.",
+    "actions_hiring": "Raise a hiring requisition for HR or a manager - role, department, seats, "
+    "CTC ceiling and the reason - checked against the department's headcount budget and sent "
+    "along its approval path when they confirm. Needs AI.",
     "actions_helpdesk": "Raise an HR helpdesk ticket for the person, when they confirm. Needs AI.",
     "actions_it_helpdesk": "Raise an IT ticket in the linked helpdesk, and work tickets there - "
     "reply, pick one up, assign, hold, close or reopen - as the helpdesk lets each person, when "

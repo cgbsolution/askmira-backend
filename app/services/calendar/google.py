@@ -44,6 +44,11 @@ __all__ = ["GoogleCalendarAdapter"]
 
 class GoogleCalendarAdapter(CalendarAdapter):
     provider = CalendarProvider.GOOGLE
+    #: Where the live transport sends this adapter's relative paths, and the only
+    #: hosts it may call with the interviewer's token.
+    BASE_URL = "https://www.googleapis.com"
+    API_HOSTS = ("googleapis.com",)
+    LABEL = "Google Calendar"
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport

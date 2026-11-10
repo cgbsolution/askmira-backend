@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,14 +25,14 @@ from app.models.jobboard import JobBoard, JobBoardAccount, JobPosting, PostingSt
 from app.models.user import User
 from app.services import audit
 from app.services.jobboards import distribution, registry
+from app.services.jobboards.feed import feed_path
 
 __all__ = ["attention", "board_status", "list_postings", "save_account"]
 
 _NOT_LIVE = (
-    "No live connection to this board has been verified from this deployment. A stored "
-    "account is a login, not a working integration: publishing needs the board's API "
-    "access on the client's subscription and an outbound transport, and until both are "
-    "in place a publish attempt is parked with the reason rather than posted."
+    "Not verified with a live account from this deployment yet. A stored account is a "
+    "login, not proof of reach: the first post shows the board's own answer, and a refusal "
+    "is parked with the board's reason rather than lost."
 )
 
 
@@ -43,9 +43,12 @@ async def board_status(session: AsyncSession, user: User) -> list[dict[str, Any]
             await session.scalars(tenant_scoped(select(JobBoardAccount), JobBoardAccount, user))
         ).all()
     }
+    slug = await distribution.published_slug(session, user)
     out = []
     for board in registry.supported_boards():
         account = accounts.get(board)
+        builder = registry.adapter_class(board)
+        reads_feed = bool(builder is not None and builder.FEED)
         out.append(
             {
                 "board": board.value,
@@ -68,6 +71,10 @@ async def board_status(session: AsyncSession, user: User) -> list[dict[str, Any]
                 ),
                 "live_connection_verified": False,
                 "message": _NOT_LIVE,
+                "needs_secret": builder.NEEDS_SECRET if builder else True,
+                "connection_note": builder.CONNECTION_NOTE if builder else "",
+                "feed_path": feed_path(slug, board) if reads_feed and slug else None,
+                "reads_feed": reads_feed,
             }
         )
     return out
@@ -84,6 +91,18 @@ async def save_account(
     settings: dict[str, Any],
     request: Request | None = None,
 ) -> JobBoardAccount:
+    builder = registry.adapter_class(board)
+    if builder is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{board.value} is not a job board jobs are posted to.",
+        )
+    secret = (secret or "").strip()
+    if builder.NEEDS_SECRET and not secret:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter the API key or password for this board.",
+        )
     existing = await session.scalar(
         tenant_scoped(
             select(JobBoardAccount).where(JobBoardAccount.board == board), JobBoardAccount, user
@@ -93,7 +112,7 @@ async def save_account(
     account.display_name = display_name
     account.username = username
     account.settings = settings
-    account.credentials_encrypted = encrypt_secret(secret, user.tenant_id)
+    account.credentials_encrypted = encrypt_secret(secret, user.tenant_id) if secret else None
     account.is_active = True
     account.last_error = None
     session.add(account)

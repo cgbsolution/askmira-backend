@@ -161,16 +161,46 @@ def _card(card: dict[str, Any]) -> list[str]:
             lines.append(f"- {scrub(figure.get('label'))}: {scrub(figure.get('value'))}")
         for note in card.get("notes") or []:
             lines.append(f"Note: {scrub(note)}")
-        if status == "proposed":
+        if status == "proposed" and card.get("waiting"):
             lines.append(
-                "Nothing has been done yet. Tell the person plainly what this will do and ask "
-                "them to confirm: they press the button on the offer, or reply yes."
+                f"Held: {scrub(card['waiting'])} It cannot be confirmed now; say what it waits for."
             )
+        elif status == "proposed":
+            lines.append(
+                "NOT DONE YET: nothing has been filed, raised, sent or saved. Tell the person in "
+                'the future tense what this will do ("this will file…", never "I\'ve filed…") '
+                "and ask them to confirm: they press the button on the offer, or reply yes."
+            )
+        elif status == "done":
+            lines.append("Done: carried out. Tell them it is done; do not ask them to confirm.")
         result = card.get("result") or {}
         if result.get("text"):
             lines.append(f"Outcome: {scrub(result['text'])}")
         return lines
     return []
+
+
+def _offer_state(card: dict[str, Any]) -> str:
+    ref = card.get("action_id")
+    status = card.get("status")
+    if status == "done":
+        return (
+            f"Done: offer {ref} was carried out, and what came of it is shown to the person. "
+            "Tell them it is done; do not ask them to confirm it."
+        )
+    if status == "failed":
+        return (
+            f"Not done: offer {ref} could not be carried out, and the reason is shown to the "
+            "person. Say it was not done."
+        )
+    if status in ("cancelled", "expired"):
+        return f"Offer {ref} is {status}: nothing was done."
+    if card.get("waiting"):
+        return f"Offer {ref} is held for an approval elsewhere; it can't be confirmed now."
+    return (
+        f"Not done yet: an offer ({ref}) is shown to the person with a Confirm button. Ask them "
+        "to check it and confirm; never say it is done, filed or sent before they do."
+    )
 
 
 def view_of(cards: list[dict[str, Any]], *, allowed: bool) -> str:
@@ -183,10 +213,14 @@ def view_of(cards: list[dict[str, Any]], *, allowed: bool) -> str:
             return " ".join(notes)
         offers = [c for c in cards if c.get("type") == "proposal"]
         if offers:
-            ids = ", ".join(str(c.get("action_id")) for c in offers)
+            # What state each offer is in, never its contents: "press Confirm" for one
+            # that is already done, or "done" for one that failed, misleads the person.
+            return " ".join(_offer_state(c) for c in offers) + " " + HIDDEN
+        if any(c.get("type") == "notice" and c.get("tone") == "warning" for c in cards):
             return (
-                f"An offer ({ids}) is shown to the person with a Confirm button. Ask them to "
-                "check it and confirm. " + HIDDEN
+                "Not done, nothing changed: AskMira refused this or needs something more from "
+                "the person, and says what under your reply. Do not say anything was done, "
+                "sent or saved."
             )
         return HIDDEN
     lines: list[str] = []

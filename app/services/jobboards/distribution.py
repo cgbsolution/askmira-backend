@@ -21,10 +21,17 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.hiring import Requisition, RequisitionStatus
-from app.models.jobboard import JobBoard, JobBoardAccount, JobPosting, PostingStatus
+from app.models.jobboard import (
+    CareersPageConfig,
+    JobBoard,
+    JobBoardAccount,
+    JobPosting,
+    PostingStatus,
+)
 from app.models.org import Location
 from app.models.user import User
 from app.services import audit
@@ -38,19 +45,54 @@ from app.services.jobboards.base import (
 )
 
 __all__ = [
+    "careers_job_url",
     "close_posting",
     "due_refreshes",
     "job_spec_for",
+    "public_careers_url",
     "publish_posting",
+    "published_slug",
     "refresh_posting",
+    "requisition_spec",
     "retryable_postings",
 ]
+
+
+def public_careers_url(slug: str) -> str:
+    """The careers page's public address (the portal serves it)."""
+    base = (settings.WEB_APP_URL or settings.PUBLIC_API_URL or "").rstrip("/")
+    return f"{base}/careers/{slug}"
+
+
+async def published_slug(session: AsyncSession, user: User) -> str | None:
+    """The workspace's careers-page slug, when the page is published."""
+    config = await session.scalar(tenant_scoped(select(CareersPageConfig), CareersPageConfig, user))
+    return config.slug if config is not None and config.is_published else None
+
+
+async def careers_job_url(session: AsyncSession, user: User, code: str) -> str | None:
+    """Where a candidate applies for one requisition, or None without a published page."""
+    slug = await published_slug(session, user)
+    base = (settings.WEB_APP_URL or settings.PUBLIC_API_URL or "").strip()
+    if not slug or not base.startswith("https://"):
+        return None
+    return f"{public_careers_url(slug)}/jobs/{code}"
 
 
 async def job_spec_for(
     session: AsyncSession, user: User, requisition: Requisition, *, apply_url: str | None = None
 ) -> JobSpec:
+    """Our requisition in our own vocabulary (see `requisition_spec`)."""
+    return await requisition_spec(session, requisition, apply_url=apply_url)
+
+
+async def requisition_spec(
+    session: AsyncSession, requisition: Requisition, *, apply_url: str | None = None
+) -> JobSpec:
     """Our requisition in our own vocabulary.
+
+    The requisition is already tenant-checked by the caller; this only reads its
+    own location.
 
     Nothing board-shaped here on purpose. The adapters translate; the moment a
     Naukri concept reached this function, every other board's adapter would have
@@ -58,11 +100,13 @@ async def job_spec_for(
     """
     location_name = ""
     state_code = None
+    city = ""
     if requisition.location_id:
         location = await session.get(Location, requisition.location_id)
         if location is not None:
             location_name = location.name
             state_code = getattr(location, "state_code", None)
+            city = getattr(location, "city", None) or ""
 
     published = [v for v in (requisition.jd_versions or []) if v.get("body")]
     description = published[-1]["body"] if published else (requisition.description or "")
@@ -74,6 +118,7 @@ async def job_spec_for(
         skills=tuple(str(s) for s in (requisition.skills or [])),
         location=location_name,
         state_code=state_code,
+        city=city,
         experience_min_years=requisition.experience_min_years,
         experience_max_years=requisition.experience_max_years,
         ctc_min=(
@@ -175,14 +220,17 @@ async def publish_posting(
         )
 
     account = await _account(session, user, board)
+    # Without an address of its own, a job points candidates at its careers-page
+    # apply link — a board listing with nowhere to apply is no listing at all.
+    apply_url = apply_url or await careers_job_url(session, user, requisition.code)
     spec = await job_spec_for(session, user, requisition, apply_url=apply_url)
     posting.status = PostingStatus.PUBLISHING
     posting.attempt_count += 1
     await session.flush()
 
     try:
-        adapter = registry.get_adapter(board, transport)
         credentials = registry.credentials_for(account, user.tenant_id)
+        adapter = registry.get_adapter(board, transport, credentials=credentials)
         result = await adapter.publish_job(spec, credentials)
     except (BoardTransientFailure, BoardPermanentFailure, registry.AdapterUnavailable) as exc:
         return await _handle_failure(
@@ -339,8 +387,8 @@ async def refresh_posting(
 
     account = await _account(session, user, posting.board)
     try:
-        adapter = registry.get_adapter(posting.board, transport)
         credentials = registry.credentials_for(account, user.tenant_id)
+        adapter = registry.get_adapter(posting.board, transport, credentials=credentials)
         await adapter.refresh_job(posting.external_job_id, credentials)
     except (BoardTransientFailure, BoardPermanentFailure, registry.AdapterUnavailable) as exc:
         posting.attempt_count += 1
@@ -384,10 +432,25 @@ async def close_posting(
 
     if posting.external_job_id:
         account = await _account(session, user, posting.board)
+        # A board that closes by re-posting the job (LinkedIn) needs the job itself.
+        requisition = await session.scalar(
+            tenant_scoped(
+                select(Requisition).where(Requisition.id == posting.requisition_id),
+                Requisition,
+                user,
+            )
+        )
+        spec = (
+            await requisition_spec(
+                session, requisition, apply_url=(posting.accepted_as or {}).get("apply_url")
+            )
+            if requisition is not None
+            else None
+        )
         try:
-            adapter = registry.get_adapter(posting.board, transport)
             credentials = registry.credentials_for(account, user.tenant_id)
-            await adapter.close_job(posting.external_job_id, credentials)
+            adapter = registry.get_adapter(posting.board, transport, credentials=credentials)
+            await adapter.close_job(posting.external_job_id, credentials, spec=spec)
         except (BoardTransientFailure, BoardPermanentFailure, registry.AdapterUnavailable) as exc:
             posting.attempt_count += 1
             return await _handle_failure(

@@ -898,6 +898,7 @@ async def _dispatch_one(
         event_key=notification.event_key,
         **email_fields,
         whatsapp_template_name=meta_template.meta_name if meta_template else None,
+        whatsapp_language=meta_template.locale if meta_template else None,
         whatsapp_parameters=[
             str(notification.payload.get(name, ""))
             for name in (meta_template.parameter_names if meta_template else [])
@@ -1213,3 +1214,18 @@ async def seed_default_templates(
 
     await session.commit()
     return created
+
+
+async def own_whatsapp_number(session: AsyncSession, user: User) -> str | None:
+    """The person's own mobile in E.164 (+919845011008), from their login or employee record."""
+    from app.models.employee import Employee  # local: employee imports notifications indirectly
+
+    raw = user.phone
+    if not raw and user.employee_id is not None:
+        employee = await session.get(Employee, user.employee_id)
+        if employee is not None and employee.tenant_id == user.tenant_id:
+            raw = getattr(employee, "phone", None)
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if len(digits) == 10:
+        digits = "91" + digits
+    return f"+{digits}" if 8 <= len(digits) <= 15 else None

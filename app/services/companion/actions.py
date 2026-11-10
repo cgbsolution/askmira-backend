@@ -26,6 +26,7 @@ they do from an approval email.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import access_control
@@ -45,6 +47,8 @@ from app.models.employee import Employee
 from app.models.leave import LeaveRequest, LeaveRequestStatus
 from app.models.user import User
 from app.services import audit
+
+logger = logging.getLogger("askmira.companion.actions")
 
 __all__ = [
     "KINDS",
@@ -72,6 +76,11 @@ KINDS = (
     "regularisation",
     "approval_decision",
     "hr_ticket",
+    # A hiring requisition, raised and sent for approval (requisition_tools.py).
+    "requisition",
+    # ExpenseGenie, as the person, through its own rules (expense_actions.py).
+    "expense_claim",
+    "expense_decision",
     # In a linked product, through its own rules, as the person (sales_tools.py).
     "saleinx_lead",
     "saleinx_stage",
@@ -86,6 +95,24 @@ KINDS = (
 _PRODUCT_KINDS = frozenset(
     {"saleinx_lead", "saleinx_stage", "saleinx_decision", "procurement_decision"}
 )
+#: Carried out in a linked product, which keeps its own history: AskMira's audit log
+#: gets a row of its own when one succeeds, as it does when one fails or is declined.
+_ELSEWHERE = _PRODUCT_KINDS | {
+    "expense_claim",
+    "expense_decision",
+    "helpdesk_ticket",
+    "helpdesk_work",
+}
+_PRODUCT_OF = {
+    "expense_claim": "ExpenseGenie",
+    "expense_decision": "ExpenseGenie",
+    "saleinx_lead": "Saleinx",
+    "saleinx_stage": "Saleinx",
+    "saleinx_decision": "Saleinx",
+    "procurement_decision": "ProcureFlow",
+    "helpdesk_ticket": "CGB Helpdesk",
+    "helpdesk_work": "CGB Helpdesk",
+}
 
 #: Where each kind's own endpoint lives, so a sub-admin's rights are read as the
 #: portal would read them for the same change.
@@ -108,6 +135,9 @@ class ToolContext:
     #: The person's words this turn, for the typed-yes check.
     latest_text: str
     request: Request | None = None
+    #: Where the message came from: "app" (the portal or the phone), "slack", "teams"
+    #: or "email". An emailed reply never confirms: an email can be forwarded or forged.
+    place: str = "app"
 
 
 # ── Cards ────────────────────────────────────────────────────────────────────
@@ -186,8 +216,50 @@ async def _offer(
     kind: str,
     payload: dict[str, Any],
     summary: dict[str, Any],
+    replaces: str | None = None,
 ) -> CompanionAction:
+    """A new offer, waiting on the person's say.
+
+    `replaces` names what it is an offer for (a requisition's role and department):
+    an earlier offer of the same kind for the same thing, still waiting in this
+    conversation, is withdrawn — "yes, but at 16 lakh" leaves one live offer, never
+    the old one a click away.
+    """
     now = datetime.now(UTC)
+    if replaces:
+        payload = {**payload, "_replaces": replaces}
+        earlier = (
+            await session.scalars(
+                tenant_scoped(
+                    select(CompanionAction).where(
+                        CompanionAction.conversation_id == ctx.conversation_id,
+                        CompanionAction.user_id == user.id,
+                        CompanionAction.kind == kind,
+                        CompanionAction.status == CompanionActionStatus.PROPOSED,
+                    ),
+                    CompanionAction,
+                    user,
+                ).with_for_update()
+            )
+        ).all()
+        for old in earlier:
+            if (old.payload or {}).get("_replaces") != replaces:
+                continue
+            old.status = CompanionActionStatus.CANCELLED
+            old.decided_at = now
+            old.decided_via = "replaced"
+            old.result = {"text": "Replaced by a newer offer below."}
+            await audit.record(
+                session,
+                tenant_id=user.tenant_id,
+                action=AuditAction.UPDATE,
+                entity_type="companion_action",
+                entity_id=old.id,
+                actor=user,
+                changes={"kind": kind, "status": "cancelled", "via": "replaced"},
+                summary=f"Ask Mira's offer ({kind.replace('_', ' ')}) replaced by a newer one",
+                request=ctx.request,
+            )
     action = CompanionAction(
         tenant_id=user.tenant_id,
         conversation_id=ctx.conversation_id,
@@ -869,6 +941,16 @@ async def _run(
             "reference": ticket.ticket_number,
         }
 
+    if action.kind in ("expense_claim", "expense_decision"):
+        from app.services.companion import expense_actions
+
+        return await expense_actions.carry_out(session, user, action)
+
+    if action.kind == "requisition":
+        from app.services.companion import requisition_tools
+
+        return await requisition_tools.carry_out(session, user, action, request)
+
     if action.kind == "approval_decision":
         from app.services.approvals.email_actions import (
             _DECIDE_PATHS,
@@ -941,6 +1023,14 @@ async def confirm(
     """
     action = await _locked(session, user, action_id, owner_id=owner_id)
     if ctx is not None:
+        if ctx.place == "email":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A reply by email never confirms an offer. The person confirms it in AskMira, "
+                    "from the link in the email."
+                ),
+            )
         if action.conversation_id != ctx.conversation_id:
             raise HTTPException(status_code=404, detail="No such offer in this conversation.")
         if action.created_at is not None and action.created_at >= ctx.turn_started:
@@ -986,10 +1076,18 @@ async def confirm(
     savepoint = await session.begin_nested()
     try:
         result = await _run(session, user, action, request)
-    except HTTPException as exc:
+    except (HTTPException, ValueError, ArithmeticError, SQLAlchemyError) as exc:
+        # A refusal in the service's own words; anything else (a value a check refused,
+        # the database) is said plainly and logged, and nothing is left half-done.
+        if not isinstance(exc, HTTPException):
+            logger.exception("Ask Mira could not carry out offer %s (%s)", action_id, action.kind)
         await _undo(session, user, savepoint)
         action = await _locked(session, user, action_id, owner_id=owner_id)
-        detail = exc.detail if isinstance(exc.detail, str) else "It could not be done."
+        detail = (
+            (exc.detail if isinstance(exc.detail, str) else "It could not be done.")
+            if isinstance(exc, HTTPException)
+            else "It could not be done: something in it did not pass a check. Nothing changed."
+        )
         action.status = CompanionActionStatus.FAILED
         action.decided_at = datetime.now(UTC)
         action.decided_via = via
@@ -1017,6 +1115,27 @@ async def confirm(
     action.decided_at = action.decided_at or datetime.now(UTC)
     action.decided_via = via
     action.result = result
+    if action.kind in _ELSEWHERE:
+        # The product keeps its own history; AskMira's log says Ask Mira did it, as whom.
+        product = _PRODUCT_OF.get(action.kind, "a linked product")
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="companion_action",
+            entity_id=action.id,
+            actor=user,
+            changes={
+                "kind": action.kind,
+                "status": "done",
+                "product": product,
+                "via": via,
+                "reference": (result or {}).get("reference"),
+                "outcome": str((result or {}).get("text") or "")[:500],
+            },
+            summary=f"Ask Mira carried out a {action.kind.replace('_', ' ')} in {product}",
+            request=request,
+        )
     await session.commit()
     await session.refresh(action)
     return action

@@ -279,14 +279,41 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             ),
             location=ProcessingLocation.OUTSIDE_INDIA,
             country="United States (Google does not pin a region for Gmail)",
-            categories_permitted=("identity", "communication", "organisational"),
+            categories_permitted=("identity", "communication", "organisational", "ai_interaction"),
             safeguards=(
                 "Google Workspace Data Processing Amendment",
                 "Sent over TLS; payslips and documents are never attached, only linked",
+                "Ask Mira's answers by email leave out lookups of pay, leave, attendance and "
+                "other personal records: those stay in AskMira, behind sign-in",
             ),
             what_is_sent=(
                 "The recipient's name and email address and the message text, which "
-                "can name a colleague, a leave date or an approval."
+                "can name a colleague, a leave date or an approval; and, when a workspace "
+                "switches on Ask Mira by email, the person's question and Ask Mira's answer."
+            ),
+        ),
+        _s(
+            key="chat_apps",
+            name="Slack and Microsoft Teams",
+            service=(
+                "Delivers the notifications a workspace sends to Slack or Teams, and, when "
+                "its admin switches Ask Mira on there, carries people's direct messages to "
+                "Ask Mira and its answers."
+            ),
+            location=ProcessingLocation.OUTSIDE_INDIA,
+            country="United States (Slack and Microsoft do not pin a region by default)",
+            categories_permitted=("identity", "communication", "organisational", "ai_interaction"),
+            is_optional=True,
+            safeguards=(
+                "Connected per workspace by its admin, with its own app and secrets",
+                "Ask Mira answers only the AskMira login with the same work email, as themselves",
+                "Lookups of pay, leave, attendance and other personal records are not written "
+                "into the chat: the reply links to AskMira",
+                "Each Ask Mira reply is recorded as a transfer",
+            ),
+            what_is_sent=(
+                "Notification text; and the person's question, Ask Mira's answer, its offers, "
+                "and lookups of people and business records."
             ),
         ),
         _s(
@@ -417,7 +444,9 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
             name="AI assistants your admin connects (Claude, ChatGPT and others)",
             service=(
                 "When an admin connects an AI assistant to AskMira, it can read the "
-                "people directory, approved leave and attendance counts."
+                "people directory, approved leave and attendance counts; a person who "
+                "connects it as themselves can also use Ask Mira's lookups of business "
+                "records (budgets, deals, procurement, expense totals, joiner counts)."
             ),
             location=ProcessingLocation.UNSPECIFIED,
             country="Depends on the assistant; usually the United States",
@@ -428,11 +457,13 @@ SUB_PROCESSORS: dict[str, SubProcessor] = {
                 "Works only while the workspace has AI switched on",
                 "People who said no to AI on My privacy are left out of every answer",
                 "Read-only; never pay, bank, statutory identifiers, health or leave reasons",
+                "Ask Mira's actions only prepare: the person confirms each in AskMira",
                 "Every call is audited and recorded as a transfer",
             ),
             what_is_sent=(
                 "Names, work emails, titles, departments, managers, approved leave "
-                "dates and attendance counts of people who agreed."
+                "dates and attendance counts of people who agreed; and business records "
+                "with no one named (budgets, deals, purchase documents, totals, counts)."
             ),
         ),
     )

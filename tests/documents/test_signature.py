@@ -149,6 +149,12 @@ async def test_the_noop_provider_round_trips_a_document() -> None:
     assert await provider.download_signed(request.request_id) == b"%PDF-1.4 fake"
 
 
+async def test_a_request_the_stand_in_does_not_remember_is_not_signed() -> None:
+    """Each check builds a fresh stand-in; one that never saw the request signed nothing."""
+    status = await NoopProvider().get_status("noop-from-an-earlier-instance")
+    assert status.state == "requested" and status.signed_at is None
+
+
 async def test_downloading_an_unknown_request_raises() -> None:
     provider = NoopProvider()
     with pytest.raises(SignatureError, match="Unknown signature request"):

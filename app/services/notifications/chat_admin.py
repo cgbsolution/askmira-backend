@@ -73,15 +73,36 @@ async def _row(session: AsyncSession, user: User, provider: Channel) -> TenantCh
     )
 
 
-def _read(provider: Channel, row: TenantChatApp | None) -> dict[str, Any]:
-    base = {"provider": provider.value, "name": LABEL[provider]}
+def inbound_url(provider: Channel, tenant_id: Any) -> str:
+    """Where Slack sends events, or Teams its messages, for Ask Mira in this workspace."""
+    from app.core.config import settings
+
+    base = (settings.PUBLIC_API_URL or settings.WEB_APP_URL or "").rstrip("/")
+    return f"{base}/api/v1/companion/inbound/{provider.value}/{tenant_id}"
+
+
+def _read(provider: Channel, row: TenantChatApp | None, tenant_id: Any = None) -> dict[str, Any]:
+    base = {
+        "provider": provider.value,
+        "name": LABEL[provider],
+        "inbound_url": inbound_url(provider, tenant_id) if tenant_id else None,
+    }
     if row is None:
-        return {**base, "configured": False, "enabled": False, "events": "approvals"}
+        return {
+            **base,
+            "configured": False,
+            "enabled": False,
+            "events": "approvals",
+            "ask_mira": False,
+            "has_signing_secret": False,
+        }
     return {
         **base,
         "configured": True,
         "enabled": row.enabled,
         "events": row.events.value,
+        "ask_mira": row.ask_mira,
+        "has_signing_secret": bool(row.signing_secret_encrypted),
         "has_secret": bool(row.secret_encrypted),
         "app_id": row.app_id,
         "directory_tenant_id": row.directory_tenant_id,
@@ -92,7 +113,7 @@ def _read(provider: Channel, row: TenantChatApp | None) -> dict[str, Any]:
 
 
 async def chat_apps(session: AsyncSession, user: User) -> list[dict[str, Any]]:
-    return [_read(p, await _row(session, user, p)) for p in CHAT_CHANNELS]
+    return [_read(p, await _row(session, user, p), user.tenant_id) for p in CHAT_CHANNELS]
 
 
 async def save(
@@ -105,9 +126,16 @@ async def save(
     secret: str | None,
     app_id: str | None,
     directory_tenant_id: str | None,
+    ask_mira: bool = False,
+    signing_secret: str | None = None,
     request: Request | None = None,
 ) -> dict[str, Any]:
-    """Save the app. `secret=None` keeps the stored one. Checked with the provider first."""
+    """Save the app. `secret=None` keeps the stored one. Checked with the provider first.
+
+    `ask_mira` lets people message the app to ask Ask Mira. Slack then needs the
+    app's signing secret (`signing_secret`, None keeps it), to tell its events
+    from anyone else's.
+    """
     try:
         chosen_events = ChatEvents(events)
     except ValueError as exc:
@@ -133,6 +161,24 @@ async def save(
                 "Your Microsoft 365 tenant id (Directory ID) is a GUID, under Microsoft Entra "
                 "ID → Overview."
             )
+    signing_secret = signing_secret.strip() if signing_secret is not None else None
+    if (
+        provider is Channel.SLACK
+        and signing_secret
+        and not re.fullmatch(r"[0-9a-f]{32}", signing_secret)
+    ):
+        raise _unprocessable(
+            "Paste the app's Signing Secret: 32 letters and digits, under Slack → your app → "
+            "Basic Information → App Credentials."
+        )
+    has_signing = bool(signing_secret) or bool(
+        row is not None and row.signing_secret_encrypted and signing_secret is None
+    )
+    if provider is Channel.SLACK and ask_mira and not has_signing:
+        raise _unprocessable(
+            "Add the app's signing secret before people can ask Mira in Slack: it is how "
+            "AskMira knows a message really came from Slack."
+        )
     has_secret = bool(secret) or bool(row is not None and row.secret_encrypted and secret is None)
     if enabled and not has_secret:
         raise _unprocessable(
@@ -151,6 +197,9 @@ async def save(
     row.directory_tenant_id = directory_tenant_id
     if secret:
         row.secret_encrypted = encrypt_secret(secret, user.tenant_id)
+    if provider is Channel.SLACK and signing_secret:
+        row.signing_secret_encrypted = encrypt_secret(signing_secret, user.tenant_id)
+    row.ask_mira = ask_mira
     row.enabled = enabled
     row.events = chosen_events
     row.configured_by_user_id = user.id
@@ -186,6 +235,8 @@ async def save(
             "enabled": enabled,
             "events": chosen_events.value,
             "secret_changed": bool(secret),
+            "ask_mira": ask_mira,
+            "signing_secret_changed": bool(signing_secret),
             "app_id": app_id,
             "directory_tenant_id": directory_tenant_id,
         },
@@ -193,7 +244,7 @@ async def save(
         request=request,
     )
     await session.commit()
-    return _read(provider, row)
+    return _read(provider, row, user.tenant_id)
 
 
 async def send_test(
@@ -297,7 +348,9 @@ async def manifest(session: AsyncSession, user: User, provider: Channel) -> tupl
 
     portal = email_brand.portal_url()
     if provider is Channel.SLACK:
-        body = json.dumps(slack_manifest(portal), indent=2).encode("utf-8")
+        row = await _row(session, user, provider)
+        events = inbound_url(provider, user.tenant_id) if row is not None and row.ask_mira else None
+        body = json.dumps(slack_manifest(portal, events), indent=2).encode("utf-8")
         return "askmira-slack-manifest.json", "application/json", body
     row = await _row(session, user, provider)
     if row is None or not row.app_id:

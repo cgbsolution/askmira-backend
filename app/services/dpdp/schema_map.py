@@ -187,6 +187,15 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "The ciphertext of the organisation's own Slack bot token or Teams bot secret. "
         "A credential belonging to a company's app, not a person's data."
     ),
+    ("tenant_chat_apps", "signing_secret_encrypted"): (
+        "The ciphertext of the organisation's own Slack app signing secret, used to check "
+        "that an event came from Slack. A credential, not a person's data."
+    ),
+    ("tenant_connections", "secret_encrypted"): (
+        "The ciphertext of the organisation's own e-sign or accounting credentials "
+        "(Digio, Zoho Books). A credential belonging to a company's account, not a person's "
+        "data."
+    ),
     ("tenant_smtp_settings", "password_encrypted"): (
         "The ciphertext of the organisation's own mail-relay password. A "
         "credential belonging to a company's mail server, not a person's data."
@@ -1317,6 +1326,11 @@ TABLES: dict[str, TableClassification] = {
     "sso_login_attempts": _p(USER, "account_security"),
     "scim_tokens": _p(USER, "account_security", {"token_hash": "account_security"}),
     "calendar_connections": _p(USER, "account_security", {"account_email": "identity"}),
+    "calendar_feed_tokens": _p(USER, "account_security", {"token_hash": "account_security"}),
+    "payroll_journal_postings": _none(
+        "Which approved payroll run was posted to the company's books, as which journal, and "
+        "the run's total: one company amount, no person's pay."
+    ),
     "report_runs": _p(USER, "audit_trail"),
     # ── Added by later slices (classified by the DPDP owner) ─────────────────
     "candidate_stage_events": _p(CAND, "recruitment"),
@@ -1382,6 +1396,10 @@ TABLES: dict[str, TableClassification] = {
     "tenant_smtp_settings": _none(
         "A tenant's own mail relay: host, port, an encrypted credential and the "
         "sender address the organisation sends from."
+    ),
+    "tenant_connections": _none(
+        "A tenant's own account at an outside service (Digio eSign, Zoho Books): the "
+        "environment or organisation id, an encrypted credential, and whether it last worked."
     ),
 }
 

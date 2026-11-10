@@ -266,6 +266,10 @@ class ChatAppSave(BaseModel):
     #: Teams only.
     app_id: str | None = Field(default=None, max_length=64)
     directory_tenant_id: str | None = Field(default=None, max_length=64)
+    #: People may ask Ask Mira by messaging the app.
+    ask_mira: bool = False
+    #: Slack only: the app's signing secret, to check events are Slack's. Null keeps it.
+    signing_secret: str | None = Field(default=None, max_length=128)
 
 
 @router.get("/admin/chat-apps", dependencies=ADMIN_ONLY)
@@ -380,7 +384,8 @@ class FailedNotificationRead(NotificationRead):
 
 
 class ConsentRequest(BaseModel):
-    phone_e164: str = Field(pattern=r"^\+[1-9]\d{7,14}$", max_length=20)
+    #: Omitted: the mobile number on the person's own record is used.
+    phone_e164: str | None = Field(default=None, pattern=r"^\+[1-9]\d{7,14}$", max_length=20)
     opted_in: bool
     source: str = Field(default="ess_settings", max_length=64)
 
@@ -616,14 +621,20 @@ async def set_consent(
         )
     )
     now = datetime.now(UTC)
+    phone = payload.phone_e164 or (consent.phone_e164 if consent else None)
+    if phone is None:
+        phone = await notification_service.own_whatsapp_number(session, user)
+    if phone is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Add your mobile number to your profile first; WhatsApp messages go to it.",
+        )
 
     if consent is None:
-        consent = WhatsAppConsent(
-            tenant_id=user.tenant_id, user_id=user.id, phone_e164=payload.phone_e164
-        )
+        consent = WhatsAppConsent(tenant_id=user.tenant_id, user_id=user.id, phone_e164=phone)
         session.add(consent)
 
-    consent.phone_e164 = payload.phone_e164
+    consent.phone_e164 = phone
     consent.source = payload.source
     if payload.opted_in:
         consent.opted_in = True

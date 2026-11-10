@@ -440,6 +440,12 @@ class TenantChatApp(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: Teams only: the bot's Microsoft app (client) id and the Microsoft 365 tenant id.
     app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     directory_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: People may ask Ask Mira here by messaging the app (companion/inbound_*.py).
+    ask_mira: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    #: Slack only: the app's signing secret, to check each event Slack sends is Slack's.
+    signing_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Shown to the admin: the Slack workspace or Teams tenant it answered as.
     connected_as: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

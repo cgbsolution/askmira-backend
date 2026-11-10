@@ -1070,6 +1070,11 @@ async def start_plan(
         },
         request=request,
     )
+    # With CGB Helpdesk linked, IT works the joiner's IT tasks there: one ticket,
+    # raised once this onboarding is saved (never for a save that fails).
+    from app.services.onboarding import helpdesk_tasks
+
+    helpdesk_tasks.send_after_commit(session, user, plan, created)
     await _notify_started(session, user, plan, employee, created)
     return plan
 

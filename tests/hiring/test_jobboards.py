@@ -40,8 +40,8 @@ class FakeTransport:
         self.responses = list(responses)
         self.calls: list[tuple] = []
 
-    async def request(self, method, path, *, json=None, headers=None):
-        self.calls.append((method, path, json, headers))
+    async def request(self, method, path, *, json=None, headers=None, form=None):
+        self.calls.append((method, path, json if form is None else form, headers))
         return self.responses.pop(0) if self.responses else (200, {})
 
 
@@ -287,8 +287,106 @@ async def test_linkedin_without_an_organisation_urn_refuses_to_post() -> None:
 def test_linkedin_warns_that_it_guessed_the_workplace_type() -> None:
     """A remote role listed as on-site gets the wrong applicants, not fewer."""
     adapter = LinkedInAdapter(FakeTransport())
-    _, warnings = adapter.build_payload(_spec(), CREDS)
-    assert any("On-site" in w for w in warnings)
+    element, warnings = adapter.build_payload(_spec(apply_url="https://hr.example/a"), CREDS)
+    assert any("on-site" in w for w in warnings)
+    # LinkedIn's documented element: on-site is the default when workplaceTypes is absent.
+    assert "workplaceTypes" not in element
+    assert isinstance(element["description"], str)
+    assert element["listingType"] == "BASIC"
+    assert element["listedAt"] < datetime.now(UTC).timestamp() * 1000
+
+
+def _linkedin(*answers) -> tuple[LinkedInAdapter, FakeTransport]:
+    from app.services.jobboards import linkedin
+
+    linkedin._TOKENS.clear()
+    transport = FakeTransport((200, {"access_token": "li-token", "expires_in": 1799}), *answers)
+    return LinkedInAdapter(transport), transport
+
+
+LI_CREDS = BoardCredentials(
+    username="li-client", secret="li-secret", extras={"organisation_urn": "urn:li:organization:1"}
+)
+
+
+async def test_linkedin_posts_a_batch_create_with_a_client_credentials_token() -> None:
+    """LinkedIn's documented contract: a client-credentials token, then one
+    batch_create with the job in `elements`, keyed by our own id."""
+    adapter, transport = _linkedin(
+        (200, {"elements": [{"id": "urn:li:simpleJobPostingTask:abc", "status": 202}]})
+    )
+    result = await adapter.publish_job(_spec(apply_url="https://hr.example/a"), LI_CREDS)
+
+    token_call, post_call = transport.calls
+    assert token_call[1] == "https://www.linkedin.com/oauth/v2/accessToken"
+    assert token_call[2] == {
+        "grant_type": "client_credentials",
+        "client_id": "li-client",
+        "client_secret": "li-secret",
+    }
+    method, path, body, headers = post_call
+    assert (method, path) == ("POST", "/v2/simpleJobPostings")
+    assert headers["x-restli-method"] == "batch_create"
+    assert headers["Authorization"] == "Bearer li-token"
+    [element] = body["elements"]
+    assert element["jobPostingOperationType"] == "CREATE"
+    assert element["externalJobPostingId"] == "REQ-001"
+    assert element["integrationContext"] == "urn:li:organization:1"
+    assert result.external_job_id == "REQ-001"
+    assert result.accepted_as["task"] == "urn:li:simpleJobPostingTask:abc"
+
+    # The token is reused, as LinkedIn asks, rather than fetched again.
+    transport.responses.append((200, {"elements": [{"id": "t2", "status": 202}]}))
+    await adapter.update_job("REQ-001", _spec(apply_url="https://hr.example/a"), LI_CREDS)
+    assert len(transport.calls) == 3
+    assert transport.calls[2][2]["elements"][0]["jobPostingOperationType"] == "UPDATE"
+
+
+async def test_a_linkedin_refusal_inside_a_200_is_a_refusal() -> None:
+    """LinkedIn answers HTTP 200 with the error inside the element."""
+    adapter, _ = _linkedin(
+        (
+            200,
+            {
+                "elements": [
+                    {
+                        "error": {
+                            "message": "ERROR :: /title :: field is required",
+                            "status": 422,
+                        },
+                        "status": 422,
+                    }
+                ]
+            },
+        )
+    )
+    with pytest.raises(BoardPermanentFailure, match="title :: field is required"):
+        await adapter.publish_job(_spec(apply_url="https://hr.example/a"), LI_CREDS)
+
+
+async def test_linkedin_closes_by_reposting_with_close_and_a_closed_job_is_closed() -> None:
+    adapter, transport = _linkedin(
+        (200, {"elements": [{"id": "t3", "status": 202}]}),
+    )
+    await adapter.close_job("REQ-001", LI_CREDS, spec=_spec(apply_url="https://hr.example/a"))
+    method, path, body, _ = transport.calls[-1]
+    assert (method, path) == ("POST", "/v2/simpleJobPostings")
+    assert body["elements"][0]["jobPostingOperationType"] == "CLOSE"
+    assert body["elements"][0]["externalJobPostingId"] == "REQ-001"
+
+    transport.responses.append(
+        (409, {"message": "Cannot close job which is already closed or does not exist"})
+    )
+    await adapter.close_job("REQ-001", LI_CREDS)  # already closed: nothing to do
+
+
+async def test_bad_linkedin_app_credentials_say_so() -> None:
+    from app.services.jobboards import linkedin
+
+    linkedin._TOKENS.clear()
+    adapter = LinkedInAdapter(FakeTransport((401, {"error": "invalid_client"})))
+    with pytest.raises(BoardPermanentFailure, match="client id and secret"):
+        await adapter.publish_job(_spec(apply_url="https://hr.example/a"), LI_CREDS)
 
 
 def test_linkedin_parses_its_own_webhook() -> None:
@@ -316,10 +414,51 @@ def test_an_ampersand_in_a_description_does_not_break_the_indeed_feed() -> None:
 
 async def test_indeed_says_the_job_is_queued_for_a_crawler_not_live() -> None:
     """"Published" that actually means "queued" is the kind of half-truth a
-    recruiter discovers by refreshing Indeed for two days."""
-    adapter = IndeedAdapter(FakeTransport((200, {"jobKey": "IND-1"})))
-    result = await adapter.publish_job(_spec(), CREDS)
-    assert any("not yet" in w and "visible" in w for w in result.warnings)
+    recruiter discovers by refreshing Indeed for two days. And nothing is sent:
+    Indeed reads the feed."""
+    transport = FakeTransport()
+    adapter = IndeedAdapter(transport)
+    spec = _spec(apply_url="https://hr.example/careers/a/jobs/R1")
+    result = await adapter.publish_job(spec, CREDS)
+    assert any("own schedule" in w and "feed" in w for w in result.warnings)
+    assert result.accepted_as["apply_url"] == "https://hr.example/careers/a/jobs/R1"
+    assert getattr(transport, "calls", []) == []
+
+
+async def test_indeed_refuses_a_job_with_nowhere_to_apply() -> None:
+    adapter = IndeedAdapter(FakeTransport())
+    with pytest.raises(BoardPermanentFailure, match="apply"):
+        await adapter.publish_job(_spec(apply_url=None), CREDS)
+
+
+async def test_indeed_does_not_pretend_to_poll_applications() -> None:
+    adapter = IndeedAdapter(FakeTransport())
+    with pytest.raises(BoardPermanentFailure, match="not an empty result"):
+        await adapter.fetch_applications("R1", CREDS)
+
+
+def test_the_indeed_feed_wraps_jobs_in_a_publisher_source() -> None:
+    from app.services.jobboards.indeed import render_feed
+
+    xml = render_feed(
+        [(_spec(description_html="<p>Ends with ]]> oddly</p>"), None)],
+        publisher="Acme & Sons",
+        publisher_url="https://hr.example/careers/acme",
+    )
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml)  # well-formed, even with ]]> inside a description
+    assert root.tag == "source"
+    assert root.findtext("publisher") == "Acme & Sons"
+    assert root.findtext("job/description") == "<p>Ends with ]]> oddly</p>"
+    assert root.findtext("job/country") == "IN"
+    # The office's name is the location; Indeed matches on the city.
+    assert root.findtext("job/location") == "Bengaluru"
+    city = render_feed(
+        [(_spec(location="Bengaluru HQ", city="Bengaluru"), None)], publisher="A", publisher_url="u"
+    )
+    assert "<city><![CDATA[Bengaluru]]></city>" in city
+    assert "<location><![CDATA[Bengaluru HQ]]></location>" in city
 
 
 # ═══════════════════════════════════════════════════════════════════════════

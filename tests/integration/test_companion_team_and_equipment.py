@@ -94,7 +94,9 @@ def desk(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeDesk]:
     monkeypatch.setattr(
         product_client,
         "httpx",
-        types.SimpleNamespace(AsyncClient=factory, HTTPError=httpx.HTTPError, Timeout=httpx.Timeout),
+        types.SimpleNamespace(
+            AsyncClient=factory, HTTPError=httpx.HTTPError, Timeout=httpx.Timeout
+        ),
     )
     yield fake
     product_settings.reset_cache()
@@ -108,7 +110,9 @@ async def _ask(session, user, text: str) -> dict[str, Any]:
 async def test_team_tickets_send_only_the_managers_own_reports(session, tenant, desk) -> None:
     boss = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Mala Manager")
     boss_emp = await session.get(Employee, boss.employee_id)
-    ravi = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Ravi Rep", manager=boss_emp)
+    ravi = await make_person(
+        session, tenant, role=UserRole.EMPLOYEE, name="Ravi Rep", manager=boss_emp
+    )
     await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Other Person")
     await _link(session, tenant, "helpdesk", None)
     boss = await as_caller(session, boss)
@@ -187,3 +191,136 @@ async def test_joiners_equipment_from_the_helpdesk_register(session, tenant, des
     [table] = [c for c in reply["cards"] if c.get("type") == "table"]
     assert {row[0]: row[3] for row in table["rows"]}["Kiran Kit"] == "2"
     assert "CGB Helpdesk" in table["caption"]
+
+
+# ── Joiners' purchases in ProcureFlow ───────────────────────────────────────
+
+PF_SECRET = "procure-secret-0123456789abcdef0123456789"
+
+
+class FakeProcureFlow:
+    def __init__(self) -> None:
+        self.asked: list[dict[str, Any]] = []
+        self.company_refused = False
+        self.requisitions: list[dict[str, Any]] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        jwt.decode(
+            request.headers["Authorization"].removeprefix("Bearer "),
+            PF_SECRET,
+            algorithms=["HS256"],
+            audience="askmira:procurement",
+            issuer="askmira",
+        )
+        body = json.loads(request.content)
+        self.asked.append(body)
+        if body["kind"] == "requisitions":
+            if body["params"].get("scope") == "company" and self.company_refused:
+                return httpx.Response(
+                    403,
+                    json={"detail": "Your ProcureFlow role shows you your own requisitions only."},
+                )
+            return httpx.Response(200, json={"kind": "requisitions", "scope": "company",
+                "total": len(self.requisitions), "requisitions": self.requisitions})  # fmt: skip
+        return httpx.Response(422, json={"detail": "unexpected"})
+
+
+@pytest.fixture
+def pf(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeProcureFlow]:
+    monkeypatch.setenv("PROCUREMENT_TOOL_API_URL", "https://pf.test/api/v1")
+    monkeypatch.setenv("PROCUREMENT_TOOL_APP_URL", "https://pf.test")
+    monkeypatch.setenv("PROCUREMENT_TOOL_SECRET", PF_SECRET)
+    product_settings.reset_cache()
+    fake = FakeProcureFlow()
+    real = httpx.AsyncClient
+
+    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(fake.handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        product_client,
+        "httpx",
+        types.SimpleNamespace(
+            AsyncClient=factory, HTTPError=httpx.HTTPError, Timeout=httpx.Timeout
+        ),
+    )
+    yield fake
+    product_settings.reset_cache()
+
+
+def _req(number: str, title: str, status: str) -> dict[str, Any]:
+    return {"ref": number, "number": number, "title": title, "status": status,
+            "requester": "Asha", "cost_center": "IT", "amount": "85000.00", "currency": "INR"}  # fmt: skip
+
+
+async def test_joiners_show_their_procureflow_purchase_and_whether_it_is_approved(
+    session, tenant, pf
+) -> None:
+    from app.services.companion.equipment_tools import joiners_equipment
+
+    hr = await as_caller(
+        session, await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
+    )
+    await _joiner(session, tenant, "Kiran Kit", -3)
+    nina = await _joiner(session, tenant, "Nina Nothing", 5)
+    await _joiner(session, tenant, "Omar Open", 7)
+    await _link(session, tenant, "procurement", {hr.email: "TENANT_ADMIN"})
+    pf.requisitions = [
+        _req("PR-0012", "Laptop for Kiran Kit", "APPROVED"),
+        _req("PR-0013", f"Laptop for new joiner {nina.employee_code}", "AWAITING_APPROVAL"),
+        _req("PR-0014", "Office chairs", "APPROVED"),
+        # Not Omar's: a part of his name, or someone else's code with his name.
+        _req("PR-0015", "Laptop for Omar Openshaw", "APPROVED"),
+        _req("PR-0016", "Laptop replacement - Omar Open (EMP0311)", "APPROVED"),
+    ]
+    cards, _used = await joiners_equipment(session, hr, {}, today=TODAY)
+    [table] = cards
+    assert table["columns"][-1] == "Purchase (ProcureFlow)"
+    purchase = {row[0]: row[5] for row in table["rows"]}
+    # By name only, and said so; by the joiner's code, settled.
+    assert purchase["Kiran Kit"] == "PR-0012 · Approved (approved) · matched by name"
+    assert purchase["Nina Nothing"] == "PR-0013 · Awaiting approval (waiting for approval)"
+    assert purchase["Omar Open"] == "No requisition found"
+    assert "1 joiner(s) have an approved purchase, 1 wait for approval" in table["model_view"]
+    assert "Kiran" not in table["model_view"]
+    [asked] = [a for a in pf.asked if a["kind"] == "requisitions"]
+    assert asked["params"]["scope"] == "company"
+
+
+async def test_a_role_that_sees_only_its_own_requisitions_is_said_so(session, tenant, pf) -> None:
+    from app.services.companion.equipment_tools import joiners_equipment
+
+    hr = await as_caller(
+        session, await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
+    )
+    await _joiner(session, tenant, "Kiran Kit", -3)
+    await _link(session, tenant, "procurement", {hr.email: "REQUESTER"})
+    pf.company_refused = True
+    pf.requisitions = [_req("PR-0012", "Laptop for Kiran Kit", "DRAFT")]
+    [table], _used = await joiners_equipment(session, hr, {}, today=TODAY)
+    assert "from your own ProcureFlow requisitions" in table["caption"]
+    shown = {row[0]: row[5] for row in table["rows"]}["Kiran Kit"]
+    assert shown == "PR-0012 · Draft (not sent for approval) · matched by name"
+    # A draft is not waiting for approval.
+    assert "0 wait for approval, 1 are drafts not sent" in table["model_view"]
+
+
+async def test_a_refused_purchase_is_no_live_requisition(session, tenant, pf) -> None:
+    from app.services.companion.equipment_tools import joiners_equipment
+
+    hr = await as_caller(
+        session, await make_person(session, tenant, role=UserRole.ADMIN, name="Asha Admin")
+    )
+    kiran = await _joiner(session, tenant, "Kiran Kit", -3)
+    await _link(session, tenant, "procurement", {hr.email: "TENANT_ADMIN"})
+    pf.requisitions = [_req("PR-0020", f"Laptop for {kiran.employee_code}", "REJECTED")]
+    [table], _used = await joiners_equipment(session, hr, {}, today=TODAY)
+    assert {row[0]: row[5] for row in table["rows"]}["Kiran Kit"] == (
+        "PR-0020 · Rejected (no live purchase)"
+    )
+    assert "0 wait for approval" in table["model_view"]
+    assert (
+        "1 were refused or withdrawn; 1 without equipment have no live requisition"
+        in (table["model_view"])
+    )

@@ -36,6 +36,7 @@ from app.services.hiring import (
 )
 from app.services.hiring import careers as careers_service
 from app.services.jobboards import distribution, overview
+from app.services.jobboards import feed as board_feed
 
 router = APIRouter(tags=["careers"])
 
@@ -57,7 +58,8 @@ class BoardAccountCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=128)
     username: str | None = Field(default=None, max_length=255)
     # Encrypted before it touches the database and never returned.
-    secret: str = Field(min_length=1, max_length=4096)
+    # Required for every board that is sent anything; a feed board needs none.
+    secret: str = Field(default="", max_length=4096)
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -377,6 +379,17 @@ async def careers_page(
         department_id=department_id,
         location_id=location_id,
         search=(search or "")[:80] or None,
+    )
+
+
+@router.get("/public/careers/{slug}/feeds/{board}.xml", include_in_schema=False)
+async def careers_board_feed(slug: str, board: str, session: DbSession) -> Response:
+    """The job feed a feed-reading board crawls: the jobs posted to that board, as XML."""
+    xml = await board_feed.board_feed(session, slug[:64], board[:32])
+    return Response(
+        content=xml,
+        media_type="application/xml; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=900"},
     )
 
 

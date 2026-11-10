@@ -51,6 +51,7 @@ from app.models.audit import AuditAction
 from app.models.interview import CalendarConnection, CalendarProviderKind
 from app.models.user import User
 from app.services import audit
+from app.services.calendar import registry as calendar_registry
 
 __all__ = [
     "OAuthClient",
@@ -59,6 +60,8 @@ __all__ = [
     "connection_status",
     "disconnect",
     "oauth_client",
+    "provider_in_state",
+    "usable_access_token",
 ]
 
 _STATE_TYPE = "calendar_oauth_state"
@@ -110,6 +113,24 @@ def _state_for(user: User, provider: CalendarProviderKind) -> str:
     )
 
 
+def provider_in_state(state: str) -> CalendarProviderKind:
+    """Which calendar a sign-in was for, read from our own signed state.
+
+    Google and Microsoft send the browser back with only `code` and `state`, so
+    the provider is taken from the state we signed when the sign-in began. The
+    state is checked in full (user, tenant, provider, expiry) by
+    `complete_connection` afterwards; this only reads it.
+    """
+    try:
+        claims = jwt.decode(state, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        return CalendarProviderKind(claims.get("provider"))
+    except (jwt.InvalidTokenError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This calendar sign-in has expired or was not started here. Connect again.",
+        ) from exc
+
+
 def _check_state(state: str, user: User, provider: CalendarProviderKind) -> None:
     try:
         claims = jwt.decode(state, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
@@ -152,7 +173,14 @@ async def connection_status(session: AsyncSession, user: User) -> dict[str, Any]
     for provider in CalendarProviderKind:
         row = rows.get(provider)
         connected = bool(row is not None and row.revoked_at is None and row.access_token_encrypted)
-        expired = bool(connected and row.expires_at is not None and row.expires_at <= now)
+        # An expired access token is renewed on the next call while a refresh
+        # token is stored; only without one does the person have to reconnect.
+        expired = bool(
+            connected
+            and row.expires_at is not None
+            and row.expires_at <= now
+            and not row.refresh_token_encrypted
+        )
         providers.append(
             {
                 "provider": provider.value,
@@ -356,3 +384,93 @@ async def disconnect(
         summary=f"Calendar disconnected ({provider.value})",
     )
     return {"disconnected": True, "provider": provider.value}
+
+
+async def usable_access_token(
+    session: AsyncSession,
+    connection: CalendarConnection,
+    tenant_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> str:
+    """An access token that works now, refreshed at the provider first if it is about to expire.
+
+    Providers issue access tokens for about an hour. Without this an interviewer's
+    calendar stopped working an hour after they connected it, and the message
+    told them to reconnect a calendar that was fine.
+    """
+    moment = now or datetime.now(UTC)
+    expires_at = connection.expires_at
+    if (
+        connection.revoked_at is None
+        and expires_at is not None
+        and expires_at - calendar_registry.REFRESH_MARGIN <= moment
+    ):
+        await _refresh(session, connection, tenant_id, transport=transport)
+    return calendar_registry.access_token_for(connection, tenant_id, now=moment)
+
+
+async def _refresh(
+    session: AsyncSession,
+    connection: CalendarConnection,
+    tenant_id: uuid.UUID,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> bool:
+    """Exchange the stored refresh token for a new access token. False when it could not."""
+    client = oauth_client(connection.provider)
+    refresh = calendar_registry.refresh_token_for(connection, tenant_id)
+    if client is None or not refresh:
+        connection.last_error = (
+            "The calendar token expired and no refresh token is stored. Reconnect the calendar."
+        )
+        return False
+
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+        "client_id": client.client_id,
+        "client_secret": client.client_secret,
+    }
+    # Providers that hand out refresh tokens only for the offline_access scope
+    # also want the scopes repeated on a refresh; the others take no scope here.
+    if "offline_access" in client.scopes.split():
+        form["scope"] = client.scopes
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=15.0) as http:
+            response = await http.post(
+                client.token_url, data=form, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError:
+        connection.last_error = "The calendar provider could not be reached to renew the token."
+        return False
+
+    try:
+        tokens = response.json()
+    except ValueError:
+        tokens = {}
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    if response.status_code >= 400 or not isinstance(access_token, str) or not access_token:
+        reason = (tokens.get("error_description") or tokens.get("error")) if tokens else None
+        connection.last_error = (
+            "The calendar provider would not renew the token"
+            + (f" ({reason})" if reason else "")
+            + ". Reconnect the calendar."
+        )
+        await session.flush()
+        return False
+
+    connection.access_token_encrypted = encrypt_secret(access_token, tenant_id)
+    rotated = tokens.get("refresh_token")
+    if isinstance(rotated, str) and rotated:
+        connection.refresh_token_encrypted = encrypt_secret(rotated, tenant_id)
+    expires_in = tokens.get("expires_in")
+    connection.expires_at = (
+        datetime.now(UTC) + timedelta(seconds=int(expires_in))
+        if isinstance(expires_in, int | float | str) and str(expires_in).isdigit()
+        else None
+    )
+    connection.last_error = None
+    await session.flush()
+    return True

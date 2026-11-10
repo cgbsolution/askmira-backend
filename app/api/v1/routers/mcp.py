@@ -36,6 +36,12 @@ async def mcp_message(
             actor, scopes = await integrations.key_identity(session, presented)
         elif presented.startswith("amo_"):
             actor, scopes = await oauth.token_identity(session, presented)
+            # What a signed-in request carries too: a sub-admin's department or location
+            # scope, read as for a message to Ask Mira.
+            from app.core.access_control import load_request_access
+            from app.services.companion.actions import _HOME_PATH, _scope_for
+
+            await load_request_access(_scope_for(request, _HOME_PATH), session, actor)
         else:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

@@ -223,6 +223,29 @@ async def exchange_code(
         expected_nonce=expected_nonce,
     )
 
+    # OpenID Connect Core §5.4: claims asked for by scope (email, name) may be
+    # returned only from UserInfo when an access token is issued, and
+    # spec-strict providers do exactly that. Without this a valid sign-in had
+    # "no email" and was refused. UserInfo is read with the access token over
+    # TLS from the provider's own endpoint; it is accepted only for the same
+    # subject as the verified id token, and never overrides a verified claim.
+    access_token = payload.get("access_token")
+    if not claims.get("email") and discovery.userinfo_endpoint and access_token:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            try:
+                info = await client.get(
+                    discovery.userinfo_endpoint,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+            except httpx.HTTPError as exc:
+                raise OidcError(f"Could not reach the userinfo endpoint: {exc}") from exc
+        if info.status_code >= 400:
+            raise OidcError(f"The identity provider refused userinfo ({info.status_code}).")
+        extra = info.json()
+        if not isinstance(extra, dict) or extra.get("sub") != claims.get("sub"):
+            raise OidcError("The userinfo response is for a different person than the id token.")
+        claims = {**extra, **claims}
+
     return OidcIdentity(subject=claims["sub"], issuer=claims["iss"], claims=claims)
 
 

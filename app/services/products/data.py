@@ -121,6 +121,16 @@ def _explain(brand: str, exc: client.ProductError) -> str:
     if exc.status == 403 and exc.detail:
         # The product's own words: why this person may not read this there.
         return exc.detail[:300]
+    said = (exc.detail or "").strip().lower().rstrip(".")
+    if (
+        exc.status == 404
+        and said
+        and said != "not found"
+        and not any(word in said for word in ("link", "organi", "workspace", "tenant"))
+    ):
+        # A record that is gone there (a claim deleted meanwhile), in its own words. A
+        # product not connected says so in words like these, or just "Not found".
+        return f"{brand} could not find it: {exc.detail[:200]}"
     if exc.status == 404:
         return (
             f"{brand} does not have your company connected any more. "

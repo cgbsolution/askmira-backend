@@ -6,7 +6,7 @@ file that is not listed here will silently produce an empty migration.
 """
 
 from app.models.access import AdminScope, UserAreaRights
-from app.models.accounting import LedgerMapping, LedgerNature
+from app.models.accounting import LedgerMapping, LedgerNature, PayrollJournalPosting
 from app.models.accounts import (
     AccountAllocation,
     AccountEntry,
@@ -374,7 +374,9 @@ from app.models.identity import (
 )
 from app.models.integrations import (
     ApiKey,
+    CalendarFeedToken,
     DeliveryStatus,
+    TenantConnection,
     WebhookDelivery,
     WebhookEndpoint,
     WebhookFormat,
@@ -749,6 +751,7 @@ __all__ = [
     "Cadence",
     "CalculationType",
     "CalendarConnection",
+    "CalendarFeedToken",
     "CalendarProviderKind",
     "CalibrationChange",
     "CalibrationMode",
@@ -1038,6 +1041,7 @@ __all__ = [
     "PayoutStatusEnum",
     "PayrollAdjustment",
     "PayrollAdjustmentApplication",
+    "PayrollJournalPosting",
     "PayrollRuleSet",
     "PayrollRun",
     "PayrollRunStatus",
@@ -1193,6 +1197,7 @@ __all__ = [
     "TemplateAssignmentRule",
     "Tenant",
     "TenantChatApp",
+    "TenantConnection",
     "TenantExpenseSettings",
     "TenantMixin",
     "TenantPlan",

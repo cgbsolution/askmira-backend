@@ -21,7 +21,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from app.services.documents.indian_numbers import group_indian
 from app.services.positions.headcount import money
+
+
+def _rupees(value: Decimal) -> str:
+    """₹1,07,20,000: how a person reads a budget, not 10720000.00."""
+    return f"₹{group_indian(value.quantize(Decimal('1')))}"
+
 
 __all__ = ["Budget", "BudgetCheck", "Seat", "check"]
 
@@ -111,8 +118,8 @@ def check(budget: Budget, *, counted: list[Seat], adding: list[Seat], what: str)
         )
         if cost_after > approved_cost:
             problems.append(
-                f"{what} would take {budget.scope}'s budgeted cost to {money(cost_after)} "
-                f"against {money(approved_cost)} approved for {budget.financial_year}."
+                f"{what} would take {budget.scope}'s budgeted cost to {_rupees(cost_after)} "
+                f"against {_rupees(approved_cost)} approved for {budget.financial_year}."
             )
 
     return BudgetCheck(

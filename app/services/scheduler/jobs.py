@@ -213,6 +213,16 @@ async def _candidate_purge(session: AsyncSession, ctx: JobContext) -> dict[str, 
     return _tally(await careers.purge_expired(session, ctx.actor, as_of=ctx.today))
 
 
+async def _signature_status(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    """Letters out for signature on the workspace's own Digio account: ask Digio
+    whether each is signed, so a letter moves on even without a webhook."""
+    from app.services.documents import service as letters
+
+    if ctx.tenant_id is None:
+        return {"signed": 0}
+    return {"signed": await letters.check_pending_signatures(session, ctx.tenant_id)}
+
+
 async def _job_board_refresh(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     """Refresh every posting that is due. One posting's failure is recorded by
     the job-board module against that posting and does not stop the rest."""
@@ -860,6 +870,15 @@ JOBS: tuple[Job, ...] = (
         module="hiring",
     ),
     Job(
+        key="documents.signature_status",
+        name="E-signature status",
+        description="Checks letters out for Aadhaar eSign on the workspace's Digio account.",
+        cadence=Cadence.every(minutes=60),
+        handler=_signature_status,
+        source="app.services.documents.service.check_pending_signatures",
+        module="core_hr",
+    ),
+    Job(
         key="rewards.expire_points",
         name="Points expiry",
         description="Writes expiry entries for reward points past the tenant's policy.",
@@ -1007,10 +1026,6 @@ NOT_YET_REGISTERED: tuple[dict[str, str], ...] = (
     {
         "requirement": "Job-board application polling (prompt 20 §3)",
         "reason": "Ingestion is push/manual only; no poll function exists.",
-    },
-    {
-        "requirement": "BI connector scheduled exports (prompt 37 §1)",
-        "reason": "No bucket or Postgres-role transport exists to deliver to.",
     },
     {
         "requirement": "Agent evaluation production sampling (prompt 27 §5)",

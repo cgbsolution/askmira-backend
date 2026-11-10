@@ -382,10 +382,35 @@ async def ingest_punches(
 
     seen_in_batch: set[tuple[str, datetime]] = set()
 
+    # Unknown-code punches already parked from an earlier send of the same log:
+    # devices resend on every retry, and one punch must be one exception.
+    parked: set[tuple[str | None, datetime]] = set()
+    if normalised and any(p.employee_code not in employees for p in normalised):
+        earliest = min(p.punched_at for p in normalised)
+        latest = max(p.punched_at for p in normalised)
+        parked = {
+            (row.employee_code, row.punched_at)
+            for row in (
+                await session.scalars(
+                    select(DevicePunchException).where(
+                        tenant_filter(DevicePunchException, device.tenant_id),
+                        DevicePunchException.device_id == device.device_id,
+                        DevicePunchException.punched_at >= earliest,
+                        DevicePunchException.punched_at <= latest,
+                    )
+                )
+            ).all()
+        }
+
     for punch in normalised:
         employee_id = employees.get(punch.employee_code)
 
         if employee_id is None:
+            parked_key = (punch.employee_code, punch.punched_at)
+            if parked_key in parked:
+                result.duplicates += 1
+                continue
+            parked.add(parked_key)
             session.add(
                 DevicePunchException(
                     tenant_id=device.tenant_id,

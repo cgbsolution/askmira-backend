@@ -24,12 +24,14 @@ from app.services.calendar.base import (
 )
 from app.services.calendar.google import GoogleCalendarAdapter
 from app.services.calendar.microsoft import MicrosoftCalendarAdapter
+from app.services.outbound_http import HttpsTransport, TransportConfigError
 
 __all__ = [
     "CalendarUnavailable",
     "access_token_for",
     "adapter_class",
     "get_adapter",
+    "refresh_token_for",
     "register_adapter",
     "supported_providers",
 ]
@@ -70,10 +72,14 @@ def get_adapter(provider: CalendarProvider, transport: Transport | None = None) 
     if builder is None:
         raise CalendarUnavailable(f"No adapter for '{provider}'.")
     if transport is None:
-        raise CalendarUnavailable(
-            f"No HTTP transport is configured for {provider.value}. This deployment "
-            "cannot reach the calendar — nothing was read and nothing was booked."
-        )
+        # Production: the live HTTPS transport, bound to the adapter's own
+        # address. Tests inject a double instead.
+        try:
+            transport = HttpsTransport(
+                builder.BASE_URL, allowed_hosts=builder.API_HOSTS, label=builder.LABEL
+            )
+        except TransportConfigError as exc:
+            raise CalendarUnavailable(str(exc)) from exc
     return builder(transport)
 
 
@@ -117,3 +123,10 @@ def access_token_for(connection: Any, tenant_id: uuid.UUID, *, now: datetime | N
             "reconnected."
         )
     return token
+
+
+def refresh_token_for(connection: Any, tenant_id: uuid.UUID) -> str | None:
+    """The stored refresh token, decrypted at the point of use; None when there is none."""
+    if not getattr(connection, "refresh_token_encrypted", None):
+        return None
+    return decrypt_secret(connection.refresh_token_encrypted, tenant_id) or None

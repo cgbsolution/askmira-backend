@@ -224,8 +224,12 @@ class SlackAdapter(ChannelAdapter):
         )
 
 
-def slack_manifest(portal_url: str | None) -> dict[str, Any]:
-    """The Slack app manifest: api.slack.com → Create an app → From a manifest."""
+def slack_manifest(portal_url: str | None, events_url: str | None = None) -> dict[str, Any]:
+    """The Slack app manifest: api.slack.com → Create an app → From a manifest.
+
+    With `events_url` (Ask Mira on in Slack) people may message the app, and Slack
+    sends each direct message there.
+    """
     manifest: dict[str, Any] = {
         "display_information": {
             "name": "AskMira",
@@ -249,11 +253,23 @@ def slack_manifest(portal_url: str | None) -> dict[str, Any]:
             "token_rotation_enabled": False,
         },
     }
+    if events_url:
+        manifest["features"]["app_home"]["messages_tab_read_only_enabled"] = False
+        manifest["oauth_config"]["scopes"]["bot"].append("im:history")
+        manifest["settings"]["event_subscriptions"] = {
+            "request_url": events_url,
+            "bot_events": ["message.im"],
+        }
     if portal_url:
+        reads = (
+            "It reads each person's email, to find them, and the direct messages people send "
+            "the app, to answer them as Ask Mira; nothing else in Slack."
+            if events_url
+            else "It reads nothing in Slack except each person's email, to find them."
+        )
         manifest["display_information"]["long_description"] = (
             "AskMira sends each person the approvals waiting on them and the updates they "
-            f"chose, with buttons that open {portal_url.rstrip('/')}. It reads nothing in "
-            "Slack except each person's email, to find them."
+            f"chose, with buttons that open {portal_url.rstrip('/')}. {reads}"
         )
     return manifest
 

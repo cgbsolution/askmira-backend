@@ -310,6 +310,14 @@ async def _travel(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     ]
 
 
+async def _decidable(session: AsyncSession, user: User, kind: str) -> set[Any]:
+    """The requisitions or offers waiting on a step this person may sign (hiring's own rule)."""
+    from app.services.hiring import requisitions as hiring_requisitions
+
+    found = await hiring_requisitions.pending_decisions(session, user)
+    return {item["id"] for item in found if item.get("kind") == kind}
+
+
 async def _requisitions(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     stmt = tenant_scoped(
         select(Requisition).where(
@@ -323,6 +331,12 @@ async def _requisitions(session: AsyncSession, user: User) -> list[dict[str, Any
         user,
     )
     requisitions = (await session.scalars(stmt.order_by(Requisition.created_at))).all()
+    if not requisitions:
+        return []
+    # Only what this person may sign now: the same list as Hiring's "Waiting on you"
+    # (a sub-admin outside the step's role is never shown one they can't decide).
+    mine = await _decidable(session, user, "requisition")
+    requisitions = [r for r in requisitions if r.id in mine]
     if not requisitions:
         return []
     steps = (
@@ -369,6 +383,10 @@ async def _offers(session: AsyncSession, user: User) -> list[dict[str, Any]]:
         user,
     )
     offers = (await session.scalars(stmt.order_by(Offer.created_at))).all()
+    if not offers:
+        return []
+    mine = await _decidable(session, user, "offer")
+    offers = [o for o in offers if o.id in mine]
     if not offers:
         return []
     steps = (

@@ -250,8 +250,8 @@ async def list_letters(
 
 
 @router.get("/letters/signature-provider", response_model=SignatureProviderRead)
-async def signature_provider(user: CurrentUser) -> SignatureProviderRead:
-    return letter_service.signature_provider_status()
+async def signature_provider(user: CurrentUser, session: DbSession) -> SignatureProviderRead:
+    return await letter_service.signature_provider_status(session, user)
 
 
 @router.get("/letters/{letter_id}/pdf")
@@ -317,6 +317,18 @@ async def send_for_signature(
     )
 
 
+@router.post(
+    "/letters/{letter_id}/signature-status",
+    response_model=LetterRead,
+    dependencies=HR_ONLY,
+)
+async def check_signature_status(
+    letter_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> LetterRead:
+    """Ask the e-sign provider now whether the letter has been signed."""
+    return await letter_service.refresh_signature_status(session, user, letter_id)
+
+
 # ── In-portal acknowledgement ──────────────────────────────────────────────
 
 
@@ -349,6 +361,20 @@ async def acknowledge(
 
 
 # ── Webhook ─────────────────────────────────────────────────────────────────
+
+
+@router.post("/webhooks/signature/digio/w/{connection_id}", include_in_schema=False)
+async def workspace_signature_webhook(
+    connection_id: uuid.UUID, request: Request, session: DbSession
+) -> dict[str, str]:
+    """A signature completion on a workspace's own Digio account. The workspace's
+    webhook secret, checked before anything is read, is the authentication."""
+    return await letter_service.record_tenant_signature_webhook(
+        session,
+        connection_id=connection_id,
+        raw_body=await request.body(),
+        headers=dict(request.headers),
+    )
 
 
 @router.post("/webhooks/signature/{provider_name}", include_in_schema=False)

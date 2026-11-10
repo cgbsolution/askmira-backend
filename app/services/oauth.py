@@ -56,13 +56,18 @@ __all__ = [
     "token_identity",
 ]
 
-#: What the MCP tools read. Nothing here writes.
-ALL_SCOPES = ("employees:read", "org:read", "leave:read", "attendance:read")
+#: What the MCP tools may do. Nothing here writes: Ask Mira's actions only prepare,
+#: and the person confirms them in AskMira.
+ALL_SCOPES = ("employees:read", "org:read", "leave:read", "attendance:read", "mira:use")
 SCOPE_LABELS = {
     "employees:read": "Search the employee directory (names, titles, teams, work email)",
     "org:read": "See departments and locations",
     "leave:read": "See who is out, and when",
     "attendance:read": "See attendance summaries for a date range",
+    "mira:use": (
+        "Use Ask Mira's lookups as you (budgets, deals, procurement, expense totals) and "
+        "prepare actions that you confirm in AskMira"
+    ),
 }
 CODE_LIFETIME = timedelta(minutes=10)
 ACCESS_LIFETIME = timedelta(hours=1)
@@ -85,7 +90,7 @@ def allowed_scopes(user: User) -> set[str]:
     `employees:read` reaches as far as the app's directory does: the whole
     company for HR, the caller's own circle for anybody else.
     """
-    scopes = {"employees:read", "org:read", "leave:read"}
+    scopes = {"employees:read", "org:read", "leave:read", "mira:use"}
     if permissions.is_hr(user):
         scopes.add("attendance:read")
     return scopes
@@ -347,6 +352,15 @@ async def token_identity(session: AsyncSession, token: str) -> tuple[User, froze
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="This person can no longer sign in."
+        )
+    from app.models.tenant import Tenant
+
+    workspace = await session.get(Tenant, user.tenant_id)
+    if workspace is None or not workspace.is_active or workspace.deleted_at is not None:
+        # As for a signed-in request (deps.get_current_user): suspended means nobody acts.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This workspace has been suspended. Contact AskMira support.",
         )
     user.has_reports = await has_direct_reports(session, user)
     grant.last_used_at = now

@@ -92,8 +92,10 @@ hiring_* and helpdesk_* tools for them, for any period up to a year, and never a
 from somewhere else. An admin may ask about the whole company there; everybody else gets \
 their own records only, and the tools hold that line.
 - Leads and deals live in Saleinx (sales_deals, sales_pipeline, save_lead, move_deal, \
-decide_deal); requisitions, purchase orders, invoices and budgets in ProcureFlow \
-(procurement_*). What a person may see or change there is their role there: a viewer only \
+decide_deal); purchase requisitions, purchase orders, invoices and budgets in ProcureFlow \
+(procurement_*). A requisition for people (a role, a seat, a hire) is AskMira's own: raise it \
+with raise_requisition, after department_budget when the person asks whether it fits. What \
+a person may see or change in Saleinx or ProcureFlow is their role there: a viewer only \
 reads, a rep's Won waits for a manager. Say so plainly when a tool says they may not.
 - A pasted note about a new lead: read out of it the company, the contact (name, title, \
 email, phone), what they want, the budget, when they decide, who referred them and the \
@@ -119,6 +121,12 @@ they answer, offer it with save_lead.
 the file shows and what they tell you: never fill in a detail yourself.
   - A picture with no person or company in it (a photo, a view, a chart) is no lead: say what it \
 shows, that it has no name or company to add, and ask for the details.
+A receipt, a bill or an invoice the person paid is an expense claim: offer it with \
+file_expense_claim, each bill a line with what it shows (amount, date, vendor, number), and \
+pick the category from what was bought; ask only for what the file does not show. Amounts go \
+in exactly as written: never move or drop a decimal point. To approve or reject the expense \
+claims waiting on them, call decide_expense_claims straight away: it finds and lists them in \
+its offer, so don't look them up first or ask which.
 A screenshot of an error or a broken device is an IT ticket (raise_it_ticket, what it shows in \
 the description). Anything else: answer from it, or ask what they want done with it. A file \
 that could not be read says so: tell them why, and ask them to type the details.
@@ -139,7 +147,9 @@ Put anything else they said about the deal ("presentation on 15 November") in `n
 - When a customer has signed, use book_order with the PO, its value, the start, the months \
 and every role with its rates. Never work out billing, cost or margin yourself: the tool \
 does, and checks the PO against them; repeat its figures. "The same team as X" means the \
-roles and rates of X's order earlier in this conversation. If it refuses (the Won is not yet \
+roles and rates of X's order earlier in this conversation. Pass the delivery department in \
+`department` when they name the team the people join ("for Sales West"): the tool checks its \
+headcount budget and raises the roles as requisitions there. If it refuses (the Won is not yet \
 approved, the PO does not match, the PO was booked already), say why and stop.
 - Follow-ups build on what came before. "And for last year", "by department instead", "as a \
 pie chart" or "only Sales" change one thing about your last lookup: ask again with that one \
@@ -148,8 +158,13 @@ change.
 cards. Do not copy tables into your reply: give the answer and the few figures that matter.
 - You never change anything yourself. An action tool (apply_leave, cancel_leave, \
 request_attendance_change, decide_approvals, raise_hr_ticket, save_lead, move_deal, \
-decide_deal, book_order, decide_procurement) checks the request and makes an offer the \
-person sees with a Confirm button. Before offering leave, know the leave type and \
+decide_deal, book_order, decide_procurement, raise_requisition, file_expense_claim, \
+decide_expense_claims) checks the request and makes an offer the person sees with a Confirm \
+button. Until they confirm nothing is done: say what the offer will do, in the future tense \
+("this files your claim for…"), never "I've filed", "it went through" or "it's done". Use an \
+action tool only when the person asks for that action, never to answer a question: "can Sales \
+afford two more hires?" is a question, not a request to raise a requisition. A requisition is \
+approved in Hiring, never here. Before offering leave, know the leave type and \
 the dates: if the person did not say which leave, check their balance first (my_record, \
 lookup leave_balance) and ask, unless only one type has the days. Then say what the offer \
 will do — the days counted, the balance after, who approves it — and ask them to confirm.
@@ -180,6 +195,23 @@ guess what they say: point the person to them, and carry on with what you can do
 - Reply in the language the person writes in. Be warm, plain and brief: short paragraphs, \
 lines starting with "- " for a list, **bold** for the one figure that matters. No headings, no \
 tables, no links."""
+
+
+def place_note(place: str) -> str:
+    """What differs when the person writes from Slack, Teams or email."""
+    if place == "email":
+        return (
+            "- This conversation is by email. There are no buttons and no cards to point at: "
+            "your reply is the email's text, followed by what the tools found. An offer is "
+            "never confirmed by replying: the email ends with a link, and the person confirms "
+            'it in AskMira. Say that, never "press Confirm" or "reply yes".'
+        )
+    name = "Slack" if place == "slack" else "Microsoft Teams"
+    return (
+        f"- This conversation is in {name}. There are no buttons: an offer is confirmed by the "
+        "person replying yes. Records of pay, leave or attendance are not written into the "
+        "chat; they are in AskMira, from the link at the end."
+    )
 
 
 def _role(user: User) -> str:
@@ -238,6 +270,14 @@ _TOPICS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("move_deal", "sales_deals", "decide_deal"),
     ),
     (r"\bpo\b|purchase order|signed|order win|positions", ("book_order", "sales_deals")),
+    (
+        r"receipt|\bbill\b|invoice|claim|reimburs|expense",
+        ("file_expense_claim", "decide_expense_claims", "expense_claims"),
+    ),
+    (
+        r"requisition|\bhire|hiring|\bseat|\brole\b|headcount|vacanc",
+        ("raise_requisition", "department_budget"),
+    ),
     (
         r"requisition|procure|vendor|invoice|budget",
         ("procurement_overview", "procurement_documents", "procurement_approvals"),
@@ -528,23 +568,30 @@ def _people_in(cards: list[dict[str, Any]], tool: Tool) -> int:
 
 
 def _drop_superseded(out: TurnOutcome) -> None:
-    """Drop a tool's "nothing found" notice when a later call of the same tool found something.
+    """Drop a tool's notice when a later call of the same tool answered it.
 
     The model often narrows a first try (a month with no payroll yet) and asks
-    again; the person needs the answer, not the miss before it.
+    again; the person needs the answer, not the miss before it. Likewise a
+    tool's question ("which category is it?") is gone once a later call of it
+    in the same turn made the offer: the question was answered.
     """
     owners = out.card_tools
     if len(owners) != len(out.cards):
         return
-    found = {
-        tool for tool, card in zip(owners, out.cards, strict=True) if card.get("type") != "notice"
-    }
-    keep = [
-        card
-        for tool, card in zip(owners, out.cards, strict=True)
-        if not (card.get("type") == "notice" and tool in found and _empty(card))
-    ]
-    out.cards[:] = keep
+    pairs = list(zip(owners, out.cards, strict=True))
+    found = {tool for tool, card in pairs if card.get("type") != "notice"}
+
+    def answered(index: int, tool: str, card: dict[str, Any]) -> bool:
+        if card.get("type") != "notice":
+            return False
+        if tool in found and _empty(card):
+            return True
+        later_offer = any(t == tool and c.get("type") == "proposal" for t, c in pairs[index + 1 :])
+        return later_offer and card.get("tone", "info") == "info"
+
+    keep = [(tool, card) for i, (tool, card) in enumerate(pairs) if not answered(i, tool, card)]
+    out.card_tools[:] = [tool for tool, _ in keep]
+    out.cards[:] = [card for _, card in keep]
 
 
 def _empty(card: dict[str, Any]) -> bool:

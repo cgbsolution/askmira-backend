@@ -63,6 +63,15 @@ ENDPOINTS: dict[str, str] = {
     ),
     "GET /leave/types": "reference: the leave catalogue.",
     "GET /leave/holidays": "reference: the holiday calendar.",
+    "GET /me/calendar-feed": (
+        "own: whether the caller has a calendar link, by user.id from the token; takes no "
+        "person id."
+    ),
+    "POST /me/calendar-feed": (
+        "own: makes the caller's own calendar link, by user.id from the token; the team is "
+        "only the caller's direct reports, by user.employee_id."
+    ),
+    "DELETE /me/calendar-feed": "own: turns off the caller's own calendar link, by user.id.",
     "GET /leave/requests": (
         "permissions: own requests, a manager's reporting line, or everybody "
         "for HR. Reasons are routinely medical."

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.config import settings
-from app.core.deps import tenant_scoped
+from app.core.deps import tenant_filter, tenant_scoped
 from app.models.audit import AuditAction
 from app.models.documents import (
     CATEGORY_CODES,
@@ -38,6 +38,7 @@ from app.models.documents import (
 )
 from app.models.employee import Employee
 from app.models.hiring import Candidate
+from app.models.integrations import TenantConnection
 from app.models.letter_acknowledgement import LetterAcknowledgement
 from app.models.notifications import Channel, DigestMode
 from app.models.payroll import EmployeeSalary
@@ -58,6 +59,8 @@ from app.schemas.letters import (
     VerifyRead,
 )
 from app.services import audit
+from app.services.connections import digio as digio_connection
+from app.services.connections import store as connection_store
 from app.services.documents import letterhead as letterhead_service
 from app.services.documents.annexure import build_annexure
 from app.services.documents.default_templates import DEFAULT_TEMPLATES, DEFAULTS_VERSION
@@ -1905,8 +1908,39 @@ def build_provider(name: str):
     raise SignatureError(f"Unknown signature provider '{name}'")
 
 
-def signature_provider_status() -> SignatureProviderRead:
-    """Whether letters can really be e-signed on this deployment. Said plainly."""
+async def provider_for(
+    session: AsyncSession, tenant_id: uuid.UUID, provider_name: str | None = None
+):
+    """The provider a workspace's letters go out on.
+
+    The workspace's own Digio account (Settings → Integrations) first; otherwise
+    the deployment's configured provider.
+    """
+    name = (provider_name or "").lower()
+    if name in ("", "digio"):
+        own = await digio_connection.provider_for_tenant(session, tenant_id)
+        if own is not None:
+            return own
+    return build_provider(name or (settings.SIGNATURE_PROVIDER or "noop").lower())
+
+
+async def signature_provider_status(session: AsyncSession, user: User) -> SignatureProviderRead:
+    """Whether letters can really be e-signed for this workspace. Said plainly."""
+    own = await connection_store.get(session, user, connection_store.KIND_DIGIO)
+    if own is not None and own.enabled and own.secret_encrypted:
+        environment = (own.settings or {}).get("environment", "production")
+        return SignatureProviderRead(
+            provider="digio",
+            connected=True,
+            detail=(
+                f"Your own Digio account ({environment}) is connected. Letters go out for "
+                "Aadhaar eSign and Digio emails each signer the link."
+            ),
+        )
+    return _deployment_provider_status()
+
+
+def _deployment_provider_status() -> SignatureProviderRead:
     name = (settings.SIGNATURE_PROVIDER or "noop").lower()
     if name == "noop":
         return SignatureProviderRead(
@@ -1966,7 +2000,7 @@ async def send_for_signature(
     employee = await _employee(session, user, letter.employee_id)
 
     try:
-        provider = build_provider((provider_name or settings.SIGNATURE_PROVIDER or "noop").lower())
+        provider = await provider_for(session, user.tenant_id, provider_name)
         signature_request = await provider.send_for_signature(
             document=document,
             file_name=f"{letter.reference_number.replace('/', '_')}.pdf",
@@ -2003,7 +2037,7 @@ async def send_for_signature(
 async def record_signature_webhook(
     session: AsyncSession, *, provider_name: str, raw_body: bytes, headers: dict[str, str]
 ) -> dict[str, str]:
-    """Verify, then apply, a provider's signature completion.
+    """Verify, then apply, a provider's signature completion (deployment account).
 
     Verification happens **before** the payload is parsed or trusted. The
     webhook is not tenant-scoped — the provider does not know about tenants —
@@ -2013,7 +2047,40 @@ async def record_signature_webhook(
         provider = build_provider(provider_name)
     except SignatureError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return await _apply_webhook(
+        session, provider, provider_name, raw_body=raw_body, headers=headers, tenant_id=None
+    )
 
+
+async def record_tenant_signature_webhook(
+    session: AsyncSession, *, connection_id: uuid.UUID, raw_body: bytes, headers: dict[str, str]
+) -> dict[str, str]:
+    """A signature completion for one workspace's own Digio account.
+
+    The address names the workspace's connection; the workspace's own webhook
+    secret proves the call came from Digio. Only that workspace's letters can
+    be touched.
+    """
+    row = await session.get(TenantConnection, connection_id)
+    if row is None or row.kind != connection_store.KIND_DIGIO or not row.enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown webhook.")
+    provider = await digio_connection.provider_for_tenant(session, row.tenant_id)
+    if provider is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown webhook.")
+    return await _apply_webhook(
+        session, provider, "digio", raw_body=raw_body, headers=headers, tenant_id=row.tenant_id
+    )
+
+
+async def _apply_webhook(
+    session: AsyncSession,
+    provider,
+    provider_name: str,
+    *,
+    raw_body: bytes,
+    headers: dict[str, str],
+    tenant_id: uuid.UUID | None,
+) -> dict[str, str]:
     if not provider.verify_webhook(raw_body=raw_body, headers=headers):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Webhook signature is not valid"
@@ -2030,16 +2097,30 @@ async def record_signature_webhook(
     if signature_status.state != "signed":
         return {"status": "ignored", "state": signature_status.state}
 
-    letter = await session.scalar(
-        select(IssuedLetter).where(IssuedLetter.signature_request_id == signature_status.request_id)
+    stmt = select(IssuedLetter).where(
+        IssuedLetter.signature_request_id == signature_status.request_id
     )
+    if tenant_id is not None:
+        stmt = stmt.where(tenant_filter(IssuedLetter, tenant_id))
+    letter = await session.scalar(stmt)
     if letter is None:
         # 200 rather than 404: providers retry on non-2xx, and retrying a
         # webhook for a letter we do not have will never succeed.
         return {"status": "unknown_request"}
+    if letter.status is LetterStatus.SIGNED:
+        return {"status": "ok"}
 
+    await _mark_signed(session, letter, provider, provider_name, signature_status)
+    await session.commit()
+    return {"status": "ok"}
+
+
+async def _mark_signed(
+    session: AsyncSession, letter: IssuedLetter, provider, provider_name: str, signature_status
+) -> None:
+    """Record a signature: status, the signed PDF when it can be fetched, the audit row."""
     letter.status = LetterStatus.SIGNED
-    letter.signed_at = signature_status.signed_at
+    letter.signed_at = signature_status.signed_at or datetime.now(UTC)
 
     try:
         signed_document = await provider.download_signed(signature_status.request_id)
@@ -2063,5 +2144,62 @@ async def record_signature_webhook(
         changes={"provider": provider_name, "request_id": signature_status.request_id},
         summary=f"Letter {letter.reference_number} signed",
     )
-    await session.commit()
-    return {"status": "ok"}
+
+
+async def refresh_signature_status(
+    session: AsyncSession, user: User, letter_id: uuid.UUID
+) -> LetterRead:
+    """Ask the provider where a letter sent for signature stands, now.
+
+    Works without a webhook: the letter moves to Signed (and the signed PDF is
+    kept) as soon as the provider says so.
+    """
+    letter = await _letter_for_hr(session, user, letter_id)
+    if letter.status is not LetterStatus.SENT or not letter.signature_request_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a letter that is out for signature can be checked.",
+        )
+    try:
+        provider = await provider_for(session, user.tenant_id, letter.signature_provider)
+        signature_status = await provider.get_status(letter.signature_request_id)
+    except SignatureError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if signature_status.state == "signed":
+        await _mark_signed(
+            session, letter, provider, letter.signature_provider or "", signature_status
+        )
+        await session.commit()
+        await session.refresh(letter)
+    return (await _letter_reads(session, user, [letter]))[0]
+
+
+async def check_pending_signatures(session: AsyncSession, tenant_id: uuid.UUID) -> int:
+    """Hourly: letters out for signature on the workspace's own Digio account. Signed count."""
+    provider = await digio_connection.provider_for_tenant(session, tenant_id)
+    if provider is None:
+        return 0
+    letters = (
+        await session.scalars(
+            select(IssuedLetter)
+            .where(
+                tenant_filter(IssuedLetter, tenant_id),
+                IssuedLetter.status == LetterStatus.SENT,
+                IssuedLetter.signature_provider == "digio",
+                IssuedLetter.signature_request_id.is_not(None),
+            )
+            .limit(200)
+        )
+    ).all()
+    signed = 0
+    for letter in letters:
+        try:
+            signature_status = await provider.get_status(letter.signature_request_id)
+        except SignatureError:
+            continue
+        if signature_status.state == "signed":
+            await _mark_signed(session, letter, provider, "digio", signature_status)
+            signed += 1
+    if signed:
+        await session.commit()
+    return signed

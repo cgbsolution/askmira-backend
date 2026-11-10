@@ -421,9 +421,13 @@ async def send(
     *,
     request: Request | None,
     files: list[tuple[str, bytes]] | None = None,
+    place: str = "app",
 ) -> dict[str, Any]:
     """One turn. `files` are (name, bytes) the person attached: read into words first
-    (attachments.py), shown as chips on their message, and given to the model with it."""
+    (attachments.py), shown as chips on their message, and given to the model with it.
+
+    `place` is where the message came from ("app", "slack", "teams", "email"):
+    from email, offers are never confirmed or withdrawn by reply."""
     files = files or []
     if not payload.text and not files:
         raise HTTPException(
@@ -506,7 +510,7 @@ async def send(
         )
 
     return await _send_ai(
-        session, user, config, conversation, mine, history, payload, now, request, attached
+        session, user, config, conversation, mine, history, payload, now, request, attached, place
     )
 
 
@@ -521,12 +525,18 @@ async def _send_ai(
     now: datetime,
     request: Request | None,
     attached: list[attachments.Attachment],
+    place: str = "app",
 ) -> dict[str, Any]:
     """A turn the model works out with tools (agent.py)."""
     tenant = await session.get(Tenant, user.tenant_id)
     company = tenant.name if tenant else "the company"
     tools = await offered(session, user, config)
+    if place == "email":
+        # An emailed "yes" can be forwarded or forged: offers are decided in AskMira.
+        tools = [tool for tool in tools if tool.key not in ("confirm_action", "cancel_action")]
     system = agent.system_prompt(config, company, user)
+    if place in ("slack", "teams", "email"):
+        system += "\n" + agent.place_note(place)
     today = _today()
     offers = await actions.recent_offers(session, user, conversation.id, owner_id=user.id)
     if client.current_route().provider == "ollama":
@@ -569,6 +579,7 @@ async def _send_ai(
         turn_started=now,
         latest_text=payload.text,
         request=request,
+        place=place,
     )
     carried = agent.history_categories(history)
 

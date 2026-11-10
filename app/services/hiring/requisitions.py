@@ -736,7 +736,24 @@ async def requisition_detail(
         "linked_job_ref": requisition.linked_job_ref,
         "linked_job_at": requisition.linked_job_at,
         "linked_job_error": requisition.linked_job_error,
+        # Whether this person can try the hand-off again: the job is opened as them,
+        # and only the product's admins and recruiters open jobs there.
+        "can_open_job": await _can_open_job(session, user, requisition),
     }
+
+
+async def _can_open_job(session: AsyncSession, user: User, requisition: Requisition) -> bool:
+    if requisition.status is not RequisitionStatus.OPEN or requisition.linked_job_ref:
+        return False
+    on_team = user.employee_id is not None and user.employee_id in (
+        requisition.hiring_manager_id,
+        requisition.recruiter_id,
+    )
+    if not (permissions.is_hr(user) or on_team):
+        return False
+    from app.services.products import data as products
+
+    return await products.role_in(session, user, "interview") in ("admin", "recruiter")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -878,12 +895,16 @@ async def approve_requisition(
 
     The first rejection ends it. Collecting the rest of the signatures on a
     requisition somebody has already refused wastes everyone's time and makes
-    the refusal look negotiable.
+    the refusal look negotiable. The requisition is locked while it is decided:
+    two approvals of the same step at once count once, and the second is told
+    it was decided already.
     """
     requisition = await session.scalar(
         tenant_scoped(
             select(Requisition).where(Requisition.id == requisition_id), Requisition, user
         )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if requisition is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requisition not found")

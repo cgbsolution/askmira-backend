@@ -68,7 +68,7 @@ from app.services.calendar.base import (
     Transport,
 )
 from app.services.hiring import candidate_comms, signals, visibility
-from app.services.interviews import availability
+from app.services.interviews import availability, calendar_oauth
 from app.services.interviews import feedback as feedback_engine
 from app.services.notifications import dispatch
 
@@ -395,7 +395,7 @@ async def propose_panel_slots(
             continue
 
         try:
-            token = calendar_registry.access_token_for(connection, user.tenant_id)
+            token = await calendar_oauth.usable_access_token(session, connection, user.tenant_id)
             adapter = calendar_registry.get_adapter(
                 CalendarProvider(connection.provider.value), transport
             )
@@ -532,7 +532,7 @@ async def _sync_event(
     )
 
     try:
-        token = calendar_registry.access_token_for(connection, user.tenant_id)
+        token = await calendar_oauth.usable_access_token(session, connection, user.tenant_id)
         adapter = calendar_registry.get_adapter(
             CalendarProvider(connection.provider.value), transport
         )
@@ -832,7 +832,9 @@ async def cancel_interview(
         connection = await _connection(session, user, interview.scheduled_by_user_id or user.id)
         if connection is not None:
             try:
-                token = calendar_registry.access_token_for(connection, user.tenant_id)
+                token = await calendar_oauth.usable_access_token(
+                    session, connection, user.tenant_id
+                )
                 adapter = calendar_registry.get_adapter(
                     CalendarProvider(connection.provider.value), transport
                 )

@@ -109,6 +109,9 @@ class OutboundMessage:
     # WhatsApp only: the approved Meta template and its ordered parameters.
     whatsapp_template_name: str | None = None
     whatsapp_parameters: list[str] | None = None
+    #: The language the Meta template was registered in (en, en_US, hi). Meta
+    #: refuses a template sent in any other language than its own.
+    whatsapp_language: str | None = None
     push_token: str | None = None
     # Email only: the branded HTML version of `body`, and the images it embeds.
     # `body` stays the plain-text part, for clients that do not show HTML.
@@ -198,6 +201,12 @@ class NullPushAdapter(ChannelAdapter):
         return DeliveryResult(provider_message_id=f"push-{uuid.uuid4().hex[:16]}")
 
 
+def _whatsapp_number(phone: str) -> str:
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    # A bare ten-digit Indian mobile gets India's country code.
+    return "91" + digits if len(digits) == 10 else digits
+
+
 class WhatsAppCloudAdapter(ChannelAdapter):
     """Meta WhatsApp Cloud API.
 
@@ -246,11 +255,13 @@ class WhatsAppCloudAdapter(ChannelAdapter):
         body = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": message.recipient_phone,
+            # Meta takes the number as digits with the country code; a number
+            # stored as "+91 98450 11008" is sent as "919845011008".
+            "to": _whatsapp_number(message.recipient_phone),
             "type": "template",
             "template": {
                 "name": message.whatsapp_template_name,
-                "language": {"code": "en"},
+                "language": {"code": message.whatsapp_language or "en"},
                 "components": [
                     {
                         "type": "body",
