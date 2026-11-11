@@ -92,7 +92,7 @@ async def test_a_lookup_answers_as_ask_mira_reads_it_and_is_recorded(
         session, hr, "tools/call", name="mira_department_budget", arguments={"query": "Sales West"}
     )
     assert result["isError"] is False
-    assert "No headcount budget" in result["content"][0]["text"]
+    assert "Sales West has no headcount budget" in result["content"][0]["text"]
     audited = await session.scalar(
         select(func.count(AuditLog.id)).where(AuditLog.entity_type == "mcp_tool")
     )

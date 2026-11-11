@@ -170,6 +170,10 @@ async def preview_salary(
     read.gross_annual = gross_annual
     read.earnings_monthly = resolved.earnings_monthly
     read.warnings = resolved.warnings
+    if payload.employee_id is not None:
+        read.take_home = await salary_service.preview_take_home(
+            session, user, structure, resolved, payload.employee_id, payload.effective_from
+        )
     return read
 
 

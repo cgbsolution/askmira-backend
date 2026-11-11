@@ -43,6 +43,7 @@ from app.schemas.payroll import (
     SalaryGroupTotalRead,
     SalaryStructureCreate,
     SalaryTypeTotalRead,
+    TakeHomeRead,
 )
 from app.schemas.payroll_run import (
     SalaryOverviewRead,
@@ -267,6 +268,34 @@ async def preview_salary(
     """What the Salary master's editor shows as HR types. Writes nothing."""
     structure = await get_structure(session, user, structure_id)
     return structure, await resolve_amounts(session, user, structure, payload, strict=False)
+
+
+async def preview_take_home(
+    session: AsyncSession,
+    user: User,
+    structure: SalaryStructure,
+    resolved: ResolvedSalary,
+    employee_id: uuid.UUID,
+    effective_from: date | None,
+) -> TakeHomeRead:
+    """The take-home of amounts still being typed: the engine runs on an unsaved
+    salary, which never joins the session, so nothing is written."""
+    from app.services.payroll.take_home import take_home
+
+    employee = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    salary = EmployeeSalary(
+        tenant_id=user.tenant_id,
+        employee_id=employee.id,
+        structure_id=structure.id,
+        ctc_annual=resolved.ctc_annual,
+        effective_from=effective_from or date.today(),
+    )
+    materialise(salary, resolved, user.tenant_id)
+    return await take_home(session, user, employee, salary, salary.effective_from)
 
 
 async def list_structures(session: AsyncSession, user: User) -> list[SalaryStructure]:

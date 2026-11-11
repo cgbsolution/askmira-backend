@@ -415,6 +415,40 @@ class SalaryGroupTotalRead(BaseModel):
     annual: Money
 
 
+class TakeHomeLineRead(BaseModel):
+    """One thing taken off the pay: PF, ESIC, PT, insurance, a typed TDS."""
+
+    code: str
+    name: str
+    monthly: Money
+    annual: Money | None = None
+    #: How payroll got there: "12% of PF wages ₹15,000", or that it was typed.
+    basis: str | None = None
+
+
+class TakeHomeRead(BaseModel):
+    """What a full month of this salary pays into the bank, from the payroll engine.
+
+    No figure without its reason: when the month cannot be worked out, `monthly`
+    is null and `note` says why.
+    """
+
+    monthly: Money | None = None
+    annual: Money | None = None
+    #: What comes off the earnings to reach it, a month.
+    deductions: list[TakeHomeLineRead] = Field(default_factory=list)
+    #: The statutory lines payroll works out: PF, ESIC, PT, LWF, TDS on the
+    #: employee's side; PF, ESIC, LWF on the company's. PF and ESIC always listed.
+    employee: list[TakeHomeLineRead] = Field(default_factory=list)
+    employer: list[TakeHomeLineRead] = Field(default_factory=list)
+    #: Their sums a month, so the screen does no arithmetic.
+    employee_total: Money | None = None
+    employer_total: Money | None = None
+    note: str | None = None
+    #: What payroll would not decide alone (a work state it couldn't resolve, say).
+    review_flags: list[str] = Field(default_factory=list)
+
+
 class SalaryBreakdownRead(BaseModel):
     """What the CTC builder screen renders.
 
@@ -438,6 +472,8 @@ class SalaryBreakdownRead(BaseModel):
     earnings_monthly: Money | None = None
     #: What would stop this from saving, said while HR is still typing.
     warnings: list[str] = Field(default_factory=list)
+    #: Take-home a month; only when the preview names the employee.
+    take_home: TakeHomeRead | None = None
 
 
 # ── Employee salary ─────────────────────────────────────────────────────────
@@ -520,7 +556,10 @@ class SalaryAmountsInput(BaseModel):
 
 
 class SalaryPreviewInput(SalaryAmountsInput):
-    pass
+    #: Whose salary it is and from when: with both, the preview adds the
+    #: take-home a month, worked out by the payroll engine.
+    employee_id: uuid.UUID | None = None
+    effective_from: date | None = None
 
 
 class EmployeeSalaryCreate(SalaryAmountsInput):
@@ -614,6 +653,7 @@ class SalaryRevisionRead(BaseModel):
     components: list[EmployeeSalaryComponentRead]
     totals: list[SalaryTypeTotalRead]
     group_totals: list[SalaryGroupTotalRead] = Field(default_factory=list)
+    take_home: TakeHomeRead | None = None
     #: Payroll has used this revision, so it is history and cannot change.
     locked: bool
     locked_reason: str | None

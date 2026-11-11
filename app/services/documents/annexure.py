@@ -16,7 +16,6 @@ rather than a table with guesses in it.
 
 from __future__ import annotations
 
-import calendar
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -83,20 +82,6 @@ def _whole(value: Decimal) -> Decimal:
     return value.quantize(Decimal(1), rounding=ROUND_HALF_UP)
 
 
-async def _rule_sets(
-    session: AsyncSession, user: User, on: date, state_code: str | None
-) -> dict[str, Any]:
-    from app.services.payroll.run import _resolve_rule_sets
-
-    resolved = await _resolve_rule_sets(session, user, on, {state_code} if state_code else set())
-    rules = {key: value for key, value in resolved.items() if ":" not in key}
-    if state_code:
-        for kind in ("professional_tax", "labour_welfare_fund"):
-            if f"{kind}:{state_code}" in resolved:
-                rules[kind] = resolved[f"{kind}:{state_code}"]
-    return rules
-
-
 async def build_annexure(
     session: AsyncSession,
     user: User,
@@ -112,34 +97,11 @@ async def build_annexure(
     the table opens with. Returns `{"error": ...}` when the month cannot be
     worked out, so the letter says why instead of printing guesses.
     """
-    from app.services.payroll import statutory_service
-    from app.services.payroll.engine import PayrollInput, PayrollRuleError, compute_payroll
-    from app.services.payroll.statutory import StatutoryError
-
-    start = as_of.replace(day=1)
-    end = as_of.replace(day=calendar.monthrange(as_of.year, as_of.month)[1])
-    days = Decimal((end - start).days + 1)
-
-    work_state = await statutory_service.work_state_for_period(session, user, employee, start, end)
-    state = None if work_state.needs_review else work_state.state_code
-    rules = await _rule_sets(session, user, as_of, state)
-    election = await statutory_service.active_pf_election(session, user, employee.id, as_of)
+    from app.services.payroll.take_home import MonthUnavailableError, one_month
 
     try:
-        month = compute_payroll(
-            PayrollInput(
-                employee_salary=salary,
-                period_start=start,
-                period_end=end,
-                working_days=days,
-                rule_sets=rules,
-                pf_election=election,
-                designation=employee.designation,
-                gender=employee.gender.value if employee.gender else None,
-                state_review=work_state.reason if work_state.needs_review else None,
-            )
-        )
-    except (PayrollRuleError, StatutoryError) as exc:
+        month = await one_month(session, user, employee, salary, as_of)
+    except MonthUnavailableError as exc:
         return {
             "error": (
                 "The salary annexure could not be worked out for this employee: "

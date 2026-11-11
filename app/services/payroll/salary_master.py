@@ -288,11 +288,19 @@ async def list_revisions(
     session: AsyncSession, user: User, employee_id: uuid.UUID
 ) -> list[SalaryRevisionRead]:
     """The Salary master's timeline for one person, newest first."""
-    await _employee(session, user, employee_id)
+    from app.services.payroll.take_home import take_home
+
+    employee = await _employee(session, user, employee_id)
     series = await _series(session, user, employee_id)
     locks = await revision_locks(session, user, [s.id for s in series])
     groups = await wage_group_map(session, user)
-    return [revision_read(s, locks.get(s.id), groups) for s in reversed(series)]
+    reads = []
+    for salary in reversed(series):
+        read = revision_read(salary, locks.get(salary.id), groups)
+        # A full month of it, with the statutory rules of the day it starts.
+        read.take_home = await take_home(session, user, employee, salary, salary.effective_from)
+        reads.append(read)
+    return reads
 
 
 async def salary_trail(
