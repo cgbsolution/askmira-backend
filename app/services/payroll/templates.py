@@ -727,8 +727,10 @@ class CtcInput:
 
     @property
     def fill_basis(self) -> str:
-        """The Pay Basis the Salary master's boxes are filled in."""
-        return "annual" if self.basis == "annual" else "monthly"
+        """The Pay Basis the Salary master's boxes are filled in: always a month's,
+        however the CTC was typed (HR reads and checks salaries month-wise). Exact,
+        because the template works in monthly figures and a year is twelve of them."""
+        return "monthly"
 
 
 def run(

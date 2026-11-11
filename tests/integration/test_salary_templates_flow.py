@@ -273,9 +273,10 @@ async def test_calculate_splits_a_monthly_ctc_and_writes_nothing(
     assert (await session.scalars(select(EmployeeSalary))).all() == []
 
 
-async def test_calculate_on_a_yearly_ctc_fills_yearly_amounts(
+async def test_calculate_on_a_yearly_ctc_still_fills_monthly_amounts(
     client: httpx.AsyncClient, session: AsyncSession, hr_user: User
 ) -> None:
+    """HR reads salaries month-wise: a CTC typed as a year fills a month's figures."""
     await _setup(session, hr_user)
     created = await _create(client, hr_user)
     response = await client.post(
@@ -284,9 +285,11 @@ async def test_calculate_on_a_yearly_ctc_fills_yearly_amounts(
         json={"ctc_amount": "1200000", "ctc_basis": "annual"},
     )
     lines = {line["component_code"]: line for line in response.json()["lines"]}
-    assert lines["BASIC"]["basis"] == "annual"
-    assert lines["BASIC"]["amount"] == "600000.00"
-    assert lines["PT_MANUAL"]["amount"] == "2400.00"
+    assert lines["BASIC"]["basis"] == "monthly"
+    assert lines["BASIC"]["amount"] == "50000.00"
+    assert lines["BASIC"]["annual"] == "600000.00"
+    assert lines["PT_MANUAL"]["amount"] == "200.00"
+    assert response.json()["ctc_monthly"] == "100000.00"
 
 
 async def test_calculate_refuses_a_ctc_the_lines_do_not_fit(
@@ -372,8 +375,9 @@ async def test_the_calculated_figures_save_exactly_through_the_salary_master(
     for line in calc["lines"]:
         if line["amount"] == "0.00":
             continue
+        # Filled month-wise, the yearly figure is still exactly the calculator's.
         assert stored[line["component_code"]]["annual_amount"] == line["annual"]
-        assert stored[line["component_code"]]["pay_basis"] == "annual"
+        assert stored[line["component_code"]]["pay_basis"] == "monthly"
     assert stored["HRA"]["remarks"] == "Reviewed"
     # Employer PF / ESI are payroll's to work out, never a stored wage type.
     assert "EMPLOYER_PF" not in stored and "EMPLOYER_ESI" not in stored
