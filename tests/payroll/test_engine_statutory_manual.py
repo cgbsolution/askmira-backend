@@ -103,3 +103,55 @@ def test_a_manual_tds_is_deducted_and_says_so(pf_rules) -> None:
     assert result.tds == Decimal("4000")
     assert result.tds_working is not None
     assert result.tds_working["manual_override"] == "4000.00"
+
+
+# ── The employer's side ─────────────────────────────────────────────────────
+
+
+def test_a_manual_employer_pf_replaces_the_employer_share_only(pf_rules) -> None:
+    """13% of 25,000, the company's policy, typed for one person."""
+    baseline = _run(salary(), {"pf": pf_rules})
+    result = _run(_with_manual(salary(), "PF_ER_MANUAL", "3250"), {"pf": pf_rules})
+    assert result.pf_employer == Decimal("3250")
+    assert result.pf_employee == Decimal("1800")  # the employee's share is untouched
+    assert "PF_ER_MANUAL" not in [line.code for line in result.lines]
+    line = next(line for line in result.lines if line.code == "PF_EMPLOYER")
+    assert line.amount == Decimal("3250") and "salary master" in line.basis
+    # The company pays it; the employee's take-home does not move.
+    assert result.net_pay == baseline.net_pay
+    assert result.employer_cost - baseline.employer_cost == Decimal("1450")
+
+
+def test_a_manual_employer_esi_applies_even_without_its_rules(pf_rules) -> None:
+    result = _run(_with_manual(salary(), "ESIC_ER_MANUAL", "650"), {"pf": pf_rules})
+    assert result.esi_employer == Decimal("650")
+    assert result.esi_employee == Decimal("0")
+    line = next(line for line in result.lines if line.code == "ESI_EMPLOYER")
+    assert line.amount == Decimal("650") and "salary master" in line.basis
+    assert not any(line.code == "ESI_EMPLOYEE" for line in result.lines)
+
+
+def test_the_pf_return_files_a_typed_employer_pf_as_paid(pf_rules) -> None:
+    """The ECR takes the employer's share off the payslip: EPS first, EPF the rest."""
+    from app.services.filings.wages import compute_ecr_wages
+
+    result = _run(_with_manual(salary(), "PF_ER_MANUAL", "3250"), {"pf": pf_rules})
+    wages = compute_ecr_wages(
+        rules={
+            **pf_rules.rules,
+            "eps_wage_ceiling": 15000,
+            "edli_wage_ceiling": 15000,
+            "eps_rate": "8.33",
+        },
+        gross_earnings=result.gross_earnings,
+        pf_wage_base=result.pf_wage_base,
+        pf_employee=result.pf_employee,
+        pf_employer=result.pf_employer,
+        lop_days=Decimal(0),
+        eps_member=True,
+        pf_on_actual_wage=False,
+        vpf=Decimal(0),
+    )
+    assert wages.eps_contribution == Decimal("1250")
+    assert wages.employer_epf_share == Decimal("2000")
+    assert wages.employer_share == Decimal("3250.00")

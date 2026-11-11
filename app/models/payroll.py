@@ -88,15 +88,19 @@ WAGE_GROUP_TYPE: dict[WageGroup, ComponentType] = {
     WageGroup.PROVISION: ComponentType.EMPLOYER_CONTRIBUTION,
 }
 
-#: Salary-master wage types that stand in for a statutory deduction. On a
-#: person's salary, an amount here (even 0) is deducted instead of what payroll
-#: would work out; no such wage type means payroll works it out as usual.
+#: Salary-master wage types that stand in for a statutory figure. On a
+#: person's salary, an amount here (even 0) is used instead of what payroll
+#: would work out; no such wage type means payroll works it out as usual. The
+#: employer's PF and ESIC are overridable too: the PF return takes the
+#: employer's share from the payslip, so a typed one is filed as paid.
 STATUTORY_OVERRIDE_CODES: dict[str, str] = {
     "PF_MANUAL": "pf",
     "ESIC_MANUAL": "esi",
     "PT_MANUAL": "pt",
     "LWF_MANUAL": "lwf",
     "TDS_MANUAL": "tds",
+    "PF_ER_MANUAL": "pf_employer",
+    "ESIC_ER_MANUAL": "esi_employer",
 }
 
 #: A component with no group set sits in its kind's usual group.

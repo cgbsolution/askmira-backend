@@ -575,6 +575,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         pf_employer = _contribution(pf_rules, pf_base, pf_employer_rate, "nearest_rupee")
         if "pf" in overrides:
             pf_employee = overrides["pf"]
+        if "pf_employer" in overrides:
+            pf_employer = overrides["pf_employer"]
 
         # Voluntary PF is an *additional employee* contribution on the full wage
         # base. It never moves the employer's — treating it as a matched
@@ -628,6 +630,8 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
 
     if "esi" in overrides:
         esi_employee = overrides["esi"]
+    if "esi_employer" in overrides:
+        esi_employer = overrides["esi_employer"]
 
     # ── 5. Professional Tax — a state slab, looked up by gross ──────────────
     #
@@ -925,7 +929,9 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "Provident Fund (employer)",
                     ComponentType.EMPLOYER_CONTRIBUTION,
                     pf_employer,
-                    f"{pf_employer_rate}% of PF wages {pf_wages_shown}",
+                    _MANUAL_BASIS
+                    if "pf_employer" in overrides
+                    else f"{pf_employer_rate}% of PF wages {pf_wages_shown}",
                     str(pf_rules.id),
                 ),
             ]
@@ -947,22 +953,35 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
                     "ESI (employer)",
                     ComponentType.EMPLOYER_CONTRIBUTION,
                     esi_employer,
-                    f"ESI wages {esi_wages_shown}",
+                    _MANUAL_BASIS
+                    if "esi_employer" in overrides
+                    else f"ESI wages {esi_wages_shown}",
                     str(esi_rules.id),
                 ),
             ]
         )
-    elif esi_employee:
+    else:
         # Typed on the salary master where no ESI rules apply.
-        lines.append(
-            ComputedLine(
-                "ESI_EMPLOYEE",
-                "ESI (employee)",
-                ComponentType.DEDUCTION,
-                esi_employee,
-                _MANUAL_BASIS,
+        if esi_employee:
+            lines.append(
+                ComputedLine(
+                    "ESI_EMPLOYEE",
+                    "ESI (employee)",
+                    ComponentType.DEDUCTION,
+                    esi_employee,
+                    _MANUAL_BASIS,
+                )
             )
-        )
+        if esi_employer:
+            lines.append(
+                ComputedLine(
+                    "ESI_EMPLOYER",
+                    "ESI (employer)",
+                    ComponentType.EMPLOYER_CONTRIBUTION,
+                    esi_employer,
+                    _MANUAL_BASIS,
+                )
+            )
     if vpf and pf_rules is not None:
         lines.append(
             ComputedLine(

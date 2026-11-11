@@ -402,3 +402,47 @@ async def test_esic_says_when_wages_are_above_its_ceiling_and_deducts_below_it(
     assert employee_side["PF_EMPLOYEE"]["monthly"] == "1200.00"  # 12% of basic 10,000
     # 18,000 less PF 1,200 and ESIC 135.
     assert take_home["monthly"] == "16665.00"
+
+
+async def test_a_typed_employer_pf_shows_on_the_employer_side_and_warns_below_eps(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+) -> None:
+    structure = await _setup(session, tenant)
+    session.add(
+        SalaryComponent(
+            tenant_id=tenant.id,
+            code="PF_ER_MANUAL",
+            name="PF EMPLOYER CONTRIBUTION MANUAL",
+            component_type=ComponentType.EMPLOYER_CONTRIBUTION,
+            calculation_type=CalculationType.FIXED,
+            value=Decimal(0),
+            part_of_ctc=False,
+            display_order=520,
+        )
+    )
+    await session.commit()
+    url = f"/api/v1/salary-structures/{structure.id}/preview"
+
+    body = _preview_body(employee)
+    body["components"].append(
+        {"component_code": "PF_ER_MANUAL", "amount": "3250", "basis": "monthly"}
+    )
+    response = await client.post(url, headers=_auth(hr_user), json=body)
+    assert response.status_code == 200, response.text
+    take_home = response.json()["take_home"]
+    pf = {line["code"]: line for line in take_home["employer"]}["PF_EMPLOYER"]
+    assert (pf["monthly"], pf["annual"]) == ("3250.00", "39000.00")
+    assert pf["basis"].startswith("Typed on the Salary master")
+    assert take_home["employer_total"] == "3250.00"
+    assert take_home["monthly"] == "46435.00"  # the company pays it, not the employee
+    assert take_home["warnings"] == []
+
+    # Below the pension share (8.33% of 15,000 = 1,250) the PF return can't be filed.
+    body["components"][-1]["amount"] = "1000"
+    low = (await client.post(url, headers=_auth(hr_user), json=body)).json()["take_home"]
+    assert len(low["warnings"]) == 1
+    assert "below the pension (EPS) share of ₹1,250.00" in low["warnings"][0]

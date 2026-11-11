@@ -447,6 +447,8 @@ class TakeHomeRead(BaseModel):
     note: str | None = None
     #: What payroll would not decide alone (a work state it couldn't resolve, say).
     review_flags: list[str] = Field(default_factory=list)
+    #: What would make the month unfileable (an employer PF below the EPS share).
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SalaryBreakdownRead(BaseModel):

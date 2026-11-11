@@ -16,7 +16,7 @@ from __future__ import annotations
 import calendar
 import re
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +39,7 @@ _EMPLOYEE_STATUTORY = {
     "LWF_EMPLOYEE": "Labour Welfare Fund (employee)",
     "TDS": "TDS",
 }
-_EMPLOYER_STATUTORY = {
+_EMPLOYER_STATUTORY = {  # typeable through PF_ER_MANUAL / ESIC_ER_MANUAL
     "PF_EMPLOYER": "Provident Fund (employer)",
     "ESI_EMPLOYER": "ESIC (employer)",
     "LWF_EMPLOYER": "Labour Welfare Fund (employer)",
@@ -214,7 +214,40 @@ async def take_home(
         employee_total=sum((r.monthly for r in employee_rows), Decimal("0.00")),
         employer_total=sum((r.monthly for r in employer_rows), Decimal("0.00")),
         review_flags=list(month.review_flags),
+        warnings=_employer_pf_warnings(employee, salary, rules, month),
     )
+
+
+def _employer_pf_warnings(
+    employee: Employee, salary: EmployeeSalary, rules: dict[str, Any], month: Any
+) -> list[str]:
+    """A typed employer PF below the pension (EPS) share cannot be filed: the PF
+    return takes the EPS share first and the EPF share is what is left."""
+    from app.services.filings.service import _eps_member
+
+    typed = next((c for c in salary.components if c.component_code == "PF_ER_MANUAL"), None)
+    pf = rules.get("pf")
+    if typed is None or pf is None or not (month.pf_employee or month.pf_employer):
+        return []
+    if not _eps_member(employee):
+        return []
+    try:
+        eps_ceiling = Decimal(str(pf.rules["eps_wage_ceiling"]))
+        eps_rate = Decimal(str(pf.rules["eps_rate"]))
+    except KeyError:
+        return []
+    eps_share = (min(Decimal(month.pf_wage_base), eps_ceiling) * eps_rate / 100).quantize(
+        Decimal(1), rounding=ROUND_HALF_UP
+    )
+    if month.pf_employer >= eps_share:
+        return []
+    return [
+        f"PF EMPLOYER CONTRIBUTION MANUAL {format_inr(month.pf_employer)} is below the pension "
+        f"(EPS) share of {format_inr(eps_share)} ({eps_rate}% of "
+        f"{format_inr(min(Decimal(month.pf_wage_base), eps_ceiling))}), so the PF return "
+        f"could not be filed. Type at least {format_inr(eps_share)}, or leave it empty for "
+        "the PF rules' figure."
+    ]
 
 
 _NUMBER = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(?![\w%.])")

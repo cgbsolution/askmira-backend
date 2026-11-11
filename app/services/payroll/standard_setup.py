@@ -127,6 +127,11 @@ STANDARD: tuple[_Spec, ...] = (
     # 6 Company contribution
     _Spec("PT_CTC", "PROF TAX CTC", C, G.COMPANY_CONTRIBUTION, taxable=False, pro_rate=False,
           order=510),
+    # The employer's PF and ESIC for one person, instead of the PF / ESI rules'.
+    _Spec("PF_ER_MANUAL", "PF EMPLOYER CONTRIBUTION MANUAL", C, G.COMPANY_CONTRIBUTION,
+          taxable=False, part_of_ctc=False, pro_rate=False, order=520),
+    _Spec("ESIC_ER_MANUAL", "ESIC EMPLOYER CONTRIBUTION MANUAL", C, G.COMPANY_CONTRIBUTION,
+          taxable=False, part_of_ctc=False, pro_rate=False, order=530),
     # 7 Provision
     _Spec("BONUS_PROVISION", "BONUS PROVISION", C, G.PROVISION, taxable=False, pro_rate=False,
           order=610, old_names=("Bonus provision",)),
