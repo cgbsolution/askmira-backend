@@ -34,6 +34,8 @@ pillow==13.0.0
 svglib==2.3.2
 # Imported directly (resume text, Form 16 Part A); also an xhtml2pdf dependency.
 pypdf==6.17.0
+# Letter pages as pictures: phones show no PDF inside a page (letter email link).
+pypdfium2==4.30.0
 
 # ── Identity (slice 04) ─────────────────────────────────────────────────────
 # signxml verifies SAML XML signatures without needing native xmlsec, which is

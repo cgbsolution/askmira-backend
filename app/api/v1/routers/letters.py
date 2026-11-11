@@ -40,7 +40,7 @@ from app.schemas.letters import (
     VerifyRead,
 )
 from app.services import uploads
-from app.services.documents import acknowledgement
+from app.services.documents import acknowledgement, letter_link
 from app.services.documents import letterhead as letterhead_service
 from app.services.documents import service as letter_service
 from app.services.documents.letterhead import LetterheadSettings
@@ -274,6 +274,23 @@ async def letter_content(
     return await letter_service.letter_content(session, user, letter_id)
 
 
+@router.get("/letters/{letter_id}/pages/{number}")
+async def letter_page(
+    letter_id: uuid.UUID, number: int, user: CurrentUser, session: DbSession
+) -> Response:
+    """One page of the letter as a picture of exactly what prints (phones show no PDF)."""
+    data = await letter_service.letter_page(session, user, letter_id, number)
+    return Response(
+        content=data, media_type="image/png", headers={"Cache-Control": "private, no-store"}
+    )
+
+
+@router.get("/letters/{letter_id}/sign-link")
+async def sign_link(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, str]:
+    """Where the caller signs a letter issued to them (an onboarding form)."""
+    return {"path": await letter_link.own_link(session, user, letter_id)}
+
+
 @router.get("/letters/{letter_id}/verify", response_model=VerifyRead)
 async def verify(letter_id: uuid.UUID, user: CurrentUser, session: DbSession) -> VerifyRead:
     """Confirm stored content still matches the hash recorded at issuance."""
@@ -472,3 +489,4 @@ async def remove_letterhead_image(
 ) -> LetterheadRead:
     await letterhead_service.remove_image(session, user, kind, request=request)
     return await _letterhead_read(session, user)
+

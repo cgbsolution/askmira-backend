@@ -435,8 +435,11 @@ async def test_an_issued_pdf_survives_a_restart(
     assert stored.startswith(b"%PDF")
     assert not hasattr(letter_service, "_PDF_CACHE")
 
+    # Employees open their letters only from the email link, not the portal.
     me = await _login_for(session, tenant, employee, UserRole.EMPLOYEE, "anita4")
-    pdf = await client.get(f"/api/v1/letters/{letter_id}/pdf", headers=_auth(me))
+    mine = await client.get(f"/api/v1/letters/{letter_id}/pdf", headers=_auth(me))
+    assert mine.status_code == 404
+    pdf = await client.get(f"/api/v1/letters/{letter_id}/pdf", headers=_auth(hr_user))
     assert pdf.status_code == 200
     assert pdf.content == stored
     assert pdf.headers["content-disposition"].startswith("attachment;")

@@ -64,3 +64,13 @@ class LetterAcknowledgement(Base, UUIDMixin, TenantMixin, TimestampMixin):
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(INET, nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: "portal" or "email_link": where the acceptance was given.
+    channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # ── The signed copy ─────────────────────────────────────────────────────
+    #: The letter as accepted, with the person's signature and the date printed
+    #: in its acknowledgement block. The signature image itself is not kept:
+    #: it is used to print this copy and then dropped.
+    signed_copy_storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    #: SHA-256 of the signed copy's bytes, so a copy shown later can be checked.
+    signed_copy_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

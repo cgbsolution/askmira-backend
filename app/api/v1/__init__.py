@@ -53,6 +53,7 @@ from app.api.v1.routers import (
     interviews,
     learning,
     leave,
+    letter_links,
     letters,
     lifecycle,
     loans,
@@ -191,3 +192,4 @@ api_router.include_router(integrations_hub.router)
 api_router.include_router(calendar_feed.router)
 api_router.include_router(public_workspaces.router)
 api_router.include_router(email_actions.router)
+api_router.include_router(letter_links.router)

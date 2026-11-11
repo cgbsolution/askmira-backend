@@ -207,6 +207,10 @@ class LetterContentRead(BaseModel):
     reference_number: str
     merged_html: str
     intact: bool
+    #: Pages of the PDF the viewer shows (`/letters/{id}/pages/{n}`); 0 if none.
+    page_count: int = 0
+    #: The pages are the signed copy printed when the letter was accepted.
+    showing_signed_copy: bool = False
 
 
 class BulkJobRead(BaseModel):

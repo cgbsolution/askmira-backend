@@ -62,6 +62,7 @@ from app.services import audit
 from app.services.connections import digio as digio_connection
 from app.services.connections import store as connection_store
 from app.services.documents import letterhead as letterhead_service
+from app.services.documents import signed_copy
 from app.services.documents.annexure import build_annexure
 from app.services.documents.default_templates import DEFAULT_TEMPLATES, DEFAULTS_VERSION
 from app.services.documents.letter_merge import (
@@ -90,19 +91,22 @@ from app.services.storage import StorageError, get_storage
 #: been withdrawn.
 ACKNOWLEDGEABLE = frozenset({LetterStatus.APPROVED, LetterStatus.SENT, LetterStatus.SIGNED})
 
-_PROMPT = {Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE}
+#: By email only: the email carries the link the letter is read and signed from,
+#: and employees have no letters in the portal to open from a bell notice.
+_PROMPT = {Channel.EMAIL: DigestMode.IMMEDIATE}
 register_event(
     "documents.letter.issued",
     "Your {letter_name} is ready",
-    "Your {letter_name} ({reference_number}) has been issued. Open Documents to read it "
-    "and acknowledge it.",
+    "Your {letter_name} ({reference_number}) has been issued. Read it, sign it and accept it "
+    "from the button in this email. You do not need to sign in.",
     preferences=_PROMPT,
 )
 register_event(
     "documents.letter.acknowledgement_requested",
     "Please acknowledge your {letter_name}",
-    "{actor_name} asked you to read and acknowledge your {letter_name} "
-    "({reference_number}). Open Documents to do it.",
+    "{actor_name} asked you to read, sign and accept your {letter_name} "
+    "({reference_number}). Open it from the button in this email. You do not need to "
+    "sign in.",
     preferences=_PROMPT,
 )
 register_event(
@@ -138,12 +142,19 @@ async def notify_letter_issued(
     )
     if not recipients:
         return
+    # Local: letter_link reads letters through this module.
+    from app.services.documents import letter_link
+
     await notify(
         session,
         tenant_id=user.tenant_id,
         event_key="documents.letter.issued",
         recipient_user_ids=recipients,
-        payload={"letter_name": letter_name, "reference_number": letter.reference_number},
+        payload={
+            "letter_name": letter_name,
+            "reference_number": letter.reference_number,
+            **letter_link.payload_for(letter),
+        },
         commit=False,
     )
 
@@ -1378,6 +1389,21 @@ async def _pdf_bytes(session: AsyncSession, letter: IssuedLetter) -> bytes:
     return data
 
 
+async def pdf_bytes(session: AsyncSession, letter: IssuedLetter) -> bytes:
+    """The letter's PDF, for a caller that has already checked its content hash."""
+    return await _pdf_bytes(session, letter)
+
+
+async def _signed_copy_key(session: AsyncSession, letter: IssuedLetter) -> str | None:
+    """Where the copy printed with the person's signature when they accepted it is."""
+    return await session.scalar(
+        select(LetterAcknowledgement.signed_copy_storage_key).where(
+            tenant_filter(LetterAcknowledgement, letter.tenant_id),
+            LetterAcknowledgement.letter_id == letter.id,
+        )
+    )
+
+
 def _serialise(values: dict) -> dict:
     """JSONB-safe copy of the manual values."""
     out: dict = {}
@@ -1604,7 +1630,9 @@ def _ensure_reader(letter: IssuedLetter, *, is_hr: bool, own_employee_id: uuid.U
     Anyone else is told it does not exist. An offer letter to a candidate is
     HR's only.
     """
-    if not is_hr and (letter.employee_id is None or letter.employee_id != own_employee_id):
+    # An employee reads, signs and downloads their letters only from the link in
+    # the letter's email (letter_link), never in the portal.
+    if not is_hr:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Letter not found")
 
 
@@ -1684,7 +1712,10 @@ async def _letter_reads(
             signed_at=letter.signed_at,
             signature_provider=letter.signature_provider,
             has_pdf=True,
-            has_signed_pdf=bool(letter.signed_pdf_storage_key),
+            has_signed_pdf=bool(
+                letter.signed_pdf_storage_key
+                or (acks.get(letter.id) and acks[letter.id].signed_copy_storage_key)
+            ),
             revoked_reason=letter.revoked_reason,
             **_ack(letter),
         )
@@ -1715,12 +1746,9 @@ async def list_letters(
         user,
     )
     if not permissions.is_hr(user):
-        # An issued letter is somebody's offer, appointment or relieving
-        # letter, usually with their salary in it.
-        own = permissions.resolve_employee(
-            user, employee_id, detail="You can only see your own letters."
-        )
-        stmt = stmt.where(IssuedLetter.employee_id == own)
+        # Employees see no letters in the portal: each one reaches them as a
+        # link in its email, where they read, sign and download it.
+        return []
     elif employee_id:
         stmt = stmt.where(IssuedLetter.employee_id == employee_id)
     if letter_status is not None:
@@ -1735,9 +1763,40 @@ async def letter_content(
 ) -> LetterContentRead:
     letter, intact = await verify_letter(session, user, letter_id)
     _ensure_reader(letter, is_hr=permissions.is_hr(user), own_employee_id=user.employee_id)
+    pages = 0
+    signed_key = await _signed_copy_key(session, letter)
+    if intact or signed_key:
+        with contextlib.suppress(HTTPException):
+            pages = signed_copy.page_count(await _shown_document(session, letter, intact))
     return LetterContentRead(
-        reference_number=letter.reference_number, merged_html=letter.merged_html, intact=intact
+        reference_number=letter.reference_number,
+        merged_html=letter.merged_html,
+        intact=intact,
+        page_count=pages,
+        showing_signed_copy=bool(signed_key),
     )
+
+
+async def _shown_document(session: AsyncSession, letter: IssuedLetter, intact: bool) -> bytes:
+    """The PDF the viewer shows: the signed copy once accepted, else the letter."""
+    data = await stored_pdf(await _signed_copy_key(session, letter) or "")
+    if data is not None:
+        return data
+    if not intact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Letter {letter.reference_number} does not match its stored content hash.",
+        )
+    return await _pdf_bytes(session, letter)
+
+
+async def letter_page(
+    session: AsyncSession, user: User, letter_id: uuid.UUID, number: int
+) -> bytes:
+    """One page of the letter as a picture, exactly as it prints."""
+    letter, intact = await verify_letter(session, user, letter_id)
+    _ensure_reader(letter, is_hr=permissions.is_hr(user), own_employee_id=user.employee_id)
+    return signed_copy.page_image(await _shown_document(session, letter, intact), number)
 
 
 async def letter_verify(session: AsyncSession, user: User, letter_id: uuid.UUID) -> VerifyRead:
@@ -1746,6 +1805,10 @@ async def letter_verify(session: AsyncSession, user: User, letter_id: uuid.UUID)
     return VerifyRead(
         reference_number=letter.reference_number, content_hash=letter.content_hash, intact=intact
     )
+
+
+async def download_stem(session: AsyncSession, letter: IssuedLetter) -> str:
+    return await _download_stem(session, letter)
 
 
 async def _download_stem(session: AsyncSession, letter: IssuedLetter) -> str:
@@ -1779,7 +1842,10 @@ async def letter_pdf(
         )
     stem = await _download_stem(session, letter)
     if signed:
+        # A provider's signed PDF first; else the copy printed when it was accepted.
         data = await stored_pdf(letter.signed_pdf_storage_key or "")
+        if data is None:
+            data = await stored_pdf(await _signed_copy_key(session, letter) or "")
         if data is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

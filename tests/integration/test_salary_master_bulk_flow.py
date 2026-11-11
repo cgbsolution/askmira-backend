@@ -154,6 +154,8 @@ async def test_the_standard_setup_creates_wage_types_and_a_working_structure(
         ("TDS MANUAL", "statutory_deduction"),
         ("INSURANCE", "non_statutory_deduction"),
         ("PROF TAX CTC", "company_contribution"),
+        ("PF EMPLOYER CONTRIBUTION MANUAL", "company_contribution"),
+        ("ESIC EMPLOYER CONTRIBUTION MANUAL", "company_contribution"),
         ("BONUS PROVISION", "provision"),
         ("GRATUITY PROVISION", "provision"),
     ]
@@ -356,6 +358,9 @@ THEIR_HEADERS = [
     "LWF MANUAL", "INSURANCE", "Uniform Allowance", "Telephone Allowance",
 ]  # fmt: skip
 
+#: Standard wage types their sheet has no column for: the employer's PF / ESIC overrides.
+EMPLOYER_MANUAL = ["PF EMPLOYER CONTRIBUTION MANUAL", "ESIC EMPLOYER CONTRIBUTION MANUAL"]
+
 
 def _row(**values) -> list:
     """A row of the user's sheet, by header."""
@@ -386,7 +391,14 @@ async def test_the_template_is_the_employee_salary_master_layout(
     sheet = book.worksheets[0]
     headers = [c.value for c in sheet[1]]
     assert headers[: len(THEIR_HEADERS)] == THEIR_HEADERS
-    assert headers[len(THEIR_HEADERS) :] == ["Salary Structure", "Reason", "Employee Name"]
+    # Their columns first, as they were; then the employer's MANUAL rows, which
+    # their sheet has no column for; then ours.
+    assert headers[len(THEIR_HEADERS) :] == [
+        *EMPLOYER_MANUAL,
+        "Salary Structure",
+        "Reason",
+        "Employee Name",
+    ]
     assert sheet["A2"].value == "ACM001"
     assert {"Sample", "Instructions"} <= set(book.sheetnames)
 
@@ -880,7 +892,9 @@ async def test_the_export_has_every_detail_of_the_chosen_peoples_present_salary(
     assert response.status_code == 200, response.text
     assert "EmployeeSalaryMaster.xlsx" in response.headers["content-disposition"]
     headers, rows = _sheet_rows(response.content)
-    assert headers == THEIR_HEADERS  # their sheet, column for column, nothing added
+    # Their sheet, column for column, then the employer's MANUAL rows it has no
+    # column for (so an exported sheet uploads back without losing them).
+    assert headers == [*THEIR_HEADERS, *EMPLOYER_MANUAL]
     assert [r["Employee Code"] for r in rows] == ["ACM001", "ACM002"]  # only the chosen
     anita, ravi = rows
     assert anita["Pay Basis"] == "Monthly"
@@ -914,7 +928,7 @@ async def test_the_export_has_every_detail_of_the_chosen_peoples_present_salary(
     assert rules["list"].formula1 == '"Yearly,Monthly,Weekly,Daily,Hourly"'
     assert "C2" in rules["list"].sqref and "B2" in rules["date"].sqref
     sample = book["Sample"]
-    assert [c.value for c in sample[1]] == THEIR_HEADERS
+    assert [c.value for c in sample[1]] == [*THEIR_HEADERS, *EMPLOYER_MANUAL]
     assert sample["A2"].value is None and sample["E2"].value == "CTC TOTAL"
     assert sample["E2"].fill.fgColor.rgb.endswith("90EE90")
 

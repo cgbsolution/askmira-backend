@@ -19,7 +19,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from app.core.config import settings
 
-TokenType = Literal["access", "refresh", "reset", "verify", "mfa", "email_action"]
+TokenType = Literal["access", "refresh", "reset", "verify", "mfa", "email_action", "letter_link"]
 
 _hasher = PasswordHasher(
     time_cost=settings.ARGON2_TIME_COST,
@@ -142,6 +142,23 @@ def create_email_action_token(
         {"sub": user_id, "tid": tenant_id, "q": queue, "i": item_id},
         timedelta(hours=expires_in_hours),
         "email_action",
+    )
+
+
+def create_letter_link_token(
+    *, letter_id: str, tenant_id: str, employee_id: str, expires_in_days: int = 30
+) -> str:
+    """The link in a letter email: one letter, the one person it was issued to.
+
+    It opens that letter and lets that person sign and accept it without
+    signing in, and download their signed copy afterwards. Nothing else: its
+    `typ` keeps it out of everywhere an access token is expected, and the
+    letter being withdrawn closes it.
+    """
+    return _encode(
+        {"tid": tenant_id, "l": letter_id, "e": employee_id},
+        timedelta(days=expires_in_days),
+        "letter_link",
     )
 
 

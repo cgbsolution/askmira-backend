@@ -146,12 +146,14 @@ def portal_url() -> str:
     return settings.WEB_APP_URL or (settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "")
 
 
-Audience = Literal["employee", "candidate", "admin"]
+Audience = Literal["employee", "candidate", "admin", "letter"]
 
 
 def _reason(audience: Audience, company: str) -> str:
     if audience == "candidate":
         return f"You are receiving this because you applied for a role at {company}."
+    if audience == "letter":
+        return f"You are receiving this because {company} issued you a letter."
     if audience == "admin":
         return f"You are receiving this because you manage {company}'s AskMiraa workspace."
     return (
@@ -173,8 +175,9 @@ async def compose(
     embed_logo: bool = True,
 ) -> RenderedEmail:
     brand = await brand_for(session, tenant_id, override)
-    # A candidate has no login: the portal is no use to them.
-    button = with_button and audience != "candidate"
+    # A candidate has no login, nor does a letter's recipient emailed directly:
+    # the portal is no use to them.
+    button = with_button and audience not in ("candidate", "letter")
     return render_email(
         brand,
         subject=subject,

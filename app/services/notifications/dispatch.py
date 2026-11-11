@@ -868,6 +868,11 @@ async def _dispatch_one(
             buttons = await email_actions.buttons_for(
                 session, user, (notification.payload or {}).get("_approval")
             )
+            if not buttons:
+                from app.services.documents import letter_link
+
+                # A letter to read and sign: its own no-sign-in link.
+                buttons = letter_link.buttons_for(user, notification.payload)
             email_fields = email_brand.as_message_fields(
                 await email_brand.compose(
                     session,

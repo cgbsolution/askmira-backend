@@ -20,8 +20,11 @@ on somebody's behalf; an acknowledgement recorded by somebody else is not one.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
@@ -30,17 +33,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.documents import IssuedLetter, LetterStatus
+from app.models.documents import IssuedLetter, LetterStatus, LetterTemplate
 from app.models.employee import Employee
 from app.models.letter_acknowledgement import LetterAcknowledgement
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.letters import LetterAcknowledgeRequest, LetterRead
 from app.services import audit
+from app.services.documents import letter_link
 from app.services.documents import service as letters
-from app.services.documents.pdf import content_hash
+from app.services.documents.pdf import PdfRenderError, content_hash
+from app.services.documents.signed_copy import stamp_letter
 from app.services.notifications.dispatch import notify
+from app.services.storage import StorageError, get_storage
 
-__all__ = ["acknowledge", "names_match", "request_acknowledgement"]
+__all__ = [
+    "acknowledge",
+    "ensure_acceptable",
+    "login_ids",
+    "names_match",
+    "record_acceptance",
+    "request_acknowledgement",
+]
 
 
 def _normalise(name: str) -> str:
@@ -57,7 +71,7 @@ def names_match(typed: str, employee: Employee) -> bool:
 
 
 async def _row(
-    session: AsyncSession, user: User, letter: IssuedLetter
+    session: AsyncSession, user: Any, letter: IssuedLetter
 ) -> LetterAcknowledgement | None:
     return await session.scalar(
         tenant_scoped(
@@ -68,9 +82,176 @@ async def _row(
     )
 
 
-async def _template_name(session: AsyncSession, user: User, letter: IssuedLetter) -> str:
-    template = await letters.get_template(session, user, letter.template_id)
-    return template.name
+async def _template_name(session: AsyncSession, user: Any, letter: IssuedLetter) -> str:
+    template = await session.scalar(
+        tenant_scoped(
+            select(LetterTemplate).where(LetterTemplate.id == letter.template_id),
+            LetterTemplate,
+            user,
+        )
+    )
+    return template.name if template else "letter"
+
+
+async def login_ids(session: AsyncSession, scope: Any, employee_id: uuid.UUID) -> list[uuid.UUID]:
+    """The active logins of the person a letter was issued to."""
+    return list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.employee_id == employee_id, User.is_active.is_(True)
+                    ),
+                    User,
+                    scope,
+                )
+            )
+        ).all()
+    )
+
+
+async def record_acceptance(
+    session: AsyncSession,
+    *,
+    scope: Any,
+    letter: IssuedLetter,
+    employee: Employee,
+    typed_name: str,
+    actor: User | None,
+    channel: str,
+    signature_png: bytes | None,
+    request: Request | None,
+) -> LetterAcknowledgement:
+    """Record that `employee` accepted `letter`, print and keep the signed copy.
+
+    The caller has checked the letter can be accepted and the typed name is the
+    person's. `scope` carries the tenant (a user, or the tenant named by an
+    email link's token). One transaction: the row, the signed copy's key, the
+    audit entry and the notice to HR are committed together.
+    """
+    row = await _row(session, scope, letter)
+    if row is not None and row.acknowledged_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"You acknowledged this letter on {row.acknowledged_at:%d %b %Y}.",
+        )
+    if row is None:
+        row = LetterAcknowledgement(
+            tenant_id=letter.tenant_id,
+            letter_id=letter.id,
+            employee_id=letter.employee_id,
+            request_count=0,
+        )
+        session.add(row)
+    now = datetime.now(UTC)
+    accepted_hash = content_hash(letter.merged_html)
+
+    # The signed copy: the letter as accepted, signature and date printed in.
+    tenant = await session.get(Tenant, letter.tenant_id)
+    stamped = stamp_letter(
+        letter.merged_html,
+        typed_name=typed_name,
+        accepted_at=now,
+        content_hash=accepted_hash,
+        signature_png=signature_png,
+    )
+    try:
+        signed = await letters.render_letter_pdf(
+            stamped, letter.reference_number, letter.letterhead, tenant
+        )
+    except PdfRenderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Your signed copy could not be prepared. Try again in a minute.",
+        ) from exc
+    storage = get_storage()
+    key = storage.new_key(letter.tenant_id, "letters", ".pdf")
+    try:
+        await storage.put(key, signed)
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Your signed copy could not be saved. Try again in a minute.",
+        ) from exc
+
+    row.acknowledged_at = now
+    row.acknowledged_by_user_id = actor.id if actor is not None else None
+    row.typed_name = typed_name
+    row.content_hash = accepted_hash
+    row.channel = channel
+    row.signed_copy_storage_key = key
+    row.signed_copy_hash = hashlib.sha256(signed).hexdigest()
+    row.ip_address = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
+    row.user_agent = user_agent[:512] if user_agent else None
+    await session.flush()
+    await audit.record(
+        session,
+        tenant_id=letter.tenant_id,
+        action=AuditAction.APPROVE,
+        entity_type="issued_letter",
+        entity_id=letter.id,
+        actor=actor,
+        actor_type="user" if actor is not None else "employee_link",
+        changes={
+            "acknowledged_at": now.isoformat(),
+            "typed_name": typed_name,
+            "content_hash": row.content_hash,
+            "signed_copy_hash": row.signed_copy_hash,
+            "signature": "uploaded image" if signature_png is not None else "typed name",
+            "via": channel,
+        },
+        summary=f"{employee.full_name} acknowledged letter {letter.reference_number}",
+        request=request,
+    )
+    # A generated onboarding form is signed by this acknowledgement.
+    from app.services.onboarding import service as onboarding
+
+    await onboarding.form_acknowledged(
+        session,
+        actor if actor is not None else SimpleNamespace(tenant_id=letter.tenant_id, id=None),
+        letter.id,
+    )
+
+    notify_ids = {uid for uid in (letter.issued_by_user_id, row.requested_by_user_id) if uid}
+    if actor is not None:
+        notify_ids.discard(actor.id)
+    if notify_ids:
+        await notify(
+            session,
+            tenant_id=letter.tenant_id,
+            event_key="documents.letter.acknowledged",
+            recipient_user_ids=sorted(notify_ids, key=str),
+            payload={
+                "employee_name": employee.full_name,
+                "letter_name": await _template_name(session, scope, letter),
+                "reference_number": letter.reference_number,
+            },
+            commit=False,
+        )
+    await session.commit()
+    return row
+
+
+def ensure_acceptable(letter: IssuedLetter, intact: bool) -> None:
+    """Refuse a letter that is withdrawn, not yet issued, or fails its hash check."""
+    if letter.status is LetterStatus.REVOKED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="This letter has been withdrawn."
+        )
+    if letter.status not in letters.ACKNOWLEDGEABLE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This letter has not been issued yet, so it cannot be acknowledged.",
+        )
+    if not intact:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This letter does not match the copy recorded when it was issued. "
+                "Contact HR before accepting it."
+            ),
+        )
 
 
 async def request_acknowledgement(
@@ -124,32 +305,30 @@ async def request_acknowledgement(
         summary=f"Asked for {letter.reference_number} to be acknowledged",
         request=request,
     )
-    recipients = list(
-        (
-            await session.scalars(
-                tenant_scoped(
-                    select(User.id).where(
-                        User.employee_id == letter.employee_id, User.is_active.is_(True)
-                    ),
-                    User,
-                    user,
-                )
-            )
-        ).all()
-    )
+    recipients = await login_ids(session, user, letter.employee_id)
+    letter_name = await _template_name(session, user, letter)
+    payload = {
+        "actor_name": user.full_name,
+        "letter_name": letter_name,
+        "reference_number": letter.reference_number,
+    }
     await notify(
         session,
         tenant_id=user.tenant_id,
         event_key="documents.letter.acknowledgement_requested",
         recipient_user_ids=recipients,
-        payload={
-            "actor_name": user.full_name,
-            "letter_name": await _template_name(session, user, letter),
-            "reference_number": letter.reference_number,
-        },
+        payload={**payload, **letter_link.payload_for(letter)},
         commit=False,
     )
     await session.commit()
+    if not recipients:
+        # No login: the email link is how they read and sign it.
+        await letter_link.email_without_login(
+            session,
+            letter=letter,
+            event_key="documents.letter.acknowledgement_requested",
+            payload=payload,
+        )
     await session.refresh(letter)
     return (await letters.letter_reads(session, user, [letter]))[0]
 
@@ -161,8 +340,14 @@ async def acknowledge(
     payload: LetterAcknowledgeRequest,
     *,
     request: Request | None = None,
+    signature_png: bytes | None = None,
 ) -> LetterRead:
-    """The employee accepts a letter issued to them. Once, and only them."""
+    """The employee accepts a letter issued to them. Once, and only them.
+
+    `signature_png` is their signature, already prepared by
+    `signed_copy.prepare_signature`; without one the typed name is printed in
+    its place on the signed copy.
+    """
     letter, intact = await letters.verify_letter(session, user, letter_id)
     if letter.employee_id is None or letter.employee_id != user.employee_id:
         # Not theirs: indistinguishable from a letter that does not exist.
@@ -175,23 +360,7 @@ async def acknowledge(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Tick the confirmation to accept the letter.",
         )
-    if letter.status is LetterStatus.REVOKED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="This letter has been withdrawn."
-        )
-    if letter.status not in letters.ACKNOWLEDGEABLE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This letter has not been issued yet, so it cannot be acknowledged.",
-        )
-    if not intact:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This letter does not match the copy recorded when it was issued. "
-                "Contact HR before accepting it."
-            ),
-        )
+    ensure_acceptable(letter, intact)
     employee = await session.scalar(
         tenant_scoped(select(Employee).where(Employee.id == letter.employee_id), Employee, user)
     )
@@ -204,64 +373,16 @@ async def acknowledge(
             detail=f"Type your name as it appears on your record: {employee.full_name}.",
         )
 
-    row = await _row(session, user, letter)
-    if row is not None and row.acknowledged_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"You acknowledged this letter on {row.acknowledged_at:%d %b %Y}.",
-        )
-    if row is None:
-        row = LetterAcknowledgement(
-            tenant_id=user.tenant_id,
-            letter_id=letter.id,
-            employee_id=letter.employee_id,
-            request_count=0,
-        )
-        session.add(row)
-    now = datetime.now(UTC)
-    row.acknowledged_at = now
-    row.acknowledged_by_user_id = user.id
-    row.typed_name = typed
-    row.content_hash = content_hash(letter.merged_html)
-    row.ip_address = request.client.host if request and request.client else None
-    user_agent = request.headers.get("user-agent") if request else None
-    row.user_agent = user_agent[:512] if user_agent else None
-    await session.flush()
-    await audit.record(
+    await record_acceptance(
         session,
-        tenant_id=user.tenant_id,
-        action=AuditAction.APPROVE,
-        entity_type="issued_letter",
-        entity_id=letter.id,
+        scope=user,
+        letter=letter,
+        employee=employee,
+        typed_name=typed,
         actor=user,
-        changes={
-            "acknowledged_at": now.isoformat(),
-            "typed_name": typed,
-            "content_hash": row.content_hash,
-        },
-        summary=f"{employee.full_name} acknowledged letter {letter.reference_number}",
+        channel="portal",
+        signature_png=signature_png,
         request=request,
     )
-    # A generated onboarding form is signed by this acknowledgement.
-    from app.services.onboarding import service as onboarding
-
-    await onboarding.form_acknowledged(session, user, letter.id)
-
-    notify_ids = {uid for uid in (letter.issued_by_user_id, row.requested_by_user_id) if uid}
-    notify_ids.discard(user.id)
-    if notify_ids:
-        await notify(
-            session,
-            tenant_id=user.tenant_id,
-            event_key="documents.letter.acknowledged",
-            recipient_user_ids=sorted(notify_ids, key=str),
-            payload={
-                "employee_name": employee.full_name,
-                "letter_name": await _template_name(session, user, letter),
-                "reference_number": letter.reference_number,
-            },
-            commit=False,
-        )
-    await session.commit()
     await session.refresh(letter)
     return (await letters.letter_reads(session, user, [letter]))[0]
