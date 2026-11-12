@@ -1749,8 +1749,9 @@ async def require_location_if_configured(
     if has_coordinates or source not in (PunchSource.WEB, PunchSource.MOBILE_GEO):
         return
     tenant = await session.get(Tenant, user.tenant_id)
+    # The same default as `AttendanceSettings.location_mode`.
     mode = (((tenant.settings or {}).get("attendance") or {}) if tenant else {}).get(
-        "location_mode", "optional"
+        "location_mode", "required"
     )
     if mode == "required":
         raise HTTPException(

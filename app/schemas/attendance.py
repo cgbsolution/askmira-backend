@@ -87,9 +87,12 @@ class AttendanceSettings(BaseModel):
     - optional: it asks, and a punch without one is still recorded.
     - required: a punch from the web or the app must carry a location; HR,
       devices and imports are unaffected.
+
+    Required by default (2026-11-12): a web or app punch with no location is
+    one HR cannot check. A workspace that wants otherwise saves "optional".
     """
 
-    location_mode: LocationMode = "optional"
+    location_mode: LocationMode = "required"
     #: off: no photo; optional: asked for; required: a self-service punch needs one.
     photo_mode: LocationMode = "off"
     #: Every Nth late mark in a calendar month is a half day: the Nth, the 2Nth

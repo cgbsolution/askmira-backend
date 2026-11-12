@@ -592,8 +592,15 @@ async def provision(
 def _admin_note(product: Product, email: str, *, created: bool, made: bool) -> str:
     """What became of the workspace's admin in the product, in a sentence."""
     if product.key == "helpdesk":
-        # Its roles reach every company it serves: AskMiraa never gives one (catalogue.py).
-        return "Its people are added there as users; the helpdesk's IT team gives any other role."
+        # Each organisation is its own helpdesk tenant; roles there stay inside it.
+        if not created:
+            return "Its people are added to that tenant as users; its admins give any other role."
+        if made:
+            return f"Its own helpdesk tenant was created; {email} is its admin."
+        return (
+            f"Its own helpdesk tenant was created, but {email} already has a helpdesk login in "
+            "another tenant, so the helpdesk's super admin needs to add this tenant's admin."
+        )
     if not created:
         return f"Its people are matched there by email; {email} keeps the role they have there."
     if made:
