@@ -50,6 +50,7 @@ from app.schemas.leave import (
 from app.services import uploads
 from app.services.leave import attachments, balance_report, comp_off, holiday_calendar, ledger
 from app.services.leave import service as leave_service
+from app.services.leave.balance_report import ProbationFilter
 
 router = APIRouter(prefix="/leave", tags=["leave"])
 
@@ -273,16 +274,22 @@ async def team_balances(
     year: int = Query(default_factory=_this_year, ge=2000, le=2100),
     q: str | None = Query(default=None, max_length=128),
     department_id: uuid.UUID | None = None,
+    probation: ProbationFilter | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> TeamBalancesRead:
-    """Everybody's balances for HR; a manager's reporting line otherwise."""
+    """Everybody's balances for HR; a manager's reporting line otherwise.
+
+    `probation=only` lists people still on probation (no leave yet),
+    `probation=exclude` everybody past it.
+    """
     return await balance_report.team_balances(
         session,
         user,
         year=year,
         q=q,
         department_id=department_id,
+        probation=probation,
         page=page,
         page_size=page_size,
     )
@@ -296,10 +303,17 @@ async def export_team_balances(
     year: int = Query(default_factory=_this_year, ge=2000, le=2100),
     q: str | None = Query(default=None, max_length=128),
     department_id: uuid.UUID | None = None,
+    probation: ProbationFilter | None = None,
 ) -> Response:
     """The team table as CSV, one row per person and leave type. Cells cannot run as formulas."""
     content = await balance_report.export_csv(
-        session, user, year=year, q=q, department_id=department_id, request=request
+        session,
+        user,
+        year=year,
+        q=q,
+        department_id=department_id,
+        probation=probation,
+        request=request,
     )
     await session.commit()
     return Response(

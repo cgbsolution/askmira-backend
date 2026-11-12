@@ -12,10 +12,11 @@ import csv
 import io
 import re
 import uuid
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 
 from fastapi import Request
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Date, Select, cast, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -50,7 +51,12 @@ EXPORT_COLUMNS = (
     "encashed",
     "pending",
     "available",
+    "on_probation_until",
 )
+
+#: The team table's probation filter: only people still on probation, or
+#: only those past it. None shows everybody.
+ProbationFilter = Literal["only", "exclude"]
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -77,12 +83,26 @@ def _team(user: User, visible: set[uuid.UUID] | None) -> set[uuid.UUID] | None:
     return line
 
 
+def _on_probation(months: int, today: date) -> Any:
+    """SQL for "still on probation today": joined less than `months` ago.
+
+    Postgres adds months the way `engine.accrual_start` does (31 Aug + 6
+    months is 28 Feb), so this and each row's own date agree.
+    """
+    return Employee.date_of_joining.is_not(None) & (
+        cast(Employee.date_of_joining + func.make_interval(0, months), Date) > today
+    )
+
+
 def _people(
     user: User,
     scope: set[uuid.UUID] | None,
     *,
     q: str | None,
     department_id: uuid.UUID | None,
+    probation: ProbationFilter | None = None,
+    months: int = 0,
+    today: date | None = None,
 ) -> Select[tuple[Employee]]:
     """Current employees in scope. Leavers are settled on the exit screen."""
     stmt = tenant_scoped(
@@ -108,6 +128,14 @@ def _people(
                 Employee.employee_code.ilike(term),
             )
         )
+    if probation is not None:
+        if months <= 0:
+            # Nobody waits for leave in this workspace.
+            if probation == "only":
+                stmt = stmt.where(false())
+        else:
+            on = _on_probation(months, today or service.local_today())
+            stmt = stmt.where(on if probation == "only" else ~on)
     return stmt.order_by(Employee.first_name, Employee.last_name, Employee.id)
 
 
@@ -136,12 +164,37 @@ async def team_balances(
     year: int,
     q: str | None = None,
     department_id: uuid.UUID | None = None,
+    probation: ProbationFilter | None = None,
     page: int = 1,
     page_size: int = 25,
 ) -> TeamBalancesRead:
     scope = _team(user, await permissions.visible_employee_ids(session, user))
-    stmt = _people(user, scope, q=q, department_id=department_id)
+    months = await service.probation_months(session, user)
+    today = service.local_today()
+    stmt = _people(
+        user,
+        scope,
+        q=q,
+        department_id=department_id,
+        probation=probation,
+        months=months,
+        today=today,
+    )
     total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    on_probation = 0
+    if months > 0:
+        waiting = _people(
+            user,
+            scope,
+            q=q,
+            department_id=department_id,
+            probation="only",
+            months=months,
+            today=today,
+        )
+        on_probation = (
+            await session.scalar(select(func.count()).select_from(waiting.subquery())) or 0
+        )
     employees = list(
         (await session.scalars(stmt.offset((page - 1) * page_size).limit(page_size))).all()
     )
@@ -158,6 +211,8 @@ async def team_balances(
     ).all()
     return TeamBalancesRead(
         year=year,
+        probation_months=months,
+        on_probation=on_probation,
         leave_types=[
             TeamBalanceColumn(
                 leave_type_id=lt.id,
@@ -179,6 +234,8 @@ async def team_balances(
                 department_name=departments.get(employee.department_id)
                 if employee.department_id
                 else None,
+                date_of_joining=employee.date_of_joining,
+                probation_until=service.probation_until_for(employee, None, months, today),
                 balances=[
                     TeamBalanceCell(
                         leave_type_id=line.leave_type.id,
@@ -209,12 +266,27 @@ async def export_csv(
     year: int,
     q: str | None = None,
     department_id: uuid.UUID | None = None,
+    probation: ProbationFilter | None = None,
     request: Request | None = None,
 ) -> str:
     """Every matching person's balances, one row per leave type. Recorded as an export."""
     scope = _team(user, await permissions.visible_employee_ids(session, user))
+    months = await service.probation_months(session, user)
+    today = service.local_today()
     employees = list(
-        (await session.scalars(_people(user, scope, q=q, department_id=department_id))).all()
+        (
+            await session.scalars(
+                _people(
+                    user,
+                    scope,
+                    q=q,
+                    department_id=department_id,
+                    probation=probation,
+                    months=months,
+                    today=today,
+                )
+            )
+        ).all()
     )
     lines = await service.balance_lines(session, user, employees, year)
     departments = await _department_names(session, user, employees)
@@ -252,6 +324,7 @@ async def export_csv(
                                 balance.available,
                             )
                         ),
+                        line.probation_until.isoformat() if line.probation_until else None,
                     )
                 ]
             )
@@ -269,6 +342,7 @@ async def export_csv(
             "rows": rows,
             "q": q,
             "department_id": str(department_id) if department_id else None,
+            "probation": probation,
         },
         request=request,
     )

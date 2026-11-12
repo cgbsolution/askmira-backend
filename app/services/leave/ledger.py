@@ -236,18 +236,29 @@ async def history(
     leave_type = await core._any_leave_type(session, user, leave_type_id)
     today = await core.today_for(session, user, employee)
     as_of = core._accrual_as_of(year, today)
-    policy = await core._policy(session, user, employee, leave_type.id, as_of)
+    policies = await core._policies(session, user, leave_type.id)
+    starts_on = core.accrual_start_for(
+        employee, leave_type, await core.probation_months(session, user)
+    )
+    # Which version earned each month, to name it beside the credit.
+    earned_under = {
+        month: policy.name
+        for policy, first, last in engine.accrual_windows(
+            policies,
+            year=year,
+            location_id=employee.location_id,
+            grade=employee.grade,
+            gender=core.gender_of(employee),
+        )
+        for month in range(first, last + 1)
+    }
+
+    def accrued_at(on: date) -> Decimal:
+        return core._accrual(policies, employee, year, on, starts_on=starts_on)
 
     entries: list[tuple[date, int, str, Decimal, str | None]] = []
-    if policy is not None:
-        for on, amount in engine.accrual_schedule(
-            annual_quota=engine.days(policy.annual_quota_days),
-            frequency=policy.accrual_frequency,
-            year=year,
-            as_of=as_of,
-            joined_on=employee.date_of_joining,
-        ):
-            entries.append((on, 1, "accrual", amount, policy.name))
+    for on, amount in engine.schedule_from(accrued_at, year=year, as_of=as_of, joined_on=starts_on):
+        entries.append((on, 1, "accrual", amount, earned_under.get(on.month)))
 
     adjustments = (
         await session.scalars(
@@ -299,9 +310,7 @@ async def history(
     # figures on the row with no rows behind them. Show the difference as one
     # line rather than a history that does not add up to the card.
     row = await core._ledger_row(session, user, employee.id, leave_type.id, year)
-    card = core._balance_from(
-        row, core._accrual(policy, employee, year, as_of), engine.ZERO
-    ).available
+    card = core._balance_from(row, accrued_at(as_of), engine.ZERO).available
     unitemised = card - sum((item[3] for item in entries), engine.ZERO)
     if unitemised != engine.ZERO:
         entries.append((date(year, 1, 1), -1, "unitemised", unitemised, None))
@@ -457,6 +466,7 @@ async def close_year(
         )
     ).all()
     policies = await core._policies(session, user)
+    probation_months = await core.probation_months(session, user)
     comp_off_lapses = await core.comp_off_lapses_at_year_end(session, user)
     rows = {
         (row.employee_id, row.leave_type_id): row
@@ -496,8 +506,9 @@ async def close_year(
             if key in done:
                 already += 1
                 continue
+            type_policies = [p for p in policies if p.leave_type_id == leave_type.id]
             policy = engine.select_policy(
-                [p for p in policies if p.leave_type_id == leave_type.id],
+                type_policies,
                 location_id=employee.location_id,
                 grade=employee.grade,
                 gender=core.gender_of(employee),
@@ -510,9 +521,14 @@ async def close_year(
                 # since. Closing a year nobody tracked would carry forward
                 # leave nobody earned here.
                 continue
-            balance = core._balance_from(
-                row, core._accrual(policy, employee, year, year_end), engine.ZERO
+            accrued = core._accrual(
+                type_policies,
+                employee,
+                year,
+                year_end,
+                starts_on=core.accrual_start_for(employee, leave_type, probation_months),
             )
+            balance = core._balance_from(row, accrued, engine.ZERO)
             cap = core.carry_cap(leave_type, policy, comp_off_lapses=comp_off_lapses)
             carried, lapsed = engine.year_end_split(balance.available, cap)
             if row is not None:

@@ -83,6 +83,12 @@ DEFAULT_COMP_OFF_EXPIRY_DAYS = 60
 COMP_OFF_YEAR_END_KEY = "comp_off_year_end"
 COMP_OFF_CARRY = "carry_forward"
 COMP_OFF_LAPSE = "lapse"
+#: Months after joining before anybody earns leave — the probation period. 0
+#: (the default) means leave builds up from the joining date. Statutory leave
+#: is never held back. Counted from the date of joining on the record.
+PROBATION_MONTHS_KEY = "leave_probation_months"
+DEFAULT_PROBATION_MONTHS = 0
+MAX_PROBATION_MONTHS = 24
 
 dispatch.register_event(
     "leave.request.cancelled",
@@ -195,6 +201,30 @@ def _year_end_rule(tenant: Tenant) -> str:
     return value if value in (COMP_OFF_CARRY, COMP_OFF_LAPSE) else COMP_OFF_CARRY
 
 
+def _probation_months_of(tenant: Tenant) -> int:
+    months = _setting(tenant, PROBATION_MONTHS_KEY, DEFAULT_PROBATION_MONTHS)
+    return months if 0 <= months <= MAX_PROBATION_MONTHS else DEFAULT_PROBATION_MONTHS
+
+
+async def probation_months(session: AsyncSession, user: User) -> int:
+    """How many months after joining people start earning leave (0 = at once)."""
+    return _probation_months_of(await _tenant(session, user))
+
+
+def accrual_start_for(employee: Employee, leave_type: LeaveType, months: int) -> date | None:
+    """The day this person starts earning this leave type."""
+    return engine.accrual_start(employee.date_of_joining, months, exempt=leave_type.is_statutory)
+
+
+def probation_until_for(
+    employee: Employee, leave_type: LeaveType | None, months: int, today: date
+) -> date | None:
+    """The day leave starts, while this person is still on probation for it."""
+    if leave_type is not None and leave_type.is_statutory:
+        return None
+    return engine.on_probation_until(employee.date_of_joining, months, today)
+
+
 async def comp_off_lapses_at_year_end(session: AsyncSession, user: User) -> bool:
     """Whether this workspace lapses unused comp-off on 31 December."""
     return _year_end_rule(await _tenant(session, user)) == COMP_OFF_LAPSE
@@ -223,6 +253,7 @@ async def get_settings(session: AsyncSession, user: User) -> LeaveSettingsRead:
         comp_off_year_end=_year_end_rule(tenant),
         comp_off_leave_type_id=comp_off.id if comp_off else None,
         comp_off_leave_type_name=comp_off.name if comp_off else None,
+        probation_months=_probation_months_of(tenant),
     )
 
 
@@ -241,6 +272,7 @@ async def update_settings(
         ),
         COMP_OFF_EXPIRY_KEY: _setting(tenant, COMP_OFF_EXPIRY_KEY, DEFAULT_COMP_OFF_EXPIRY_DAYS),
         COMP_OFF_YEAR_END_KEY: _year_end_rule(tenant),
+        PROBATION_MONTHS_KEY: _probation_months_of(tenant),
     }
     changes: dict[str, Any] = {}
     if payload.optional_holiday_quota is not None:
@@ -258,6 +290,16 @@ async def update_settings(
                 "Only an admin decides whether unused comp-off lapses or carries forward."
             )
         changes[COMP_OFF_YEAR_END_KEY] = payload.comp_off_year_end
+    if (
+        payload.probation_months is not None
+        and payload.probation_months != before[PROBATION_MONTHS_KEY]
+    ):
+        # Who earns leave, and from when, is the same kind of call: the admin's.
+        if not permissions.is_admin(user):
+            raise permissions.forbidden(
+                "Only an admin decides how long new joiners wait before they earn leave."
+            )
+        changes[PROBATION_MONTHS_KEY] = payload.probation_months
     if changes:
         # A new dict, not an in-place edit: JSONB change tracking sees assignment only.
         tenant.settings = {**(tenant.settings or {}), **changes}
@@ -382,19 +424,52 @@ def _accrual_as_of(year: int, today: date, until: date | None = None) -> date:
     return min(today, date(year, 12, 31))
 
 
-def _accrual(policy: LeavePolicy | None, employee: Employee, year: int, as_of: date) -> Decimal:
-    if policy is None:
+def _accrual(
+    policies: Sequence[LeavePolicy],
+    employee: Employee,
+    year: int,
+    as_of: date,
+    *,
+    starts_on: date | None,
+) -> Decimal:
+    """What this person has earned of one leave type in `year` up to `as_of`.
+
+    `policies` are the type's versions (any population — the engine picks the
+    one covering this person for each month), so a version that starts in
+    November earns only November and December. `starts_on` is when the person
+    starts earning: `accrual_start_for`, which waits out probation.
+    """
+    if not policies:
         return engine.ZERO
     # Nothing is earned after the last day of employment. Without this a
     # leaver's balance, and the encashment paid from it, keeps growing.
     if employee.date_of_exit is not None and employee.date_of_exit < as_of:
         as_of = employee.date_of_exit
-    return engine.accrued_to_date(
-        annual_quota=engine.days(policy.annual_quota_days),
-        frequency=policy.accrual_frequency,
+    windows = engine.accrual_windows(
+        policies,
         year=year,
-        as_of=as_of,
-        joined_on=employee.date_of_joining,
+        location_id=employee.location_id,
+        grade=employee.grade,
+        gender=gender_of(employee),
+    )
+    return engine.accrued_across(windows, year=year, as_of=as_of, joined_on=starts_on)
+
+
+async def accrued_for(
+    session: AsyncSession,
+    user: User,
+    employee: Employee,
+    leave_type: LeaveType,
+    year: int,
+    as_of: date,
+) -> Decimal:
+    """`_accrual` with the type's policies and the workspace's probation loaded."""
+    return _accrual(
+        await _policies(session, user, leave_type.id),
+        employee,
+        year,
+        as_of,
+        starts_on=accrual_start_for(employee, leave_type, await probation_months(session, user)),
     )
 
 
@@ -491,14 +566,13 @@ async def live_balance(
     The one computation every reader uses — the balance cards, the request
     check, the encashment at exit — so no two screens can disagree.
     """
-    policy = await _policy(
-        session, user, employee, leave_type.id, _accrual_as_of(year, today, until)
-    )
     row = await _ledger_row(session, user, employee.id, leave_type.id, year)
     projected = await _projected_carry_in(session, user, employee, leave_type, year, today)
     balance = _balance_from(
         row,
-        _accrual(policy, employee, year, _accrual_as_of(year, today, until)),
+        await accrued_for(
+            session, user, employee, leave_type, year, _accrual_as_of(year, today, until)
+        ),
         await _pending_days(session, user, employee.id, leave_type.id, year),
         projected,
     )
@@ -530,7 +604,7 @@ async def _projected_carry_in(
         return engine.ZERO
     balance = _balance_from(
         row,
-        _accrual(policy, employee, previous, year_end),
+        await accrued_for(session, user, employee, leave_type, previous, year_end),
         await _pending_days(session, user, employee.id, leave_type.id, previous),
     )
     cap = carry_cap(
@@ -567,9 +641,11 @@ async def _post_to_ledger(
     today: date,
 ) -> LeaveBalance:
     """Move `used` on the ledger row, creating it and refreshing accrual as it goes."""
-    policy = await _policy(session, user, employee, leave_type_id, date(year, 12, 31))
+    leave_type = await _any_leave_type(session, user, leave_type_id)
     row = await ensure_ledger_row(session, user, employee.id, leave_type_id, year)
-    row.accrued = _accrual(policy, employee, year, _accrual_as_of(year, today))
+    row.accrued = await accrued_for(
+        session, user, employee, leave_type, year, _accrual_as_of(year, today)
+    )
     row.used = engine.days(row.used) + used_delta
     await session.flush()
     return row
@@ -817,6 +893,20 @@ async def _assess(
         balance=balance,
         overlapping=overlapping,
     )
+    probation_until = probation_until_for(
+        employee, leave_type, await probation_months(session, user), today
+    )
+    if probation_until is not None:
+        # Say why there is nothing to apply against, instead of "no balance".
+        generic = [p for p in assessment.problems if p.startswith("No balance is available")]
+        if generic:
+            assessment.problems = [
+                f"{leave_type.name} starts building up on {probation_until:%d %b %Y}, after "
+                "the probation period. Until then there is no balance to apply against."
+                if p in generic
+                else p
+                for p in assessment.problems
+            ]
     if not leave_type.is_paid:
         assessment.warnings.append(
             "This leave is unpaid: the days count as loss of pay in payroll."
@@ -1468,6 +1558,8 @@ class BalanceLine:
     leave_type: LeaveType
     policy: LeavePolicy | None
     balance: engine.Balance
+    #: Still on probation today: the day this type starts building up.
+    probation_until: date | None = None
 
 
 async def balance_lines(
@@ -1534,14 +1626,17 @@ async def balance_lines(
         ).all()
     }
     todays = await todays_for(session, user, employees)
+    months = await probation_months(session, user)
 
     result: dict[uuid.UUID, list[BalanceLine]] = {}
     for employee in employees:
-        as_of = _accrual_as_of(year, todays[employee.id])
+        today = todays[employee.id]
+        as_of = _accrual_as_of(year, today)
         lines: list[BalanceLine] = []
         for leave_type in leave_types:
+            policies = policies_by_type.get(leave_type.id, [])
             policy = engine.select_policy(
-                policies_by_type.get(leave_type.id, []),
+                policies,
                 location_id=employee.location_id,
                 grade=employee.grade,
                 gender=gender_of(employee),
@@ -1556,9 +1651,16 @@ async def balance_lines(
                     policy=policy,
                     balance=_balance_from(
                         row,
-                        _accrual(policy, employee, year, as_of),
+                        _accrual(
+                            policies,
+                            employee,
+                            year,
+                            as_of,
+                            starts_on=accrual_start_for(employee, leave_type, months),
+                        ),
                         pending.get((employee.id, leave_type.id), engine.ZERO),
                     ),
+                    probation_until=probation_until_for(employee, leave_type, months, today),
                 )
             )
         result[employee.id] = lines
@@ -1587,6 +1689,7 @@ def _balance_read(line: BalanceLine, year: int) -> LeaveBalanceRead:
         pending=balance.pending,
         available=balance.available,
         available_after_pending=balance.available_after_pending,
+        probation_until=line.probation_until,
     )
 
 

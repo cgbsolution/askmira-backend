@@ -376,10 +376,25 @@ def test_a_leaver_earns_nothing_after_their_last_day() -> None:
 
     from app.services.leave.service import _accrual
 
-    policy = SimpleNamespace(annual_quota_days=Decimal(18), accrual_frequency="monthly")
-    stayer = SimpleNamespace(date_of_joining=date(2023, 6, 1), date_of_exit=None)
-    leaver = SimpleNamespace(date_of_joining=date(2023, 6, 1), date_of_exit=date(2026, 8, 31))
+    policy = SimpleNamespace(
+        annual_quota_days=Decimal(18),
+        accrual_frequency="monthly",
+        location_id=None,
+        grade=None,
+        applies_to_gender=None,
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+        is_active=True,
+    )
+    person = {"location_id": None, "grade": None, "gender": None}
+    stayer = SimpleNamespace(date_of_joining=date(2023, 6, 1), date_of_exit=None, **person)
+    leaver = SimpleNamespace(
+        date_of_joining=date(2023, 6, 1), date_of_exit=date(2026, 8, 31), **person
+    )
 
     october = date(2026, 10, 7)
-    assert _accrual(policy, stayer, 2026, october) == Decimal(15)
-    assert _accrual(policy, leaver, 2026, october) == Decimal(12), "January to August only"
+    starts = date(2023, 6, 1)
+    assert _accrual([policy], stayer, 2026, october, starts_on=starts) == Decimal(15)
+    assert _accrual([policy], leaver, 2026, october, starts_on=starts) == Decimal(12), (
+        "January to August only"
+    )

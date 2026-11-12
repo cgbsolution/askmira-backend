@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Protocol, TypeVar
 
+from dateutil.relativedelta import relativedelta
+
 ZERO = Decimal("0")
 HALF = Decimal("0.5")
 MONTHS_IN_YEAR = 12
@@ -168,21 +170,33 @@ def overlapping_requests(
 # ── Accrual ─────────────────────────────────────────────────────────────────
 
 
-def _months_credited(year: int, as_of: date, joined_on: date | None) -> int:
-    """Months of `year` that have started by `as_of` and that the person was here for."""
-    if as_of.year < year:
-        return 0
-    last_month = MONTHS_IN_YEAR if as_of.year > year else as_of.month
+def _service_span(
+    year: int, joined_on: date | None, first: int = 1, last: int = MONTHS_IN_YEAR
+) -> tuple[int, int] | None:
+    """The months of `year`, within `first`..`last`, the person earns leave in.
 
-    first_month = 1
+    A joiner on or before the 15th earns their first month; after it, they
+    start from the next. None when they earn nothing in the range.
+    """
+    start = first
     if joined_on is not None:
         if joined_on.year > year:
-            return 0
+            return None
         if joined_on.year == year:
-            first_month = joined_on.month
-            if joined_on.day > MID_MONTH_CUTOFF_DAY:
-                first_month += 1
-    return max(0, last_month - first_month + 1)
+            joined_month = joined_on.month + (1 if joined_on.day > MID_MONTH_CUTOFF_DAY else 0)
+            start = max(start, joined_month)
+    return (start, last) if start <= last else None
+
+
+def _months_credited(
+    year: int, as_of: date, joined_on: date | None, first: int = 1, last: int = MONTHS_IN_YEAR
+) -> int:
+    """Months of `year` (within `first`..`last`) started by `as_of` that the person was here for."""
+    if as_of.year < year:
+        return 0
+    started = MONTHS_IN_YEAR if as_of.year > year else as_of.month
+    span = _service_span(year, joined_on, first, min(last, started))
+    return 0 if span is None else span[1] - span[0] + 1
 
 
 def accrued_to_date(
@@ -192,6 +206,7 @@ def accrued_to_date(
     year: int,
     as_of: date,
     joined_on: date | None,
+    months: tuple[int, int] = (1, MONTHS_IN_YEAR),
 ) -> Decimal:
     """Days earned in a leave year up to `as_of`.
 
@@ -199,42 +214,181 @@ def accrued_to_date(
     usually written ("1.5 days on the 1st of every month"). A mid-year joiner
     earns only the periods they were employed for; a joiner after the 15th
     starts from the following month.
+
+    `months` limits the credit to the months a policy version governs (see
+    `accrual_windows`): a policy that starts in November earns nothing for
+    January to October. `joined_on` is the day the person starts earning —
+    their joining date, or the end of probation when leave waits for it.
     """
     if frequency not in ACCRUAL_FREQUENCIES:
         raise LeaveRuleError(f"Unknown accrual frequency '{frequency}'.")
     quota = days(annual_quota)
-    if quota <= ZERO:
+    if quota <= ZERO or as_of.year < year:
         return ZERO
+    first, last = months
+    started = MONTHS_IN_YEAR if as_of.year > year else as_of.month
 
     if frequency == "on_joining":
         employed = joined_on is None or joined_on <= as_of
-        return quota if as_of.year >= year and employed else ZERO
+        return quota if employed and first <= started else ZERO
 
-    months = _months_credited(year, as_of, joined_on)
     if frequency == "monthly":
-        return _quantize(quota * months / MONTHS_IN_YEAR)
+        return _quantize(
+            quota * _months_credited(year, as_of, joined_on, first, last) / MONTHS_IN_YEAR
+        )
+
+    span = _service_span(year, joined_on, first, last)
+    if span is None:
+        return ZERO
+    start, end = span
 
     if frequency == "quarterly":
-        if months == 0:
-            return ZERO
         # Each started quarter credits a quarter of the quota, pro-rated by the
-        # months of it the person is employed for.
-        last_month = MONTHS_IN_YEAR if as_of.year > year else as_of.month
-        first_month = last_month - months + 1
+        # months of it the person is employed for (and the policy governs).
         total = ZERO
         for quarter_start in (1, 4, 7, 10):
-            if quarter_start > last_month:
+            low, high = max(quarter_start, start), min(quarter_start + 2, end)
+            if low > high:
+                continue
+            if low > started:
                 break
-            quarter_end = quarter_start + 2
-            served = max(0, quarter_end - max(quarter_start, first_month) + 1)
-            total += quota / 4 * served / 3
+            total += quota / 4 * (high - low + 1) / 3
         return _quantize(total)
 
-    # annual: the whole year's credit on day one, pro-rated for a mid-year joiner.
-    if as_of.year < year:
+    # annual: the whole period's credit up front, pro-rated for a mid-year
+    # joiner — and not before the person starts earning (end of probation).
+    if first > started or (joined_on is not None and joined_on > as_of):
         return ZERO
-    service_months = _months_credited(year, date(year, 12, 31), joined_on)
-    return _quantize(quota * service_months / MONTHS_IN_YEAR)
+    return _quantize(quota * (end - start + 1) / MONTHS_IN_YEAR)
+
+
+class AccruingPolicy(Protocol):
+    location_id: uuid.UUID | None
+    grade: str | None
+    effective_from: date
+    effective_to: date | None
+    is_active: bool
+    annual_quota_days: Any
+    accrual_frequency: str
+
+
+A = TypeVar("A", bound=AccruingPolicy)
+
+
+def accrual_windows(
+    policies: Sequence[A],
+    *,
+    year: int,
+    location_id: uuid.UUID | None,
+    grade: str | None,
+    gender: str | None = None,
+) -> list[tuple[A, int, int]]:
+    """Which policy version earns each month of `year`: `(policy, first, last)` runs.
+
+    A month belongs to the version in force on its 15th — the same cut-off a
+    joiner gets — so a new version starting on 1 November earns November and
+    December, the one it replaced earns January to October, and no month is
+    counted twice or lost. Months no policy covers earn nothing.
+    """
+    windows: list[tuple[A, int, int]] = []
+    for month in range(1, MONTHS_IN_YEAR + 1):
+        policy = select_policy(
+            policies,
+            location_id=location_id,
+            grade=grade,
+            gender=gender,
+            on=date(year, month, MID_MONTH_CUTOFF_DAY),
+        )
+        if policy is None:
+            continue
+        if windows and windows[-1][0] is policy and windows[-1][2] == month - 1:
+            windows[-1] = (policy, windows[-1][1], month)
+        else:
+            windows.append((policy, month, month))
+    return windows
+
+
+def accrued_across(
+    windows: Sequence[tuple[AccruingPolicy, int, int]],
+    *,
+    year: int,
+    as_of: date,
+    joined_on: date | None,
+) -> Decimal:
+    """Days earned in `year` up to `as_of` under every version that governed it.
+
+    A one-off "on joining" credit is given once, however many versions there were.
+    """
+    total = ZERO
+    joining_credited = False
+    for policy, first, last in windows:
+        if policy.accrual_frequency == "on_joining" and joining_credited:
+            continue
+        earned = accrued_to_date(
+            annual_quota=days(policy.annual_quota_days),
+            frequency=policy.accrual_frequency,
+            year=year,
+            as_of=as_of,
+            joined_on=joined_on,
+            months=(first, last),
+        )
+        if policy.accrual_frequency == "on_joining" and earned > ZERO:
+            joining_credited = True
+        total += earned
+    return total
+
+
+def accrual_start(
+    date_of_joining: date | None, probation_months: int, *, exempt: bool = False
+) -> date | None:
+    """The day somebody starts earning leave.
+
+    Their joining date, or — when the workspace holds leave back for probation —
+    that many months after it. Statutory leave (maternity) is never held back:
+    the law, not the company, decides who is entitled.
+    """
+    if date_of_joining is None or exempt or probation_months <= 0:
+        return date_of_joining
+    return date_of_joining + relativedelta(months=probation_months)
+
+
+def on_probation_until(
+    date_of_joining: date | None, probation_months: int, today: date
+) -> date | None:
+    """The day leave starts, while somebody is still on probation; None after it."""
+    start = accrual_start(date_of_joining, probation_months)
+    if start is None or probation_months <= 0 or start <= today:
+        return None
+    return start
+
+
+def schedule_from(
+    total_at: Callable[[date], Decimal], *, year: int, as_of: date, joined_on: date | None
+) -> list[tuple[date, Decimal]]:
+    """Each credit behind a running accrual total, dated, for the balance history.
+
+    Built from the total at each month start, so the entries always add up to
+    exactly what the balance says — the history and the card cannot disagree
+    by a rounding paisa.
+    """
+    if as_of < date(year, 1, 1):
+        return []
+    points = [date(year, m, 1) for m in range(1, 13) if date(year, m, 1) <= as_of]
+    # An up-front credit that waits for the start date (probation) lands on it.
+    if joined_on is not None and joined_on.year == year and joined_on <= as_of:
+        points = sorted({*points, joined_on})
+    entries: list[tuple[date, Decimal]] = []
+    running = ZERO
+    for point in points:
+        total = total_at(point)
+        if total != running:
+            shown = joined_on if joined_on is not None and joined_on > point else point
+            entries.append((min(shown, as_of), total - running))
+            running = total
+    final = total_at(as_of)
+    if final != running:
+        entries.append((as_of, final - running))
+    return entries
 
 
 def accrual_schedule(
@@ -245,42 +399,21 @@ def accrual_schedule(
     as_of: date,
     joined_on: date | None,
 ) -> list[tuple[date, Decimal]]:
-    """Each credit behind `accrued_to_date`, dated, for the balance history.
-
-    Built from the running total at each period start, so the entries always
-    add up to exactly what `accrued_to_date` says — the history and the balance
-    card cannot disagree by a rounding paisa.
-    """
-    if as_of < date(year, 1, 1) or days(annual_quota) <= ZERO:
+    """Each credit behind `accrued_to_date` for one policy, dated."""
+    if days(annual_quota) <= ZERO:
         return []
-    if frequency == "monthly":
-        points = [date(year, m, 1) for m in range(1, 13)]
-    elif frequency == "quarterly":
-        points = [date(year, m, 1) for m in (1, 4, 7, 10)]
-    else:
-        points = [date(year, 1, 1)]
-    points = [p for p in points if p <= as_of]
-
-    entries: list[tuple[date, Decimal]] = []
-    running = ZERO
-    for point in points:
-        total = accrued_to_date(
+    return schedule_from(
+        lambda on: accrued_to_date(
             annual_quota=annual_quota,
             frequency=frequency,
             year=year,
-            as_of=point,
+            as_of=on,
             joined_on=joined_on,
-        )
-        if total != running:
-            shown = joined_on if joined_on is not None and joined_on > point else point
-            entries.append((min(shown, as_of), total - running))
-            running = total
-    final = accrued_to_date(
-        annual_quota=annual_quota, frequency=frequency, year=year, as_of=as_of, joined_on=joined_on
+        ),
+        year=year,
+        as_of=as_of,
+        joined_on=joined_on,
     )
-    if final != running:
-        entries.append((as_of, final - running))
-    return entries
 
 
 # ── Balances ────────────────────────────────────────────────────────────────

@@ -191,6 +191,8 @@ class LeaveSettingsRead(BaseModel):
     comp_off_year_end: CompOffYearEnd
     comp_off_leave_type_id: uuid.UUID | None
     comp_off_leave_type_name: str | None
+    #: Months after joining before anybody earns leave (probation). 0 = at once.
+    probation_months: int = 0
 
 
 class LeaveSettingsUpdate(BaseModel):
@@ -198,6 +200,8 @@ class LeaveSettingsUpdate(BaseModel):
     comp_off_expiry_days: int | None = Field(default=None, ge=1, le=365)
     #: Admins only (leave.service.update_settings).
     comp_off_year_end: CompOffYearEnd | None = None
+    #: Admins only. Statutory leave is never held back.
+    probation_months: int | None = Field(default=None, ge=0, le=24)
 
 
 # ── Requests ────────────────────────────────────────────────────────────────
@@ -336,6 +340,8 @@ class LeaveBalanceRead(BaseModel):
     pending: Decimal
     available: Decimal
     available_after_pending: Decimal
+    #: Still on probation: the day this type starts building up. None otherwise.
+    probation_until: date | None = None
 
 
 class BalanceAdjustmentCreate(BaseModel):
@@ -411,6 +417,9 @@ class TeamBalanceRow(BaseModel):
     photo_url: str | None
     designation: str | None
     department_name: str | None
+    date_of_joining: date | None = None
+    #: Still on probation: the day leave starts building up. None otherwise.
+    probation_until: date | None = None
     #: Only the types a policy or a ledger row gives this person.
     balances: list[TeamBalanceCell]
 
@@ -420,6 +429,11 @@ class TeamBalancesRead(Page[TeamBalanceRow]):
     #: Every active leave type, in name order, whether or not this page uses it,
     #: so the columns do not move between pages.
     leave_types: list[TeamBalanceColumn]
+    #: The workspace's probation before leave builds up (0 = none).
+    probation_months: int = 0
+    #: People in scope (search and department applied, probation filter not)
+    #: still on probation today, for the tab count.
+    on_probation: int = 0
 
 
 class WhoIsOutRead(BaseModel):
