@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.models.employee import EmploymentStatus
 from app.models.payroll import (
     WAGE_GROUP_TYPE,
     CalculationType,
@@ -691,10 +692,34 @@ class StandardSetupRead(BaseModel):
     structure_skipped: str | None = None
 
 
+class SalaryListFilters(BaseModel):
+    """The Salary master list's filters, the same for the list and its export.
+
+    Status, company, project, department and location are the directory's own;
+    `structure_id` and `salary` read the salary each person is on today.
+    """
+
+    search: str | None = Field(default=None, max_length=128)
+    status: EmploymentStatus | None = None
+    #: Everybody who has not left: every status but exited.
+    current: bool = False
+    legal_entity_id: uuid.UUID | None = None
+    without_legal_entity: bool = False
+    project_id: uuid.UUID | None = None
+    without_project: bool = False
+    department_id: uuid.UUID | None = None
+    location_id: uuid.UUID | None = None
+    structure_id: uuid.UUID | None = None
+    #: "assigned": on a salary today; "none": no salary yet.
+    salary: Literal["assigned", "none"] | None = None
+
+
 class SalaryExportInput(BaseModel):
-    """Whose present salary to export; empty exports everyone."""
+    """Whose present salary to export: the ticked people, else everyone the
+    filters match, else everyone."""
 
     employee_ids: list[uuid.UUID] | None = Field(default=None, max_length=20000)
+    filters: SalaryListFilters | None = None
 
 
 class StandardStatusRead(BaseModel):

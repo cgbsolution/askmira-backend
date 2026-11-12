@@ -15,6 +15,10 @@ ENDPOINTS: dict[str, str] = {
         "permissions: the sender or HR, and only on a shoutout the caller can see - "
         "an invisible one is a 404."
     ),
+    "GET /culture/shoutouts/{shoutout_id}/card": (
+        "scoped:visibility_clause: the birthday or anniversary card, only on a post "
+        "the caller can see - an invisible one is a 404."
+    ),
     "PUT /culture/shoutouts/{shoutout_id}/reactions": (
         "permissions: the caller's own reaction, only on a shoutout the caller can see."
     ),
@@ -118,8 +122,8 @@ ENDPOINTS: dict[str, str] = {
         "permissions: your own celebration settings only - nobody consents on anybody's behalf."
     ),
     "GET /culture/calendar": (
-        "scoped:EventPrivacyPreference: birthdays and anniversaries pass through "
-        "each person's own privacy preference, and a team-scoped birthday reaches "
-        "only that person's department and HR."
+        "scoped:effective_privacy: birthdays and anniversaries pass through each "
+        "person's own privacy choice, else the workspace default HR set, and a "
+        "team-scoped birthday reaches only that person's department and HR."
     ),
 }

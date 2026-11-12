@@ -139,7 +139,10 @@ def _read(product: Product, row: ProductLink | None) -> dict[str, Any]:
     connected = row is not None and row.status == links.ACTIVE
     via = None
     if connected:
-        via = "connectors" if row.secret_encrypted else "platform"
+        # "platform": the super admin set it up (products/platform.py), with a key
+        # of this workspace's own; "server": made the older way, with the
+        # server-wide settings.
+        via = row.via or ("connectors" if row.secret_encrypted else "server")
     where = _where(product, row)
     return {
         "key": product.key,
@@ -327,6 +330,7 @@ async def complete(
     row.app_url = data["app"] if custom else None
     row.secret_encrypted = answer["secret"]
     row.linked_by_user_id = user.id
+    row.via = "connectors"
     row.last_error = None
     tenant = await session.get(Tenant, user.tenant_id)
     if tenant is not None:

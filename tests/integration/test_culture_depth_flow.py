@@ -906,15 +906,27 @@ async def test_the_audience_narrows_who_the_register_expects(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def test_a_birthday_is_not_published_without_an_opt_in(session, hr_user, employee):
-    """The absence of a record is a refusal, not a gap to fill with yes."""
+async def test_a_birthday_follows_the_workspace_default_until_the_person_chooses(
+    session, hr_user, employee
+):
+    """Out of the box everybody's birthday is shared with the workspace; HR can
+    make the default private, and then nobody who never chose is shown."""
+    from app.services.culture import celebrations
+
     employee.date_of_birth = date(1992, 9, 9)
     await session.commit()
+    window = {"from_date": date(2026, 9, 1), "to_date": date(2026, 9, 30)}
 
-    calendar = await culture.calendar(
-        session, hr_user, from_date=date(2026, 9, 1), to_date=date(2026, 9, 30)
+    shown = await culture.calendar(session, hr_user, **window)
+    birthdays = [e for e in shown["events"] if e["kind"] == "birthday"]
+    assert len(birthdays) == 1 and birthdays[0]["scope"] == "company"
+
+    await celebrations.save_settings(
+        session, hr_user, celebrations.CelebrationSettings(share_by_default=False)
     )
-    assert all(e["kind"] != "birthday" for e in calendar["events"])
+    await session.commit()
+    hidden = await culture.calendar(session, hr_user, **window)
+    assert all(e["kind"] != "birthday" for e in hidden["events"])
 
 
 async def test_a_birthday_appears_after_an_explicit_opt_in(session, hr_user, employee):

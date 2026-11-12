@@ -164,6 +164,10 @@ EXEMPT_COLUMNS: dict[tuple[str, str], str] = {
         "The key this workspace's connection to one of our products is signed with. A "
         "credential of an integration, about no person; encrypted at rest."
     ),
+    ("platform_product_keys", "secret_encrypted"): (
+        "The platform's key for one of our products, with which it sets a workspace up "
+        "there. A credential of an integration, about no person; encrypted at rest."
+    ),
     ("leave_policies", "applies_to_gender"): (
         "Which population a leave policy covers ('female' for maternity leave). A rule "
         "about a group, stored once per policy; it records nobody's gender."
@@ -594,6 +598,10 @@ TABLES: dict[str, TableClassification] = {
         # member_roles: linked people's login emails and their role in Saleinx/ProcureFlow.
         {"last_sync": "identity", "member_roles": "identity"},
     ),
+    "platform_product_keys": _none(
+        "The platform's key for each of our products, set by its super admin: a credential "
+        "of an integration, encrypted at rest, about no person."
+    ),
     "social_login_attempts": _none(
         "A sign-in in flight: random state, nonce and PKCE verifier; no person until it ends."
     ),
@@ -798,6 +806,10 @@ TABLES: dict[str, TableClassification] = {
     ),
     "exit_interviews": _p(EMP, "organisational", {"comments": "organisational"}),
     "milestone_rules": _none("Which work anniversaries the company marks, and how. Configuration."),
+    "celebration_templates": _none(
+        "The design and wording of the birthday and anniversary cards. Configuration; "
+        "names and photos are filled in only when a card is drawn."
+    ),
     "approval_rules": _none(
         "Who approves leave and expenses under which conditions. Workflow configuration."
     ),

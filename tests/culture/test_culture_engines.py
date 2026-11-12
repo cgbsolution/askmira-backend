@@ -86,7 +86,7 @@ def test_a_group_below_the_threshold_is_withheld():
 
 
 def test_the_count_is_still_shown_for_a_withheld_group():
-    """"Too few to report" with no number sends somebody to ask HR for it."""
+    """ "Too few to report" with no number sends somebody to ask HR for it."""
     result = surveys.breakdown(
         {"tiny": rows(3, clarity=2), "eng": rows(12, clarity=4), "ops": rows(8, clarity=3)},
         instrument_key="engagement_9",
@@ -145,13 +145,11 @@ def test_every_group_below_the_threshold_is_withheld_not_just_the_smallest():
 
 
 def test_a_reverse_scored_item_is_flipped_before_averaging():
-    """"I have to hide parts of who I am" scored 1 is a good answer.
+    """ "I have to hide parts of who I am" scored 1 is a good answer.
 
     Averaging it unflipped reads a healthy team as a sick one, invisibly.
     """
-    scores = surveys.score_scale(
-        [{"hide": 1, "belong": 5}], instrument_key="inclusion_6"
-    )
+    scores = surveys.score_scale([{"hide": 1, "belong": 5}], instrument_key="inclusion_6")
     assert scores["hide"] == 5.0
     assert scores["belong"] == 5.0
 
@@ -222,14 +220,8 @@ def test_the_window_is_inclusive_at_both_ends():
 
 
 def test_before_and_after_the_window_are_distinct_states():
-    assert (
-        awards.window_state(WINDOW, today=date(2026, 8, 31))
-        is awards.WindowState.NOT_OPEN
-    )
-    assert (
-        awards.window_state(WINDOW, today=date(2026, 9, 21))
-        is awards.WindowState.CLOSED
-    )
+    assert awards.window_state(WINDOW, today=date(2026, 8, 31)) is awards.WindowState.NOT_OPEN
+    assert awards.window_state(WINDOW, today=date(2026, 9, 21)) is awards.WindowState.CLOSED
 
 
 def test_a_closed_window_refuses_and_says_when_it_closed():
@@ -289,9 +281,7 @@ def test_a_juror_never_sees_another_jurors_draft():
 
 
 def test_a_juror_with_no_score_at_all_sees_nothing():
-    visible = awards.visible_scores_for(
-        viewer_juror_id="j9", all_scores=[SUBMITTED_A, SUBMITTED_B]
-    )
+    visible = awards.visible_scores_for(viewer_juror_id="j9", all_scores=[SUBMITTED_A, SUBMITTED_B])
     assert visible == []
 
 
@@ -312,9 +302,7 @@ NOMINATION = awards.Nomination("n1", "e2", "e1", "impact", "Rebuilt reconciliati
 def test_only_submitted_scores_are_aggregated():
     """A draft is somebody's thinking; averaging it means the standings move as
     people type."""
-    result = awards.aggregate_scores(
-        NOMINATION, [SUBMITTED_A, SUBMITTED_B, DRAFT_C]
-    )
+    result = awards.aggregate_scores(NOMINATION, [SUBMITTED_A, SUBMITTED_B, DRAFT_C])
     assert result.juror_count == 2
     assert result.mean_score == 6.0
 
@@ -434,7 +422,10 @@ def test_a_trend_is_counts_per_named_period_not_a_direction():
 
 
 DONE = ap.ActionItem(
-    "i1", "Weekly one-to-ones reinstated", "m1", date(2026, 8, 1),
+    "i1",
+    "Weekly one-to-ones reinstated",
+    "m1",
+    date(2026, 8, 1),
     done_on=date(2026, 8, 20),
 )
 OPEN = ap.ActionItem("i2", "Publish the promotion criteria", "m1", date(2026, 8, 15))
@@ -449,13 +440,20 @@ DROPPED = ap.ActionItem(
 
 def plan(items, status=ap.PlanStatus.IN_PROGRESS) -> ap.ActionPlan:
     return ap.ActionPlan(
-        "p1", "s1", ap.PlanScope.DEPARTMENT, "eng", "voice", "m1",
-        date(2026, 8, 31), status, tuple(items),
+        "p1",
+        "s1",
+        ap.PlanScope.DEPARTMENT,
+        "eng",
+        "voice",
+        "m1",
+        date(2026, 8, 31),
+        status,
+        tuple(items),
     )
 
 
 def test_an_action_item_needs_a_named_owner():
-    """"The team" owns nothing, and an item owned by nobody is the one still
+    """ "The team" owns nothing, and an item owned by nobody is the one still
     open next year."""
     with pytest.raises(ap.ActionPlanError):
         ap.ActionItem("x", "Do a thing", "", date(2026, 9, 1))
@@ -501,9 +499,7 @@ def test_a_completed_plan_is_not_reported_overdue():
 
 
 def test_loop_closure_reports_action_and_movement_together():
-    report = ap.loop_closure(
-        plans=[plan([DONE, OPEN])], movement={"voice": 0.4}, today=TODAY
-    )
+    report = ap.loop_closure(plans=[plan([DONE, OPEN])], movement={"voice": 0.4}, today=TODAY)
     voice = next(r for r in report["themes"] if r["theme"] == "voice")
     assert voice["acted"] is True
     assert voice["movement"] == 0.4
@@ -511,9 +507,7 @@ def test_loop_closure_reports_action_and_movement_together():
 
 
 def test_movement_with_no_action_is_not_booked_as_a_win():
-    report = ap.loop_closure(
-        plans=[plan([OPEN])], movement={"voice": 0.6}, today=TODAY
-    )
+    report = ap.loop_closure(plans=[plan([OPEN])], movement={"voice": 0.6}, today=TODAY)
     voice = next(r for r in report["themes"] if r["theme"] == "voice")
     assert "do not book this as a win" in voice["reading"]
 
@@ -527,9 +521,7 @@ def test_a_theme_never_re_surveyed_is_reported_as_unmeasured():
 
 
 def test_nothing_done_and_nothing_moved_says_what_that_means():
-    report = ap.loop_closure(
-        plans=[plan([OPEN])], movement={"voice": -0.3}, today=TODAY
-    )
+    report = ap.loop_closure(plans=[plan([OPEN])], movement={"voice": -0.3}, today=TODAY)
     voice = next(r for r in report["themes"] if r["theme"] == "voice")
     assert "ends survey programmes" in voice["reading"]
 
@@ -548,7 +540,11 @@ RECIPIENTS = [
 
 def posh(body: str = "The policy body.") -> comms.Announcement:
     return comms.Announcement(
-        "a1", "POSH policy 2026", body, comms.Audience(), NOW,
+        "a1",
+        "POSH policy 2026",
+        body,
+        comms.Audience(),
+        NOW,
         requires_acknowledgement=True,
     )
 
@@ -560,13 +556,13 @@ def test_an_empty_audience_means_everyone():
 
 
 def test_audience_dimensions_are_combined_with_and():
-    """"Engineering" and "Bengaluru" means Engineering in Bengaluru."""
+    """ "Engineering" and "Bengaluru" means Engineering in Bengaluru."""
     audience = comms.Audience(department_ids=("eng",), location_ids=("blr",))
     assert [r.employee_id for r in comms.resolve_audience(audience, RECIPIENTS)] == ["e1"]
 
 
 def test_an_acknowledgement_names_who_has_not_read_it():
-    """"43 outstanding" cannot be chased, and the point of the register is that
+    """ "43 outstanding" cannot be chased, and the point of the register is that
     somebody chases it before the audit."""
     announcement = posh()
     ack = comms.Acknowledgement("a1", "e1", NOW, announcement.content_hash)
@@ -595,16 +591,18 @@ def test_editing_the_body_invalidates_earlier_acknowledgements():
 
 def test_retitling_also_invalidates_an_acknowledgement():
     body = "The policy body."
-    assert comms.body_hash("POSH policy 2026", body) != comms.body_hash(
-        "Updated POSH policy", body
-    )
+    assert comms.body_hash("POSH policy 2026", body) != comms.body_hash("Updated POSH policy", body)
 
 
 def test_an_acknowledgement_announcement_cannot_expire():
     """The audit question is asked months after it stopped being news."""
     with pytest.raises(comms.AnnouncementError) as exc:
         comms.Announcement(
-            "a1", "POSH", "body", comms.Audience(), NOW,
+            "a1",
+            "POSH",
+            "body",
+            comms.Audience(),
+            NOW,
             expires_at=datetime(2026, 10, 1, tzinfo=UTC),
             requires_acknowledgement=True,
         )
@@ -614,9 +612,7 @@ def test_an_acknowledgement_announcement_cannot_expire():
 def test_a_register_is_refused_for_an_announcement_that_never_asked():
     plain = comms.Announcement("a2", "Canteen", "Closed Friday.", comms.Audience(), NOW)
     with pytest.raises(comms.AnnouncementError):
-        comms.acknowledgement_report(
-            announcement=plain, recipients=RECIPIENTS, acknowledgements=[]
-        )
+        comms.acknowledgement_report(announcement=plain, recipients=RECIPIENTS, acknowledgements=[])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -648,9 +644,7 @@ def test_a_birthday_appears_only_after_an_explicit_opt_in():
         person_events=PERSON_EVENTS,
         privacy={"e1": comms.EventPrivacy("e1", share_birthday=True)},
     )
-    assert any(
-        e.kind is comms.EventKind.BIRTHDAY and e.employee_id == "e1" for e in events
-    )
+    assert any(e.kind is comms.EventKind.BIRTHDAY and e.employee_id == "e1" for e in events)
 
 
 def test_a_work_anniversary_is_a_separate_opt_in_from_a_birthday():
@@ -671,20 +665,31 @@ def test_a_holiday_needs_no_opt_in():
 def test_a_shared_birthday_carries_its_scope():
     events = comms.calendar_events(
         person_events=PERSON_EVENTS,
-        privacy={
-            "e1": comms.EventPrivacy("e1", share_birthday=True, birthday_scope="team")
-        },
+        privacy={"e1": comms.EventPrivacy("e1", share_birthday=True, birthday_scope="team")},
     )
     birthday = next(e for e in events if e.kind is comms.EventKind.BIRTHDAY)
     assert birthday.scope == "team"
 
 
-def test_a_permissive_default_privacy_is_refused():
-    """A caller that can pass a permissive default has an opt-out setting
-    wearing an opt-in's name."""
-    with pytest.raises(comms.AnnouncementError):
-        comms.calendar_events(
-            person_events=PERSON_EVENTS,
-            privacy={},
-            default_privacy=comms.EventPrivacy("x", share_birthday=True),
-        )
+def test_the_workspace_default_shares_people_who_never_chose():
+    """HR chose "shared with everyone" for the workspace: somebody who never
+    touched their own setting is celebrated company-wide."""
+    events = comms.calendar_events(
+        person_events=PERSON_EVENTS,
+        privacy={},
+        default_privacy=comms.EventPrivacy(
+            "", share_birthday=True, share_work_anniversary=True, birthday_scope="company"
+        ),
+    )
+    birthday = next(e for e in events if e.kind is comms.EventKind.BIRTHDAY)
+    assert birthday.employee_id == "e1" and birthday.scope == "company"
+
+
+def test_a_persons_own_choice_beats_the_workspace_default():
+    """Default on, but they switched theirs off: nothing of theirs is shown."""
+    events = comms.calendar_events(
+        person_events=PERSON_EVENTS,
+        privacy={"e1": comms.EventPrivacy("e1")},
+        default_privacy=comms.EventPrivacy("", share_birthday=True, share_work_anniversary=True),
+    )
+    assert all(e.employee_id != "e1" for e in events)

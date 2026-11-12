@@ -11,9 +11,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
@@ -41,6 +42,7 @@ from app.schemas.payroll import (
     SalaryAmountsInput,
     SalaryComponentCreate,
     SalaryGroupTotalRead,
+    SalaryListFilters,
     SalaryStructureCreate,
     SalaryTypeTotalRead,
     TakeHomeRead,
@@ -995,30 +997,56 @@ def salary_record(salary: EmployeeSalary) -> SalaryRecordRead:
     )
 
 
+def filter_salary_people(stmt: Any, user: User, filters: SalaryListFilters | None) -> Any:
+    """The Salary master's filters on a tenant-scoped employee query.
+
+    The directory's own filters (search, status, company, project, department,
+    location), then the salary each person is on today: its structure, or
+    whether there is one at all.
+    """
+    from app.services.employee import filter_directory
+
+    f = filters or SalaryListFilters()
+    stmt = filter_directory(
+        stmt,
+        search=f.search,
+        department_id=f.department_id,
+        location_id=f.location_id,
+        legal_entity_id=f.legal_entity_id,
+        without_legal_entity=f.without_legal_entity,
+        project_id=f.project_id,
+        without_project=f.without_project,
+        status_filter=f.status.value if f.status else None,
+        current_only=f.current,
+    )
+    open_salary = tenant_scoped(
+        select(EmployeeSalary.id).where(
+            EmployeeSalary.employee_id == Employee.id,
+            EmployeeSalary.effective_to.is_(None),
+        ),
+        EmployeeSalary,
+        user,
+    )
+    if f.structure_id:
+        stmt = stmt.where(open_salary.where(EmployeeSalary.structure_id == f.structure_id).exists())
+    if f.salary == "assigned":
+        stmt = stmt.where(open_salary.exists())
+    elif f.salary == "none":
+        stmt = stmt.where(~open_salary.exists())
+    return stmt
+
+
 async def salary_overview(
     session: AsyncSession,
     user: User,
     *,
-    search: str | None = None,
+    filters: SalaryListFilters | None = None,
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list[SalaryOverviewRead], int]:
     """Employees and the salary each is on today — the Salaries screen's list."""
-    stmt = tenant_scoped(select(Employee).where(Employee.deleted_at.is_(None)), Employee, user)
-    count_stmt = tenant_scoped(
-        select(func.count(Employee.id)).where(Employee.deleted_at.is_(None)), Employee, user
-    )
-    if search and search.strip():
-        pattern = f"%{search.strip()}%"
-        condition = or_(
-            Employee.first_name.ilike(pattern),
-            # A full name ("Meera Nair") spans both columns.
-            func.concat_ws(" ", Employee.first_name, Employee.last_name).ilike(pattern),
-            Employee.last_name.ilike(pattern),
-            Employee.employee_code.ilike(pattern),
-        )
-        stmt = stmt.where(condition)
-        count_stmt = count_stmt.where(condition)
+    stmt = filter_salary_people(tenant_scoped(select(Employee), Employee, user), user, filters)
+    count_stmt = select(func.count()).select_from(stmt.subquery())
 
     total = int(await session.scalar(count_stmt) or 0)
     employees = (

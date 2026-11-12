@@ -8,9 +8,9 @@ members - is decided in the service, in the query.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.core import permissions
@@ -29,7 +29,9 @@ from app.schemas.culture import (
     ShoutoutRead,
 )
 from app.schemas.engagement import EventCreate, PollCreate, PollVoteIn, RsvpIn
-from app.services.culture import engagement, feed, milestones
+from app.services.culture import celebrations, engagement, feed, milestones
+from app.services.culture.cards import CardDesign
+from app.services.culture.celebrations import CelebrationSettings
 
 router = APIRouter(prefix="/culture", tags=["culture"])
 
@@ -215,6 +217,135 @@ async def save_milestone_rules(
     )
     await session.commit()
     return result
+
+
+# ── Birthdays and work anniversaries: settings, card templates, the card ────
+
+_JPEG_HEADERS = {"Cache-Control": "private, max-age=300"}
+
+
+class CelebrationTemplateCreate(BaseModel):
+    kind: Literal["birthday", "work_anniversary"]
+    name: str = Field(min_length=1, max_length=120)
+    preset_key: str | None = Field(default=None, max_length=64)
+    design: CardDesign | None = None
+
+
+class CelebrationTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    design: CardDesign | None = None
+
+
+class CelebrationPreviewIn(BaseModel):
+    kind: Literal["birthday", "work_anniversary"]
+    design: CardDesign
+    employee_id: uuid.UUID | None = None
+    years: int | None = Field(default=None, ge=1, le=60)
+
+
+@router.get("/celebrations/settings", dependencies=HR_ONLY)
+async def get_celebration_settings(user: CurrentUser, session: DbSession) -> CelebrationSettings:
+    return await celebrations.get_settings(session, user.tenant_id)
+
+
+@router.put("/celebrations/settings", dependencies=HR_ONLY)
+async def save_celebration_settings(
+    payload: CelebrationSettings, user: CurrentUser, session: DbSession, request: Request
+) -> CelebrationSettings:
+    result = await celebrations.save_settings(session, user, payload, request=request)
+    await session.commit()
+    return result
+
+
+@router.get("/celebrations/templates", dependencies=HR_ONLY)
+async def list_celebration_templates(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """HR's card templates, the ready-made designs to start from, and the placeholders."""
+    return await celebrations.list_templates(session, user)
+
+
+@router.post("/celebrations/templates", status_code=status.HTTP_201_CREATED, dependencies=HR_ONLY)
+async def create_celebration_template(
+    payload: CelebrationTemplateCreate, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    result = await celebrations.create_template(
+        session,
+        user,
+        kind=payload.kind,
+        name=payload.name,
+        design=payload.design,
+        preset_key=payload.preset_key,
+        request=request,
+    )
+    await session.commit()
+    return result
+
+
+@router.put("/celebrations/templates/{template_id}", dependencies=HR_ONLY)
+async def update_celebration_template(
+    template_id: uuid.UUID,
+    payload: CelebrationTemplateUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    result = await celebrations.update_template(
+        session, user, template_id, name=payload.name, design=payload.design, request=request
+    )
+    await session.commit()
+    return result
+
+
+@router.post("/celebrations/templates/{template_id}/use", dependencies=HR_ONLY)
+async def use_celebration_template(
+    template_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    result = await celebrations.set_in_use(session, user, template_id, request=request)
+    await session.commit()
+    return result
+
+
+@router.delete(
+    "/celebrations/templates/{template_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=HR_ONLY,
+)
+async def delete_celebration_template(
+    template_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> None:
+    await celebrations.delete_template(session, user, template_id, request=request)
+    await session.commit()
+
+
+@router.post("/celebrations/preview", dependencies=HR_ONLY)
+async def preview_celebration_card(
+    payload: CelebrationPreviewIn, user: CurrentUser, session: DbSession
+) -> Response:
+    """The card exactly as it would be sent, as a JPEG."""
+    data = await celebrations.preview(
+        session,
+        user,
+        kind=payload.kind,
+        design=payload.design,
+        employee_id=payload.employee_id,
+        years=payload.years,
+    )
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.post("/celebrations/test-email", dependencies=HR_ONLY)
+async def send_celebration_test(
+    payload: CelebrationPreviewIn, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """The wish email with this card, to the HR person's own inbox."""
+    return await celebrations.send_test(session, user, kind=payload.kind, design=payload.design)
+
+
+@router.get("/shoutouts/{shoutout_id}/card")
+async def shoutout_card(shoutout_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """The greeting card on a birthday or anniversary post, for whoever may see the post."""
+    data = await celebrations.card_image(session, user, shoutout_id)
+    return Response(content=data, media_type="image/jpeg", headers=_JPEG_HEADERS)
 
 
 # ── Polls and events ────────────────────────────────────────────────────────

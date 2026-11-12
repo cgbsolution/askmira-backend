@@ -1,7 +1,7 @@
 """Culture layer: shoutouts, clubs (FRD 5.3, FS-CUL-01).
 
 Your Voice (anonymous POSH-framed reporting) and pulse surveys are V2 and are
-deliberately not modelled here yet — FS-CUL-02 requires that a submitter's
+deliberately not modelled here yet â€” FS-CUL-02 requires that a submitter's
 identity is never stored anywhere retrievable by a case handler, which is a
 schema decision worth making with the compliance SME rather than guessing now.
 """
@@ -22,7 +22,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,10 +55,21 @@ class Shoutout(Base, UUIDMixin, TenantMixin, TimestampMixin):
         # must never be attributed to whichever HR person clicked "declare".
         # A work-anniversary post is the company's own, so it carries the
         # milestone in place of an author.
+        # A birthday post is the company's own as well.
         CheckConstraint(
             "from_employee_id IS NOT NULL OR award_result_id IS NOT NULL "
-            "OR milestone_years IS NOT NULL",
+            "OR milestone_years IS NOT NULL OR celebration IS NOT NULL",
             name="ck_shoutout_has_author",
+        ),
+        # A birthday or anniversary is wished once a year, whatever re-runs.
+        Index(
+            "uq_shoutout_celebration_once",
+            "tenant_id",
+            "to_employee_id",
+            "celebration",
+            "celebration_year",
+            unique=True,
+            postgresql_where=text("celebration IS NOT NULL"),
         ),
     )
 
@@ -89,6 +102,11 @@ class Shoutout(Base, UUIDMixin, TenantMixin, TimestampMixin):
     points_awarded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: Set on the company's own post for a work anniversary: how many years.
     milestone_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: `birthday` or `work_anniversary` on the company's celebration post, with
+    #: the calendar year it was wished in and the card image it carries.
+    celebration: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    celebration_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    card_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     reactions: Mapped[list[ShoutoutReaction]] = relationship(
         back_populates="shoutout", cascade="all, delete-orphan"
@@ -117,8 +135,8 @@ class ShoutoutReaction(Base, UUIDMixin, TenantMixin, TimestampMixin):
 class Club(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """An interest group, deliberately independent of the org structure.
 
-    Participation is surfaced to HR as an aggregate signal — never as
-    "who joined what" — so the club stays a safe social space (FRD 5.3).
+    Participation is surfaced to HR as an aggregate signal â€” never as
+    "who joined what" â€” so the club stays a safe social space (FRD 5.3).
     """
 
     __tablename__ = "clubs"
@@ -190,3 +208,32 @@ class MilestoneRule(Base, UUIDMixin, TenantMixin, TimestampMixin):
     points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class CelebrationTemplate(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A greeting card design HR keeps for birthdays or work anniversaries.
+
+    `design` holds the layout, colours and wording (see
+    `app.services.culture.cards.CardDesign`); `{name}`, `{years}` and the other
+    placeholders are filled per person when the card is drawn. One template per
+    kind is the one in use; with none saved, the built-in design is used.
+    """
+
+    __tablename__ = "celebration_templates"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('birthday', 'work_anniversary')", name="ck_celebration_template_kind"
+        ),
+        Index(
+            "uq_celebration_template_in_use",
+            "tenant_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    design: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

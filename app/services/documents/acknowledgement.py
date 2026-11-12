@@ -16,6 +16,11 @@ What an acknowledgement records, and why:
 
 Only the employee can acknowledge (`require_self`). HR cannot accept a letter
 on somebody's behalf; an acknowledgement recorded by somebody else is not one.
+
+Employees normally accept from the link in the letter's email
+(`letter_link`), with a picture of their signature. Either way
+`record_acceptance` writes the row and keeps a signed copy: the letter with
+the signature (or the typed name) and the date printed in.
 """
 
 from __future__ import annotations
@@ -150,7 +155,8 @@ async def record_acceptance(
     tenant = await session.get(Tenant, letter.tenant_id)
     stamped = stamp_letter(
         letter.merged_html,
-        typed_name=typed_name,
+        # The copy carries the name on record; the row keeps what was typed.
+        typed_name=employee.full_name,
         accepted_at=now,
         content_hash=accepted_hash,
         signature_png=signature_png,

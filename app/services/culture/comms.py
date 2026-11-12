@@ -331,19 +331,12 @@ def calendar_events(
 ) -> list[CalendarEvent]:
     """The events that may be published, with unshared personal ones removed.
 
-    An employee with no privacy record is treated as **not** having opted in.
-    That is the whole point of opt-in: the absence of a record is a refusal, not
-    a gap to be filled with a default of yes.
+    An employee with no privacy record follows `default_privacy` — the
+    workspace's own choice, made by HR under Culture → Celebrations. With no
+    default passed, the absence of a record is a refusal: nothing is shared
+    that nobody decided to share. A record the person saved always wins over
+    the default, in both directions.
     """
-    if default_privacy is not None and (
-        default_privacy.share_birthday or default_privacy.share_work_anniversary
-    ):
-        raise AnnouncementError(
-            "The default privacy passed in shares a personal event. Opt-in "
-            "means the default is no; a caller that can pass a permissive "
-            "default has an opt-out setting wearing an opt-in's name."
-        )
-
     out: list[CalendarEvent] = list(company_events)
 
     for event in person_events:
@@ -358,7 +351,7 @@ def calendar_events(
             )
             continue
 
-        setting = privacy.get(event.employee_id)
+        setting = privacy.get(event.employee_id) or default_privacy
         if setting is None:
             continue
 

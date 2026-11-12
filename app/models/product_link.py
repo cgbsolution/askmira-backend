@@ -59,3 +59,8 @@ class ProductLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: people sync. AskMiraa never grants these; it reads them to know what to
     #: offer a person, and the product checks the person again on every call.
     member_roles: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    #: How the connection was made: "connectors" (the workspace's admin pressed
+    #: Connect and Allow), "platform" (the platform's super admin created or
+    #: attached the organisation, products/platform.py), or None for a link made
+    #: the older way with the server-wide settings.
+    via: Mapped[str | None] = mapped_column(String(16), nullable=True)

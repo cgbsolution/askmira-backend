@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal, InvalidOperation
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -25,6 +25,7 @@ from fastapi import (
 )
 
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.models.employee import EmploymentStatus
 from app.models.payroll import SalaryStructure
 from app.models.user import UserRole
 from app.schemas.common import Page
@@ -40,6 +41,7 @@ from app.schemas.payroll import (
     SalaryDeleteRead,
     SalaryExportInput,
     SalaryImportRead,
+    SalaryListFilters,
     SalaryPreviewInput,
     SalaryRevisionRead,
     SalaryStructureCreate,
@@ -344,7 +346,9 @@ async def salary_export(
     payload: SalaryExportInput, user: CurrentUser, session: DbSession, request: Request
 ) -> Response:
     """The chosen people's present salary as an Excel sheet, in the upload layout."""
-    data, _ = await salary_import.export_present(session, user, payload.employee_ids, request)
+    data, _ = await salary_import.export_present(
+        session, user, payload.employee_ids, request, filters=payload.filters
+    )
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -378,12 +382,37 @@ async def salary_overview(
     user: CurrentUser,
     session: DbSession,
     search: str | None = Query(default=None, max_length=128),
+    employment_status: EmploymentStatus | None = Query(default=None, alias="status"),
+    current: bool = Query(default=False, description="Everybody but those who have left."),
+    legal_entity_id: uuid.UUID | None = None,
+    without_legal_entity: bool = False,
+    project_id: uuid.UUID | None = None,
+    without_project: bool = False,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+    structure_id: uuid.UUID | None = None,
+    salary: Literal["assigned", "none"] | None = Query(
+        default=None, description="On a salary today, or not yet."
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=200),
 ) -> Page[SalaryOverviewRead]:
-    """Employees with the salary each is on today."""
+    """Employees with the salary each is on today, narrowed by the list's filters."""
+    filters = SalaryListFilters(
+        search=search,
+        status=employment_status,
+        current=current,
+        legal_entity_id=legal_entity_id,
+        without_legal_entity=without_legal_entity,
+        project_id=project_id,
+        without_project=without_project,
+        department_id=department_id,
+        location_id=location_id,
+        structure_id=structure_id,
+        salary=salary,
+    )
     rows, total = await salary_service.salary_overview(
-        session, user, search=search, page=page, page_size=page_size
+        session, user, filters=filters, page=page, page_size=page_size
     )
     return Page[SalaryOverviewRead](items=rows, total=total, page=page, page_size=page_size)
 

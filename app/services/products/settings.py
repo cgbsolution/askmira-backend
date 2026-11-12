@@ -8,6 +8,10 @@ PROCUREMENT_TOOL_…):
     _SECRET   optional: a server-wide secret set on both sides, for workspaces
               linked before Connectors. A workspace that connected from
               Connectors has a secret of its own (products/connections.py).
+    _PLATFORM_SECRET  optional: the platform's key for the product, used when
+              the super admin has not set one under Platform → Tools
+              (products/platform.py). The product holds the same value as
+              ASKMIRA_PLATFORM_SECRET.
 
 The addresses are public facts, not secrets. The products' production
 addresses are built in; set the variables only to point somewhere else (a
@@ -34,18 +38,23 @@ class ProductSettings(BaseSettings):
     interview_tool_api_url: str | None = None
     interview_tool_app_url: str | None = None
     interview_tool_secret: str | None = None
+    interview_tool_platform_secret: str | None = None
     expense_tool_api_url: str | None = None
     expense_tool_app_url: str | None = None
     expense_tool_secret: str | None = None
+    expense_tool_platform_secret: str | None = None
     helpdesk_tool_api_url: str | None = None
     helpdesk_tool_app_url: str | None = None
     helpdesk_tool_secret: str | None = None
+    helpdesk_tool_platform_secret: str | None = None
     saleinx_tool_api_url: str | None = None
     saleinx_tool_app_url: str | None = None
     saleinx_tool_secret: str | None = None
+    saleinx_tool_platform_secret: str | None = None
     procurement_tool_api_url: str | None = None
     procurement_tool_app_url: str | None = None
     procurement_tool_secret: str | None = None
+    procurement_tool_platform_secret: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +108,15 @@ DEFAULT_ADDRESSES: dict[str, tuple[str, str]] = {
     ),
     "saleinx": ("https://crm.artboxsolutions.ai/api", "https://crm.artboxsolutions.ai"),
 }
+
+
+def platform_secret(product: str) -> str | None:
+    """The platform's key for the product from the environment, or None."""
+    prefix = _PREFIX.get(product)
+    if prefix is None:
+        return None
+    value = getattr(_settings(), f"{prefix}_platform_secret")
+    return value if value and len(value) >= MIN_SECRET_LENGTH else None
 
 
 def addresses(product: str) -> tuple[str, str] | None:

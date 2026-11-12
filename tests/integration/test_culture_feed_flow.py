@@ -774,8 +774,9 @@ async def test_a_team_birthday_reaches_the_team_and_not_the_company(session, org
 
     prefs = await comms_portal.get_my_event_privacy(session, org["asha"])
     assert prefs.share_birthday and prefs.configured
+    # Ben never chose: he is shown the workspace default (shared with everyone).
     fresh = await comms_portal.get_my_event_privacy(session, org["ben"])
-    assert not fresh.share_birthday and not fresh.configured
+    assert fresh.share_birthday and fresh.birthday_scope == "company" and not fresh.configured
 
 
 async def test_a_leap_day_birthday_does_not_break_the_calendar(session, org):
@@ -929,7 +930,8 @@ async def test_the_http_surface_holds_its_gates(session, org, client):
     )
     assert privacy.status_code == 200
     bens = await client.get("/api/v1/culture/event-privacy", headers=_auth(ben))
-    assert bens.json()["share_birthday"] is False
+    # Asha's request wrote her own choice, never Ben's: his is still the default.
+    assert bens.json()["configured"] is False
 
     statement = await client.get("/api/v1/rewards/me/statement", headers=_auth(asha))
     assert statement.status_code == 200 and statement.json()["balance_points"] == 0

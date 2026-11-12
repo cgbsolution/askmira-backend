@@ -291,10 +291,14 @@ async def get_my_event_privacy(session: AsyncSession, user: User) -> EventPrivac
         )
     )
     if row is None:
+        # Never chosen: the workspace default applies, and is shown as such.
+        from app.services.culture import celebrations
+
+        settings = await celebrations.get_settings(session, user.tenant_id)
         return EventPrivacyRead(
-            share_birthday=False,
-            share_work_anniversary=False,
-            birthday_scope="team",
+            share_birthday=settings.share_by_default,
+            share_work_anniversary=settings.share_by_default,
+            birthday_scope=settings.default_birthday_scope,
             configured=False,
         )
     return EventPrivacyRead(

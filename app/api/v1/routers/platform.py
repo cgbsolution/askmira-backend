@@ -14,7 +14,7 @@ from starlette.background import BackgroundTask
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.services import platform, tenant_purge
-from app.services.products import service as products
+from app.services.products import platform as tools
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -185,33 +185,107 @@ async def delete_logo(
     await platform.remove_logo(session, user, tenant_id, request=request)
 
 
-# ── Linked products (the interview tool, the expense tool) ──────────────────
+# ── Our other products: the platform's key per product (Platform → Tools) ─────
+
+
+class ToolKeyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The key to keep; leave it out and the platform makes a strong one, shown once.
+    secret: str | None = Field(default=None, max_length=512)
+
+
+@router.get("/tools", dependencies=SUPER_ONLY)
+async def list_tools(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await tools.tools(session, user)
+
+
+@router.put("/tools/{product}/key", dependencies=SUPER_ONLY)
+async def set_tool_key(
+    product: str, body: ToolKeyIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await tools.set_key(session, user, product, secret=body.secret, request=request)
+
+
+@router.delete("/tools/{product}/key", dependencies=SUPER_ONLY)
+async def remove_tool_key(
+    product: str, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await tools.remove_key(session, user, product, request=request)
+
+
+@router.post("/tools/{product}/check", dependencies=SUPER_ONLY)
+async def check_tool(product: str, user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    return await tools.check(session, user, product)
+
+
+# ── A workspace in our other products ────────────────────────────────────────
+
+
+class ProvisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Attach this organisation the product already has, instead of creating one.
+    organization_ref: str | None = Field(default=None, max_length=120)
+    #: Create a new organisation even though the admin already has one there.
+    create_new: bool = False
+
+
+class OrganizationSearchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    q: str = Field(min_length=2, max_length=120)
 
 
 @router.get("/workspaces/{tenant_id}/products", dependencies=SUPER_ONLY)
 async def list_products(
     tenant_id: uuid.UUID, user: CurrentUser, session: DbSession
 ) -> list[dict[str, Any]]:
-    return await products.list_for_workspace(session, user, tenant_id)
+    return await tools.workspace_tools(session, user, tenant_id)
 
 
 @router.post("/workspaces/{tenant_id}/products/{product}", dependencies=SUPER_ONLY)
 async def link_product(
-    tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
+    tenant_id: uuid.UUID,
+    product: str,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    body: ProvisionIn | None = None,
 ) -> dict[str, Any]:
-    """Link the workspace to the product: it replaces the built-in module there."""
-    return await products.link(session, user, tenant_id, product, request=request)
+    """Create (or attach) the company's organisation in the product and connect it."""
+    body = body or ProvisionIn()
+    return await tools.provision(
+        session,
+        user,
+        tenant_id,
+        product,
+        organization_ref=body.organization_ref,
+        create_new=body.create_new,
+        request=request,
+    )
+
+
+@router.post("/workspaces/{tenant_id}/products/{product}/organizations", dependencies=SUPER_ONLY)
+async def search_product_organizations(
+    tenant_id: uuid.UUID,
+    product: str,
+    body: OrganizationSearchIn,
+    user: CurrentUser,
+    session: DbSession,
+) -> list[dict[str, Any]]:
+    return await tools.organizations(session, user, tenant_id, product, q=body.q)
 
 
 @router.delete("/workspaces/{tenant_id}/products/{product}", dependencies=SUPER_ONLY)
 async def unlink_product(
     tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    return await products.unlink(session, user, tenant_id, product, request=request)
+    return await tools.disconnect(session, user, tenant_id, product, request=request)
 
 
 @router.post("/workspaces/{tenant_id}/products/{product}/sync", dependencies=SUPER_ONLY)
 async def sync_product(
     tenant_id: uuid.UUID, product: str, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    return await products.sync_now(session, user, tenant_id, product, request=request)
+    return await tools.sync_now(session, user, tenant_id, product, request=request)

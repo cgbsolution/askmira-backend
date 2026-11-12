@@ -24,6 +24,7 @@ flow that adds somebody without their acceptance is worse than none.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import date, datetime
 
@@ -324,9 +325,16 @@ async def _read_many(session: AsyncSession, user: User, rows: list[Shoutout]) ->
         ShoutoutRead(
             id=row.id,
             kind=(
-                "award" if row.award_result_id else "milestone" if row.milestone_years else "peer"
+                "award"
+                if row.award_result_id
+                else "birthday"
+                if row.celebration == "birthday"
+                else "milestone"
+                if row.milestone_years
+                else "peer"
             ),
             milestone_years=row.milestone_years,
+            card_url=f"/api/v1/culture/shoutouts/{row.id}/card" if row.card_key else None,
             from_employee_id=row.from_employee_id,
             to_employee_id=row.to_employee_id,
             sender=people.get(row.from_employee_id) if row.from_employee_id else None,
@@ -602,8 +610,15 @@ async def delete_shoutout(
         ),
         request=request,
     )
+    card_key = shoutout.card_key
     session.expunge(shoutout)
     await session.commit()
+    if card_key:
+        # The birthday or anniversary card goes with its post.
+        from app.services.storage import StorageError, get_storage
+
+        with contextlib.suppress(StorageError):
+            await get_storage().delete(card_key)
 
 
 async def pin_shoutout(

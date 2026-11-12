@@ -6,6 +6,7 @@
     POST /integrations/askmira/act             something one person does there (a helpdesk ticket)
     POST /integrations/askmira/connect/token   swap a one-time connect code for a secret
     POST /integrations/askmira/connect/revoke  the workspace disconnected
+    POST /integrations/askmira/platform/...    the platform sets a workspace up (platform())
 
 The first two are idempotent on the product side, so a retry after a timeout
 does no harm; the third changes nothing. An action is never retried here: the
@@ -25,6 +26,7 @@ import httpx
 from app.services.products.settings import Endpoint
 from app.services.products.tokens import (
     action_token,
+    platform_token,
     provision_token,
     query_token,
     revoke_token,
@@ -42,10 +44,20 @@ class ProductError(Exception):
     not be reached), and `detail` its own message, when it gave one.
     """
 
-    def __init__(self, message: str, *, status: int | None = None, detail: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        detail: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.detail = detail
+        #: The product's whole answer when it refused, for a refusal that carries
+        #: more than words (the organisations an admin already has).
+        self.payload = payload
 
 
 async def _post(
@@ -227,3 +239,46 @@ async def revoke(endpoint: Endpoint, product: str, tenant_id: uuid.UUID) -> None
         use="revoke",
         timeout=QUERY_TIMEOUT,
     )
+
+
+async def platform(
+    api_url: str, product: str, secret: str, path: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """A call signed with the platform's key for the product: ping, organizations, provision.
+
+    A refusal keeps the product's whole answer on the error (`payload`), so a
+    409 naming the organisations the admin already has reaches the console.
+    """
+    body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
+    token = platform_token(secret, product, body)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            response = await client.post(
+                f"{api_url}/integrations/askmira/platform/{path}",
+                content=body,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        raise ProductError(f"Could not reach the product: {exc.__class__.__name__}.") from exc
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("context"), dict):
+        # A problem+json refusal (ProcureFlow) carries its `code` in `context`.
+        data = {**data["context"], **{k: v for k, v in data.items() if k != "context"}}
+    if response.status_code >= 400:
+        detail = None
+        if isinstance(data, dict):
+            found = data.get("error") or data.get("detail") or data.get("message")
+            detail = found if isinstance(found, str) else None
+        raise ProductError(
+            f"The product answered {response.status_code}: "
+            f"{detail or response.text[:200] or response.reason_phrase}",
+            status=response.status_code,
+            detail=detail,
+            payload=data if isinstance(data, dict) else None,
+        )
+    if not isinstance(data, dict):
+        raise ProductError("The product's answer was not a JSON object.")
+    return data

@@ -70,6 +70,7 @@ from app.schemas.payroll import (
     SalaryComponentAmountInput,
     SalaryImportRead,
     SalaryImportRowRead,
+    SalaryListFilters,
 )
 from app.services import audit, uploads
 from app.services.employee_import.fields import read_date, text
@@ -77,6 +78,7 @@ from app.services.payroll.salary_master import revision_locks, revision_snapshot
 from app.services.payroll.service import (
     assign_salaries,
     assign_salary,
+    filter_salary_people,
     get_structure,
     resolve_amounts,
     to_period_amounts,
@@ -430,6 +432,8 @@ async def export_present(
     user: User,
     employee_ids: list[uuid.UUID] | None,
     request: Request | None = None,
+    *,
+    filters: SalaryListFilters | None = None,
 ) -> tuple[bytes, int]:
     """Everyone's (or the chosen people's) present salary, as the Employee Salary Master.
 
@@ -445,6 +449,9 @@ async def export_present(
     stmt = select(Employee).where(Employee.deleted_at.is_(None))
     if employee_ids is not None:
         stmt = stmt.where(Employee.id.in_(employee_ids))
+    elif filters is not None:
+        # Nothing ticked: everyone the list's filters show, as on screen.
+        stmt = filter_salary_people(stmt, user, filters)
     people = (
         await session.scalars(tenant_scoped(stmt.order_by(Employee.employee_code), Employee, user))
     ).all()

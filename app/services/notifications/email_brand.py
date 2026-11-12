@@ -25,6 +25,7 @@ from app.models.audit import AuditAction
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
+from app.services.notifications.adapters import InlineImage
 from app.services.notifications.email_layout import (
     DEFAULT_ACCENT,
     EmailAction,
@@ -173,6 +174,7 @@ async def compose(
     actions: tuple[EmailAction, ...] = (),
     override: BrandSettings | None = None,
     embed_logo: bool = True,
+    hero: InlineImage | None = None,
 ) -> RenderedEmail:
     brand = await brand_for(session, tenant_id, override)
     # A candidate has no login, nor does a letter's recipient emailed directly:
@@ -186,6 +188,7 @@ async def compose(
         actions=actions,
         reason=_reason(audience, brand.company_name or "your company"),
         embed_logo=embed_logo,
+        hero=hero,
     )
 
 

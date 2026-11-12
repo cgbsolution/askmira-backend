@@ -20,19 +20,16 @@ from datetime import date
 from typing import Any
 
 from fastapi import HTTPException, Request
-from sqlalchemy import extract, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.culture import MilestoneRule, Shoutout, ShoutoutVisibility
-from app.models.culture_depth import EventPrivacyPreference
-from app.models.employee import Employee, EmploymentStatus
-from app.models.tenant import Tenant
+from app.models.culture import MilestoneRule
 from app.models.user import User
 from app.services import audit
-from app.services.notifications.dispatch import notify, register_event
+from app.services.notifications.dispatch import register_event
 
 __all__ = ["DEFAULT_MESSAGE", "celebrate_due", "list_rules", "save_rules"]
 
@@ -137,154 +134,12 @@ def _anniversary_today(joined: date, today: date) -> bool:
 
 
 async def celebrate_due(session: AsyncSession, actor: User, *, today: date) -> dict[str, int]:
-    """Scheduler-callable: today's anniversaries, posted and (optionally) rewarded."""
-    rules = {
-        r.years: r
-        for r in (
-            await session.scalars(
-                tenant_scoped(
-                    select(MilestoneRule).where(MilestoneRule.active.is_(True)),
-                    MilestoneRule,
-                    actor,
-                )
-            )
-        ).all()
-    }
-    if not rules:
-        return {"posted": 0, "rewarded": 0}
-    tenant = await session.get(Tenant, actor.tenant_id)
-    company = tenant.name if tenant else "the company"
-    rewards_on = bool(tenant and (tenant.enabled_modules or {}).get("rewards"))
+    """Scheduler-callable: today's birthdays and work anniversaries.
 
-    month_matches = [today.month] + ([2] if today.month == 2 else [])
-    candidates = (
-        await session.scalars(
-            tenant_scoped(
-                select(Employee).where(
-                    Employee.status == EmploymentStatus.ACTIVE,
-                    Employee.deleted_at.is_(None),
-                    Employee.date_of_joining.is_not(None),
-                    extract("month", Employee.date_of_joining).in_(month_matches),
-                ),
-                Employee,
-                actor,
-            )
-        )
-    ).all()
-    due = [
-        (person, today.year - person.date_of_joining.year)
-        for person in candidates
-        if _anniversary_today(person.date_of_joining, today)
-        and (today.year - person.date_of_joining.year) in rules
-    ]
-    if not due:
-        return {"posted": 0, "rewarded": 0}
+    The milestone rules above add their message and points to the anniversary
+    they name; every anniversary and birthday is wished with a card (see
+    `app.services.culture.celebrations`).
+    """
+    from app.services.culture import celebrations
 
-    ids = [p.id for p, _ in due]
-    already = {
-        (to, years)
-        for to, years in (
-            await session.execute(
-                tenant_scoped(
-                    select(Shoutout.to_employee_id, Shoutout.milestone_years).where(
-                        Shoutout.to_employee_id.in_(ids), Shoutout.milestone_years.is_not(None)
-                    ),
-                    Shoutout,
-                    actor,
-                )
-            )
-        ).all()
-    }
-    sharing = set(
-        (
-            await session.scalars(
-                tenant_scoped(
-                    select(EventPrivacyPreference.employee_id).where(
-                        EventPrivacyPreference.employee_id.in_(ids),
-                        EventPrivacyPreference.share_work_anniversary.is_(True),
-                    ),
-                    EventPrivacyPreference,
-                    actor,
-                )
-            )
-        ).all()
-    )
-    logins = dict(
-        (
-            await session.execute(
-                tenant_scoped(
-                    select(User.employee_id, User.id).where(
-                        User.employee_id.in_(ids), User.is_active.is_(True)
-                    ),
-                    User,
-                    actor,
-                )
-            )
-        ).all()
-    )
-
-    posted = rewarded = 0
-    for person, years in due:
-        if (person.id, years) in already:
-            continue
-        rule = rules[years]
-        message = _render(
-            rule.message, name=person.first_name or person.full_name, years=years, company=company
-        )
-        post = Shoutout(
-            tenant_id=actor.tenant_id,
-            from_employee_id=None,
-            to_employee_id=person.id,
-            message=message,
-            visibility=(
-                ShoutoutVisibility.COMPANY if person.id in sharing else ShoutoutVisibility.PRIVATE
-            ),
-            milestone_years=years,
-        )
-        session.add(post)
-        await session.flush()
-        posted += 1
-        points_line = ""
-        if rule.points and rewards_on:
-            from app.services.rewards import service as rewards
-
-            try:
-                async with session.begin_nested():
-                    await rewards.award_points(
-                        session,
-                        actor,
-                        employee_id=person.id,
-                        points=rule.points,
-                        awarded_on=today,
-                        source_type="milestone",
-                        source_id=post.id,
-                    )
-                post.points_awarded = rule.points
-                rewarded += 1
-                points_line = f" {rule.points} points have been added to your balance."
-            except HTTPException:
-                # No valuation or no budget: the post still goes; the points do not.
-                points_line = ""
-        await audit.record(
-            session,
-            tenant_id=actor.tenant_id,
-            actor=actor,
-            actor_type="system",
-            action=AuditAction.CREATE,
-            entity_type="shoutout",
-            entity_id=post.id,
-            summary=f"{years}-year work anniversary marked"
-            + (f" with {post.points_awarded} points" if post.points_awarded else ""),
-        )
-        login = logins.get(person.id)
-        if login is not None:
-            await notify(
-                session,
-                tenant_id=actor.tenant_id,
-                event_key="culture.milestone",
-                recipient_user_ids=[login],
-                payload={"message": message, "points_line": points_line},
-                commit=False,
-            )
-    await session.commit()
-    return {"posted": posted, "rewarded": rewarded}
+    return await celebrations.run_daily(session, actor, today=today)

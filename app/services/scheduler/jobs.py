@@ -603,10 +603,11 @@ JOBS: tuple[Job, ...] = (
     ),
     Job(
         key="culture.milestones",
-        name="Work anniversaries",
+        name="Birthdays and work anniversaries",
         description=(
-            "Marks the work anniversaries the company has chosen, on the feed for people who "
-            "share theirs and privately for everyone else, with points where the rule says so."
+            "Wishes everybody whose birthday or work anniversary is today: a card in the "
+            "template HR chose, emailed to them and posted on the feed (privately for anyone "
+            "who keeps theirs to themselves), with points where a milestone rule says so."
         ),
         cadence=Cadence.daily(hour=9),
         handler=_milestones,

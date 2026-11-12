@@ -17,6 +17,10 @@ Five kinds, all HS256 with the product's own secret, all good for 60 seconds:
   Connectors: the product forgets that workspace's secret. `bh` as above.
 * **launch** — carried in the URL fragment when a person opens the product. It
   names the person and their role there; the product accepts each `jti` once.
+* **platform** — signed with the platform's own key for the product (Platform →
+  Tools), never a workspace's: asks the product to create or attach a
+  workspace's organisation and issue that workspace's secret. `sub` is
+  "platform"; `bh` as above.
 
 Common claims: iss "askmira", aud "askmira:<product>", sub, iat, exp, jti, use.
 """
@@ -74,6 +78,11 @@ def action_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -
 def revoke_token(secret: str, product: str, tenant_id: uuid.UUID, body: bytes) -> str:
     """The workspace disconnected: the product forgets the secret this token is signed with."""
     return _sign(secret, product, str(tenant_id), "revoke", {"bh": body_hash(body)})
+
+
+def platform_token(secret: str, product: str, body: bytes) -> str:
+    """The platform asks the product to set a workspace up (products/platform.py)."""
+    return _sign(secret, product, "platform", "platform", {"bh": body_hash(body)})
 
 
 def launch_token(

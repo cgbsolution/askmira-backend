@@ -105,9 +105,11 @@ class ShoutoutRead(BaseModel):
     id: uuid.UUID
     #: "peer" is a colleague's shoutout; "award" is an award result the
     #: company announced, and has no sender.
-    kind: Literal["peer", "award", "milestone"]
+    kind: Literal["peer", "award", "milestone", "birthday"]
     #: A work anniversary the company marked: how many years.
     milestone_years: int | None = None
+    #: The greeting card on a birthday or anniversary post, served by the API.
+    card_url: str | None = None
     from_employee_id: uuid.UUID | None
     to_employee_id: uuid.UUID
     sender: PersonRef | None

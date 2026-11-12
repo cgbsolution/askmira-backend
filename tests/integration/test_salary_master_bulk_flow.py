@@ -1036,3 +1036,158 @@ async def test_the_export_never_reaches_another_workspace(
     response = await _export(client, other_hr_user, [str(employee.id)])
     assert response.status_code == 200
     assert _sheet_rows(response.content)[1] == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# List filters: status, company, project, department, location, structure,
+# salary assigned or not, and the export that follows them
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _filter_people(session: AsyncSession, tenant: Tenant, legal_entity: LegalEntity):
+    """Three people beside the fixture's Anita: one on notice in Sales on a
+    client project, one exited, one in Sales with no company."""
+    from app.models.employee import EmploymentStatus
+    from app.models.org import Department
+    from app.models.timesheets import Project
+
+    sales = Department(tenant_id=tenant.id, name="Sales", code="SAL")
+    client = Project(tenant_id=tenant.id, code="DXC", name="DXC INET")
+    session.add_all([sales, client])
+    await session.flush()
+    notice = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM002",
+        first_name="Ravi",
+        work_email="r@acme.test",
+        status=EmploymentStatus.ON_NOTICE,
+        department_id=sales.id,
+        project_id=client.id,
+        legal_entity_id=legal_entity.id,
+    )
+    gone = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM003",
+        first_name="Sita",
+        work_email="s@acme.test",
+        status=EmploymentStatus.EXITED,
+        legal_entity_id=legal_entity.id,
+    )
+    loose = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM004",
+        first_name="Om",
+        work_email="o@acme.test",
+        status=EmploymentStatus.ACTIVE,
+        department_id=sales.id,
+    )
+    session.add_all([notice, gone, loose])
+    await session.commit()
+    return sales, client, notice, gone, loose
+
+
+async def _codes(client: httpx.AsyncClient, hr: User, query: str) -> list[str]:
+    response = await client.get(f"/api/v1/salaries?page_size=200&{query}", headers=_auth(hr))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    codes = [row["employee_code"] for row in body["items"]]
+    assert body["total"] == len(codes)
+    return codes
+
+
+async def test_the_salary_list_filters_by_status_company_project_department_and_salary(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    legal_entity: LegalEntity,
+    other_tenant: Tenant,
+) -> None:
+    await _standard(client, hr_user)
+    structure = await session.scalar(select(SalaryStructure))
+    saved = await client.post(
+        f"/api/v1/employees/{employee.id}/salary",
+        headers=_auth(hr_user),
+        json=_manual(structure.id, "2026-04-01", "51666.67", SCREEN, gross_amount="48474"),
+    )
+    assert saved.status_code == 201, saved.text
+    sales, project, notice, gone, loose = await _filter_people(session, tenant, legal_entity)
+    # Another workspace's people never show, whatever the filters.
+    session.add(
+        Employee(
+            tenant_id=other_tenant.id,
+            employee_code="ZZZ001",
+            first_name="Other",
+            work_email="x@z.test",
+        )
+    )
+    await session.commit()
+
+    assert await _codes(client, hr_user, "") == ["ACM001", "ACM002", "ACM003", "ACM004"]
+    assert await _codes(client, hr_user, "status=active") == ["ACM001", "ACM004"]
+    assert await _codes(client, hr_user, "current=true") == ["ACM001", "ACM002", "ACM004"]
+    assert await _codes(client, hr_user, f"department_id={sales.id}") == ["ACM002", "ACM004"]
+    assert await _codes(client, hr_user, f"project_id={project.id}") == ["ACM002"]
+    assert await _codes(client, hr_user, "without_project=true") == ["ACM001", "ACM003", "ACM004"]
+    assert await _codes(client, hr_user, f"legal_entity_id={legal_entity.id}") == [
+        "ACM001",
+        "ACM002",
+        "ACM003",
+    ]
+    assert await _codes(client, hr_user, "without_legal_entity=true") == ["ACM004"]
+    assert await _codes(client, hr_user, "salary=assigned") == ["ACM001"]
+    assert await _codes(client, hr_user, "salary=none") == ["ACM002", "ACM003", "ACM004"]
+    assert await _codes(client, hr_user, f"structure_id={structure.id}") == ["ACM001"]
+    # Filters combine: active people in Sales with no salary.
+    assert await _codes(client, hr_user, f"status=active&department_id={sales.id}&salary=none") == [
+        "ACM004"
+    ]
+    assert await _codes(client, hr_user, "status=active&search=om") == ["ACM004"]
+    # Nonsense is refused, not ignored.
+    for bad in ("status=sleeping", "salary=maybe", "department_id=not-a-uuid"):
+        response = await client.get(f"/api/v1/salaries?{bad}", headers=_auth(hr_user))
+        assert response.status_code == 422, bad
+
+
+async def test_the_export_follows_the_filters_unless_people_are_ticked(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    legal_entity: LegalEntity,
+) -> None:
+    await _standard(client, hr_user)
+    sales, _project, notice, _gone, loose = await _filter_people(session, tenant, legal_entity)
+
+    by_filters = await client.post(
+        "/api/v1/salaries/export",
+        headers=_auth(hr_user),
+        json={"employee_ids": None, "filters": {"status": "active"}},
+    )
+    assert by_filters.status_code == 200, by_filters.text
+    _, rows = _sheet_rows(by_filters.content)
+    assert [r["Employee Code"] for r in rows] == ["ACM001", "ACM004"]
+
+    in_sales = await client.post(
+        "/api/v1/salaries/export",
+        headers=_auth(hr_user),
+        json={"filters": {"department_id": str(sales.id), "current": True}},
+    )
+    _, rows = _sheet_rows(in_sales.content)
+    assert [r["Employee Code"] for r in rows] == ["ACM002", "ACM004"]
+
+    # Ticked people are exported as ticked, whatever the filters say.
+    ticked = await client.post(
+        "/api/v1/salaries/export",
+        headers=_auth(hr_user),
+        json={"employee_ids": [str(notice.id)], "filters": {"status": "active"}},
+    )
+    _, rows = _sheet_rows(ticked.content)
+    assert [r["Employee Code"] for r in rows] == ["ACM002"]
+
+    # No filters and nothing ticked: everyone, as before.
+    everyone = await client.post("/api/v1/salaries/export", headers=_auth(hr_user), json={})
+    _, rows = _sheet_rows(everyone.content)
+    assert [r["Employee Code"] for r in rows] == ["ACM001", "ACM002", "ACM003", "ACM004"]

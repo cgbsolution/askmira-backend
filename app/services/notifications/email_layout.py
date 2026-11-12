@@ -189,8 +189,12 @@ def render_email(
     actions: tuple[EmailAction, ...] = (),
     reason: str | None = None,
     embed_logo: bool = True,
+    hero: InlineImage | None = None,
 ) -> RenderedEmail:
     """Lay a message out in the workspace's branded email.
+
+    `hero` is a picture shown full width under the title (a birthday card),
+    carried inline like the logo.
 
     `actions` are buttons (Approve / Reject on an approval email). Without
     them, `action_url` adds one button into the portal — unless the wording
@@ -225,6 +229,19 @@ def render_email(
         )
 
     button = _buttons(actions, accent)
+
+    picture = ""
+    if hero is not None:
+        if embed_logo:
+            hero_src = f"cid:{hero.cid}"
+            images = (*images, hero)
+        else:
+            hero_src = f"data:{hero.mime_type};base64,{base64.b64encode(hero.data).decode()}"
+        picture = (
+            f'<img src="{hero_src}" alt="{title}" width="536" '
+            f'style="display:block;width:100%;max-width:536px;height:auto;border:0;'
+            f'border-radius:8px;margin:0 0 20px 0;">'
+        )
 
     sign_off = ""
     if brand.sign_off.strip():
@@ -262,6 +279,7 @@ def render_email(
 <tr><td style="padding:0 4px 16px 4px;">{header}</td></tr>
 <tr><td style="{_CARD}border-top:4px solid {accent};">
 <h1 style="{_H1}">{title}</h1>
+{picture}
 {body_to_html(body, accent)}
 {button}
 {sign_off}

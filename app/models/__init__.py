@@ -149,6 +149,7 @@ from app.models.contractors import (
     TdsSection,
 )
 from app.models.culture import (
+    CelebrationTemplate,
     Club,
     ClubMember,
     ClubPost,
@@ -561,6 +562,7 @@ from app.models.performance_flow import (
     PromotionRecord,
     RecommendationStatusEnum,
 )
+from app.models.platform_product_key import PlatformProductKey
 from app.models.position import (
     AssignmentType,
     CostCentre,
@@ -769,6 +771,7 @@ __all__ = [
     "CandidateStage",
     "CandidateStageEvent",
     "CareersPageConfig",
+    "CelebrationTemplate",
     "Channel",
     "ChartType",
     "ChatEvents",
@@ -1056,6 +1059,7 @@ __all__ = [
     "PipStatusEnum",
     "PlanScopeEnum",
     "PlanStatusEnum",
+    "PlatformProductKey",
     "PointsBudget",
     "PointsExpiryPolicy",
     "PointsLedgerEntry",

@@ -184,6 +184,8 @@ async def test_an_anniversary_is_marked_once_and_privately_without_consent(
             EventPrivacyPreference(
                 tenant_id=tenant.id, employee_id=sharer.id, share_work_anniversary=True
             ),
+            # Sharing is on by default for the workspace; this one switched it off.
+            EventPrivacyPreference(tenant_id=tenant.id, employee_id=quiet.id),
             MilestoneRule(tenant_id=tenant.id, years=5, message="Five years, {name}!"),
         ]
     )

@@ -1922,8 +1922,8 @@ async def calendar(
 ) -> dict[str, Any]:
     """The events that may be published in a window, for this viewer.
 
-    An employee with no privacy row contributes nothing. The absence of a
-    record is a refusal, not a gap to be filled with a default of yes. A
+    An employee with no privacy row follows the workspace default (see
+    `celebrations.effective_privacy`); one who chose follows their choice. A
     birthday shared with the team is shown to that person's department, to
     themselves and to HR - not to the company.
     """
@@ -1932,21 +1932,13 @@ async def calendar(
     if (to_date - from_date).days > 366:
         raise _bad_request("A calendar window is at most a year.")
 
+    from app.services.culture import celebrations
+
     employees = list((await session.execute(_current_employees_stmt(user))).scalars())
     by_id = {str(e.id): e for e in employees}
-    prefs = {
-        str(p.employee_id): comms_engine.EventPrivacy(
-            employee_id=str(p.employee_id),
-            share_birthday=p.share_birthday,
-            share_work_anniversary=p.share_work_anniversary,
-            birthday_scope=p.birthday_scope,
-        )
-        for p in (
-            await session.execute(
-                tenant_scoped(select(EventPrivacyPreference), EventPrivacyPreference, user)
-            )
-        ).scalars()
-    }
+    # Each person's own choice, else the workspace default (shared with
+    # everyone unless HR changed it under Culture → Celebrations).
+    prefs = await celebrations.effective_privacy(session, user, [e.id for e in employees])
 
     person_events: list[comms_engine.PersonEvent] = []
     for e in employees:
@@ -2036,8 +2028,8 @@ async def calendar(
         "to": to_date.isoformat(),
         "events": shown,
         "note": (
-            "Birthdays and work anniversaries appear only for people who have "
-            "opted in, and the two are separate choices."
+            "Birthdays and work anniversaries follow each person's own choice "
+            "(My celebrations on the feed), else the workspace's default."
         ),
     }
 
@@ -2059,8 +2051,8 @@ def culture_posture() -> dict[str, Any]:
             "An action plan cannot be completed while any item is open.",
             "An acknowledgement stores the hash of the text it attested to, so "
             "an edit does not inherit it.",
-            "Birthday and work-anniversary sharing default to off, in the "
-            "column, and are separate consents.",
+            "Birthday and work-anniversary sharing are separate choices; a "
+            "person's own choice always beats the workspace default HR sets.",
             "Announcements are delivered to their audience through the "
             "notification engine when published, exactly once. Scheduled ones "
             "are picked up every 15 minutes by the scheduler.",
