@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import logging
 import re
 import uuid
 import zipfile
@@ -51,9 +52,10 @@ from app.schemas.documents import (
     DocumentVerify,
 )
 from app.services import audit, uploads
+from app.services.documents import zip_scan
 from app.services.notifications.dispatch import notify, register_event
 from app.services.storage import FileRejectedError, StorageError, get_storage
-from app.services.storage.sniff import size_label
+from app.services.storage.sniff import FileTooLargeError, size_label
 
 __all__ = [
     "delete_document",
@@ -83,7 +85,14 @@ register_event(
     "HR {decision} '{title}'. {note}",
 )
 
-_EXTENSIONS = {"application/pdf": ".pdf", "image/png": ".png", "image/jpeg": ".jpg"}
+_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    zip_scan.ZIP_MIME: ".zip",
+}
+
+logger = logging.getLogger(__name__)
 
 _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
@@ -305,11 +314,23 @@ async def upload_document(
     _refuse_own_record(user, employee_id)
     employee = await _employee(session, user, employee_id)
 
-    accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
-    kind, data = accepted.kind, accepted.data
+    # A ZIP of the person's papers is stored as one document, but only once
+    # every file in it has been checked (`zip_scan`); anything else is a single
+    # PDF, PNG or JPEG.
+    inside: tuple[str, ...] | None = None
+    if zip_scan.looks_like_zip(data):
+        checked = await _check_zip(session, user, data)
+        mime_type, extension, inside = zip_scan.ZIP_MIME, ".zip", checked.files
+        sizes = {"size_bytes": len(checked.data), "uploaded_size_bytes": checked.uploaded_size}
+        data = checked.data
+    else:
+        accepted = await uploads.accept_for_tenant(session, user.tenant_id, data)
+        mime_type, extension = accepted.kind.mime_type, accepted.kind.extension
+        sizes = accepted.sizes
+        data = accepted.data
 
     storage = get_storage()
-    key = storage.new_key(user.tenant_id, "documents", kind.extension)
+    key = storage.new_key(user.tenant_id, "documents", extension)
     try:
         await storage.put(key, data)
     except StorageError as exc:
@@ -325,7 +346,7 @@ async def upload_document(
             title=title.strip(),
             file_url=key,
             file_size_bytes=len(data),
-            mime_type=kind.mime_type,
+            mime_type=mime_type,
             document_number=_clean(document_number),
             remark=_clean(remark),
             dependant_name=_clean(dependant_name),
@@ -347,9 +368,11 @@ async def upload_document(
                 "employee_code": employee.employee_code,
                 "category": category.value,
                 "title": document.title,
-                "mime_type": kind.mime_type,
-                **accepted.sizes,
+                "mime_type": mime_type,
+                **sizes,
                 "employee_visible": is_employee_visible,
+                # What the ZIP holds, every file checked: the record of what is in it.
+                **({"zip_files": list(inside)} if inside is not None else {}),
             },
             summary=f"Uploaded '{document.title}' to {employee.employee_code}'s vault",
             request=request,
@@ -364,6 +387,36 @@ async def upload_document(
 
     await session.refresh(document)
     return _read(document, employee, today=date.today())
+
+
+async def _check_zip(session: AsyncSession, user: User, data: bytes) -> zip_scan.CheckedZip:
+    """Every file in the ZIP checked and the ZIP rebuilt from them, or an HTTP refusal.
+
+    At most 5 MB, or the workspace's own upload limit when that is lower.
+    """
+    limit = await uploads.limit_bytes(session, user.tenant_id)
+    try:
+        return await asyncio.to_thread(
+            zip_scan.check_zip,
+            data,
+            max_file_bytes=limit,
+            max_zip_bytes=min(zip_scan.MAX_ZIP_BYTES, limit),
+        )
+    except FileTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)
+        ) from exc
+    except zip_scan.ZipRejectedError as exc:
+        # Worth a line in the log: a refused ZIP may be somebody probing.
+        logger.warning(
+            "Refused a document ZIP in tenant %s from user %s: %s",
+            user.tenant_id,
+            user.id,
+            "; ".join(exc.problems[:20]),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 #: The most files one bulk upload stores, counting every file inside a ZIP.
@@ -434,7 +487,15 @@ def _unzip(
             )
             break
         budget -= len(content)
-        files.append((inner, content))
+        # The same checks as a ZIP kept whole (`zip_scan`): a real PDF, PNG or
+        # JPEG under a document's name, an image that decodes, a PDF that
+        # cannot run anything. What is kept is the cleaned file.
+        try:
+            clean = zip_scan.check_document(info.filename.replace("\\", "/"), content)
+        except zip_scan.FileProblemError as problem:
+            skipped.append(BulkDocumentSkipped(file=inner, reason=f"It {problem}"))
+            continue
+        files.append((inner, clean.data))
     return files
 
 
@@ -500,7 +561,8 @@ async def upload_documents(
                 BulkDocumentSkipped(file=name, reason=_too_large(settings.MAX_ARCHIVE_BYTES))
             )
         elif data.startswith(_ZIP_MAGIC):
-            candidates.extend(_unzip(name, data, skipped, limit))
+            # Every file is opened and checked: CPU work, off the event loop.
+            candidates.extend(await asyncio.to_thread(_unzip, name, data, skipped, limit))
         elif len(data) > limit:
             skipped.append(BulkDocumentSkipped(file=name, reason=_too_large(limit)))
         else:

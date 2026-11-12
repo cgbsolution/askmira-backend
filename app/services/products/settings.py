@@ -55,6 +55,12 @@ class ProductSettings(BaseSettings):
     procurement_tool_app_url: str | None = None
     procurement_tool_secret: str | None = None
     procurement_tool_platform_secret: str | None = None
+    #: The finance app (accounting and GST). No production address yet: set
+    #: FINANCE_TOOL_API_URL (its API's /api/v1) and FINANCE_TOOL_APP_URL.
+    finance_tool_api_url: str | None = None
+    finance_tool_app_url: str | None = None
+    finance_tool_secret: str | None = None
+    finance_tool_platform_secret: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +77,7 @@ _PREFIX = {
     "helpdesk": "helpdesk_tool",
     "saleinx": "saleinx_tool",
     "procurement": "procurement_tool",
+    "finance": "finance_tool",
 }
 
 

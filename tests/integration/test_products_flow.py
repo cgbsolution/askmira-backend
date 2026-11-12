@@ -217,6 +217,7 @@ async def test_unconfigured_product_cannot_be_linked(
         "helpdesk": False,
         "saleinx": False,
         "procurement": False,
+        "finance": False,
     }
     with pytest.raises(HTTPException) as refused:
         await products.link(session, super_admin, tenant.id, "interview", request=None)

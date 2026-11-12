@@ -24,6 +24,8 @@ class DocumentCategory(str, enum.Enum):
     TAX = "tax"
     MEDICAL = "medical"
     BANK = "bank"
+    #: One ZIP of the person's papers, uploaded by HR (each file inside checked).
+    ALL_DOCUMENTS = "all_documents"
     OTHER = "other"
 
 
@@ -39,6 +41,7 @@ CATEGORY_LABELS: dict[DocumentCategory, str] = {
     DocumentCategory.PAYSLIP: "Payslip",
     DocumentCategory.TAX: "Tax",
     DocumentCategory.MEDICAL: "Medical",
+    DocumentCategory.ALL_DOCUMENTS: "All documents (ZIP)",
     DocumentCategory.OTHER: "Other",
 }
 

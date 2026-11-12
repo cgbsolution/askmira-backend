@@ -85,6 +85,7 @@ KINDS = (
     "saleinx_lead",
     "saleinx_stage",
     "saleinx_decision",
+    "saleinx_activity",
     "procurement_decision",
     # Across products, step by step, undone on failure (order_win.py).
     "order_win",
@@ -93,7 +94,13 @@ KINDS = (
     "helpdesk_work",
 )
 _PRODUCT_KINDS = frozenset(
-    {"saleinx_lead", "saleinx_stage", "saleinx_decision", "procurement_decision"}
+    {
+        "saleinx_lead",
+        "saleinx_stage",
+        "saleinx_decision",
+        "saleinx_activity",
+        "procurement_decision",
+    }
 )
 #: Carried out in a linked product, which keeps its own history: AskMiraa's audit log
 #: gets a row of its own when one succeeds, as it does when one fails or is declined.
@@ -109,6 +116,7 @@ _PRODUCT_OF = {
     "saleinx_lead": "Saleinx",
     "saleinx_stage": "Saleinx",
     "saleinx_decision": "Saleinx",
+    "saleinx_activity": "Saleinx",
     "procurement_decision": "ProcureFlow",
     "helpdesk_ticket": "CGB Helpdesk",
     "helpdesk_work": "CGB Helpdesk",

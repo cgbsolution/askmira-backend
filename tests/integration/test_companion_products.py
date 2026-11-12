@@ -402,6 +402,7 @@ def test_every_status_and_scope_is_a_choice_the_model_is_given() -> None:
         "helpdesk",
         "saleinx",
         "procurement",
+        "finance",
     }
 
 

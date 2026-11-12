@@ -47,6 +47,7 @@ HOLDS = {
     "helpdesk": "IT tickets and the assets people hold",
     "saleinx": "leads, deals and the sales pipeline",
     "procurement": "requisitions, purchase orders, invoices and budgets",
+    "finance": "the books: accounts, journals and financial reports",
 }
 #: What Ask Miraa can do there once it is ready.
 CAN_DO = {
@@ -55,6 +56,7 @@ CAN_DO = {
     "helpdesk": "raise IT tickets and follow them",
     "saleinx": "add leads and move deals",
     "procurement": "show requisitions and orders and decide approvals",
+    "finance": "open the books for you",
 }
 _WHY = {
     NOT_CONNECTED: "not connected to this workspace",

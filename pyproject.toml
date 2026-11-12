@@ -42,6 +42,7 @@ ignore = [
 "tests/integration/test_companion_agent.py" = ["F811"]
 "tests/integration/test_account_pnl_flow.py" = ["F811"]
 "tests/integration/test_companion_product_data.py" = ["F811"]
+"tests/integration/test_saleinx_deal_activity.py" = ["F811"]
 # Reuse the companion fixtures (injected by name) and keep each scenario's
 # figures and expectations on one line, as the user wrote the test prompts.
 "tests/integration/test_sales_procurement_link.py" = ["F811", "E501"]

@@ -104,3 +104,35 @@ async def test_required_location_refuses_a_self_punch_without_one(
     await attendance_service.require_location_if_configured(
         session, login, source=PunchSource.BIOMETRIC, has_coordinates=False
     )
+
+
+async def test_a_workspace_that_never_chose_requires_a_location(
+    session: AsyncSession, tenant: Tenant, hr_user: User
+):
+    """Since 2026-11-12 the default is required: with location off, a web or
+    app punch is refused; devices are not; a workspace can still opt out."""
+    tenant.settings = {k: v for k, v in (tenant.settings or {}).items() if k != "attendance"}
+    await session.commit()
+    assert (
+        await attendance_setup.attendance_settings(session, hr_user)
+    ).location_mode == "required"
+
+    for source in (PunchSource.WEB, PunchSource.MOBILE_GEO):
+        with pytest.raises(HTTPException) as refused:
+            await attendance_service.require_location_if_configured(
+                session, hr_user, source=source, has_coordinates=False
+            )
+        assert refused.value.status_code == 422
+    await attendance_service.require_location_if_configured(
+        session, hr_user, source=PunchSource.WEB, has_coordinates=True
+    )
+    await attendance_service.require_location_if_configured(
+        session, hr_user, source=PunchSource.BIOMETRIC, has_coordinates=False
+    )
+
+    await attendance_setup.update_attendance_settings(
+        session, hr_user, AttendanceSettings(location_mode="optional")
+    )
+    await attendance_service.require_location_if_configured(
+        session, hr_user, source=PunchSource.WEB, has_coordinates=False
+    )

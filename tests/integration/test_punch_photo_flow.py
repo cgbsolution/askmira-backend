@@ -82,7 +82,10 @@ async def test_a_required_photo_is_asked_for_kept_and_shown_to_few(
     client, session, tenant, hr_user, legal_entity, location
 ) -> None:
     tenant.enabled_modules = {**(tenant.enabled_modules or {}), "leave": True}
-    tenant.settings = {**(tenant.settings or {}), "attendance": {"photo_mode": "required"}}
+    tenant.settings = {
+        **(tenant.settings or {}),
+        "attendance": {"photo_mode": "required", "location_mode": "optional"},
+    }
     await session.commit()
     me = await _login(session, tenant, legal_entity, location, "SELFIE")
     colleague = await _login(session, tenant, legal_entity, location, "OTHER")

@@ -851,6 +851,26 @@ TOOLS: dict[str, Tool] = {
             inputs=("deal", "decision", "reason"),
         ),
         Tool(
+            key="log_deal_activity",
+            group="actions_sales",
+            product="saleinx",
+            title="Deal activity",
+            kind="action",
+            needs_ai=True,
+            description=(
+                f"Logs a call or a meeting in a deal's Activity in {_SALES} (its 'Log "
+                "activity'), one that happened or one that is planned, and offers it; the "
+                "person confirms. Use it whenever they say to add, log, update or schedule "
+                "something 'under activity', or a call or meeting on a deal; a note they ask "
+                "for is a note (save_lead), not an activity. Set `deal` (its "
+                "name or company as they said it), `activity_type` (call or meeting), "
+                "`activity_date` (YYYY-MM-DD: 'on 23rd Nov' is the coming 23 November; empty "
+                "means today) and `activity_notes` (what it is about, in their words). A date "
+                "still to come also goes on their Saleinx Tasks for that day as a reminder."
+            ),
+            inputs=("deal", "activity_type", "activity_date", "activity_notes"),
+        ),
+        Tool(
             key="book_order",
             group="actions_orders",
             product="saleinx",
@@ -1102,6 +1122,15 @@ INPUTS: dict[str, dict[str, Any]] = {
     "source": {"type": "string", "description": "Where the lead came from, or empty."},
     "follow_up": {"type": "string", "description": "The follow-up to do, like 'Call back'."},
     "follow_up_date": {"type": "string", "description": "YYYY-MM-DD, or empty."},
+    "activity_type": {"type": "string", "enum": ["none", "call", "meeting"]},
+    "activity_date": {
+        "type": "string",
+        "description": "When the call or meeting is or was, YYYY-MM-DD, or empty for today.",
+    },
+    "activity_notes": {
+        "type": "string",
+        "description": "What the call or meeting is about, in the person's words, or empty.",
+    },
     "offerings": {
         "type": "array",
         "items": {"type": "string"},
@@ -1610,6 +1639,8 @@ async def _act(
         return await sales_tools.propose_stage(session, user, inputs, ctx)
     if tool.key == "decide_deal":
         return await sales_tools.propose_deal_decision(session, user, inputs, ctx)
+    if tool.key == "log_deal_activity":
+        return await sales_tools.propose_activity(session, user, inputs, ctx)
     if tool.key == "decide_procurement":
         return await sales_tools.propose_procurement_decision(session, user, inputs, ctx)
     if tool.key == "book_order":

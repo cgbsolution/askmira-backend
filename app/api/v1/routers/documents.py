@@ -103,7 +103,11 @@ async def upload(
     remark: Annotated[str | None, Form(max_length=1000)] = None,
     dependant_name: Annotated[str | None, Form(max_length=128)] = None,
 ) -> DocumentRead:
-    """Upload a PDF, PNG or JPEG. Type is read from the bytes; the name is ignored."""
+    """Upload a PDF, PNG or JPEG, or a ZIP of them (at most 5 MB) kept as one document.
+
+    Type is read from the bytes; the name is ignored. Every file inside a ZIP is
+    opened and checked before anything is stored (`documents.zip_scan`).
+    """
     # One byte past the limit is enough to know it is over the limit.
     data = await uploads.read_file(file, session, user.tenant_id)
     return await vault.upload_document(

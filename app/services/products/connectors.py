@@ -94,6 +94,12 @@ DESCRIPTIONS = {
         "invoices and budgets, and decides approvals for them. ProcureFlow's admins "
         "decide who has an account and its role."
     ),
+    "finance": (
+        "Accounting, GST and finance. People with a user there open it without a second "
+        "login; its admins decide who is a user and their role (accountant, staff, "
+        "viewer). A user who leaves here is switched off there. Payroll journals and "
+        "expense claims post to it in later phases."
+    ),
 }
 
 

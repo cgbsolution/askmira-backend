@@ -80,6 +80,7 @@ WHAT = {
     "helpdesk": "IT tickets and assets",
     "saleinx": "Sales CRM",
     "procurement": "Procure-to-pay",
+    "finance": "Accounting and GST",
 }
 
 

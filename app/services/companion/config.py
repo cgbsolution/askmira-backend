@@ -80,9 +80,9 @@ TOOL_GROUPS: dict[str, str] = {
     "they confirm. Needs AI.",
     "sales_data": "Read leads, deals and the pipeline from the linked sales CRM (Saleinx), as "
     "each person's own access there shows them.",
-    "actions_sales": "Add a lead from a pasted note, update it, move a deal's stage or approve a "
-    "rep's Won in Saleinx for the person, when they confirm, with Saleinx's own rules and their "
-    "own access there. Needs AI.",
+    "actions_sales": "Add a lead from a pasted note, update it, move a deal's stage, log a call "
+    "or meeting in a deal's Activity or approve a rep's Won in Saleinx for the person, when they "
+    "confirm, with Saleinx's own rules and their own access there. Needs AI.",
     "actions_orders": "Book a signed order: check its deal is Won and approved and its PO matches "
     "the team's billing, open the positions in the interview tool and write the prospective P&L, "
     "when the person confirms; a failed step undoes the earlier ones. Needs AI.",

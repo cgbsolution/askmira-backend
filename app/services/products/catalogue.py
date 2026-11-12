@@ -76,6 +76,12 @@ PRODUCTS: dict[str, Product] = {
         brand="ProcureFlow",
         roles_from_product=True,
     ),
+    # Accounting, GST and finance (E:\ask-mira\finance). Roles are its own (Admin,
+    # Accountant, Staff, Viewer or custom), like Saleinx and ProcureFlow. The brand
+    # is a working name until the product is named.
+    "finance": Product(
+        key="finance", name="Finance", replaces="", brand="Finance", roles_from_product=True
+    ),
 }
 
 

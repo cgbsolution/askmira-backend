@@ -40,6 +40,7 @@ __all__ = [
     "PROCUREMENT_DOCUMENTS",
     "ROLLBACK_REASONS",
     "carry_out",
+    "propose_activity",
     "propose_deal_decision",
     "propose_lead",
     "propose_procurement_decision",
@@ -530,13 +531,47 @@ def _viewer_refusal(role: str) -> dict[str, Any]:
     )
 
 
+#: Words that name no deal on their own: the word-by-word search skips them.
+_FILLER = frozenset(
+    {"deal", "deals", "lead", "leads", "under", "with", "from", "this", "that", "opportunity"}
+    | {"company", "private", "limited", "pvt", "ltd", "the", "for", "and"}
+)
+
+
+async def _search_deals(session: AsyncSession, user: User, text: str) -> list[dict[str, Any]]:
+    data = await products.ask(session, user, SALEINX, "deals", {"query": text, "limit": 10})
+    return [d for d in data.get("deals") or [] if isinstance(d, dict)]
+
+
+def _hits(deal: dict[str, Any], words: list[str]) -> int:
+    """How many of the words name this deal ("safeops360" names "Megafine - Safeops")."""
+    title = " ".join(str(deal.get(k) or "") for k in ("title", "company", "name")).lower()
+    tokens = [t for t in re.findall(r"[a-z0-9]+", title) if len(t) >= 4]
+    return sum(
+        1 for w in words if w in title or any(w.startswith(t) or t.startswith(w) for t in tokens)
+    )
+
+
 async def _find_deal(
     session: AsyncSession, user: User, wanted: str, *, stages: tuple[str, ...] = ()
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """The one deal the person means, or the deals it could be (empty: none)."""
-    params: dict[str, Any] = {"query": wanted, "limit": 10}
-    data = await products.ask(session, user, SALEINX, "deals", params)
-    deals = [d for d in data.get("deals") or [] if isinstance(d, dict)]
+    deals = await _search_deals(session, user, wanted)
+    if not deals:
+        # Saleinx matches the text whole, so "SafeOps360 deal for Megafine" finds nothing:
+        # look word by word and keep the deals most of the words point to.
+        words = [
+            w
+            for w in dict.fromkeys(re.findall(r"[a-z0-9]+", wanted.lower()))
+            if len(w) >= 4 and w not in _FILLER
+        ][:4]
+        if len(words) > 1:
+            seen: dict[str, dict[str, Any]] = {}
+            for word in words:
+                for d in await _search_deals(session, user, word):
+                    seen.setdefault(str(d.get("id")), d)
+            best = max((_hits(d, words) for d in seen.values()), default=0)
+            deals = [d for d in seen.values() if _hits(d, words) == best] if best else []
     if stages:
         deals = [d for d in deals if d.get("stage") in stages] or deals
     want = " ".join(wanted.lower().translate({0x2013: "-", 0x2014: "-"}).split())
@@ -977,6 +1012,91 @@ async def propose_deal_decision(
     return [actions.card_for(action)], used
 
 
+#: How far from today a call or meeting may be dated, either way: "2062" is a typo.
+ACTIVITY_REACH_DAYS = 366
+ACTIVITY_LABEL = {"call": "Call", "meeting": "Meeting"}
+
+
+async def propose_activity(
+    session: AsyncSession, user: User, inputs: dict[str, Any], ctx: Any
+) -> Result:
+    """A call or meeting in a deal's Activity, as Saleinx's "Log activity" writes it.
+
+    One still to come ("schedule a call on 23rd Nov") is logged for that day and also
+    goes on the person's Saleinx Tasks for it, so it reminds them; the offer says so.
+    """
+    from app.services.attendance import service as attendance
+    from app.services.companion import actions
+
+    role = await _role(session, user)
+    if role is None:
+        return [_notice("Saleinx is not linked to your workspace for you.", "warning")], {}
+    if role == "viewer":
+        return [_viewer_refusal(role)], {}
+    wanted = _text(inputs.get("deal"), 160)
+    kind = _text(inputs.get("activity_type"), 20).lower()
+    raw_day = _text(inputs.get("activity_date"), 40)
+    notes = _text(inputs.get("activity_notes"), 4000)
+    used = {"deal": wanted, "activity_type": kind, "activity_date": raw_day}
+    if not wanted:
+        return [_notice("Which deal is it for?")], used
+    if kind not in ACTIVITY_LABEL:
+        return [_notice("Is it a call or a meeting?")], used
+    today = await attendance.local_today(session, user)
+    on = _day(raw_day) if raw_day else today
+    if on is None:
+        return [_notice("Give the date as YYYY-MM-DD, like 2026-11-23.")], used
+    if abs((on - today).days) > ACTIVITY_REACH_DAYS:
+        return [_notice(f"{_when(on.isoformat())} is more than a year away. Which date?")], used
+    found = await _find_deal(session, user, wanted)
+    if isinstance(found, list):
+        if not found:
+            return [
+                _notice(
+                    f"No lead or deal you can see in Saleinx matches “{wanted}”.",
+                    "warning",
+                    note=True,
+                )
+            ], used
+        return _which(found, wanted), used
+    deal = found
+    label = ACTIVITY_LABEL[kind]
+    ahead = on > today
+    params: dict[str, Any] = {
+        "deal_id": deal["id"],
+        "type": kind,
+        "date": on.isoformat(),
+        "notes": notes or None,
+    }
+    figures = [
+        {"label": "Deal", "value": str(deal.get("title"))},
+        {"label": "Activity", "value": label + (" (planned)" if ahead else "")},
+        {"label": "Date", "value": _when(on.isoformat())},
+    ]
+    if notes:
+        figures.append({"label": "Notes", "value": notes})
+    remarks = [f"It shows in the deal's Activity in Saleinx as a {kind} on {on:%d %b %Y}."]
+    if ahead:
+        params["task"] = {"title": f"{label}: {deal.get('title')}", "due_date": on.isoformat()}
+        figures.append({"label": "Reminder", "value": f"{label} task in your Saleinx Tasks"})
+        remarks.append(f"The date is ahead, so a {kind} task due that day is added for you too.")
+    action = await actions._offer(
+        session,
+        user,
+        ctx,
+        kind="saleinx_activity",
+        payload=params,
+        summary={
+            "title": f"Log a {kind} on {deal.get('title')} in Saleinx",
+            "figures": figures,
+            "notes": remarks,
+            "confirm_label": f"Log the {kind}",
+            "question": "Log it?",
+        },
+    )
+    return [actions.card_for(action)], used
+
+
 async def propose_procurement_decision(
     session: AsyncSession, user: User, inputs: dict[str, Any], ctx: Any
 ) -> Result:
@@ -1079,6 +1199,23 @@ async def carry_out(session: AsyncSession, user: User, action: CompanionAction) 
             )
         else:
             text = f"{deal.get('title')} is now at {deal.get('stage_label')} in Saleinx."
+        return {"text": text, "open": "/launch/saleinx", "reference": deal.get("id")}
+
+    if action.kind == "saleinx_activity":
+        try:
+            answer = await products.act(session, user, SALEINX, "deal.activity", payload)
+        except products.ProductUnavailableError as exc:
+            raise _unavailable(exc) from exc
+        deal = answer.get("deal") or {}
+        kind = str(payload.get("type") or "call")
+        text = (
+            f"Logged in Saleinx: a {kind} on {_when(payload.get('date'))}, in the Activity "
+            f"of {deal.get('title')}."
+        )
+        if answer.get("task_id"):
+            text += f" A {kind} task due that day is on your Saleinx Tasks."
+        elif answer.get("task_error"):
+            text += f" The reminder task could not be added: {answer['task_error']}"
         return {"text": text, "open": "/launch/saleinx", "reference": deal.get("id")}
 
     if action.kind == "saleinx_decision":

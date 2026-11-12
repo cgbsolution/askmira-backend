@@ -432,7 +432,10 @@ async def as_user(session: AsyncSession) -> AsyncGenerator:
 async def test_http_an_employee_cannot_backdate_a_punch_or_decide(session, team, as_user):
     report_user = team["report_user"]
     async with as_user(report_user) as client:
-        ok = await client.post("/api/v1/attendance/punch", json={"direction": "in"})
+        ok = await client.post(
+            "/api/v1/attendance/punch",
+            json={"direction": "in", "source": "web", "latitude": 28.54, "longitude": 77.29},
+        )
         assert ok.status_code == 201, ok.text
         assert ok.json()["source"] == "web"
         backdated = await client.post(
