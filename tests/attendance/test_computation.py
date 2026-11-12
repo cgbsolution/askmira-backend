@@ -335,32 +335,133 @@ def test_an_in_with_no_out_needs_regularisation_rather_than_counting_absent() ->
     Marking them absent is both wrong and the fastest way to lose employees'
     trust in the whole system.
     """
-    result = compute_day(
-        inputs(punches=[punch(DAY, "09:00", PunchDirection.IN)])
-    )
+    result = compute_day(inputs(punches=[punch(DAY, "09:00", PunchDirection.IN)]))
     assert result.status is AttendanceStatus.NEEDS_REGULARISATION
     assert result.status is not AttendanceStatus.ABSENT
     assert "unpaired" in result.note.lower()
 
 
 def test_an_out_with_no_in_needs_regularisation() -> None:
-    result = compute_day(
-        inputs(punches=[punch(DAY, "18:00", PunchDirection.OUT)])
-    )
+    result = compute_day(inputs(punches=[punch(DAY, "18:00", PunchDirection.OUT)]))
     assert result.status is AttendanceStatus.NEEDS_REGULARISATION
 
 
-def test_two_ins_with_one_out_needs_regularisation() -> None:
+def test_a_second_in_tapped_by_mistake_keeps_the_first_in() -> None:
+    """The phone case: in at 11:04, tapped In again at 18:33 meaning Out, then Out.
+
+    The old reading restarted the day at 18:33 — "0m worked, Absent / Missed
+    punch" for someone who was at work all day.
+    """
+    result = compute_day(
+        inputs(
+            shift=shift(start="10:00", end="19:00"),
+            punches=[
+                punch(DAY, "11:04", PunchDirection.IN),
+                punch(DAY, "18:33", PunchDirection.IN),
+                punch(DAY, "18:34", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.status is not AttendanceStatus.NEEDS_REGULARISATION
+    # 11:04 to 18:34 is 450 minutes, more than half the shift, so the break comes off.
+    assert result.worked_minutes == 390
+    assert result.first_in.time() == time(11, 4)
+    assert result.last_out.time() == time(18, 34)
+    assert result.status is AttendanceStatus.HALF_DAY
+
+
+def test_a_second_out_extends_the_stretch_it_follows() -> None:
+    result = compute_day(
+        inputs(
+            shift=shift(break_minutes=0),
+            punches=[
+                punch(DAY, "09:00", PunchDirection.IN),
+                punch(DAY, "09:01", PunchDirection.OUT),
+                punch(DAY, "17:00", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.status is AttendanceStatus.PRESENT
+    assert result.worked_minutes == 480
+
+
+def test_an_out_before_any_in_still_needs_regularisation() -> None:
     result = compute_day(
         inputs(
             punches=[
+                punch(DAY, "08:00", PunchDirection.OUT),
                 punch(DAY, "09:00", PunchDirection.IN),
-                punch(DAY, "13:00", PunchDirection.IN),
                 punch(DAY, "18:00", PunchDirection.OUT),
             ]
         )
     )
     assert result.status is AttendanceStatus.NEEDS_REGULARISATION
+
+
+def test_an_afternoon_only_day_does_not_lose_the_lunch_break() -> None:
+    """The second screenshot: in 14:29, out 18:57 on a 10:15-19:15 shift.
+
+    4h 28m on the clock. Taking the 60-minute lunch break off someone who came
+    in after lunch left 3h 28m, under the 4h half-day line, and marked them
+    absent.
+    """
+    result = compute_day(
+        inputs(
+            shift=shift(start="10:15", end="19:15", break_minutes=60),
+            punches=[
+                punch(DAY, "14:29", PunchDirection.IN),
+                punch(DAY, "18:57", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.worked_minutes == 268
+    assert result.status is AttendanceStatus.HALF_DAY
+    assert result.payable_fraction == Decimal("0.5")
+    assert result.late_by_minutes == 254
+
+
+def test_a_morning_only_day_does_not_lose_the_lunch_break() -> None:
+    result = compute_day(
+        inputs(
+            shift=shift(start="09:00", end="18:00", break_minutes=60),
+            punches=[
+                punch(DAY, "09:00", PunchDirection.IN),
+                punch(DAY, "13:15", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.worked_minutes == 255
+    assert result.status is AttendanceStatus.HALF_DAY
+
+
+def test_a_lunch_punched_out_is_not_taken_off_twice() -> None:
+    result = compute_day(
+        inputs(
+            shift=shift(start="09:00", end="18:00", break_minutes=60),
+            punches=[
+                punch(DAY, "09:00", PunchDirection.IN),
+                punch(DAY, "13:00", PunchDirection.OUT),
+                punch(DAY, "14:00", PunchDirection.IN),
+                punch(DAY, "18:00", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.worked_minutes == 480
+    assert result.status is AttendanceStatus.PRESENT
+
+
+def test_the_short_day_note_reads_in_hours() -> None:
+    result = compute_day(
+        inputs(
+            shift=shift(break_minutes=0),
+            punches=[
+                punch(DAY, "09:00", PunchDirection.IN),
+                punch(DAY, "12:28", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.status is AttendanceStatus.ABSENT
+    assert result.note == "Absent: worked 3h 28m; a half day needs 4h 00m"
 
 
 def test_no_punches_at_all_is_a_plain_absence() -> None:

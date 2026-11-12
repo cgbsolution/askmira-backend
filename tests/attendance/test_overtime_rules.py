@@ -75,7 +75,8 @@ def test_work_on_a_holiday_is_recorded_as_overtime() -> None:
         )
     )
     assert result.status is AttendanceStatus.HOLIDAY
-    assert result.overtime_minutes == 120
+    # Three hours, no more than half the shift: no lunch break was taken.
+    assert result.overtime_minutes == 180
     assert result.note.startswith("Diwali")
 
 

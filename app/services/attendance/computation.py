@@ -39,6 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
+from itertools import pairwise
 
 from app.models.attendance import (
     AttendanceStatus,
@@ -170,6 +171,69 @@ def _is_weekly_off(shift: Shift | None, day: date) -> bool:
     return shift_off_on(shift, day)
 
 
+def _stretches(
+    punches: list[PunchRecord],
+) -> tuple[list[tuple[datetime, datetime]], datetime | None, datetime | None, bool]:
+    """Pair INs with OUTs into worked stretches.
+
+    Returns `(stretches, first_in, last_out, has_unpaired)`.
+
+    A repeated tap is read as a mistake, not as a missing punch, because that
+    is what it almost always is on a phone:
+
+    * IN, IN, OUT — the second IN was tapped while already in. The person has
+      been at work since the first IN, so the stretch runs from the first IN.
+      (Restarting at the second IN turned 11:04 → 18:34 into one minute.)
+    * IN, OUT, OUT — the first OUT was tapped early by mistake; the stretch
+      runs to the later OUT.
+
+    What stays unpaired, and goes to a human: an IN never closed by an OUT
+    (forgot to punch out), and an OUT with no IN before it at all.
+    """
+    ordered = sorted(punches, key=lambda p: p.punched_at)
+
+    stretches: list[tuple[datetime, datetime]] = []
+    open_in: datetime | None = None
+    first_in: datetime | None = None
+    last_out: datetime | None = None
+    has_unpaired = False
+
+    for punch in ordered:
+        if punch.direction is PunchDirection.IN:
+            if open_in is None:
+                open_in = punch.punched_at
+            if first_in is None:
+                first_in = punch.punched_at
+        else:
+            if open_in is not None:
+                stretches.append((open_in, punch.punched_at))
+                open_in = None
+            elif stretches:
+                # A second OUT straight after an OUT extends that stretch.
+                start, _ = stretches[-1]
+                stretches[-1] = (start, punch.punched_at)
+            else:
+                # An OUT with no IN before it.
+                has_unpaired = True
+            last_out = punch.punched_at
+
+    if open_in is not None:
+        has_unpaired = True
+
+    return stretches, first_in, last_out, has_unpaired
+
+
+def _hm(minutes: int) -> str:
+    """Minutes the way people read a working day: 3h 28m."""
+    hours, rest = divmod(max(0, minutes), 60)
+    return f"{hours}h {rest:02d}m" if hours else f"{rest}m"
+
+
+def _minutes(stretches: list[tuple[datetime, datetime]]) -> int:
+    total = sum((end - start for start, end in stretches), timedelta())
+    return int(total.total_seconds() // 60)
+
+
 def _pair_punches(
     punches: list[PunchRecord],
 ) -> tuple[int, datetime | None, datetime | None, bool]:
@@ -182,35 +246,40 @@ def _pair_punches(
     forgot to punch out worked that day; recording them absent is both wrong and
     the fastest way to lose employees' trust in the system.
     """
-    ordered = sorted(punches, key=lambda p: p.punched_at)
+    stretches, first_in, last_out, has_unpaired = _stretches(punches)
+    return _minutes(stretches), first_in, last_out, has_unpaired
 
-    worked = timedelta()
-    open_in: datetime | None = None
-    first_in: datetime | None = None
-    last_out: datetime | None = None
-    has_unpaired = False
 
-    for punch in ordered:
-        if punch.direction is PunchDirection.IN:
-            if open_in is not None:
-                # Two INs with no OUT between them — the first is unpaired.
-                has_unpaired = True
-            open_in = punch.punched_at
-            if first_in is None:
-                first_in = punch.punched_at
-        else:
-            if open_in is None:
-                # An OUT with no matching IN.
-                has_unpaired = True
-            else:
-                worked += punch.punched_at - open_in
-                open_in = None
-            last_out = punch.punched_at
+def _shift_span_minutes(shift: Shift) -> int:
+    """Start to end of the shift, break included."""
+    start = datetime.combine(date(2000, 1, 1), shift.start_time)
+    end = datetime.combine(date(2000, 1, 1), shift.end_time)
+    if shift.is_night_shift or shift.end_time <= shift.start_time:
+        end += timedelta(days=1)
+    return int((end - start).total_seconds() // 60)
 
-    if open_in is not None:
-        has_unpaired = True
 
-    return int(worked.total_seconds() // 60), first_in, last_out, has_unpaired
+def _break_to_deduct(shift: Shift | None, stretches: list[tuple[datetime, datetime]]) -> int:
+    """How much of the shift's break to take off the worked time.
+
+    * Someone who worked only one half of the shift (in after lunch, or out
+      before it) never took the break. Taking 60 minutes off a 14:29-18:57
+      afternoon left 3h 28m, under the 4h half-day line — absent for a break
+      they did not have. So a day no longer than half the shift loses nothing.
+    * Someone who punched out for lunch and back in already has the break as a
+      gap between stretches; only what the gaps fall short of the break is
+      taken off, so it is never counted twice.
+    """
+    if shift is None or not shift.break_minutes or not stretches:
+        return 0
+    gross = _minutes(stretches)
+    if gross <= _shift_span_minutes(shift) // 2:
+        return 0
+    gaps = sum(
+        (start - prev_end for (_, prev_end), (start, _) in pairwise(stretches)),
+        timedelta(),
+    )
+    return max(0, shift.break_minutes - int(gaps.total_seconds() // 60))
 
 
 def compute_day(inputs: DayInputs) -> ComputedDay:
@@ -286,7 +355,8 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         )
 
     # ── 4. Pair punches ─────────────────────────────────────────────────────
-    worked_minutes, first_in, last_out, has_unpaired = _pair_punches(inputs.punches)
+    stretches, first_in, last_out, has_unpaired = _stretches(inputs.punches)
+    worked_minutes = _minutes(stretches)
 
     if not inputs.punches:
         return ComputedDay(
@@ -310,8 +380,8 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
             ),
         )
 
-    # Break time is not worked time.
-    worked_minutes = max(0, worked_minutes - shift.break_minutes)
+    # Break time is not worked time — when the person was in through it.
+    worked_minutes = max(0, worked_minutes - _break_to_deduct(shift, stretches))
 
     # ── 5. Thresholds ───────────────────────────────────────────────────────
     if worked_minutes >= shift.full_day_threshold_minutes:
@@ -322,15 +392,15 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
         status = AttendanceStatus.HALF_DAY
         payable = Decimal("0.5")
         note = (
-            f"Worked {worked_minutes} minutes, below the full-day threshold of "
-            f"{shift.full_day_threshold_minutes}"
+            f"Half day: worked {_hm(worked_minutes)}; a full day needs "
+            f"{_hm(shift.full_day_threshold_minutes)}"
         )
     else:
         status = AttendanceStatus.ABSENT
         payable = Decimal(0)
         note = (
-            f"Worked {worked_minutes} minutes, below the half-day threshold of "
-            f"{shift.half_day_threshold_minutes}"
+            f"Absent: worked {_hm(worked_minutes)}; a half day needs "
+            f"{_hm(shift.half_day_threshold_minutes)}"
         )
 
     # ── 6. Grace ────────────────────────────────────────────────────────────
@@ -369,10 +439,10 @@ def _rest_day(
     asked to regularise a day off.
     """
     if inputs.punches:
-        worked, first_in, last_out, has_unpaired = _pair_punches(inputs.punches)
+        stretches, first_in, last_out, has_unpaired = _stretches(inputs.punches)
+        worked = _minutes(stretches)
         if not has_unpaired and worked > 0:
-            break_minutes = inputs.shift.break_minutes if inputs.shift is not None else 0
-            worked = max(0, worked - break_minutes)
+            worked = max(0, worked - _break_to_deduct(inputs.shift, stretches))
             if worked > 0:
                 return ComputedDay(
                     attendance_date=inputs.attendance_date,
@@ -463,8 +533,7 @@ def _regularised(inputs: DayInputs) -> ComputedDay:
     shift = inputs.shift
     if first_in is not None and last_out is not None and last_out > first_in:
         worked = int((last_out - first_in).total_seconds() // 60)
-        if shift is not None:
-            worked = max(0, worked - shift.break_minutes)
+        worked = max(0, worked - _break_to_deduct(shift, [(first_in, last_out)]))
     if shift is not None and status in {AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY}:
         late_by, early_by = _late_and_early(shift, day, first_in, last_out, inputs.timezone)
         if status is AttendanceStatus.PRESENT:

@@ -486,6 +486,30 @@ async def test_a_published_announcement_is_delivered_to_its_audience(session, or
     assert register["people"][str(org["ben"].employee_id)] == "Ben Test"
 
 
+async def test_an_email_only_announcement_still_shows_in_the_portal(session, org):
+    """Sent by email alone, it is still on Home and in Announcements for its
+    audience: the channel says how people are told, not where they can read it.
+    (2026-11-12: an email-only announcement reached Sachin's inbox but not Home.)"""
+    made = await comms_portal.create_announcement(
+        session,
+        org["hr"],
+        AnnouncementCreate(
+            title="Office closed Friday",
+            body="For Diwali.",
+            channels=["email"],
+            requires_acknowledgement=True,
+        ),
+    )
+    mine = await comms_portal.list_my_announcements(session, org["asha"])
+    assert [a.id for a in mine] == [made.id]
+    assert mine[0].acknowledged is False
+
+    ack = await comms_portal.acknowledge(session, org["asha"], made.id, AcknowledgeCreate())
+    assert ack.acknowledged is True
+    again = await comms_portal.list_my_announcements(session, org["asha"])
+    assert again[0].acknowledged is True
+
+
 async def test_a_scheduled_announcement_is_delivered_once_when_due(session, org):
     later = datetime.now(UTC) + timedelta(hours=2)
     made = await comms_portal.create_announcement(
