@@ -291,6 +291,7 @@ async def test_only_the_super_admin_manages_tools(
         ("GET", "/api/v1/platform/tools"),
         ("PUT", "/api/v1/platform/tools/saleinx/key"),
         ("POST", f"/api/v1/platform/workspaces/{tenant.id}/products/saleinx"),
+        ("GET", "/api/v1/platform/connections"),
     ):
         response = await http.request(method, url, json={}, headers=_bearer(admin))
         assert response.status_code == 403, (method, url, response.text)
@@ -487,3 +488,41 @@ async def test_the_console_round_trip_over_http(
     assert found.status_code == 200 and any(o["ref"] == "org-2" for o in found.json())
     gone = await http.delete(f"{base}/saleinx", headers=headers)
     assert gone.status_code == 200 and gone.json()["connected"] is False
+
+
+# ── The console's overview grid ──────────────────────────────────────────────
+
+
+async def test_connections_grid_shows_every_workspace_in_every_tool(
+    session: AsyncSession,
+    http: httpx.AsyncClient,
+    super_admin: User,
+    admin: User,
+    tenant: Tenant,
+    product: FakeProduct,
+) -> None:
+    other = Tenant(name="Beta Works", slug="beta-works", is_active=False)
+    session.add(other)
+    await session.commit()
+
+    before = (await http.get("/api/v1/platform/connections", headers=_bearer(super_admin))).json()
+    rows = {row["workspace"]: row for row in before}
+    assert {tenant.slug, "beta-works"} <= set(rows)
+    assert rows["beta-works"]["is_active"] is False
+    sale = {t["key"]: t for t in rows[tenant.slug]["tools"]}["saleinx"]
+    assert sale["connected"] is False and sale["ready"] is False, "no platform key yet"
+
+    await _with_key(session, super_admin)
+    await tools.provision(session, super_admin, tenant.id, "saleinx", request=None)
+    after = {
+        row["workspace"]: row
+        for row in (
+            await http.get("/api/v1/platform/connections", headers=_bearer(super_admin))
+        ).json()
+    }
+    sale = {t["key"]: t for t in after[tenant.slug]["tools"]}["saleinx"]
+    assert sale["connected"] and sale["ready"] and sale["via"] == "platform"
+    beta = {t["key"]: t for t in after["beta-works"]["tools"]}["saleinx"]
+    assert beta["connected"] is False and beta["ready"] is True
+    # Nothing secret leaves in the grid.
+    assert "secret" not in json.dumps(after).lower()

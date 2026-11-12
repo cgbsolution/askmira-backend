@@ -125,6 +125,10 @@ class UserRead(BaseModel):
     #: up: the portal sends them to set it up before anything else.
     two_step_required: bool = False
     employee_id: uuid.UUID | None
+    #: Their own profile photo (the route that serves it), so the portal's
+    #: header and sidebar show it. Filled by `auth.user_read`, never by the
+    #: User row, which has no photo of its own.
+    photo_url: str | None = None
     last_login_at: datetime | None
     created_at: datetime
 

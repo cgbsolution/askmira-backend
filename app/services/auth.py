@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.deps import has_direct_reports, tenant_filter
+from app.core.deps import has_direct_reports, tenant_filter, tenant_scoped
 from app.core.security import (
     create_access_token,
     create_mfa_token,
@@ -92,6 +92,24 @@ async def _unique_slug(session: AsyncSession, base: str) -> str:
     return candidate
 
 
+async def user_read(session: AsyncSession, user: User) -> UserRead:
+    """The signed-in person as the portal sees them, with their own photo."""
+    read = UserRead.model_validate(user)
+    if user.employee_id is None:
+        return read
+    # The caller's own employee record, by its key from their own login row.
+    photo = await session.scalar(
+        tenant_scoped(
+            select(Employee.photo_url).where(
+                Employee.id == user.employee_id, Employee.deleted_at.is_(None)
+            ),
+            Employee,
+            user,
+        )
+    )
+    return read.model_copy(update={"photo_url": photo})
+
+
 async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> AuthResponse:
     from app.services import branding
 
@@ -104,7 +122,7 @@ async def _build_response(session: AsyncSession, user: User, tenant: Tenant) -> 
         ),
         refresh_token=create_refresh_token(user_id=str(user.id), tenant_id=str(user.tenant_id)),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=UserRead.model_validate(user),
+        user=await user_read(session, user),
         tenant=TenantRead.model_validate(tenant),
     )
 

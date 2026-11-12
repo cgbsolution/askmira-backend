@@ -350,6 +350,41 @@ async def workspace_tools(
     return out
 
 
+async def connections(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Every live workspace with its standing in each tool: the console's overview grid."""
+    require_super(user)
+    tenants = (
+        await session.scalars(
+            select(Tenant).where(Tenant.deleted_at.is_(None)).order_by(Tenant.name)
+        )
+    ).all()
+    ready: dict[str, bool] = {}
+    for product in PRODUCTS.values():
+        secret, _ = await _secret(session, product.key)
+        ready[product.key] = (
+            secret is not None and addresses(product.key) is not None and can_encrypt()
+        )
+    out = []
+    for tenant in tenants:
+        out.append(
+            {
+                "id": str(tenant.id),
+                "name": tenant.name,
+                "workspace": tenant.slug,
+                "is_active": tenant.is_active,
+                "tools": [
+                    _link_read(
+                        product,
+                        await _link(session, tenant.id, product.key),
+                        ready=ready[product.key],
+                    )
+                    for product in PRODUCTS.values()
+                ],
+            }
+        )
+    return out
+
+
 async def _target(session: AsyncSession, product: Product) -> tuple[str, str, str]:
     """(api_url, app_url, platform key), or a 409 saying what is missing."""
     secret, _ = await _secret(session, product.key)

@@ -214,6 +214,12 @@ async def remove_tool_key(
     return await tools.remove_key(session, user, product, request=request)
 
 
+@router.get("/connections", dependencies=SUPER_ONLY)
+async def list_connections(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """Every workspace's standing in every tool, for the console's overview grid."""
+    return await tools.connections(session, user)
+
+
 @router.post("/tools/{product}/check", dependencies=SUPER_ONLY)
 async def check_tool(product: str, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     return await tools.check(session, user, product)

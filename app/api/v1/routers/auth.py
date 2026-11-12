@@ -241,8 +241,8 @@ async def refresh(
 
 
 @router.get("/me", response_model=UserRead)
-async def me(user: CurrentUser) -> UserRead:
-    return UserRead.model_validate(user)
+async def me(user: CurrentUser, session: DbSession) -> UserRead:
+    return await auth_service.user_read(session, user)
 
 
 @router.get("/session", response_model=SessionRead)
@@ -257,7 +257,7 @@ async def current_session(user: CurrentUser, session: DbSession) -> SessionRead:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace not found")
     company = await branding.company_for(session, user, tenant)
     return SessionRead(
-        user=UserRead.model_validate(user),
+        user=await auth_service.user_read(session, user),
         tenant=TenantRead.model_validate(tenant),
         company=company,
     )

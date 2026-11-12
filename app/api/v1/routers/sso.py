@@ -30,8 +30,9 @@ from app.models.audit import AuditAction
 from app.models.identity import IdentityProvider, IdpType, SsoLoginAttempt
 from app.models.tenant import Tenant
 from app.models.user import UserRole
-from app.schemas.auth import AuthResponse, TenantRead, UserRead
+from app.schemas.auth import AuthResponse, TenantRead
 from app.services import audit
+from app.services import auth as auth_service
 from app.services.identity import oidc as oidc_service
 from app.services.identity import saml as saml_service
 from app.services.identity import sso as sso_service
@@ -510,7 +511,7 @@ async def _complete_login(
         ),
         refresh_token=create_refresh_token(user_id=str(user.id), tenant_id=str(user.tenant_id)),
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=UserRead.model_validate(user),
+        user=await auth_service.user_read(session, user),
         tenant=TenantRead.model_validate(tenant),
     )
 
