@@ -690,6 +690,16 @@ TABLES: dict[str, TableClassification] = {
             "phone": "identity",
         },
     ),
+    # Showcase links: an exhibition QR code the platform's super admin made, and
+    # the sample order its story tells. About no person.
+    "showcase_links": _none(
+        "An exhibition QR link: its label, the sample order its story tells, the "
+        "window it works in and how many stories it started. About no person."
+    ),
+    # One visitor's story from a scanned QR code: sample figures, and what the
+    # visitor typed into the chat. No name, address or account ties it to
+    # anyone; it is deleted three days after it was last used.
+    "showcase_runs": _p(THIRD, "ai_interaction", {"state": "ai_interaction"}),
     "candidate_consents": _p(CAND, "recruitment"),
     "candidate_portal_tokens": _p(CAND, "account_security", {"token_hash": "account_security"}),
     "background_checks": _p(

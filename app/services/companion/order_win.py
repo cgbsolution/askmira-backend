@@ -318,6 +318,36 @@ def business_key(po_number: str) -> str:
     return f"order_win:{po_number}"
 
 
+def sales_order_params(plan: dict[str, Any]) -> dict[str, Any]:
+    """The order as a draft sales order in Finance: one line per role, months x monthly billing."""
+    start = date.fromisoformat(plan["start_date"])
+    months = int(plan["months"])
+    lines = []
+    for r in plan["roles"]:
+        count, share = int(r["count"]), Decimal(r["allocation"]) / 100
+        monthly = (Decimal(r["bill_rate"]) * count * share).quantize(CENT, rounding=ROUND_HALF_UP)
+        part = "" if Decimal(r["allocation"]) == 100 else f" at {_num(Decimal(r['allocation']))}%"
+        people = f"{count} {'person' if count == 1 else 'people'}{part}"
+        lines.append(
+            {
+                "name": r["title"],
+                "description": f"{people}, {inr(Decimal(r['bill_rate']))} a month each; "
+                f"{months} month{'s' if months != 1 else ''} from {start:%d %b %Y}",
+                "quantity": str(months),
+                "rate": str(monthly),
+            }
+        )
+    return {
+        "key": business_key(plan["po_number"]),
+        "po_number": plan["po_number"],
+        "customer": plan["account"],
+        "start_date": plan["start_date"],
+        "subject": f"PO {plan['po_number']}: {plan.get('deal_title') or plan['account']}"[:250],
+        "notes": f"Saleinx deal {plan.get('deal_title') or plan.get('deal_id')}, won and approved.",
+        "lines": lines,
+    }
+
+
 # ── Cards ────────────────────────────────────────────────────────────────────
 
 
@@ -1259,6 +1289,33 @@ async def run(
     except products.ProductUnavailableError as exc:
         warning = f"The note on the Saleinx deal could not be added ({exc})."
         _step(booking, {"step": "deal_note", "status": "failed", "detail": str(exc)})
+
+    # 4. A draft sales order in Finance, when this workspace uses it (a courtesy, like the note).
+    order_text = None
+    if await products.role_in(session, user, "finance") is not None:
+        try:
+            answer = await products.act(
+                session, user, "finance", "sales_order.create", sales_order_params(plan)
+            )
+            order = answer.get("order") if isinstance(answer.get("order"), dict) else {}
+            _step(
+                booking,
+                {
+                    "step": "sales_order",
+                    "status": "done",
+                    "label": f"Draft sales order {order.get('number')} in Finance",
+                    "number": order.get("number"),
+                    "existing": bool(answer.get("existing")),
+                },
+            )
+            order_text = (
+                f"A draft sales order {order.get('number')} is in Finance for "
+                f"{order.get('customer')}: check its GST rate and SAC there, then confirm it."
+            )
+        except products.ProductUnavailableError as exc:
+            missed = f"The sales order in Finance could not be made ({exc})."
+            warning = f"{warning} {missed}" if warning else missed
+            _step(booking, {"step": "sales_order", "status": "failed", "detail": str(exc)})
     booking.status = CompanionRunStatus.DONE
     booking.finished_at = datetime.now(UTC)
     await _record(
@@ -1299,6 +1356,8 @@ async def run(
             f"PO {plan['po_number']} is booked. {len(jobs)} position(s) are open in AnytimeHire "
             f"for {figures['hires']} hires, and {pnl}"
         )
+    if order_text:
+        text += " " + order_text
     if warning:
         text += " " + warning
     return {

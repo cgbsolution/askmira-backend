@@ -82,6 +82,7 @@ from app.api.v1.routers import (
     retention,
     rewards,
     salary,
+    showcase,
     sso,
     statutory,
     statutory_watch,
@@ -185,6 +186,8 @@ api_router.include_router(operators.router)
 api_router.include_router(platform.router)
 api_router.include_router(demo_requests.platform_router)
 api_router.include_router(demo_requests.public_router)
+api_router.include_router(showcase.platform_router)
+api_router.include_router(showcase.public_router)
 api_router.include_router(bi.public_router)
 api_router.include_router(products.router)
 api_router.include_router(connectors.router)

@@ -36,6 +36,8 @@ svglib==2.3.2
 pypdf==6.17.0
 # Letter pages as pictures: phones show no PDF inside a page (letter email link).
 pypdfium2==4.30.0
+# Showcase links: the QR code printed on exhibition material (pure Python, SVG + PNG).
+segno==1.6.6
 
 # ── Identity (slice 04) ─────────────────────────────────────────────────────
 # signxml verifies SAML XML signatures without needing native xmlsec, which is

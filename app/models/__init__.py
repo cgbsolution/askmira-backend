@@ -631,6 +631,7 @@ from app.models.rewards import (
 )
 from app.models.scheduler import SchedulerJobRun, SchedulerRunStatus
 from app.models.shift_swaps import ShiftSwapRequest, ShiftSwapStatus
+from app.models.showcase import ShowcaseLink, ShowcaseRun
 from app.models.social_login import SocialLoginAttempt
 from app.models.statutory_watch import StatutoryNotice, StatutoryNoticeAlert
 from app.models.talent_pools import TalentPool, TalentPoolMember
@@ -1167,6 +1168,8 @@ __all__ = [
     "Shoutout",
     "ShoutoutReaction",
     "ShoutoutVisibility",
+    "ShowcaseLink",
+    "ShowcaseRun",
     "SiemDelivery",
     "SiemDestination",
     "SiemVendorEnum",

@@ -204,6 +204,32 @@ async def post_to_zoho_books(
     )
 
 
+@router.get("/runs/{run_id}/journal/finance")
+async def finance_posting(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Whether this run is already in the linked Finance product, and whether it can be posted."""
+    from app.services.connections import finance_books
+
+    return await finance_books.run_posting_status(session, user, run_id)
+
+
+@router.post("/runs/{run_id}/journal/finance")
+async def post_to_finance(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    by_department: bool = False,
+) -> dict[str, Any]:
+    """Post the approved run's journal into the linked Finance product, once."""
+    from app.services.connections import finance_books
+
+    return await finance_books.post_run(
+        session, user, run_id, by_department=by_department, request=request
+    )
+
+
 @router.get("/runs/{run_id}/journal")
 async def export_journal(
     run_id: uuid.UUID,

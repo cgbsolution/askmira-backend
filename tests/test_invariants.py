@@ -55,8 +55,8 @@ def test_no_delete_path_exists_for_an_attendance_punch() -> None:
             if pattern.search(source):
                 offenders.append(f"{path.relative_to(APP.parent)}: {pattern.pattern}")
 
-    assert not offenders, (
-        "AttendancePunch must have no delete path. Found:\n  " + "\n  ".join(offenders)
+    assert not offenders, "AttendancePunch must have no delete path. Found:\n  " + "\n  ".join(
+        offenders
     )
 
 
@@ -133,9 +133,7 @@ def test_no_delete_or_update_path_exists_for_the_audit_log() -> None:
             if pattern.search(source):
                 offenders.append(f"{path.relative_to(APP.parent)}: {pattern.pattern}")
 
-    assert not offenders, (
-        "The audit log must stay insert-only. Found:\n  " + "\n  ".join(offenders)
-    )
+    assert not offenders, "The audit log must stay insert-only. Found:\n  " + "\n  ".join(offenders)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -200,6 +198,11 @@ _UNSCOPED_BY_DESIGN = {
     # on the route. Telling the team reads every active super admin's login.
     # Fenced by `test_the_demo_request_service_reads_only_its_own_table_and_logins`.
     "demo_requests.py",
+    # Showcase links belong to the platform, not a workspace (no tenant column);
+    # a visitor's story belongs to a link and is read by its id and key. Only the
+    # super admin manages links, checked in the service and on the route. Fenced
+    # by `test_the_showcase_service_reads_only_its_own_tables`.
+    "showcase_links.py",
 }
 
 
@@ -284,8 +287,7 @@ def test_no_model_declares_a_plaintext_secret_column() -> None:
 
     assert not offenders, (
         "These columns look like they hold a credential in plaintext. Store the "
-        "ciphertext (`*_encrypted`) or a hash (`*_hash`) instead:\n  "
-        + "\n  ".join(offenders)
+        "ciphertext (`*_encrypted`) or a hash (`*_hash`) instead:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -364,8 +366,7 @@ def test_no_module_outside_notifications_imports_a_messaging_sdk() -> None:
 
     assert not offenders, (
         "Only app/services/notifications/ may talk to a messaging provider. "
-        "Everything else raises an event through notify(). Found:\n  "
-        + "\n  ".join(offenders)
+        "Everything else raises an event through notify(). Found:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -425,8 +426,7 @@ def test_no_tax_rate_or_ceiling_is_hardcoded_in_the_tax_module() -> None:
 
     assert not offenders, (
         "These numeric literals in app/services/tax/ look like tax policy. Move them "
-        "into the PayrollRuleSet so a Budget change is configuration:\n  "
-        + "\n  ".join(offenders)
+        "into the PayrollRuleSet so a Budget change is configuration:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -507,9 +507,38 @@ def test_the_statutory_engine_never_branches_on_a_state_code() -> None:
     payroll = APP / "services" / "payroll"
     # ISO 3166-2:IN codes, as they would appear in a comparison.
     state_codes = {
-        "AP", "AR", "AS", "BR", "CG", "CH", "DL", "GA", "GJ", "HR", "HP", "JK",
-        "JH", "KA", "KL", "MP", "MH", "MN", "ML", "MZ", "NL", "OD", "PB", "PY",
-        "RJ", "SK", "TN", "TS", "TR", "UP", "UK", "WB",
+        "AP",
+        "AR",
+        "AS",
+        "BR",
+        "CG",
+        "CH",
+        "DL",
+        "GA",
+        "GJ",
+        "HR",
+        "HP",
+        "JK",
+        "JH",
+        "KA",
+        "KL",
+        "MP",
+        "MH",
+        "MN",
+        "ML",
+        "MZ",
+        "NL",
+        "OD",
+        "PB",
+        "PY",
+        "RJ",
+        "SK",
+        "TN",
+        "TS",
+        "TR",
+        "UP",
+        "UK",
+        "WB",
     }
 
     offenders: list[str] = []
@@ -543,8 +572,7 @@ def test_lwf_is_never_prorated_across_months() -> None:
         if re.search(r"/\s*(12|Decimal\(12\)|MONTHS)", line)
     ]
     assert not offenders, (
-        "The LWF computation divides by a month count, which prorates a periodic "
-        f"levy: {offenders}"
+        f"The LWF computation divides by a month count, which prorates a periodic levy: {offenders}"
     )
 
 
@@ -577,9 +605,7 @@ def test_the_esi_period_rule_reads_configured_periods_not_calendar_months() -> N
         for line in section.splitlines()
         if re.search(r"month\s*(>=|<=|==)\s*(3|4|9|10)\b", line)
     ]
-    assert not offenders, (
-        f"The ESI period rule hardcodes calendar months: {offenders}"
-    )
+    assert not offenders, f"The ESI period rule hardcodes calendar months: {offenders}"
 
 
 def test_a_state_review_flag_cannot_be_acknowledged_away() -> None:
@@ -611,9 +637,7 @@ def test_a_state_review_flag_cannot_be_acknowledged_away() -> None:
     assert guards, "approve_run no longer checks review_flags at all."
 
     for guard in guards:
-        names = {
-            inner.id for inner in ast.walk(guard.test) if isinstance(inner, ast.Name)
-        }
+        names = {inner.id for inner in ast.walk(guard.test) if isinstance(inner, ast.Name)}
         assert "acknowledge_variances" not in names, (
             "The review-flag guard in approve_run has become acknowledgeable. These "
             "flags mean payroll could not determine an amount; there is nothing to "
@@ -791,8 +815,7 @@ def test_an_approval_names_the_file_it_approved() -> None:
     )
     body = ast.get_source_segment(service, release) or ""
     assert "approval_is_current" in body, (
-        "release_batch no longer checks that the approval applies to the file that "
-        "exists now."
+        "release_batch no longer checks that the approval applies to the file that exists now."
     )
 
 
@@ -862,9 +885,7 @@ def test_every_disbursement_download_is_recorded() -> None:
     )
     body = ast.get_source_segment(source, download) or ""
 
-    assert "DisbursementDownload(" in body, (
-        "download_file no longer writes a download record."
-    )
+    assert "DisbursementDownload(" in body, "download_file no longer writes a download record."
     assert "audit.record" in body, "download_file no longer writes an audit entry."
 
 
@@ -886,8 +907,8 @@ def test_no_disbursement_read_schema_returns_an_account_number() -> None:
             ):
                 offenders.append(f"{node.name}.account_number")
 
-    assert not offenders, (
-        "A disbursement read schema returns an account number: " + ", ".join(offenders)
+    assert not offenders, "A disbursement read schema returns an account number: " + ", ".join(
+        offenders
     )
 
 
@@ -934,8 +955,7 @@ def test_the_arrears_module_never_writes_to_a_payslip_or_a_run() -> None:
                         and target.value.id in {"payslip", "run", "payslips", "runs"}
                     ):
                         offenders.append(
-                            f"{path.name}:{node.lineno} -> "
-                            f"{target.value.id}.{target.attr}"
+                            f"{path.name}:{node.lineno} -> {target.value.id}.{target.attr}"
                         )
             # `session.delete(payslip)` / `session.add(Payslip(...))`
             if (
@@ -953,8 +973,7 @@ def test_the_arrears_module_never_writes_to_a_payslip_or_a_run() -> None:
                     )
                     if name in {"Payslip", "PayrollRun", "payslip", "run"}:
                         offenders.append(
-                            f"{path.name}:{node.lineno} -> "
-                            f"session.{node.func.attr}({name})"
+                            f"{path.name}:{node.lineno} -> session.{node.func.attr}({name})"
                         )
 
     assert not offenders, (
@@ -1006,8 +1025,7 @@ def test_arrear_lines_are_per_component_per_period() -> None:
     assert "component_code" in source
     assert '"period"' in source
     assert "uq_arrear_line" in source, (
-        "The uniqueness constraint that makes a line one-per-component-per-period "
-        "has gone."
+        "The uniqueness constraint that makes a line one-per-component-per-period has gone."
     )
 
 
@@ -1052,9 +1070,7 @@ def test_a_negative_settlement_is_never_floored_at_zero() -> None:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "max"
-            and any(
-                isinstance(arg, ast.Constant) and arg.value == 0 for arg in node.args
-            )
+            and any(isinstance(arg, ast.Constant) and arg.value == 0 for arg in node.args)
         ):
             offenders.append(f"settlement.py:{node.lineno} -> max(..., 0)")
 
@@ -1074,8 +1090,14 @@ def test_the_exit_workflow_deletes_no_employment_record() -> None:
     """
     exits = APP / "services" / "exit_workflow"
     protected = {
-        "Employee", "employee", "Payslip", "payslip", "AttendanceDay",
-        "AuditLog", "PayrollRun", "run",
+        "Employee",
+        "employee",
+        "Payslip",
+        "payslip",
+        "AttendanceDay",
+        "AuditLog",
+        "PayrollRun",
+        "run",
     }
 
     offenders: list[str] = []
@@ -1186,9 +1208,7 @@ def test_loan_recovery_always_consults_the_net_pay_floor() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "plan_recovery"
     )
-    arguments = {arg.arg for arg in plan.args.kwonlyargs} | {
-        arg.arg for arg in plan.args.args
-    }
+    arguments = {arg.arg for arg in plan.args.kwonlyargs} | {arg.arg for arg in plan.args.args}
     assert "minimum_net_pay" in arguments, (
         "plan_recovery no longer takes a floor, so nothing stops a recovery taking "
         "someone's whole salary."
@@ -1211,8 +1231,7 @@ def test_loan_recovery_always_consults_the_net_pay_floor() -> None:
 
     body = ast.get_source_segment(source, plan) or ""
     assert "is_skipped" in body and "carried_forward" in body, (
-        "A recovery that does not fit must be skipped and carried forward, not "
-        "silently reduced."
+        "A recovery that does not fit must be skipped and carried forward, not silently reduced."
     )
 
 
@@ -1222,8 +1241,7 @@ def test_the_amortisation_ledger_refuses_not_to_reconcile() -> None:
     source = source_of(APP / "services" / "loans" / "amortisation.py")
     assert "def reconciles" in source
     assert "if not schedule.reconciles:" in source, (
-        "build_schedule no longer checks that the principal components sum to the "
-        "principal."
+        "build_schedule no longer checks that the principal components sum to the principal."
     )
 
 
@@ -1246,9 +1264,7 @@ def test_reimbursement_components_and_expense_claims_stay_separate() -> None:
     offenders = [
         f"{node.lineno}: {node.module}"
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module
-        and "expense" in node.module.lower()
+        if isinstance(node, ast.ImportFrom) and node.module and "expense" in node.module.lower()
     ]
     assert not offenders, (
         "The reimbursement models import from an expense module. They are separate "
@@ -1277,8 +1293,7 @@ def test_unclaimed_entitlement_is_computable_before_year_end() -> None:
     )
     arguments = {arg.arg for arg in warn.args.kwonlyargs}
     assert {"today", "financial_year_end", "reminder_months_before_year_end"} <= arguments, (
-        "should_warn no longer takes a date and a window, so it cannot fire in "
-        "advance."
+        "should_warn no longer takes a date and a window, so it cannot fire in advance."
     )
 
 
@@ -1329,15 +1344,12 @@ def test_a_return_always_requires_a_reason() -> None:
     guards_the_reason = any(
         isinstance(node, ast.If)
         and any(
-            isinstance(inner, ast.Name) and inner.id == "reason"
-            for inner in ast.walk(node.test)
+            isinstance(inner, ast.Name) and inner.id == "reason" for inner in ast.walk(node.test)
         )
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
         for node in ast.walk(plan)
     )
-    assert guards_the_reason, (
-        "plan_return no longer refuses an empty reason."
-    )
+    assert guards_the_reason, "plan_return no longer refuses an empty reason."
 
     model = source_of(APP / "models" / "appraisal.py")
     assert "returned_reason" in model and "returned_to_stage_id" in model, (
@@ -1363,15 +1375,14 @@ def test_an_employee_can_close_a_cycle_while_disagreeing() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "acknowledge"
     )
+
     # The close has to be a statement in the function body, not nested inside a
     # conditional — a substring check passes either way, and "only closes when
     # they agreed" is exactly the failure mode this guards.
     def _closes(statements: list[ast.stmt]) -> bool:
         return any(
             isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Attribute) and t.attr == "status" for t in node.targets
-            )
+            and any(isinstance(t, ast.Attribute) and t.attr == "status" for t in node.targets)
             and isinstance(node.value, ast.Attribute)
             and node.value.attr == "ACKNOWLEDGED"
             for node in statements
@@ -1394,8 +1405,7 @@ def test_self_appraisal_conflict_escalates_rather_than_blocking() -> None:
     detect = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "detect_self_appraisal_conflict"
+        if isinstance(node, ast.FunctionDef) and node.name == "detect_self_appraisal_conflict"
     )
     body = ast.get_source_segment(source, detect) or ""
     assert "escalate_to_user_id" in body
@@ -1427,8 +1437,8 @@ def test_a_delegated_entry_keeps_the_original_owner() -> None:
     }
     assert "delegated_from_user_id" in columns, (
         "AppraisalStageEntry no longer records who the stage should have belonged to. "
-        "An audit trail showing only who acted cannot answer \"why did someone outside "
-        "my reporting line rate me\"."
+        'An audit trail showing only who acted cannot answer "why did someone outside '
+        'my reporting line rate me".'
     )
 
     source = source_of(APP / "services" / "appraisal" / "progression.py")
@@ -1440,8 +1450,7 @@ def test_a_delegated_entry_keeps_the_original_owner() -> None:
     )
     body = ast.get_source_segment(source, resolve) or ""
     assert "nominal_owner_user_id" in body, (
-        "resolve_stage_owner no longer returns the original owner alongside the acting "
-        "one."
+        "resolve_stage_owner no longer returns the original owner alongside the acting one."
     )
 
 
@@ -1496,16 +1505,13 @@ def test_every_model_module_is_imported_by_the_registry() -> None:
     }
 
     on_disk = {
-        path.stem
-        for path in (APP / "models").glob("*.py")
-        if path.stem not in {"__init__", "base"}
+        path.stem for path in (APP / "models").glob("*.py") if path.stem not in {"__init__", "base"}
     }
 
     missing = sorted(on_disk - imported)
     assert not missing, (
         "These model modules are not imported in app/models/__init__.py, so Alembic "
-        "cannot see their tables and will generate an empty migration: "
-        + ", ".join(missing)
+        "cannot see their tables and will generate an empty migration: " + ", ".join(missing)
     )
 
 
@@ -1519,8 +1525,8 @@ def test_every_name_in_the_model_registry_is_actually_importable() -> None:
     import app.models as models
 
     missing = [name for name in models.__all__ if not hasattr(models, name)]
-    assert not missing, (
-        "app/models/__init__.py exports names it never imports: " + ", ".join(missing)
+    assert not missing, "app/models/__init__.py exports names it never imports: " + ", ".join(
+        missing
     )
 
 
@@ -1573,8 +1579,7 @@ def test_a_calibration_justification_can_never_be_null() -> None:
 
     rendered = ast.unparse(justification)
     assert "nullable=False" in rendered, (
-        "The calibration justification is nullable. It will be null exactly when it "
-        "matters."
+        "The calibration justification is nullable. It will be null exactly when it matters."
     )
     assert "str | None" not in rendered, (
         "The calibration justification is optionally typed, so a change can be recorded "
@@ -1603,8 +1608,7 @@ def test_the_justification_is_enforced_in_the_service_not_only_the_schema() -> N
         for node in ast.walk(apply)
     )
     assert guards, (
-        "apply_change no longer refuses an empty justification before recording the "
-        "change."
+        "apply_change no longer refuses an empty justification before recording the change."
     )
 
 
@@ -1689,8 +1693,7 @@ def test_the_calibration_module_does_not_editorialise_about_distribution() -> No
 
     for opinion in ("bad practice", "we recommend", "should not use", "is unfair"):
         assert opinion not in user_facing, (
-            f"The calibration module editorialises about forced distribution: "
-            f"'{opinion}'"
+            f"The calibration module editorialises about forced distribution: '{opinion}'"
         )
 
 
@@ -1715,9 +1718,7 @@ def test_a_default_assignment_rule_is_required() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "validate_rule_set"
     )
     body = ast.get_source_segment(source, validate) or ""
-    assert "is_default" in body, (
-        "validate_rule_set no longer checks for a default rule."
-    )
+    assert "is_default" in body, "validate_rule_set no longer checks for a default rule."
     assert any(isinstance(node, ast.Raise) for node in ast.walk(validate)), (
         "validate_rule_set no longer refuses anything."
     )
@@ -1759,9 +1760,7 @@ def test_assignment_rule_priority_is_unique_per_cycle() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "validate_rule_set"
     )
     body = ast.get_source_segment(engine, validate) or ""
-    assert "priorit" in body.lower(), (
-        "validate_rule_set no longer checks for duplicate priorities."
-    )
+    assert "priorit" in body.lower(), "validate_rule_set no longer checks for duplicate priorities."
 
 
 def test_an_unknown_rule_condition_is_refused_rather_than_never_matching() -> None:
@@ -1855,8 +1854,7 @@ def test_an_extension_always_schedules_the_next_review() -> None:
     record = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "record_probation_outcome"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "record_probation_outcome"
     )
     body = ast.get_source_segment(source, record) or ""
 
@@ -1944,9 +1942,7 @@ def test_an_approval_is_bound_to_the_terms_it_approved() -> None:
     """An approval is a decision about specific numbers. Reusing it after those
     numbers change puts the approver on record for something they never saw."""
     model = source_of(APP / "models" / "offer.py")
-    assert "terms_fingerprint" in model, (
-        "OfferApproval no longer records which terms it approved."
-    )
+    assert "terms_fingerprint" in model, "OfferApproval no longer records which terms it approved."
 
     source = source_of(APP / "services" / "hiring" / "offers.py")
     tree = ast.parse(source)
@@ -2130,8 +2126,7 @@ def test_a_terminal_offer_status_puts_the_vacancy_back() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(t, ast.Name) and t.id == "VACANCY_RELEASING_STATUSES"
-            for t in node.targets
+            isinstance(t, ast.Name) and t.id == "VACANCY_RELEASING_STATUSES" for t in node.targets
         )
     )
     listed = {
@@ -2343,8 +2338,7 @@ def _vendor_leaks(
                 )
                 if hit:
                     offenders.append(
-                        f"{path.relative_to(APP)}:{number} names '{vendor}' in code "
-                        f"({name[:80]})"
+                        f"{path.relative_to(APP)}:{number} names '{vendor}' in code ({name[:80]})"
                     )
     return sorted(set(offenders))
 
@@ -2437,20 +2431,19 @@ def test_every_adapter_implements_the_full_interface() -> None:
         node.name
         for node in interface.body
         if isinstance(node, ast.AsyncFunctionDef)
-        and any(
-            isinstance(d, ast.Name) and d.id == "abstractmethod"
-            for d in node.decorator_list
-        )
+        and any(isinstance(d, ast.Name) and d.id == "abstractmethod" for d in node.decorator_list)
     }
     assert required >= {
-        "publish_job", "update_job", "close_job", "fetch_applications", "fetch_resume",
+        "publish_job",
+        "update_job",
+        "close_job",
+        "fetch_applications",
+        "fetch_resume",
     }, f"The board interface has lost methods; it now requires only {sorted(required)}"
 
     for name in ("naukri", "linkedin", "indeed"):
         adapter_tree = ast.parse(source_of(_ADAPTER_DIR / f"{name}.py"))
-        classes = [
-            node for node in ast.walk(adapter_tree) if isinstance(node, ast.ClassDef)
-        ]
+        classes = [node for node in ast.walk(adapter_tree) if isinstance(node, ast.ClassDef)]
         implemented = {
             method.name
             for cls in classes
@@ -2558,8 +2551,7 @@ def test_phone_normalisation_refuses_a_key_too_short_to_identify_anyone() -> Non
     guards = [
         node
         for node in ast.walk(normalise)
-        if isinstance(node, ast.If)
-        and "len(" in (ast.get_source_segment(source, node.test) or "")
+        if isinstance(node, ast.If) and "len(" in (ast.get_source_segment(source, node.test) or "")
     ]
     assert guards, (
         "normalise_phone no longer checks the length, so a four-digit extension becomes "
@@ -2650,8 +2642,7 @@ def test_a_purge_keeps_the_application_row_and_clears_the_person() -> None:
     body = ast.get_source_segment(source, purge) or ""
 
     deletes = any(
-        isinstance(node, ast.Attribute) and node.attr == "delete"
-        for node in ast.walk(purge)
+        isinstance(node, ast.Attribute) and node.attr == "delete" for node in ast.walk(purge)
     )
     assert not deletes, (
         "The purge now deletes rows. Removing the application row along with the "
@@ -2717,9 +2708,7 @@ def test_structured_data_carries_everything_google_requires() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "REQUIRED_PROPERTIES" for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "REQUIRED_PROPERTIES" for t in node.targets)
     )
     listed = {
         node.value
@@ -2727,8 +2716,7 @@ def test_structured_data_carries_everything_google_requires() -> None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     assert listed == {"title", "description", "datePosted", "hiringOrganization"}, (
-        f"The required-property set has changed to {sorted(listed)}. It is Google's "
-        "list, not ours."
+        f"The required-property set has changed to {sorted(listed)}. It is Google's list, not ours."
     )
 
 
@@ -2771,8 +2759,14 @@ _PROVIDER_WORDS = {
     "google": ("google", "hangoutsmeet", "conferencedataversion", "htmllink"),
     # Not "graph" on its own: Facebook's WhatsApp API is also a Graph API, and
     # it has nothing to do with calendars.
-    "microsoft": ("microsoft", "msgraph", "getschedule", "availabilityview",
-                  "teamsforbusiness", "singlevalueextended"),
+    "microsoft": (
+        "microsoft",
+        "msgraph",
+        "getschedule",
+        "availabilityview",
+        "teamsforbusiness",
+        "singlevalueextended",
+    ),
 }
 
 
@@ -2960,14 +2954,11 @@ def test_a_proposed_slot_must_suit_the_whole_panel() -> None:
         "slots that suit one interviewer and nobody else."
     )
 
-    require_all = next(
-        (arg for arg in propose.args.kwonlyargs if arg.arg == "require_all"), None
-    )
+    require_all = next((arg for arg in propose.args.kwonlyargs if arg.arg == "require_all"), None)
     assert require_all is not None, "propose_slots lost its require_all switch."
     default = propose.args.kw_defaults[propose.args.kwonlyargs.index(require_all)]
     assert isinstance(default, ast.Constant) and default.value is True, (
-        "require_all no longer defaults to True, so a partial panel is proposed by "
-        "default."
+        "require_all no longer defaults to True, so a partial panel is proposed by default."
     )
 
 
@@ -3005,8 +2996,7 @@ def test_peer_feedback_is_hidden_until_the_viewer_has_submitted() -> None:
     assert hide is not None, "The anchoring switch is gone."
     default = visible.args.kw_defaults[visible.args.kwonlyargs.index(hide)]
     assert isinstance(default, ast.Constant) and default.value is True, (
-        "Anchoring protection no longer defaults to on. The default is what most "
-        "tenants will run."
+        "Anchoring protection no longer defaults to on. The default is what most tenants will run."
     )
 
 
@@ -3097,16 +3087,14 @@ def test_recommendations_are_never_averaged_into_a_score() -> None:
         for node in result_class.body
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
     }
-    assert "has_strong_dissent" in fields, (
-        "The consolidation no longer surfaces strong dissent."
-    )
+    assert "has_strong_dissent" in fields, "The consolidation no longer surfaces strong dissent."
     assert not {"overall_score", "average", "mean"} & fields, (
         f"An aggregate score has appeared on the consolidation: {sorted(fields)}"
     )
 
 
 def test_a_negative_recommendation_requires_a_stated_concern() -> None:
-    """"No" with nothing behind it cannot be explained to the candidate, cannot
+    """ "No" with nothing behind it cannot be explained to the candidate, cannot
     be examined for bias, and cannot be defended if the decision is questioned."""
     source = source_of(APP / "services" / "interviews" / "feedback.py")
     tree = ast.parse(source)
@@ -3155,9 +3143,7 @@ def test_a_panelist_decline_is_recorded_as_having_been_notified() -> None:
     ]
     assert branches, "record_response no longer treats a decline differently."
     body = ast.get_source_segment(source, record) or ""
-    assert "decline_notified_at" in body, (
-        "A decline is no longer marked as notified."
-    )
+    assert "decline_notified_at" in body, "A decline is no longer marked as notified."
 
 
 def test_a_bulk_drive_never_double_books_an_interviewer() -> None:
@@ -3215,9 +3201,7 @@ def test_a_self_scheduling_link_can_only_book_a_slot_that_was_offered() -> None:
         and "offered" in (ast.get_source_segment(source, node.test) or "")
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "book_self_schedule no longer checks the chosen time against the offered slots."
-    )
+    assert guards, "book_self_schedule no longer checks the chosen time against the offered slots."
 
     body = ast.get_source_segment(source, book) or ""
     assert "link.tenant_id" in body, (
@@ -3273,9 +3257,7 @@ def test_the_report_compiler_never_builds_sql_from_a_string() -> None:
     text_calls = [
         node.lineno
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "text"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "text"
     ]
     assert not text_calls, (
         f"The compiler calls text() at line(s) {text_calls}. Raw SQL here is how a "
@@ -3289,9 +3271,7 @@ def test_the_report_compiler_never_builds_sql_from_a_string() -> None:
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "format"
     ]
-    assert not formatted, (
-        f".format() appears in the compiler at line(s) {formatted}."
-    )
+    assert not formatted, f".format() appears in the compiler at line(s) {formatted}."
 
     # `literal_column` takes a string straight into the SQL. The one legitimate
     # use is the constant `false` for an empty scope; anything else is an
@@ -3414,9 +3394,7 @@ def test_restricted_fields_are_removed_before_any_sql_exists() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "_resolve_fields"
     )
     checks = any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "may_see"
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "may_see"
         for node in ast.walk(resolve)
     )
     assert checks, "_resolve_fields no longer checks the role against sensitivity."
@@ -3427,9 +3405,7 @@ def test_restricted_fields_are_removed_before_any_sql_exists() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "compile_report"
     )
     body = ast.get_source_segment(source, compile_fn) or ""
-    assert "_resolve_fields" in body, (
-        "compile_report no longer filters fields by role."
-    )
+    assert "_resolve_fields" in body, "compile_report no longer filters fields by role."
     # Filters, grouping and sorting are refused rather than dropped — and the
     # thing being refused must actually be derived from all three denied lists.
     #
@@ -3455,9 +3431,7 @@ def test_restricted_fields_are_removed_before_any_sql_exists() -> None:
         targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
         if not targets & refusing_names:
             continue
-        sources = {
-            inner.id for inner in ast.walk(node.value) if isinstance(inner, ast.Name)
-        }
+        sources = {inner.id for inner in ast.walk(node.value) if isinstance(inner, ast.Name)}
         if {"filter_denied", "group_denied", "sort_denied"} <= sources:
             derived_from_all_three = True
 
@@ -3540,9 +3514,7 @@ def test_the_row_cap_and_the_timeout_both_exist_and_are_enforced() -> None:
     )
     body = ast.get_source_segment(service_source, run) or ""
 
-    assert "statement_timeout" in body, (
-        "run_definition no longer sets a statement timeout."
-    )
+    assert "statement_timeout" in body, "run_definition no longer sets a statement timeout."
     assert "MAX_ROWS" in body, "run_definition no longer enforces the row cap."
     # Counted before the rows are fetched. Fetching first means the memory was
     # already spent and the database already did the work.
@@ -3572,8 +3544,7 @@ def test_a_run_returning_restricted_data_is_audited() -> None:
         isinstance(node, ast.If)
         and "Sensitivity" in (ast.get_source_segment(source, node.test) or "")
         and any(
-            isinstance(inner, ast.Attribute) and inner.attr == "record"
-            for inner in ast.walk(node)
+            isinstance(inner, ast.Attribute) and inner.attr == "record" for inner in ast.walk(node)
         )
         for node in ast.walk(run)
     )
@@ -3642,14 +3613,10 @@ def test_a_scheduled_report_is_compiled_as_each_recipient() -> None:
     passes_recipient = any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute | ast.Name)
-        and any(
-            isinstance(arg, ast.Name) and arg.id == "recipient" for arg in node.args
-        )
+        and any(isinstance(arg, ast.Name) and arg.id == "recipient" for arg in node.args)
         for node in ast.walk(run_schedule)
     )
-    assert passes_recipient, (
-        "run_schedule no longer compiles each copy as its recipient."
-    )
+    assert passes_recipient, "run_schedule no longer compiles each copy as its recipient."
 
 
 def test_a_saved_report_runs_as_the_caller_not_its_author() -> None:
@@ -3685,10 +3652,7 @@ def test_a_csv_export_neutralises_formula_injection() -> None:
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "_FORMULA_PREFIXES"
-                for t in node.targets
-            )
+            and any(isinstance(t, ast.Name) and t.id == "_FORMULA_PREFIXES" for t in node.targets)
         ),
         None,
     )
@@ -3745,9 +3709,7 @@ def test_the_financial_year_starts_in_april() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "FY_START_MONTH" for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "FY_START_MONTH" for t in node.targets)
     )
     assert isinstance(constant.value, ast.Constant)
     assert constant.value.value == 4, (
@@ -3774,8 +3736,16 @@ def test_nothing_outside_the_semantic_layer_names_a_reportable_table() -> None:
     with a nicer form. Only `semantic.py` may name the tables a report can reach;
     the compiler looks them up through it.
     """
-    tables = {"employees", "payslips", "attendance_days", "leave_requests",
-              "appraisals", "candidates", "offers", "employee_salaries"}
+    tables = {
+        "employees",
+        "payslips",
+        "attendance_days",
+        "leave_requests",
+        "appraisals",
+        "candidates",
+        "offers",
+        "employee_salaries",
+    }
     allowed = {_REPORTING_DIR / "semantic.py"}
 
     offenders: list[str] = []
@@ -3786,8 +3756,8 @@ def test_nothing_outside_the_semantic_layer_names_a_reportable_table() -> None:
             if is_literal and name.strip() in tables:
                 offenders.append(f"{path.name}:{number} names the table '{name}'")
 
-    assert not offenders, (
-        "Table names have leaked out of the semantic layer:\n" + "\n".join(offenders)
+    assert not offenders, "Table names have leaked out of the semantic layer:\n" + "\n".join(
+        offenders
     )
 
 
@@ -3871,10 +3841,7 @@ def test_only_primary_assignments_count_toward_headcount() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "COUNTS_TOWARD_HEADCOUNT"
-            for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "COUNTS_TOWARD_HEADCOUNT" for t in node.targets)
     )
     listed = {
         node.attr
@@ -3942,9 +3909,9 @@ def test_fte_is_decimal_throughout() -> None:
         and isinstance(node.target, ast.Name)
         and node.target.id == "fte"
     )
-    assert (
-        isinstance(fte.annotation, ast.Name) and fte.annotation.id == "Decimal"
-    ), "FTE is no longer a Decimal."
+    assert isinstance(fte.annotation, ast.Name) and fte.annotation.id == "Decimal", (
+        "FTE is no longer a Decimal."
+    )
 
     # And nowhere in the planning layer turns it into a float.
     for path in _POSITIONS_DIR.rglob("*.py"):
@@ -3978,16 +3945,11 @@ def test_vacancy_ageing_measures_from_the_vacate_date() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "ageing"
     )
     reads_vacated = any(
-        isinstance(node, ast.Attribute) and node.attr == "vacated_on"
-        for node in ast.walk(ageing)
+        isinstance(node, ast.Attribute) and node.attr == "vacated_on" for node in ast.walk(ageing)
     )
-    assert reads_vacated, (
-        "Vacancy ageing no longer measures from the vacate date."
-    )
+    assert reads_vacated, "Vacancy ageing no longer measures from the vacate date."
     body = ast.get_source_segment(source, ageing) or ""
-    assert "requisition" not in body.lower().replace(
-        "# ", ""
-    ) or "vacated_on" in body, (
+    assert "requisition" not in body.lower().replace("# ", "") or "vacated_on" in body, (
         "Ageing now depends on a requisition date."
     )
 
@@ -4010,15 +3972,13 @@ def test_an_exit_vacates_a_position_and_never_deletes_one() -> None:
         if isinstance(node, ast.Attribute) and node.attr == "delete"
     ]
     assert not deletes, (
-        f"vacate() deletes something at line(s) {deletes}. Vacating a seat must leave "
-        "the seat."
+        f"vacate() deletes something at line(s) {deletes}. Vacating a seat must leave the seat."
     )
 
     body = ast.get_source_segment(source, vacate) or ""
     assert "PositionStatus.VACANT" in body, "vacate no longer sets the status."
     assert "vacated_on" in body, (
-        "vacate no longer stamps the date, so vacancy ageing has nothing to measure "
-        "from."
+        "vacate no longer stamps the date, so vacancy ageing has nothing to measure from."
     )
 
 
@@ -4141,8 +4101,7 @@ def test_the_org_chart_detects_reporting_loops_rather_than_recursing() -> None:
     tree = ast.parse(source)
 
     assert any(
-        isinstance(node, ast.FunctionDef) and node.name == "find_cycles"
-        for node in ast.walk(tree)
+        isinstance(node, ast.FunctionDef) and node.name == "find_cycles" for node in ast.walk(tree)
     ), "The cycle check is gone."
 
     build = next(
@@ -4246,9 +4205,7 @@ def test_a_future_dated_event_cannot_apply_early() -> None:
         and "effective_from" in (ast.get_source_segment(source, node.test) or "")
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "effect_event no longer refuses to apply an event before its date."
-    )
+    assert guards, "effect_event no longer refuses to apply an event before its date."
 
 
 def test_the_cascade_is_all_or_nothing() -> None:
@@ -4347,12 +4304,10 @@ def test_an_event_can_only_change_the_fields_its_type_owns() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "validate_event"
     )
     checks = any(
-        isinstance(node, ast.Name) and node.id == "CHANGED_FIELDS"
-        for node in ast.walk(validate)
+        isinstance(node, ast.Name) and node.id == "CHANGED_FIELDS" for node in ast.walk(validate)
     )
     assert checks, (
-        "validate_event no longer checks the changed fields against the type's own "
-        "allowed set."
+        "validate_event no longer checks the changed fields against the type's own allowed set."
     )
 
 
@@ -4373,9 +4328,7 @@ def test_a_cross_state_transfer_surfaces_professional_tax() -> None:
     )
     body = ast.get_source_segment(source, consequences) or ""
     for required in ("professional_tax", "holiday_calendar", "state_code"):
-        assert required in body, (
-            f"A cross-state transfer no longer surfaces {required}."
-        )
+        assert required in body, f"A cross-state transfer no longer surfaces {required}."
 
     # PT is a payroll consequence, not an informational one — the severity is
     # what decides whether an approver reads the line.
@@ -4386,12 +4339,10 @@ def test_a_cross_state_transfer_surfaces_professional_tax() -> None:
 
 
 def test_the_consequences_shown_to_an_approver_are_snapshotted() -> None:
-    """"Did they know PT would change" has to be answerable about the moment they
+    """ "Did they know PT would change" has to be answerable about the moment they
     signed, not about what the code says today."""
     model = source_of(APP / "models" / "lifecycle.py")
-    assert "consequences_shown" in model, (
-        "The event no longer records what the approver was shown."
-    )
+    assert "consequences_shown" in model, "The event no longer records what the approver was shown."
 
     source = source_of(_LIFECYCLE_DIR / "service.py")
     tree = ast.parse(source)
@@ -4428,8 +4379,7 @@ def test_a_manager_change_reassigns_what_the_old_manager_was_holding() -> None:
     tree = ast.parse(source)
 
     assert any(
-        isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_reassign_pending_approvals"
+        isinstance(node, ast.AsyncFunctionDef) and node.name == "_reassign_pending_approvals"
         for node in ast.walk(tree)
     ), "The approval reassignment is gone."
 
@@ -4444,9 +4394,7 @@ def test_a_manager_change_reassigns_what_the_old_manager_was_holding() -> None:
         and node.func.id == "_reassign_pending_approvals"
         for node in ast.walk(effect)
     )
-    assert calls, (
-        "Effecting a manager change no longer reassigns the pending approvals."
-    )
+    assert calls, "Effecting a manager change no longer reassigns the pending approvals."
 
 
 def test_the_probation_silence_policy_has_no_default() -> None:
@@ -4522,9 +4470,7 @@ def test_probation_reminders_escalate_beyond_the_manager() -> None:
         and isinstance(node.value, ast.Name)
         and node.value.id == "ReminderStep"
     ]
-    assert steps == [
-        "MANAGER_FIRST", "MANAGER_SECOND", "SKIP_LEVEL", "HR"
-    ], (
+    assert steps == ["MANAGER_FIRST", "MANAGER_SECOND", "SKIP_LEVEL", "HR"], (
         f"The escalation is now {steps}. It has to widen at each step, ending with "
         "somebody whose job it is to notice."
     )
@@ -4730,9 +4676,7 @@ def test_the_dpdp_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -4777,8 +4721,7 @@ def test_a_mandatory_purpose_can_never_rest_on_consent() -> None:
     offenders = [
         spec.key
         for spec in PURPOSES.values()
-        if spec.is_mandatory_for_employment
-        and spec.lawful_basis is LawfulBasis.CONSENT
+        if spec.is_mandatory_for_employment and spec.lawful_basis is LawfulBasis.CONSENT
     ]
     assert not offenders, (
         f"{', '.join(offenders)} are mandatory for employment and rest on "
@@ -4885,8 +4828,7 @@ def test_an_erasure_reaches_a_decision_for_every_category() -> None:
         and "unknown" in (ast.get_source_segment(source, node.test) or "")
         and any(
             isinstance(inner, ast.Raise)
-            and "ReconciliationError"
-            in (ast.get_source_segment(source, inner) or "")
+            and "ReconciliationError" in (ast.get_source_segment(source, inner) or "")
             for inner in ast.walk(node)
         )
     ]
@@ -4974,7 +4916,7 @@ def test_a_partial_erasure_can_never_report_itself_complete() -> None:
 
 
 def test_a_retained_category_names_the_statute_and_the_expiry() -> None:
-    """"We have to keep it" is not a reason. The statute and the date are."""
+    """ "We have to keep it" is not a reason. The statute and the date are."""
     source = source_of(_DPDP_DIR / "rights.py")
     tree = ast.parse(source)
 
@@ -4991,8 +4933,7 @@ def test_a_retained_category_names_the_statute_and_the_expiry() -> None:
         and node.func.id == "CategoryDecision"
         and any(
             kw.arg == "outcome"
-            and "RETAINED_STATUTORY"
-            in (ast.get_source_segment(source, kw.value) or "")
+            and "RETAINED_STATUTORY" in (ast.get_source_segment(source, kw.value) or "")
             for kw in node.keywords
         )
     ]
@@ -5059,9 +5000,7 @@ def test_a_breach_clock_starts_from_becoming_aware() -> None:
         "clock later is strongest when it is least defensible."
     )
 
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     body = ast.get_source_segment(source, returned) or ""
     for deadline in ("intimation_target_at", "board_report_due_at"):
         assert deadline in body, f"{deadline} is no longer built here."
@@ -5122,14 +5061,12 @@ def test_a_notification_cannot_be_drafted_without_the_incidents_own_facts() -> N
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "notification_to_principals"
+        if isinstance(node, ast.FunctionDef) and node.name == "notification_to_principals"
     )
     required = {"what_happened", "remediation", "grievance_contact"}
     supplied = {arg.arg for arg in fn.args.kwonlyargs}
     assert required <= supplied, (
-        f"notification_to_principals no longer requires "
-        f"{sorted(required - supplied)}."
+        f"notification_to_principals no longer requires {sorted(required - supplied)}."
     )
     defaulted = {
         arg.arg
@@ -5137,8 +5074,7 @@ def test_a_notification_cannot_be_drafted_without_the_incidents_own_facts() -> N
         if default is not None and arg.arg in required
     }
     assert not defaulted, (
-        f"{sorted(defaulted)} now have defaults, so a notification can be sent "
-        "with no facts in it."
+        f"{sorted(defaulted)} now have defaults, so a notification can be sent with no facts in it."
     )
 
     # The emptiness check has to be a guard that raises. Looking for
@@ -5169,8 +5105,7 @@ def test_a_transfer_of_a_disallowed_category_raises_rather_than_filtering() -> N
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "assert_transfer_allowed"
+        if isinstance(node, ast.FunctionDef) and node.name == "assert_transfer_allowed"
     )
     assert fn.returns is not None and ast.unparse(fn.returns) == "None", (
         "assert_transfer_allowed now returns something. A function that returns "
@@ -5290,13 +5225,11 @@ def test_a_rehearsal_is_never_counted_as_a_real_breach() -> None:
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "tenant_compliance_surface"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "tenant_compliance_surface"
     )
     body = ast.get_source_segment(source, fn) or ""
     assert "is_rehearsal.is_(False)" in body, (
-        "The breach count on the tenant compliance surface no longer excludes "
-        "rehearsals."
+        "The breach count on the tenant compliance surface no longer excludes rehearsals."
     )
     assert "rehearsals" in body, (
         "Rehearsals are no longer reported separately, so a team cannot tell "
@@ -5322,9 +5255,7 @@ def test_the_consent_record_is_insert_only() -> None:
             r"session\.delete\(\s*consent", source
         ):
             offenders.append(str(path.relative_to(APP.parent)))
-    assert not offenders, (
-        "A delete path for ConsentRecord now exists: " + ", ".join(offenders)
-    )
+    assert not offenders, "A delete path for ConsentRecord now exists: " + ", ".join(offenders)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -5351,9 +5282,7 @@ def test_the_retention_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -5384,8 +5313,7 @@ def test_a_statutory_category_is_always_in_the_statutory_tier() -> None:
     offenders = [
         key
         for key, cat in CATEGORIES.items()
-        if cat.retention.is_statutory
-        and tier_for(key) is not RetentionTier.STATUTORY_RETAINED
+        if cat.retention.is_statutory and tier_for(key) is not RetentionTier.STATUTORY_RETAINED
     ]
     assert not offenders, (
         f"{offenders} cite a statute and are not in the statutory tier. The "
@@ -5458,11 +5386,7 @@ def test_the_database_refuses_a_policy_below_its_own_recorded_floor() -> None:
     """Belt and braces: even a direct UPDATE cannot produce an unlawful policy."""
     from app.models.retention import RetentionPolicyRow
 
-    constraints = {
-        c.name
-        for c in RetentionPolicyRow.__table__.constraints
-        if c.name is not None
-    }
+    constraints = {c.name for c in RetentionPolicyRow.__table__.constraints if c.name is not None}
     assert "ck_retention_above_floor" in constraints, (
         "The check constraint keeping retention_period_months at or above "
         "statutory_minimum_months is gone. The service guard is then the only "
@@ -5479,8 +5403,7 @@ def test_the_system_defaults_are_the_statutory_floor_exactly() -> None:
         f"{p.data_category_key}: {p.retention_period_months} vs "
         f"{CATEGORIES[p.data_category_key].retention.months}"
         for p in default_policies()
-        if p.retention_period_months
-        != CATEGORIES[p.data_category_key].retention.months
+        if p.retention_period_months != CATEGORIES[p.data_category_key].retention.months
     ]
     assert not offenders, (
         "A default retention period no longer matches its category: "
@@ -5520,14 +5443,10 @@ def test_the_legal_hold_check_runs_before_anything_can_drop_a_record() -> None:
     tree = ast.parse(source)
 
     fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "plan"
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "plan"
     )
     loop = next(
-        node
-        for node in ast.walk(fn)
-        if isinstance(node, ast.For) and node.target.id == "record"
+        node for node in ast.walk(fn) if isinstance(node, ast.For) and node.target.id == "record"
     )
 
     # Find the line of the hold check and of the first `continue` that is not
@@ -5576,9 +5495,7 @@ def test_a_category_with_no_policy_is_blocked_rather_than_defaulted() -> None:
     tree = ast.parse(source)
 
     fn = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "plan"
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "plan"
     )
     blocked = [
         node
@@ -5850,9 +5767,7 @@ def test_anonymisation_actually_removes_every_direct_identifier() -> None:
         "ctc_annual": 4200000,
         "department": "Data",
     }
-    result = anonymise_record(
-        original, subject_id="employee-4471", tenant_secret="k" * 48
-    )
+    result = anonymise_record(original, subject_id="employee-4471", tenant_secret="k" * 48)
 
     for field in DIRECT_IDENTIFIERS & set(original):
         assert field not in result.record, (
@@ -5862,9 +5777,7 @@ def test_anonymisation_actually_removes_every_direct_identifier() -> None:
     assert result.record["date_of_birth"] == 1991, (
         "date_of_birth is no longer generalised to a year."
     )
-    verify_irreversible(
-        original=original, result=result, subject_id="employee-4471"
-    )
+    verify_irreversible(original=original, result=result, subject_id="employee-4471")
 
 
 def test_k_of_one_is_refused_as_an_anonymity_threshold() -> None:
@@ -5923,9 +5836,7 @@ def test_the_retention_action_log_has_no_update_or_delete_path() -> None:
             r"session\.delete\(\s*(log|action_log)\b", source
         ):
             offenders.append(str(path.relative_to(APP.parent)))
-    assert not offenders, (
-        "A delete path for RetentionActionLog now exists: " + ", ".join(offenders)
-    )
+    assert not offenders, "A delete path for RetentionActionLog now exists: " + ", ".join(offenders)
 
 
 def test_a_legal_hold_records_its_release_rather_than_being_deleted() -> None:
@@ -5945,9 +5856,7 @@ def test_a_legal_hold_records_its_release_rather_than_being_deleted() -> None:
         for path in python_files()
         if re.search(r"\bdelete\s*\(\s*LegalHold\s*\)", source_of(path))
     ]
-    assert not offenders, (
-        "A delete path for LegalHold now exists: " + ", ".join(offenders)
-    )
+    assert not offenders, "A delete path for LegalHold now exists: " + ", ".join(offenders)
 
 
 def test_the_backup_position_is_disclosed_rather_than_claimed_away() -> None:
@@ -5979,9 +5888,7 @@ def test_execution_does_not_claim_to_have_removed_records_it_did_not() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute_plan"
     )
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     body = ast.get_source_segment(source, returned) or ""
     assert "records_actually_removed" in body, (
         "execute_plan no longer reports how many records it actually removed."
@@ -6024,9 +5931,7 @@ def test_the_eval_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -6100,9 +6005,7 @@ def test_every_scoring_suite_has_a_discrimination_assertion() -> None:
     from app.services.agenteval.suites import SUITES
 
     offenders = [
-        d.problem
-        for suite in SUITES.values()
-        if (d := missing_discrimination(suite)) is not None
+        d.problem for suite in SUITES.values() if (d := missing_discrimination(suite)) is not None
     ]
     assert not offenders, "\n  ".join(["Scoring suites with no discrimination check:", *offenders])
 
@@ -6143,9 +6046,7 @@ def test_the_fit_score_regression_case_fails_the_original_defect() -> None:
 
     decision = evaluate_gate(report)
     assert decision.outcome is GateOutcome.BLOCK
-    assert not decision.outcome.allows_merge, (
-        "A failing regression case no longer blocks a merge."
-    )
+    assert not decision.outcome.allows_merge, "A failing regression case no longer blocks a merge."
 
 
 def test_the_fit_score_suite_passes_the_corrected_implementation() -> None:
@@ -6180,8 +6081,7 @@ def test_a_failed_regression_case_always_blocks() -> None:
         for node in ast.walk(fn)
         if isinstance(node, ast.If)
         and "is_regression_case" in (ast.get_source_segment(source, node.test) or "")
-        and "blocking.append"
-        in (ast.get_source_segment(source, node) or "")
+        and "blocking.append" in (ast.get_source_segment(source, node) or "")
     ]
     assert guards, (
         "evaluate_gate no longer blocks on a failed regression case. Every one "
@@ -6441,9 +6341,7 @@ def test_the_agent_version_is_a_fingerprint_not_a_hand_written_string() -> None:
     """A version somebody remembers to bump is wrong on the release that matters."""
     from app.services.agenteval.fixtures import agent_fingerprint
 
-    assert agent_fingerprint("fit_score") != agent_fingerprint(
-        "fit_score_defective"
-    ), (
+    assert agent_fingerprint("fit_score") != agent_fingerprint("fit_score_defective"), (
         "Two different implementations produce the same fingerprint, so a run "
         "cannot say what it was run against."
     )
@@ -6492,12 +6390,9 @@ def test_drift_stays_quiet_below_a_meaningful_sample_size() -> None:
     assert MIN_SAMPLES >= 30
     baseline = ScoreWindow("b", (10.0, 50.0, 90.0))
     collapsed = ScoreWindow("c", (72.0, 72.0, 72.0))
-    assert (
-        detect_drift(
-            baseline_scores=baseline, current_scores=collapsed, sample_count=3
-        )
-        == []
-    ), "Drift alerted on a three-sample window, where a spread means nothing."
+    assert detect_drift(baseline_scores=baseline, current_scores=collapsed, sample_count=3) == [], (
+        "Drift alerted on a three-sample window, where a spread means nothing."
+    )
 
 
 def test_drift_catches_a_collapsing_distribution() -> None:
@@ -6511,15 +6406,9 @@ def test_drift_catches_a_collapsing_distribution() -> None:
     )
 
     rng = _random.Random(19)
-    baseline = ScoreWindow(
-        "b", tuple(rng.uniform(40, 95) for _ in range(200))
-    )
-    collapsed = ScoreWindow(
-        "c", tuple(rng.uniform(71.5, 72.5) for _ in range(200))
-    )
-    alerts = detect_drift(
-        baseline_scores=baseline, current_scores=collapsed, sample_count=200
-    )
+    baseline = ScoreWindow("b", tuple(rng.uniform(40, 95) for _ in range(200)))
+    collapsed = ScoreWindow("c", tuple(rng.uniform(71.5, 72.5) for _ in range(200)))
+    alerts = detect_drift(baseline_scores=baseline, current_scores=collapsed, sample_count=200)
     assert alerts and alerts[0].signal is DriftSignal.DISTRIBUTION_COLLAPSE, (
         "Drift no longer catches a collapsing score distribution. That is the "
         "live-traffic form of the defect this whole slice exists for."
@@ -6579,9 +6468,7 @@ def test_no_source_file_contains_a_stray_control_character() -> None:
         if "__pycache__" in path.parts:
             continue
         source = source_of(path)
-        found = sorted(
-            {hex(ord(ch)) for ch in source if ord(ch) < 32 and ch not in allowed}
-        )
+        found = sorted({hex(ord(ch)) for ch in source if ord(ch) < 32 and ch not in allowed})
         if found:
             offenders.append(f"{path.relative_to(APP.parent)}: {found}")
 
@@ -6624,9 +6511,7 @@ def test_the_grounding_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -6705,9 +6590,7 @@ def test_an_unknown_role_gets_the_narrowest_scope() -> None:
     """A role added and forgotten must not become a tenant-wide reader."""
     from app.services.grounding.retrieval import ScopeKind, scope_for
 
-    scope = scope_for(
-        role="a_role_nobody_mapped", tenant_id="t", requester_employee_id="e1"
-    )
+    scope = scope_for(role="a_role_nobody_mapped", tenant_id="t", requester_employee_id="e1")
     assert scope.kind is ScopeKind.SELF, (
         "An unmapped role now defaults to something wider than SELF. Every "
         "future role would be a tenant-wide reader until somebody noticed."
@@ -6739,14 +6622,12 @@ def test_retrieval_is_scoped_at_the_query_not_at_the_output() -> None:
             node
             for node in ast.walk(fetch)
             if isinstance(node, ast.If)
-            and "ScopeKind.TENANT"
-            in (ast.get_source_segment(source, node.test) or "")
+            and "ScopeKind.TENANT" in (ast.get_source_segment(source, node.test) or "")
         ),
         None,
     )
     assert scope_branch is not None, (
-        "_fetch no longer branches on the scope kind, so a non-tenant scope is "
-        "not narrowed at all."
+        "_fetch no longer branches on the scope kind, so a non-tenant scope is not narrowed at all."
     )
     branch_body = ast.get_source_segment(source, scope_branch) or ""
     assert "stmt.where(" in branch_body and "reachable" in branch_body, (
@@ -6799,9 +6680,7 @@ def test_an_unverifiable_citation_withholds_the_response() -> None:
         "A response with a fabricated citation now renders something other than "
         "the withheld message."
     )
-    assert "14 days" not in result.text, (
-        "The unverified claim survived into the rendered text."
-    )
+    assert "14 days" not in result.text, "The unverified claim survived into the rendered text."
 
 
 def test_the_verified_response_exposes_only_renderable_text() -> None:
@@ -6838,17 +6717,16 @@ def test_the_verified_response_exposes_only_renderable_text() -> None:
         and isinstance(node.func, ast.Name)
         and node.func.id == "VerifiedResponse"
         and any(
-            kw.arg == "outcome"
-            and "WITHHELD" in (ast.get_source_segment(source, kw.value) or "")
+            kw.arg == "outcome" and "WITHHELD" in (ast.get_source_segment(source, kw.value) or "")
             for kw in node.keywords
         )
     ]
     assert withheld_returns, "verify no longer constructs a withheld response."
     for call in withheld_returns:
         text_kw = next(kw for kw in call.keywords if kw.arg == "text")
-        assert "WITHHELD_MESSAGE" in (
-            ast.get_source_segment(source, text_kw.value) or ""
-        ), "A withheld response now renders something other than the fixed message."
+        assert "WITHHELD_MESSAGE" in (ast.get_source_segment(source, text_kw.value) or ""), (
+            "A withheld response now renders something other than the fixed message."
+        )
 
 
 def test_a_cited_record_that_was_never_retrieved_is_caught() -> None:
@@ -6861,9 +6739,7 @@ def test_a_cited_record_that_was_never_retrieved_is_caught() -> None:
         existing_ids=frozenset({"leave_requests:l1", "leave_requests:l2"}),
     )
     assert not result.may_render
-    assert (
-        result.failures[0].problem is CitationProblem.NOT_IN_RETRIEVED_SET
-    ), (
+    assert result.failures[0].problem is CitationProblem.NOT_IN_RETRIEVED_SET, (
         "A citation to a record that exists and was never retrieved is no "
         "longer caught. That is not grounding; it is a coincidence."
     )
@@ -6878,9 +6754,7 @@ def test_an_uncited_factual_claim_does_not_render() -> None:
         existing_ids=frozenset({"leave_requests:l1"}),
     )
     assert not result.may_render
-    assert any(
-        f.problem is CitationProblem.UNCITED_CLAIM for f in result.failures
-    )
+    assert any(f.problem is CitationProblem.UNCITED_CLAIM for f in result.failures)
 
 
 def test_a_refusal_is_not_treated_as_an_uncited_claim() -> None:
@@ -6915,9 +6789,7 @@ def test_an_advisory_question_keeps_its_factual_half() -> None:
         split_response,
     )
 
-    outcome = classify(
-        "How much tax will I pay if I resign in March? Should I wait?"
-    )
+    outcome = classify("How much tax will I pay if I resign in March? Should I wait?")
     assert RefusalReason.ADVISORY in outcome.reasons
     assert not outcome.is_total, (
         "An advisory question is now refused entirely. The factual half — what "
@@ -6936,9 +6808,7 @@ def test_an_out_of_scope_question_is_refused_entirely() -> None:
     """No factual half survives, because we do not have the facts."""
     from app.services.grounding.refusals import RefusalReason, classify
 
-    outcome = classify(
-        "What is Rahul's salary?", requested_employee_id="e9", scope_covers=False
-    )
+    outcome = classify("What is Rahul's salary?", requested_employee_id="e9", scope_covers=False)
     assert RefusalReason.OUT_OF_SCOPE in outcome.reasons
     assert outcome.is_total
 
@@ -7024,9 +6894,7 @@ def test_retrieved_records_are_not_inside_the_untrusted_fence() -> None:
     from app.services.grounding.injection import build_prompt
     from app.services.grounding.retrieval import RetrievedRecord
 
-    record = RetrievedRecord(
-        source="employees", record_id="e1", content={"grade": "M3"}
-    )
+    record = RetrievedRecord(source="employees", record_id="e1", content={"grade": "M3"})
     prompt = build_prompt(
         system_rules="rules",
         untrusted_sections=[("resume", "a resume")],
@@ -7035,9 +6903,7 @@ def test_retrieved_records_are_not_inside_the_untrusted_fence() -> None:
     # rindex on the record, index on the fence: *every* grounding block has to
     # sit before the fence opens. Comparing first occurrences passed a plant
     # that appended the blocks a second time, after the untrusted content.
-    assert prompt.rindex('id="employees:e1"') < prompt.index(
-        "[[untrusted-content]]"
-    ), (
+    assert prompt.rindex('id="employees:e1"') < prompt.index("[[untrusted-content]]"), (
         "Retrieved records are now inside the untrusted fence, which either "
         "makes our own records unusable as facts or makes a resume as "
         "trustworthy as a payroll row."
@@ -7146,9 +7012,7 @@ def test_the_log_keeps_what_was_produced_and_what_was_shown_separately() -> None
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_log_and_return"
     )
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Dict)
     keys = {
         key.value
@@ -7187,9 +7051,7 @@ def test_the_autonomy_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -7245,9 +7107,7 @@ def test_your_voice_cannot_even_be_configured_to_propose() -> None:
 
     assert ceiling_for("your_voice.act_on_case") is AutonomyLevel.SUGGEST_ONLY
     with pytest.raises(AutonomyError):
-        validate_autonomy(
-            "your_voice.act_on_case", AutonomyLevel.PROPOSE_FOR_APPROVAL
-        )
+        validate_autonomy("your_voice.act_on_case", AutonomyLevel.PROPOSE_FOR_APPROVAL)
 
 
 def test_an_irreversible_action_is_capped_at_approval() -> None:
@@ -7271,8 +7131,7 @@ def test_an_irreversible_action_is_capped_at_approval() -> None:
     offenders = [
         f"{key} -> {ceiling_for(key).value}"
         for key, spec in ACTIONS.items()
-        if not spec.reversible
-        and ceiling_for(key).rank > AutonomyLevel.PROPOSE_FOR_APPROVAL.rank
+        if not spec.reversible and ceiling_for(key).rank > AutonomyLevel.PROPOSE_FOR_APPROVAL.rank
     ]
     assert not offenders, (
         "An irreversible action permits automatic application: "
@@ -7357,8 +7216,7 @@ def test_the_ceiling_is_enforced_again_when_a_setting_is_read() -> None:
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "effective_autonomy"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "effective_autonomy"
     )
     body = ast.get_source_segment(source, fn) or ""
     assert "ceiling_for" in body and "configured.rank > ceiling.rank" in body, (
@@ -7398,13 +7256,11 @@ def test_the_autonomy_catalogue_does_not_contradict_itself() -> None:
     from app.services.autonomy.catalogue import catalogue_contradictions
 
     problems = catalogue_contradictions()
-    assert not problems, "\n  ".join(
-        ["The autonomy catalogue disagrees with itself:", *problems]
-    )
+    assert not problems, "\n  ".join(["The autonomy catalogue disagrees with itself:", *problems])
 
 
 def test_threshold_routing_puts_the_boundary_on_the_human_side() -> None:
-    """"Under 2,000" is what the client configured, and 2,000 is not under it."""
+    """ "Under 2,000" is what the client configured, and 2,000 is not under it."""
     from decimal import Decimal
 
     from app.services.autonomy.catalogue import AutonomyLevel
@@ -7468,9 +7324,7 @@ def test_the_proposal_row_requires_reasoning_and_citations() -> None:
     assert not columns["citations"].nullable
     assert not columns["previous_state"].nullable
 
-    constraints = {
-        c.name for c in AgentProposal.__table__.constraints if c.name is not None
-    }
+    constraints = {c.name for c in AgentProposal.__table__.constraints if c.name is not None}
     assert "ck_proposal_has_reasoning" in constraints, (
         "The check constraint requiring non-empty reasoning is gone."
     )
@@ -7514,9 +7368,7 @@ def test_a_higher_impact_proposal_expires_sooner() -> None:
     from app.services.autonomy.catalogue import ImpactLevel
     from app.services.autonomy.proposals import EXPIRY_WINDOWS
 
-    assert (
-        EXPIRY_WINDOWS[ImpactLevel.CRITICAL] < EXPIRY_WINDOWS[ImpactLevel.LOW]
-    ), (
+    assert EXPIRY_WINDOWS[ImpactLevel.CRITICAL] < EXPIRY_WINDOWS[ImpactLevel.LOW], (
         "A critical proposal now stays approvable at least as long as a low one. "
         "A critical proposal sitting for a fortnight is one nobody understood, "
         "and applying it late is worse than losing it."
@@ -7598,9 +7450,7 @@ def test_a_small_sample_produces_no_rate() -> None:
     """Three rejections out of three is noise."""
     from app.services.autonomy.proposals import ProposalStatus, stats_for
 
-    stats = stats_for(
-        "expense_extraction.approve_claim", [ProposalStatus.REJECTED] * 3
-    )
+    stats = stats_for("expense_extraction.approve_claim", [ProposalStatus.REJECTED] * 3)
     assert stats.rejection_rate is None
     assert not stats.is_defective_signal
 
@@ -7628,14 +7478,12 @@ def test_there_is_one_queue_and_no_agent_has_a_private_one() -> None:
 
 
 def test_a_reversal_is_its_own_row_not_a_status_flip() -> None:
-    """"Applied on the 3rd, reverted on the 5th" is two events."""
+    """ "Applied on the 3rd, reverted on the 5th" is two events."""
     from app.models.autonomy import ProposalReversal
 
     columns = {c.name for c in ProposalReversal.__table__.columns}
     for required in ("proposal_id", "restored_state", "reason", "reverted_at"):
-        assert required in columns, (
-            f"ProposalReversal no longer records {required}."
-        )
+        assert required in columns, f"ProposalReversal no longer records {required}."
 
 
 def test_a_reversal_copies_the_restored_state_rather_than_referencing_it() -> None:
@@ -7689,9 +7537,7 @@ def test_reverting_does_not_claim_to_have_restored_a_record() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "revert"
     )
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Dict)
     keys = {
         key.value
@@ -7712,12 +7558,9 @@ def test_the_transparency_surface_lists_what_is_not_built() -> None:
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "transparency_surface"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "transparency_surface"
     )
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Dict)
     keys = {
         key.value
@@ -7771,9 +7614,7 @@ def test_the_opsec_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -8223,9 +8064,7 @@ def test_the_remediation_clock_runs_from_discovery_not_triage() -> None:
     tree = ast.parse(source)
 
     cls = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name == "Finding"
+        node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Finding"
     )
     prop = next(
         node
@@ -8289,9 +8128,7 @@ def test_the_opsec_posture_lists_everything_that_is_not_built() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "posture"
     )
-    returned = next(
-        node for node in ast.walk(fn) if isinstance(node, ast.Return)
-    )
+    returned = next(node for node in ast.walk(fn) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Dict)
     keys = {
         key.value
@@ -8329,9 +8166,7 @@ def test_the_expense_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -8474,9 +8309,7 @@ def test_a_per_diem_rule_never_requires_a_receipt() -> None:
         incurred_on=_date(2026, 9, 7),
         has_receipt=False,
     )
-    assert evaluate(claim, rules=[rule], priors=[]).kind is not (
-        VerdictKind.RECEIPT_REQUIRED
-    ), (
+    assert evaluate(claim, rules=[rule], priors=[]).kind is not (VerdictKind.RECEIPT_REQUIRED), (
         "A per-diem rule now demands a receipt. That asks for a document which "
         "does not exist, and the employee produces something."
     )
@@ -8651,9 +8484,7 @@ def test_a_rate_is_resolved_by_the_claim_date_never_by_today() -> None:
         vehicle_type="car", rate_per_km=_Dec("12"), effective_from=_date(2026, 4, 1)
     )
     resolved = rate_on([march, april], _date(2026, 3, 20), vehicle_type="car")
-    assert resolved.rate_per_km == _Dec("10"), (
-        "A March claim now resolves to April's rate."
-    )
+    assert resolved.rate_per_km == _Dec("10"), "A March claim now resolves to April's rate."
 
 
 def test_no_expense_service_updates_a_rate_row_in_place() -> None:
@@ -8734,9 +8565,7 @@ def test_mileage_flags_rather_than_refuses() -> None:
 
     from app.services.expenses.rates import MileageRate, mileage_claim
 
-    rate = MileageRate(
-        vehicle_type="car", rate_per_km=_Dec("12"), effective_from=_date(2026, 4, 1)
-    )
+    rate = MileageRate(vehicle_type="car", rate_per_km=_Dec("12"), effective_from=_date(2026, 4, 1))
     out = mileage_claim(distance_km=_Dec("400"), rate=rate, route_km=_Dec("100"))
     assert out.exceeds_tolerance
     assert out.amount == _Dec("4800.00"), (
@@ -8753,9 +8582,7 @@ def test_a_foreign_claim_keeps_both_amounts() -> None:
 
     fields = set(ConvertedAmount.__dataclass_fields__)
     for required in ("original_amount", "original_currency", "converted_amount"):
-        assert required in fields, (
-            f"`ConvertedAmount` no longer carries {required}."
-        )
+        assert required in fields, f"`ConvertedAmount` no longer carries {required}."
 
     from app.models.expenses import ExpenseClaim
 
@@ -8788,9 +8615,7 @@ def test_the_conversion_convention_is_configured_and_not_assumed() -> None:
         "transaction_date",
         "settlement_date",
     }
-    assert "conversion_convention" in {
-        c.name for c in TenantExpenseSettings.__table__.columns
-    }
+    assert "conversion_convention" in {c.name for c in TenantExpenseSettings.__table__.columns}
 
 
 def test_a_settlement_date_conversion_refuses_to_fall_back() -> None:
@@ -8919,9 +8744,7 @@ def test_the_block_message_names_the_advance_and_the_way_out() -> None:
         issued_on=_date(2026, 3, 1),
     )
     message = advance_block([old], today=_date(2026, 9, 7)).message
-    assert "trip-bengaluru" in message, (
-        "The block message no longer names the blocking trip."
-    )
+    assert "trip-bengaluru" in message, "The block message no longer names the blocking trip."
     assert "2026-03-01" in message, (
         "The block message no longer says when the blocking advance was issued."
     )
@@ -8990,9 +8813,7 @@ def test_the_recovery_is_handed_to_payroll_and_not_netted_here() -> None:
     """
     from app.models.expenses import AdvanceSettlement
 
-    assert "payroll_recovery_ref" in {
-        c.name for c in AdvanceSettlement.__table__.columns
-    }
+    assert "payroll_recovery_ref" in {c.name for c in AdvanceSettlement.__table__.columns}
 
     tree = ast.parse(source_of(_EXPENSES_DIR / "service.py"))
     fn = next(
@@ -9149,12 +8970,8 @@ def test_a_violation_rate_below_a_usable_sample_is_not_reported() -> None:
     about somebody's character based on three claims."""
     from app.services.expenses.policy import ViolationRate
 
-    assert ViolationRate(
-        scope="employee", key="e1", total_claims=3, violations=2
-    ).rate is None
-    assert ViolationRate(
-        scope="employee", key="e1", total_claims=40, violations=2
-    ).rate is not None
+    assert ViolationRate(scope="employee", key="e1", total_claims=3, violations=2).rate is None
+    assert ViolationRate(scope="employee", key="e1", total_claims=40, violations=2).rate is not None
 
 
 def test_the_violation_rate_distinguishes_a_policy_problem_from_a_person() -> None:
@@ -9263,9 +9080,7 @@ def test_the_culture_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -9514,8 +9329,7 @@ def test_a_value_tally_never_becomes_a_per_person_score() -> None:
     from app.services.culture.values import TaggedItem, TagSource, for_person
 
     items = [
-        TaggedItem(f"s{i}", TagSource.SHOUTOUT, "craft", "e1", _date(2026, 9, 1))
-        for i in range(9)
+        TaggedItem(f"s{i}", TagSource.SHOUTOUT, "craft", "e1", _date(2026, 9, 1)) for i in range(9)
     ]
     report = for_person(items, subject_id="e1")
     forbidden = {"score", "rating", "points", "rank"}
@@ -9619,7 +9433,10 @@ def test_a_plan_with_open_items_cannot_be_completed() -> None:
         PlanStatus.IN_PROGRESS,
         (
             ActionItem(
-                "i1", "Reinstate one-to-ones", "m1", _date(2026, 8, 1),
+                "i1",
+                "Reinstate one-to-ones",
+                "m1",
+                _date(2026, 8, 1),
                 done_on=_date(2026, 8, 20),
             ),
             ActionItem("i2", "Publish promotion criteria", "m1", _date(2026, 8, 15)),
@@ -9647,8 +9464,15 @@ def test_an_empty_plan_cannot_be_completed() -> None:
     )
 
     plan = ActionPlan(
-        "p1", "s1", PlanScope.COMPANY, "all", "voice", "m1",
-        _date(2026, 8, 31), PlanStatus.IN_PROGRESS, (),
+        "p1",
+        "s1",
+        PlanScope.COMPANY,
+        "all",
+        "voice",
+        "m1",
+        _date(2026, 8, 31),
+        PlanStatus.IN_PROGRESS,
+        (),
     )
     allowed, _ = can_complete(plan)
     assert not allowed, (
@@ -9685,11 +9509,20 @@ def test_loop_closure_distinguishes_unmeasured_from_unmoved() -> None:
     )
 
     plan = ActionPlan(
-        "p1", "s1", PlanScope.TEAM, "eng", "voice", "m1",
-        _date(2026, 8, 31), PlanStatus.IN_PROGRESS,
+        "p1",
+        "s1",
+        PlanScope.TEAM,
+        "eng",
+        "voice",
+        "m1",
+        _date(2026, 8, 31),
+        PlanStatus.IN_PROGRESS,
         (
             ActionItem(
-                "i1", "Reinstate one-to-ones", "m1", _date(2026, 8, 1),
+                "i1",
+                "Reinstate one-to-ones",
+                "m1",
+                _date(2026, 8, 1),
                 done_on=_date(2026, 8, 20),
             ),
         ),
@@ -9712,13 +9545,17 @@ def test_movement_with_no_action_is_not_booked_as_a_win() -> None:
     )
 
     plan = ActionPlan(
-        "p1", "s1", PlanScope.TEAM, "eng", "voice", "m1",
-        _date(2026, 8, 31), PlanStatus.IN_PROGRESS,
+        "p1",
+        "s1",
+        PlanScope.TEAM,
+        "eng",
+        "voice",
+        "m1",
+        _date(2026, 8, 31),
+        PlanStatus.IN_PROGRESS,
         (ActionItem("i1", "Publish criteria", "m1", _date(2026, 8, 1)),),
     )
-    report = loop_closure(
-        plans=[plan], movement={"voice": 0.6}, today=_date(2026, 9, 7)
-    )
+    report = loop_closure(plans=[plan], movement={"voice": 0.6}, today=_date(2026, 9, 7))
     row = next(r for r in report["themes"] if r["theme"] == "voice")
     assert "do not book this as a win" in row["reading"], (
         "A theme that moved with no completed action reads as a success. "
@@ -9742,12 +9579,20 @@ def test_editing_an_announcement_invalidates_its_acknowledgements() -> None:
 
     now = _dt(2026, 9, 7, 10, tzinfo=_UTC)
     original = Announcement(
-        "a1", "POSH policy", "The body.", Audience(), now,
+        "a1",
+        "POSH policy",
+        "The body.",
+        Audience(),
+        now,
         requires_acknowledgement=True,
     )
     ack = Acknowledgement("a1", "e1", now, original.content_hash)
     revised = Announcement(
-        "a1", "POSH policy", "The body, revised.", Audience(), now,
+        "a1",
+        "POSH policy",
+        "The body, revised.",
+        Audience(),
+        now,
         requires_acknowledgement=True,
     )
 
@@ -9774,15 +9619,17 @@ def test_an_acknowledgement_register_never_expires() -> None:
     now = _dt(2026, 9, 7, 10, tzinfo=_UTC)
     try:
         Announcement(
-            "a1", "POSH policy", "The body.", Audience(), now,
+            "a1",
+            "POSH policy",
+            "The body.",
+            Audience(),
+            now,
             expires_at=_dt(2026, 10, 1, tzinfo=_UTC),
             requires_acknowledgement=True,
         )
     except AnnouncementError:
         return
-    raise AssertionError(
-        "An announcement requiring acknowledgement was given an expiry date."
-    )
+    raise AssertionError("An announcement requiring acknowledgement was given an expiry date.")
 
 
 def test_the_outstanding_list_names_people_rather_than_counting_them() -> None:
@@ -9800,7 +9647,11 @@ def test_the_outstanding_list_names_people_rather_than_counting_them() -> None:
 
     now = _dt(2026, 9, 7, 10, tzinfo=_UTC)
     announcement = Announcement(
-        "a1", "POSH policy", "The body.", Audience(), now,
+        "a1",
+        "POSH policy",
+        "The body.",
+        Audience(),
+        now,
         requires_acknowledgement=True,
     )
     report = acknowledgement_report(
@@ -9856,9 +9707,7 @@ def test_an_employee_with_no_privacy_record_is_not_broadcast() -> None:
     from app.services.culture.comms import EventKind, PersonEvent, calendar_events
 
     events = calendar_events(
-        person_events=[
-            PersonEvent("e1", EventKind.BIRTHDAY, _date(2026, 9, 9), "Anita")
-        ],
+        person_events=[PersonEvent("e1", EventKind.BIRTHDAY, _date(2026, 9, 9), "Anita")],
         privacy={},
     )
     assert all(e.kind is not EventKind.BIRTHDAY for e in events), (
@@ -9879,9 +9728,7 @@ def test_a_work_anniversary_is_a_separate_consent_from_a_birthday() -> None:
     )
 
     events = calendar_events(
-        person_events=[
-            PersonEvent("e1", EventKind.BIRTHDAY, _date(2026, 9, 9), "Anita")
-        ],
+        person_events=[PersonEvent("e1", EventKind.BIRTHDAY, _date(2026, 9, 9), "Anita")],
         privacy={"e1": EventPrivacy("e1", share_work_anniversary=True)},
     )
     assert all(e.kind is not EventKind.BIRTHDAY for e in events), (
@@ -9919,9 +9766,7 @@ def test_survey_responses_has_no_column_that_identifies_a_respondent() -> None:
     )
 
     foreign_keys = {
-        fk.column.table.name
-        for c in SurveyResponse.__table__.columns
-        for fk in c.foreign_keys
+        fk.column.table.name for c in SurveyResponse.__table__.columns for fk in c.foreign_keys
     }
     assert "employees" not in foreign_keys and "users" not in foreign_keys, (
         "`survey_responses` now has a foreign key to a person. Whatever the "
@@ -9953,11 +9798,7 @@ def test_the_reporting_threshold_has_a_database_floor() -> None:
     application check is one careless endpoint away from being skipped."""
     from app.models.culture_depth import Survey
 
-    constraints = {
-        str(c.sqltext)
-        for c in Survey.__table__.constraints
-        if hasattr(c, "sqltext")
-    }
+    constraints = {str(c.sqltext) for c in Survey.__table__.constraints if hasattr(c, "sqltext")}
     assert any("min_responses_to_report >= 5" in c for c in constraints), (
         "`surveys` no longer has a check constraint holding the reporting "
         f"threshold at five or more. Constraints found: {sorted(constraints)}."
@@ -10106,8 +9947,7 @@ def test_the_nomination_window_is_checked_against_stored_dates() -> None:
         and node.func.attr == "check_window_open"
     ]
     assert calls, (
-        "`nominate` no longer calls `check_window_open`, so the advertised "
-        "window is decorative."
+        "`nominate` no longer calls `check_window_open`, so the advertised window is decorative."
     )
     body = ast.unparse(fn)
     assert "cycle.nominations_open_on" in body and "cycle.nominations_close_on" in body, (
@@ -10120,9 +9960,7 @@ def test_a_self_nomination_is_refused_by_the_database_too() -> None:
     from app.models.culture_depth import AwardNomination
 
     constraints = {
-        str(c.sqltext)
-        for c in AwardNomination.__table__.constraints
-        if hasattr(c, "sqltext")
+        str(c.sqltext) for c in AwardNomination.__table__.constraints if hasattr(c, "sqltext")
     }
     assert any("nominee_employee_id" in c and "nominator" in c for c in constraints), (
         "`award_nominations` no longer has a check constraint against "
@@ -10167,11 +10005,8 @@ def test_an_acknowledgement_stores_the_hash_it_attested_to() -> None:
 
     unique = {
         tuple(sorted(c.name for c in constraint.columns))
-        for constraint in Announcement.metadata.tables[
-            "announcement_acknowledgements"
-        ].constraints
-        if hasattr(constraint, "columns") and constraint.__class__.__name__ ==
-        "UniqueConstraint"
+        for constraint in Announcement.metadata.tables["announcement_acknowledgements"].constraints
+        if hasattr(constraint, "columns") and constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert any("content_hash" in cols for cols in unique), (
         "The uniqueness on an acknowledgement no longer includes the content "
@@ -10238,7 +10073,6 @@ def test_the_culture_posture_discloses_what_is_not_wired() -> None:
     assert "scheduler" in enforced, "Scheduled delivery is no longer stated as enforced."
 
 
-
 def test_the_survey_results_endpoint_is_not_gated_to_hr() -> None:
     """Deliberate. A privileged view is what makes the threshold meaningless -
     somebody with the role runs the report and forwards it.
@@ -10287,9 +10121,7 @@ def test_the_rewards_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -10311,9 +10143,7 @@ def test_the_rewards_engines_never_convert_money_to_float() -> None:
                 and node.func.id == "float"
             ):
                 offenders.append(f"{name}:{node.lineno}")
-    assert not offenders, (
-        f"A rewards engine converts to float at {offenders}."
-    )
+    assert not offenders, f"A rewards engine converts to float at {offenders}."
 
 
 def test_the_points_ledger_has_no_update_path() -> None:
@@ -10338,8 +10168,7 @@ def test_the_points_ledger_has_no_update_path() -> None:
         ledger_locals = {
             target.id
             for node in ast.walk(fn)
-            if isinstance(node, ast.Assign)
-            and "PointsLedgerEntry" in ast.unparse(node.value)
+            if isinstance(node, ast.Assign) and "PointsLedgerEntry" in ast.unparse(node.value)
             for target in node.targets
             if isinstance(target, ast.Name)
         }
@@ -10377,9 +10206,7 @@ def test_the_points_ledger_has_no_delete_path() -> None:
             if not isinstance(node, ast.Call):
                 continue
             rendered = ast.unparse(node)
-            is_delete = (
-                isinstance(node.func, ast.Name) and node.func.id == "delete"
-            ) or (
+            is_delete = (isinstance(node.func, ast.Name) and node.func.id == "delete") or (
                 isinstance(node.func, ast.Attribute) and node.func.attr == "delete"
             )
             if is_delete and "PointsLedgerEntry" in rendered:
@@ -10756,8 +10583,7 @@ def test_a_soft_warning_records_the_overspend() -> None:
     )
     assert decision.permitted
     assert decision.overspend_points == 100, (
-        "A soft-warning overspend is not quantified, so nothing downstream can "
-        "count it."
+        "A soft-warning overspend is not quantified, so nothing downstream can count it."
     )
 
 
@@ -10821,9 +10647,7 @@ def test_payroll_refuses_a_perquisite_from_an_unreviewed_rule() -> None:
         )
     except TaxError:
         return
-    raise AssertionError(
-        "Payroll accepted a taxable figure computed from an unreviewed rule."
-    )
+    raise AssertionError("Payroll accepted a taxable figure computed from an unreviewed rule.")
 
 
 def test_the_gift_rule_and_the_perquisite_rule_differ_at_the_threshold() -> None:
@@ -10985,7 +10809,6 @@ def test_the_rewards_posture_leads_with_the_unreviewed_tax_position() -> None:
         assert phrase in enforced, f"The rewards posture no longer states {phrase!r}."
 
 
-
 def test_a_redemption_cannot_overdraw_the_balance() -> None:
     """A negative balance is one nobody can explain on a statement."""
     tree = ast.parse(source_of(_REWARDS_DIR / "service.py"))
@@ -11049,14 +10872,11 @@ def test_the_gst_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
-        "A GST engine now reaches into the database or the web layer:\n  "
-        + "\n  ".join(offenders)
+        "A GST engine now reaches into the database or the web layer:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -11119,11 +10939,7 @@ def test_the_capture_path_records_the_line_whatever_the_verdict() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "capture_credit"
     )
-    raises = [
-        f"line {node.lineno}"
-        for node in ast.walk(fn)
-        if isinstance(node, ast.Raise)
-    ]
+    raises = [f"line {node.lineno}" for node in ast.walk(fn) if isinstance(node, ast.Raise)]
     assert not raises, (
         f"`capture_credit` raises at {raises}. Capture never refuses: a bad "
         "GSTIN, a blocked category and an undecidable place of supply all "
@@ -11340,9 +11156,7 @@ def test_a_review_requires_a_rationale_and_a_decision() -> None:
         if isinstance(node, ast.If)
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert any("rationale" in g for g in guards), (
-        "`review_credit` no longer requires a rationale."
-    )
+    assert any("rationale" in g for g in guards), "`review_credit` no longer requires a rationale."
     # The guard has to be on the *decision argument*, not merely mention the
     # word: the separate check that the row is uncertain also contains it, so
     # looking for the enum name alone passes with this guard deleted.
@@ -11373,10 +11187,7 @@ def test_only_an_uncertain_line_can_be_reviewed() -> None:
         and "eligibility" in ast.unparse(node.test)
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "`review_credit` no longer checks that the line is uncertain before "
-        "deciding it."
-    )
+    assert guards, "`review_credit` no longer checks that the line is uncertain before deciding it."
 
 
 def test_invoice_numbers_normalise_to_one_key() -> None:
@@ -11420,12 +11231,8 @@ def test_the_three_reconciliation_states_are_reported_separately() -> None:
             ),
         ],
         portal=[
-            Gstr2bLine(
-                "27AAPFU0939F1ZV", "inv-1", _date(2026, 9, 1), _Dec("100"), _Dec("18")
-            ),
-            Gstr2bLine(
-                "33AABCT1332L1ZM", "OTHER", _date(2026, 9, 1), _Dec("50"), _Dec("9")
-            ),
+            Gstr2bLine("27AAPFU0939F1ZV", "inv-1", _date(2026, 9, 1), _Dec("100"), _Dec("18")),
+            Gstr2bLine("33AABCT1332L1ZM", "OTHER", _date(2026, 9, 1), _Dec("50"), _Dec("9")),
         ],
         period_label="2026-09",
     )
@@ -11569,9 +11376,7 @@ def test_reconciling_without_an_import_is_refused() -> None:
         and "import_row" in ast.unparse(node.test)
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "`reconcile_period` no longer refuses when no GSTR-2B has been imported."
-    )
+    assert guards, "`reconcile_period` no longer refuses when no GSTR-2B has been imported."
 
 
 def test_every_gst_service_query_is_tenant_scoped() -> None:
@@ -11603,14 +11408,11 @@ def test_the_gst_posture_leads_with_the_unreviewed_rules() -> None:
     assert posture["not_built"]
     first = posture["not_built"][0].lower()
     assert "tax advisor" in first and "reviewed" in first, (
-        f"The first not_built line is no longer the unreviewed rules: "
-        f"{posture['not_built'][0]!r}"
+        f"The first not_built line is no longer the unreviewed rules: {posture['not_built'][0]!r}"
     )
     joined = " ".join(posture["not_built"]).lower()
     for phrase in ("portal", "receipt extraction", "files anything"):
-        assert phrase in joined, (
-            f"The GST posture no longer discloses {phrase!r}."
-        )
+        assert phrase in joined, f"The GST posture no longer discloses {phrase!r}."
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11636,9 +11438,7 @@ def test_the_performance_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -11824,9 +11624,7 @@ def test_an_unsuccessful_outcome_on_a_thin_trail_is_refused() -> None:
         expectations="Close twelve a week.",
         support_provided="Weekly coaching.",
         status=PipStatus.ACTIVE,
-        milestones=(
-            Milestone("m1", "Twelve a week", _date(2026, 10, 1), ">= 12 weekly"),
-        ),
+        milestones=(Milestone("m1", "Twelve a week", _date(2026, 10, 1), ">= 12 weekly"),),
         check_ins=(one,),
     )
     try:
@@ -11926,8 +11724,7 @@ def test_the_trail_gaps_are_frozen_when_the_outcome_is_recorded() -> None:
         for node in ast.walk(fn)
         if isinstance(node, ast.Assign)
         for target in node.targets
-        if isinstance(target, ast.Attribute)
-        and target.attr == "trail_gaps_at_outcome"
+        if isinstance(target, ast.Attribute) and target.attr == "trail_gaps_at_outcome"
     ]
     assert assigns, (
         "`close_pip` no longer freezes the trail gaps onto the plan, so the "
@@ -11972,8 +11769,7 @@ def test_the_evidence_pack_reproduces_the_check_ins_in_full() -> None:
         today=_date(2026, 12, 1),
     )
     assert pack["check_ins"][0]["employee_comments"] == words, (
-        "The employee's own words are no longer reproduced verbatim in the "
-        "evidence pack."
+        "The employee's own words are no longer reproduced verbatim in the evidence pack."
     )
 
 
@@ -12086,10 +11882,7 @@ def test_a_small_comparison_group_gets_no_pay_gap_figure() -> None:
     snapshot = equity_snapshot(
         employee_id="e1",
         proposed_ctc=_Dec("1000000"),
-        peers=[
-            PeerFacts(f"p{i}", _Dec("1000000"), "M3", "Eng", "BLR", "female")
-            for i in range(3)
-        ],
+        peers=[PeerFacts(f"p{i}", _Dec("1000000"), "M3", "Eng", "BLR", "female") for i in range(3)],
     )
     assert snapshot["gender_gap"] is None
     assert snapshot["parity"] is None
@@ -12102,15 +11895,9 @@ def test_a_gap_needs_two_groups_that_each_clear_the_floor() -> None:
     from app.services.performance.increments import PeerFacts, equity_snapshot
 
     lopsided = [
-        PeerFacts(f"m{i}", _Dec("1000000"), "M3", "Eng", "BLR", "male")
-        for i in range(10)
-    ] + [
-        PeerFacts(f"f{i}", _Dec("800000"), "M3", "Eng", "BLR", "female")
-        for i in range(2)
-    ]
-    snapshot = equity_snapshot(
-        employee_id="e1", proposed_ctc=_Dec("1000000"), peers=lopsided
-    )
+        PeerFacts(f"m{i}", _Dec("1000000"), "M3", "Eng", "BLR", "male") for i in range(10)
+    ] + [PeerFacts(f"f{i}", _Dec("800000"), "M3", "Eng", "BLR", "female") for i in range(2)]
+    snapshot = equity_snapshot(employee_id="e1", proposed_ctc=_Dec("1000000"), peers=lopsided)
     assert snapshot["gender_gap"] is None
 
 
@@ -12132,9 +11919,7 @@ def test_the_pay_gap_is_an_observation_not_a_verdict() -> None:
         )
         for i in range(14)
     ]
-    snapshot = equity_snapshot(
-        employee_id="e1", proposed_ctc=_Dec("1150000"), peers=peers
-    )
+    snapshot = equity_snapshot(employee_id="e1", proposed_ctc=_Dec("1150000"), peers=peers)
     reading = snapshot["gender_gap"]["reading"]
     assert "not a finding" in reading
     assert "legitimate explanations" in reading
@@ -12145,16 +11930,13 @@ def test_the_equity_snapshot_is_stored_on_the_recommendation() -> None:
     is what the manager was shown when they chose the number."""
     from app.models.performance_flow import IncrementRecommendation
 
-    assert "equity_snapshot" in {
-        c.name for c in IncrementRecommendation.__table__.columns
-    }
+    assert "equity_snapshot" in {c.name for c in IncrementRecommendation.__table__.columns}
 
     tree = ast.parse(source_of(_PERF_DIR / "service.py"))
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "recommend_increment"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "recommend_increment"
     )
     assigns = [
         node
@@ -12176,8 +11958,7 @@ def test_the_recommendation_response_carries_budget_and_equity_together() -> Non
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "recommend_increment"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "recommend_increment"
     )
     keys: set[str] = set()
     for node in ast.walk(fn):
@@ -12337,9 +12118,7 @@ def test_a_recommendation_cannot_be_promoted_twice() -> None:
         and "existing" in ast.unparse(node.test)
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "`apply_promotion` no longer checks for an existing promotion record."
-    )
+    assert guards, "`apply_promotion` no longer checks for an existing promotion record."
 
 
 def test_letters_hold_until_the_controlled_date() -> None:
@@ -12409,9 +12188,7 @@ def test_a_cycle_cannot_release_its_letters_twice() -> None:
         and "letters_released_at" in ast.unparse(node.test)
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
-    assert guards, (
-        "`release_letters` no longer refuses a second release for a cycle."
-    )
+    assert guards, "`release_letters` no longer refuses a second release for a cycle."
 
 
 def test_a_rejected_recommendation_does_not_consume_budget() -> None:
@@ -12425,8 +12202,7 @@ def test_a_rejected_recommendation_does_not_consume_budget() -> None:
     )
     body = ast.unparse(fn)
     assert "REJECTED" in body, (
-        "`_consumed` no longer excludes rejected recommendations from the "
-        "budget."
+        "`_consumed` no longer excludes rejected recommendations from the budget."
     )
 
 
@@ -12494,9 +12270,7 @@ def test_the_recruiting_engines_import_no_database_or_web_layer() -> None:
             else:
                 continue
             for module in modules:
-                if any(
-                    module == bad or module.startswith(f"{bad}.") for bad in forbidden
-                ):
+                if any(module == bad or module.startswith(f"{bad}.") for bad in forbidden):
                     offenders.append(f"{name} imports {module}")
 
     assert not offenders, (
@@ -12604,8 +12378,7 @@ def test_a_funnel_grouping_finer_than_a_process_is_refused() -> None:
     except FunnelError:
         return
     raise AssertionError(
-        "A funnel grouped per candidate describes individuals rather than a "
-        "process."
+        "A funnel grouped per candidate describes individuals rather than a process."
     )
 
 
@@ -12668,13 +12441,9 @@ def test_a_missing_cost_component_is_named_and_the_figure_is_a_floor() -> None:
 
     from app.services.recruiting.funnel import COST_COMPONENTS, cost_per_hire
 
-    result = cost_per_hire(
-        hires=4, components={"job_board_spend": _Dec("400000")}
-    )
+    result = cost_per_hire(hires=4, components={"job_board_spend": _Dec("400000")})
     assert result["is_complete"] is False
-    assert set(result["missing_components"]) == set(COST_COMPONENTS) - {
-        "job_board_spend"
-    }
+    assert set(result["missing_components"]) == set(COST_COMPONENTS) - {"job_board_spend"}
     assert "floor" in result["note"]
 
 
@@ -12709,8 +12478,7 @@ def test_interviewer_analytics_carry_a_coaching_framing() -> None:
     # the framing would be the other.
     for size in (4, 12):
         rows = [
-            FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 3}, 3, 100, 1.0, True)
-            for i in range(size)
+            FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 3}, 3, 100, 1.0, True) for i in range(size)
         ]
         for payload in (
             severity(rows, interviewer_id="j1"),
@@ -12750,13 +12518,9 @@ def test_interviewer_analytics_produce_no_rank_or_percentile() -> None:
     exists somebody will screenshot it."""
     from app.services.recruiting.interviewers import FeedbackFacts, severity
 
-    mine = [
-        FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 2}, 2, 100, 1.0, False)
-        for i in range(12)
-    ]
+    mine = [FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 2}, 2, 100, 1.0, False) for i in range(12)]
     peers = [
-        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True)
-        for i in range(15)
+        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True) for i in range(15)
     ]
     payload = severity(mine + peers, interviewer_id="j1")
     forbidden = {"rank", "percentile", "position", "league"}
@@ -12776,13 +12540,9 @@ def test_an_interviewer_below_the_sample_floor_gets_no_figure() -> None:
     )
 
     assert MIN_INTERVIEWS_FOR_SIGNAL >= 10
-    few = [
-        FeedbackFacts(f"f{i}", "j2", f"c{i}", {"a": 3}, 3, 100, 1.0, True)
-        for i in range(4)
-    ]
+    few = [FeedbackFacts(f"f{i}", "j2", f"c{i}", {"a": 3}, 3, 100, 1.0, True) for i in range(4)]
     peers = [
-        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True)
-        for i in range(15)
+        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True) for i in range(15)
     ]
     assert severity(few + peers, interviewer_id="j2")["deviation"] is None
 
@@ -12792,13 +12552,9 @@ def test_severity_is_reported_without_a_verdict() -> None:
     on a hard role should be strict."""
     from app.services.recruiting.interviewers import FeedbackFacts, severity
 
-    mine = [
-        FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 2}, 2, 100, 1.0, False)
-        for i in range(12)
-    ]
+    mine = [FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 2}, 2, 100, 1.0, False) for i in range(12)]
     peers = [
-        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True)
-        for i in range(15)
+        FeedbackFacts(f"p{i}", f"p{i % 3}", f"d{i}", {"a": 4}, 4, 100, 1.0, True) for i in range(15)
     ]
     reading = severity(mine + peers, interviewer_id="j1")["reading"]
     assert "not a finding" in reading
@@ -12809,10 +12565,7 @@ def test_the_feedback_quality_metric_calls_itself_a_proxy() -> None:
     than four paragraphs of impressions, and this scores it lower."""
     from app.services.recruiting.interviewers import FeedbackFacts, feedback_quality
 
-    rows = [
-        FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 4}, 4, 100, 1.0, True)
-        for i in range(12)
-    ]
+    rows = [FeedbackFacts(f"f{i}", "j1", f"c{i}", {"a": 4}, 4, 100, 1.0, True) for i in range(12)]
     result = feedback_quality(rows, interviewer_id="j1")
     assert "proxy_caveat" in result
     assert "proxies" in result["proxy_caveat"]
@@ -12925,9 +12678,7 @@ def test_the_hiring_team_cannot_refer_into_their_own_requisition() -> None:
         check_eligibility,
     )
 
-    check = check_eligibility(
-        ReferrerFacts("e1", True, False, True, ("r1",)), requisition_id="r1"
-    )
+    check = check_eligibility(ReferrerFacts("e1", True, False, True, ("r1",)), requisition_id="r1")
     assert not check.eligible
     assert check.reason is IneligibilityReason.IN_HIRING_TEAM
 
@@ -12939,9 +12690,7 @@ def test_a_referrer_on_a_pip_is_ineligible_and_told_it_is_a_rule() -> None:
         check_eligibility,
     )
 
-    check = check_eligibility(
-        ReferrerFacts("e1", True, True, True), requisition_id="r1"
-    )
+    check = check_eligibility(ReferrerFacts("e1", True, True, True), requisition_id="r1")
     assert check.reason is IneligibilityReason.ON_PIP
     assert "configured rule rather than a judgement" in check.message
 
@@ -12951,9 +12700,7 @@ def test_an_untracked_share_channel_is_refused() -> None:
     from app.services.recruiting.referrals import ReferralError, share_link
 
     try:
-        share_link(
-            base_url="x", requisition_id="r1", referrer_id="e1", channel="pigeon"
-        )
+        share_link(base_url="x", requisition_id="r1", referrer_id="e1", channel="pigeon")
     except ReferralError:
         return
     raise AssertionError("An untracked share channel was accepted.")
@@ -12964,9 +12711,7 @@ def test_referral_retention_below_the_floor_is_not_reported() -> None:
     produced from a handful of people - somebody would put it in a board pack."""
     from app.services.recruiting.referrals import retention_comparison
 
-    result = retention_comparison(
-        referred_tenures_days=[900] * 3, other_tenures_days=[600] * 20
-    )
+    result = retention_comparison(referred_tenures_days=[900] * 3, other_tenures_days=[600] * 20)
     assert result["median_referred_days"] is None
 
 
@@ -12979,10 +12724,7 @@ def test_undisclosed_candidates_are_excluded_from_the_denominator() -> None:
     from app.services.recruiting.diversity import DisclosedAttribute, coverage
     from app.services.recruiting.funnel import CandidateJourney, Stage
 
-    rows = [
-        CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)})
-        for i in range(10)
-    ]
+    rows = [CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)}) for i in range(10)]
     disclosures = [DisclosedAttribute("c0", "gender", "female")]
     result = coverage(rows, disclosures=disclosures, dimension="gender")
     assert result["candidates"] == 10
@@ -12998,10 +12740,7 @@ def test_low_disclosure_coverage_is_warned_about() -> None:
     from app.services.recruiting.diversity import DisclosedAttribute, coverage
     from app.services.recruiting.funnel import CandidateJourney, Stage
 
-    rows = [
-        CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)})
-        for i in range(10)
-    ]
+    rows = [CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)}) for i in range(10)]
     result = coverage(
         rows,
         disclosures=[DisclosedAttribute("c0", "gender", "female")],
@@ -13022,13 +12761,9 @@ def test_a_diversity_stage_below_the_threshold_is_suppressed() -> None:
     from app.services.recruiting.funnel import CandidateJourney, Stage
 
     assert MIN_GROUP >= 5
-    rows = [
-        CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)})
-        for i in range(6)
-    ]
+    rows = [CandidateJourney(f"c{i}", "x", {Stage.APPLIED: _date(2026, 1, 1)}) for i in range(6)]
     disclosures = [
-        DisclosedAttribute(f"c{i}", "gender", "female" if i < 3 else "male")
-        for i in range(6)
+        DisclosedAttribute(f"c{i}", "gender", "female" if i < 3 else "male") for i in range(6)
     ]
     result = stage_representation(
         rows, disclosures=disclosures, dimension="gender", focus_value="female"
@@ -13059,9 +12794,7 @@ def test_the_diversity_finding_is_the_stage_where_share_falls() -> None:
         "The diversity report no longer names where representation falls, which "
         "is the only actionable part of it."
     )
-    assert "coverage" in keys, (
-        "The diversity report no longer carries its disclosure coverage."
-    )
+    assert "coverage" in keys, "The diversity report no longer carries its disclosure coverage."
 
 
 def test_the_duplicate_check_runs_before_the_referral_is_accepted() -> None:
@@ -13093,8 +12826,7 @@ def test_the_payout_schedule_is_written_in_full_when_the_candidate_joins() -> No
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "mark_referral_hired"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "mark_referral_hired"
     )
     loops = [
         node
@@ -13139,8 +12871,7 @@ def test_a_duplicate_referral_is_not_paid() -> None:
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "mark_referral_hired"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "mark_referral_hired"
     )
     guards = [
         node
@@ -13150,8 +12881,7 @@ def test_a_duplicate_referral_is_not_paid() -> None:
         and any(isinstance(inner, ast.Raise) for inner in ast.walk(node))
     ]
     assert guards, (
-        "`mark_referral_hired` no longer refuses a referral that lost the "
-        "duplicate race."
+        "`mark_referral_hired` no longer refuses a referral that lost the duplicate race."
     )
 
 
@@ -13230,9 +12960,7 @@ def test_the_bi_engines_import_no_session_or_model() -> None:
                 assert not module.startswith("app.models"), (
                     f"{name} imports {module}. The engines are pure."
                 )
-                assert "sqlalchemy" not in module, (
-                    f"{name} imports {module}. The engines are pure."
-                )
+                assert "sqlalchemy" not in module, f"{name} imports {module}. The engines are pure."
                 for alias in node.names:
                     assert alias.name not in forbidden, (
                         f"{name} imports {alias.name}. The engines are pure."
@@ -13258,8 +12986,7 @@ def test_the_exposed_schema_does_not_restate_sensitivity() -> None:
             fields = {
                 target.id
                 for stmt in node.body
-                if isinstance(stmt, ast.AnnAssign)
-                and isinstance(target := stmt.target, ast.Name)
+                if isinstance(stmt, ast.AnnAssign) and isinstance(target := stmt.target, ast.Name)
             }
             assert "sensitivity" not in fields, (
                 "ExposedField now stores a sensitivity of its own. It must be "
@@ -13267,9 +12994,9 @@ def test_the_exposed_schema_does_not_restate_sensitivity() -> None:
                 "the payroll-only rules is a second copy that drifts."
             )
     # And no literal assignment anywhere in the catalogue.
-    assert "Sensitivity." not in source.split("def exposed_entity")[0].split(
-        "class ExposedField"
-    )[-1], (
+    assert (
+        "Sensitivity." not in source.split("def exposed_entity")[0].split("class ExposedField")[-1]
+    ), (
         "A Sensitivity literal appeared in the exposed-schema catalogue. The "
         "sensitivity comes from services.reporting.semantic or it drifts."
     )
@@ -13357,7 +13084,7 @@ def test_the_schema_document_never_publishes_an_internal_name() -> None:
 
 
 def test_every_export_path_produces_a_field_list() -> None:
-    """"How many rows" is not the question asked after an incident. Every
+    """ "How many rows" is not the question asked after an incident. Every
     function that builds an audit payload must carry the names."""
     tree = ast.parse(source_of(_BI_DIR / "export.py"))
     for node in ast.walk(tree):
@@ -13393,9 +13120,7 @@ def test_the_watermark_is_never_set_to_now() -> None:
                 "the largest change key actually seen; advancing to now skips "
                 "rows written during the export and they are never sent again."
             )
-            assert "max(" in body, (
-                "extract_rows no longer takes the maximum change key seen."
-            )
+            assert "max(" in body, "extract_rows no longer takes the maximum change key seen."
             return
     raise AssertionError("extract_rows disappeared from the export module.")
 
@@ -13445,7 +13170,7 @@ def test_a_benchmark_cell_below_the_floor_carries_no_numbers() -> None:
 
 
 def test_the_contributor_floor_is_companies_and_is_not_below_eight() -> None:
-    """"SaaS, 200-500 employees, Bengaluru" with three contributors is three
+    """ "SaaS, 200-500 employees, Bengaluru" with three contributors is three
     named companies, and anybody in that market can name them."""
     from app.services.bi import benchmarks
 
@@ -13551,9 +13276,7 @@ def test_the_published_benchmark_reader_can_reach_nothing_else() -> None:
     tree = ast.parse(source_of(_BI_DIR / "published.py"))
     imported_models: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-            "app.models"
-        ):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.models"):
             imported_models.update(alias.name for alias in node.names)
     assert imported_models == {"BenchmarkDataset"}, (
         f"published.py now imports {sorted(imported_models)}. It is exempt from "
@@ -13575,8 +13298,7 @@ def test_the_published_benchmark_reader_has_no_write_path() -> None:
     source = source_of(_BI_DIR / "published.py")
     for forbidden in ("session.add", "session.delete", "sa.update", "sa.delete"):
         assert forbidden not in source, (
-            f"published.py now calls {forbidden}. It reads the published cell "
-            "and nothing else."
+            f"published.py now calls {forbidden}. It reads the published cell and nothing else."
         )
 
 
@@ -13587,9 +13309,7 @@ def test_the_cross_tenant_aggregation_is_not_reachable_from_a_request() -> None:
     for path in (APP / "api").rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
-        if "bi.aggregation" in source_of(path) or "import aggregation" in source_of(
-            path
-        ):
+        if "bi.aggregation" in source_of(path) or "import aggregation" in source_of(path):
             offenders.append(str(path.relative_to(APP.parent)))
     assert not offenders, (
         f"{offenders} import the benchmark aggregation job. It reads across "
@@ -13603,9 +13323,7 @@ def test_the_aggregation_job_reads_only_benchmark_tables() -> None:
     tree = ast.parse(source_of(_BI_DIR / "aggregation.py"))
     imported_models: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-            "app.models"
-        ):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.models"):
             imported_models.update(alias.name for alias in node.names)
     allowed = {
         "BenchmarkConsent",
@@ -13968,3 +13686,27 @@ def test_the_demo_request_service_reads_only_its_own_table_and_logins() -> None:
     assert "tenant_id" not in DemoRequest.__table__.columns, (
         "DemoRequest acquired a tenant_id; scope its queries instead of keeping the exemption."
     )
+
+
+def test_the_showcase_service_reads_only_its_own_tables() -> None:
+    """`showcase_links.py` is exempt from tenant scoping because a showcase link
+    belongs to the platform and a visitor's story to its link. The exemption
+    holds only while the module selects its own two tables, reads a workspace by
+    primary key for its name and logo, and the showcase tables carry no tenant."""
+    source = source_of(APP / "services" / "showcase" / "showcase_links.py")
+    targets = set(re.findall(r"(?<![\w.])(?:select|delete)\s*\(\s*(\w+)", source))
+    assert targets <= {"ShowcaseLink", "ShowcaseRun"}, (
+        f"showcase_links.py now reads or deletes {sorted(targets)}; only the showcase "
+        "tables are exempt from tenant scoping there."
+    )
+    assert re.findall(r"session\.get\(\s*(\w+)", source) and set(
+        re.findall(r"session\.get\(\s*(\w+)", source)
+    ) <= {"Tenant", "ShowcaseLink", "ShowcaseRun"}
+
+    from app.models.showcase import ShowcaseLink, ShowcaseRun
+
+    for model in (ShowcaseLink, ShowcaseRun):
+        assert "tenant_id" not in model.__table__.columns, (
+            f"{model.__name__} acquired a tenant_id; scope its queries instead of keeping "
+            "the exemption."
+        )
