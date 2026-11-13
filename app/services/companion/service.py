@@ -283,9 +283,12 @@ async def _tokens_this_month(session: AsyncSession, user: User) -> int:
 
 
 async def _check_limits(
-    session: AsyncSession, user: User, config: CompanionConfig, *, ai: bool
+    session: AsyncSession, user: User, config: CompanionConfig, *, ai: bool, per_person: bool = True
 ) -> None:
-    if await _sent_today(session, user, owner_id=user.id) >= config.daily_messages_per_person:
+    if (
+        per_person
+        and await _sent_today(session, user, owner_id=user.id) >= config.daily_messages_per_person
+    ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
@@ -422,12 +425,17 @@ async def send(
     request: Request | None,
     files: list[tuple[str, bytes]] | None = None,
     place: str = "app",
+    own_cap: bool = False,
 ) -> dict[str, Any]:
     """One turn. `files` are (name, bytes) the person attached: read into words first
     (attachments.py), shown as chips on their message, and given to the model with it.
 
     `place` is where the message came from ("app", "slack", "teams", "email"):
-    from email, offers are never confirmed or withdrawn by reply."""
+    from email, offers are never confirmed or withdrawn by reply.
+
+    `own_cap`: the caller counts messages against a cap of its own (a showcase
+    link's daily cap), so the person's daily count is not checked here; the
+    workspace's monthly AI allowance still is."""
     files = files or []
     if not payload.text and not files:
         raise HTTPException(
@@ -447,7 +455,7 @@ async def send(
     accepted = await attachments.accept_all(session, user, files) if files else []
     config = await get_config(session, user)
     ai = await _reason(session, user) is None
-    await _check_limits(session, user, config, ai=ai)
+    await _check_limits(session, user, config, ai=ai, per_person=not own_cap)
 
     now = datetime.now(UTC)
     if payload.conversation_id:

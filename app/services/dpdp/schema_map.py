@@ -690,16 +690,18 @@ TABLES: dict[str, TableClassification] = {
             "phone": "identity",
         },
     ),
-    # Showcase links: an exhibition QR code the platform's super admin made, and
-    # the sample order its story tells. About no person.
+    # Showcase links: an exhibition QR code the platform's super admin made, the
+    # workspace whose Ask Miraa it opens and the admin it answers as.
     "showcase_links": _none(
-        "An exhibition QR link: its label, the sample order its story tells, the "
-        "window it works in and how many stories it started. About no person."
+        "An exhibition QR link: its label, the workspace and admin login it opens "
+        "Ask Miraa as, a stand PIN, its window and message counts. About no person."
     ),
-    # One visitor's story from a scanned QR code: sample figures, and what the
-    # visitor typed into the chat. No name, address or account ties it to
-    # anyone; it is deleted three days after it was last used.
-    "showcase_runs": _p(THIRD, "ai_interaction", {"state": "ai_interaction"}),
+    # One visitor's chat from a scanned QR code: a key's hash and which Ask Miraa
+    # conversation it reaches. What the visitor typed is in companion_messages.
+    "showcase_runs": _none(
+        "Ties a scanned QR's key to an Ask Miraa conversation. Holds no words, "
+        "name or contact; forgotten three days after it was last used."
+    ),
     "candidate_consents": _p(CAND, "recruitment"),
     "candidate_portal_tokens": _p(CAND, "account_security", {"token_hash": "account_security"}),
     "background_checks": _p(

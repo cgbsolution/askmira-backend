@@ -507,6 +507,18 @@ async def complete_mfa_login(
 
 
 async def refresh(session: AsyncSession, refresh_token: str) -> AuthResponse:
+    user, tenant = await account_for_refresh_token(session, refresh_token)
+    return await _build_response(session, user, tenant)
+
+
+async def account_for_refresh_token(
+    session: AsyncSession, refresh_token: str
+) -> tuple[User, Tenant]:
+    """The login and workspace a refresh token still stands for, or a 401/403.
+
+    The same checks a refresh makes: signature and expiry, an active login, no
+    password change or forced sign-out since it was issued, an active workspace.
+    """
     try:
         payload = decode_token(refresh_token, expected_type="refresh")
     except jwt.ExpiredSignatureError as exc:
@@ -539,7 +551,7 @@ async def refresh(session: AsyncSession, refresh_token: str) -> AuthResponse:
     if tenant is None or not tenant.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active")
 
-    return await _build_response(session, user, tenant)
+    return user, tenant
 
 
 async def change_password(

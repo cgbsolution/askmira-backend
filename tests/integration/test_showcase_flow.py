@@ -1,11 +1,14 @@
-"""Showcase links end to end: the super admin's QR code, and a visitor's story from a scan.
+"""Showcase links end to end: the super admin's QR code, and the Ask Miraa chat a scan opens.
 
-A visitor never signs in; every step re-checks the link, so switching it off or
-letting it end stops a page that is already open.
+A visitor never signs in: the page can only chat, as the admin the link names,
+in a conversation of the visitor's own. Every message re-checks the link, so
+switching it off, letting it end, or switching the admin's login off stops a
+page that is already open.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,12 +22,25 @@ from app.core.security import create_access_token
 from app.db.session import get_session
 from app.main import app
 from app.models.audit import AuditAction, AuditLog
+from app.models.companion import CompanionConversation, CompanionMessage
+from app.models.employee import Employee
+from app.models.leave import LeaveType
 from app.models.showcase import ShowcaseLink, ShowcaseRun
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
+from app.services.ai import client as ai_client
+from app.services.ai.client import use_backend
+from app.services.companion import config as companion_config
 from app.services.hiring import public_guard
-from app.services.showcase import story
+from app.services.showcase import showcase_links
 from tests.integration.conftest import requires_db
+from tests.integration.test_companion_agent import _weekday_ahead, casual  # noqa: F401
+from tests.integration.test_companion_flow import (
+    FakeModel,
+    _ai_on,
+    _consent,
+    tool_call,
+)
 
 pytestmark = requires_db
 
@@ -37,28 +53,19 @@ def _fresh_limits() -> None:
 
 
 @pytest.fixture
-async def super_admin(session: AsyncSession, tenant: Tenant) -> User:
-    user = User(
-        tenant_id=tenant.id,
-        email="platform@acme.test",
-        password_hash="x",
-        full_name="Platform",
-        role=UserRole.SUPER_ADMIN,
-        is_active=True,
-    )
-    session.add(user)
-    await session.commit()
-    return user
+def no_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No model on this server: Ask Miraa answers by matching words to a lookup."""
+    monkeypatch.setattr(ai_client.settings, "ANTHROPIC_API_KEY", "")
 
 
 @pytest.fixture
-async def admin(session: AsyncSession, tenant: Tenant) -> User:
+async def super_admin(session: AsyncSession, other_tenant: Tenant) -> User:
     user = User(
-        tenant_id=tenant.id,
-        email="admin@acme.test",
+        tenant_id=other_tenant.id,
+        email="platform@askmiraa.test",
         password_hash="x",
-        full_name="Asha Admin",
-        role=UserRole.ADMIN,
+        full_name="Platform",
+        role=UserRole.SUPER_ADMIN,
         is_active=True,
     )
     session.add(user)
@@ -88,19 +95,13 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _body(tenant: Tenant | None = None, **overrides: Any) -> dict[str, Any]:
+def _body(tenant: Tenant, admin: User, **overrides: Any) -> dict[str, Any]:
     now = datetime.now(UTC)
     body: dict[str, Any] = {
         "label": "HR Tech Expo, Bengaluru",
-        "brand_tenant_id": str(tenant.id) if tenant else None,
-        "client_name": "Acme Technologies",
-        "role_title": "Java Developer",
-        "headcount": 6,
-        "months": 12,
-        "order_value": "5000000",
-        "team_budget": "3000000",
-        "laptop_price": "55000",
-        "payment_days": 30,
+        "workspace_id": str(tenant.id),
+        "acting_user_id": str(admin.id),
+        "daily_messages": 300,
         "is_active": True,
         "starts_at": (now - timedelta(hours=1)).isoformat(),
         "ends_at": (now + timedelta(days=2)).isoformat(),
@@ -109,9 +110,13 @@ def _body(tenant: Tenant | None = None, **overrides: Any) -> dict[str, Any]:
     return body
 
 
-async def _create(http: httpx.AsyncClient, user: User, **overrides: Any) -> dict[str, Any]:
+async def _create(
+    http: httpx.AsyncClient, user: User, tenant: Tenant, admin: User, **overrides: Any
+) -> dict[str, Any]:
     response = await http.post(
-        f"{BASE}/platform/showcase-links", json=_body(**overrides), headers=_bearer(user)
+        f"{BASE}/platform/showcase-links",
+        json=_body(tenant, admin, **overrides),
+        headers=_bearer(user),
     )
     assert response.status_code == 201, response.text
     return response.json()
@@ -124,332 +129,526 @@ async def _audits(session: AsyncSession, action: AuditAction) -> list[AuditLog]:
     return list(rows)
 
 
+async def _start(http: httpx.AsyncClient, code: str, pin: str | None = None) -> dict[str, Any]:
+    response = await http.post(f"{BASE}/public/showcase/{code}/runs", json={"pin": pin})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _say(
+    http: httpx.AsyncClient, code: str, run: dict[str, Any], text: str, **extra: Any
+) -> httpx.Response:
+    return await http.post(
+        f"{BASE}/public/showcase/{code}/runs/{run['run_id']}/messages",
+        json={"text": text, **extra},
+        headers={"X-Showcase-Key": run["key"]},
+    )
+
+
+async def _patch(
+    http: httpx.AsyncClient, user: User, link: dict[str, Any], **fields: Any
+) -> httpx.Response:
+    return await http.patch(
+        f"{BASE}/platform/showcase-links/{link['id']}", json=fields, headers=_bearer(user)
+    )
+
+
 # ── The super admin ──────────────────────────────────────────────────────────
 
 
 async def test_the_super_admin_makes_a_link_with_its_qr_and_an_audit_row(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User, tenant: Tenant
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
 ) -> None:
-    link = await _create(http, super_admin, tenant=tenant)
+    link = await _create(http, super_admin, tenant, hr_user, pin="4321")
     assert link["status"] == "live"
     assert link["company"] == tenant.name
-    assert link["margin_floor"] == "40.0"
+    assert link["acting_name"] == hr_user.full_name and link["acting_email"] == hr_user.email
+    assert link["pin"] == "4321" and link["daily_messages"] == 300
     assert link["url"].endswith(f"/showcase/{link['code']}")
-    assert len(link["code"]) >= 12
+    assert "client_name" not in link and "order_value" not in link
 
-    # The code is kept encrypted and found by its hash, never stored as typed.
-    row = await session.get(ShowcaseLink, link["id"])
+    # The code and PIN are kept encrypted; the code is found by its hash.
+    row = await session.get(ShowcaseLink, uuid.UUID(link["id"]))
     assert row is not None and row.code_hash != link["code"]
     raw = await session.scalar(
-        select(
-            func.cast(ShowcaseLink.__table__.c.code_encrypted, ShowcaseLink.__table__.c.label.type)
-        ).where(ShowcaseLink.__table__.c.id == row.id)
+        select(func.count()).select_from(ShowcaseLink).where(ShowcaseLink.code_hash == link["code"])
     )
-    assert raw is not None and link["code"] not in raw
-
-    svg = await http.get(
-        f"{BASE}/platform/showcase-links/{link['id']}/qr?format=svg", headers=_bearer(super_admin)
-    )
-    assert svg.status_code == 200 and svg.headers["content-type"].startswith("image/svg+xml")
-    assert b"<svg" in svg.content
-    png = await http.get(
-        f"{BASE}/platform/showcase-links/{link['id']}/qr?format=png", headers=_bearer(super_admin)
-    )
-    assert png.status_code == 200 and png.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert raw == 0
 
     created = await _audits(session, AuditAction.CREATE)
-    assert len(created) == 1 and created[0].actor_user_id == super_admin.id
-    assert created[0].changes["team_budget"] == "3000000.00"
+    assert len(created) == 1 and created[0].changes["pin"] == "set"
+    assert "4321" not in str(created[0].changes)
 
-    listed = await http.get(f"{BASE}/platform/showcase-links", headers=_bearer(super_admin))
-    assert [item["id"] for item in listed.json()] == [link["id"]]
+    for kind, media in (("svg", "image/svg+xml"), ("png", "image/png")):
+        qr = await http.get(
+            f"{BASE}/platform/showcase-links/{link['id']}/qr?format={kind}",
+            headers=_bearer(super_admin),
+        )
+        assert qr.status_code == 200 and qr.headers["content-type"].startswith(media)
+        assert "attachment" in qr.headers["content-disposition"]
 
 
-async def test_nobody_but_the_super_admin_manages_links(
-    http: httpx.AsyncClient, super_admin: User, admin: User
+async def test_the_chat_answers_only_as_an_active_admin_of_that_workspace(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    other_hr_user: User,
+    employee: Employee,
 ) -> None:
-    link = await _create(http, super_admin)
-    for method, path in [
+    staff = User(
+        tenant_id=tenant.id,
+        email="anita@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
+    )
+    session.add(staff)
+    await session.commit()
+    for admin in (staff, other_hr_user):
+        refused = await http.post(
+            f"{BASE}/platform/showcase-links",
+            json=_body(tenant, admin),
+            headers=_bearer(super_admin),
+        )
+        assert refused.status_code == 422, refused.text
+        assert "active admin of that workspace" in refused.text
+    missing = await http.post(
+        f"{BASE}/platform/showcase-links",
+        json={**_body(tenant, hr_user), "workspace_id": str(uuid.uuid4())},
+        headers=_bearer(super_admin),
+    )
+    assert missing.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"pin": "12"},
+        {"pin": "12ab"},
+        {"pin": "123456789"},
+        {"daily_messages": 5},
+        {"daily_messages": 6000},
+        {"label": "x"},
+        {"ends_at": (datetime.now(UTC) - timedelta(hours=2)).isoformat()},
+        {"starts_at": "2026-11-13T10:00:00"},
+        {"client_name": "Acme"},
+    ],
+)
+async def test_bad_link_details_are_refused(
+    http: httpx.AsyncClient,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    overrides: dict[str, Any],
+) -> None:
+    response = await http.post(
+        f"{BASE}/platform/showcase-links",
+        json=_body(tenant, hr_user, **overrides),
+        headers=_bearer(super_admin),
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_only_the_super_admin_manages_links(
+    http: httpx.AsyncClient, super_admin: User, tenant: Tenant, hr_user: User
+) -> None:
+    link = await _create(http, super_admin, tenant, hr_user)
+    for method, path in (
         ("GET", "/platform/showcase-links"),
         ("POST", "/platform/showcase-links"),
         ("PATCH", f"/platform/showcase-links/{link['id']}"),
         ("DELETE", f"/platform/showcase-links/{link['id']}"),
         ("GET", f"/platform/showcase-links/{link['id']}/qr"),
-    ]:
+    ):
         response = await http.request(
-            method,
-            f"{BASE}{path}",
-            json=_body() if method in ("POST", "PATCH") else None,
-            headers=_bearer(admin),
+            method, BASE + path, json=_body(tenant, hr_user), headers=_bearer(hr_user)
         )
-        assert response.status_code == 403, (method, path, response.status_code)
-        response = await http.request(method, f"{BASE}{path}")
-        assert response.status_code == 401, (method, path, response.status_code)
+        assert response.status_code == 403, (method, path, response.text)
 
 
-@pytest.mark.parametrize(
-    ("overrides", "reason"),
-    [
-        ({"team_budget": "5000000"}, "budget equal to the order"),
-        ({"team_budget": "6000000"}, "budget over the order"),
-        ({"order_value": "fifty lakh"}, "letters in an amount"),
-        ({"order_value": "-5"}, "negative amount"),
-        ({"order_value": "50000.123"}, "more than two decimals"),
-        ({"headcount": 11}, "team over ten"),
-        ({"headcount": 0}, "empty team"),
-        ({"months": 2}, "contract under three months"),
-        ({"laptop_price": "10"}, "laptop under a thousand"),
-        ({"payment_days": 120}, "payment terms over 90 days"),
-        ({"label": "  "}, "blank label"),
-        ({"client_name": ""}, "no client"),
-    ],
-)
-async def test_a_link_that_does_not_add_up_is_refused(
-    http: httpx.AsyncClient, super_admin: User, overrides: dict[str, Any], reason: str
+async def test_switching_off_editing_and_deleting_are_audited(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
 ) -> None:
-    response = await http.post(
-        f"{BASE}/platform/showcase-links", json=_body(**overrides), headers=_bearer(super_admin)
+    link = await _create(http, super_admin, tenant, hr_user)
+    off = await _patch(http, super_admin, link, is_active=False)
+    assert off.status_code == 200 and off.json()["status"] == "off"
+    pinned = await _patch(http, super_admin, link, pin="9876", daily_messages=50)
+    assert pinned.json()["pin"] == "9876" and pinned.json()["daily_messages"] == 50
+    cleared = await _patch(http, super_admin, link, clear_pin=True)
+    assert cleared.json()["pin"] is None
+    same = await _patch(http, super_admin, link, label=link["label"])
+    assert same.status_code == 200
+
+    updates = await _audits(session, AuditAction.UPDATE)
+    assert [row.summary for row in updates] == [
+        f"Showcase link switched off: {link['label']}",
+        f"Showcase link changed: {link['label']}",
+        f"Showcase link changed: {link['label']}",
+    ]
+    assert all("9876" not in str(row.changes) for row in updates)
+
+    gone = await http.delete(
+        f"{BASE}/platform/showcase-links/{link['id']}", headers=_bearer(super_admin)
     )
-    assert response.status_code == 422, reason
+    assert gone.status_code == 204
+    assert len(await _audits(session, AuditAction.DELETE)) == 1
+    listed = await http.get(f"{BASE}/platform/showcase-links", headers=_bearer(super_admin))
+    assert listed.json() == []
+    again = await _patch(http, super_admin, link, label="Edited after delete")
+    assert again.status_code == 404
 
 
-async def test_a_window_that_ends_before_it_starts_or_in_the_past_is_refused(
-    http: httpx.AsyncClient, super_admin: User
+async def test_one_qr_per_workspace_and_its_code_never_changes(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    other_tenant: Tenant,
+    other_hr_user: User,
+    no_ai: None,
 ) -> None:
-    now = datetime.now(UTC)
-    backwards = _body(starts_at=now.isoformat(), ends_at=(now - timedelta(hours=1)).isoformat())
-    past = _body(
-        starts_at=(now - timedelta(days=3)).isoformat(),
-        ends_at=(now - timedelta(days=1)).isoformat(),
-    )
-    for body in (backwards, past):
-        response = await http.post(
-            f"{BASE}/platform/showcase-links", json=body, headers=_bearer(super_admin)
-        )
-        assert response.status_code == 422
+    first = await _create(http, super_admin, tenant, hr_user, pin="1357")
+    code = first["code"]
 
-
-async def test_an_edit_that_breaks_the_margin_is_refused_and_nothing_changes(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User
-) -> None:
-    link = await _create(http, super_admin)
-    response = await http.patch(
-        f"{BASE}/platform/showcase-links/{link['id']}",
-        json={"team_budget": "5000000"},
+    # A second QR for the same workspace is refused: edit the one there is.
+    second = await http.post(
+        f"{BASE}/platform/showcase-links",
+        json=_body(tenant, hr_user, label="Another event"),
         headers=_bearer(super_admin),
     )
-    assert response.status_code == 422
-    await session.rollback()
-    row = await session.get(ShowcaseLink, link["id"])
-    await session.refresh(row)
-    assert str(row.team_budget) == "3000000.00"
-    assert await _audits(session, AuditAction.UPDATE) == []
+    assert second.status_code == 409 and "code never changes" in second.text
+
+    # A link never moves to another workspace (its printed QR is that workspace's).
+    moved = await _patch(http, super_admin, first, workspace_id=str(other_tenant.id))
+    assert moved.status_code == 422
+
+    # Deleted: the printed QR says it is switched off, not that it does not exist.
+    await http.delete(f"{BASE}/platform/showcase-links/{first['id']}", headers=_bearer(super_admin))
+    seen = await http.get(f"{BASE}/public/showcase/{code}")
+    assert seen.status_code == 200 and seen.json()["status"] == "off"
+    refused = await http.post(f"{BASE}/public/showcase/{code}/runs", json={"pin": "1357"})
+    assert refused.status_code == 410 and refused.headers["x-showcase-status"] == "off"
+
+    # Made again for the same workspace, with new details: the same code, the same QR.
+    remade = await _create(
+        http, super_admin, tenant, hr_user, label="Second expo", pin="2468", daily_messages=50
+    )
+    assert remade["code"] == code and remade["url"] == first["url"]
+    assert remade["id"] == first["id"]
+    assert remade["label"] == "Second expo" and remade["pin"] == "2468"
+    assert remade["status"] == "live"
+    run = await _start(http, code, "2468")
+    assert run["run_id"]
+    qr_before = first["url"]
+    qr = await http.get(
+        f"{BASE}/platform/showcase-links/{remade['id']}/qr?format=svg",
+        headers=_bearer(super_admin),
+    )
+    assert qr.status_code == 200 and remade["url"] == qr_before
+    created = await _audits(session, AuditAction.CREATE)
+    assert [row.summary for row in created] == [
+        f"Showcase link created: {first['label']}",
+        "Showcase link made again with its printed code: Second expo",
+    ]
+
+    # Another workspace gets its own code.
+    other = await _create(http, super_admin, other_tenant, other_hr_user)
+    assert other["code"] != code
 
 
 # ── A visitor ────────────────────────────────────────────────────────────────
 
 
-async def _start(http: httpx.AsyncClient, code: str) -> dict[str, Any]:
-    response = await http.post(f"{BASE}/public/showcase/{code}/runs")
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-async def test_a_visitor_runs_the_story_without_signing_in(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User, tenant: Tenant
+async def test_a_scan_opens_the_workspaces_ask_miraa_answering_as_the_admin(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    no_ai: None,
 ) -> None:
-    link = await _create(http, super_admin, tenant=tenant)
+    link = await _create(http, super_admin, tenant, hr_user)
     code = link["code"]
-    described = await http.get(f"{BASE}/public/showcase/{code}")
-    assert described.status_code == 200
-    assert described.json()["status"] == "live" and described.json()["company"] == tenant.name
-    assert described.headers["cache-control"] == "private, no-store"
+
+    seen = await http.get(f"{BASE}/public/showcase/{code}")
+    assert seen.status_code == 200
+    assert seen.json() == {
+        "status": "live",
+        "company": tenant.name,
+        "logo_url": None,
+        "ends_at": seen.json()["ends_at"],
+        "needs_pin": False,
+    }
+    assert seen.headers["cache-control"] == "private, no-store"
 
     run = await _start(http, code)
-    key, run_id = run["key"], run["run_id"]
-    assert run["chapters"][0]["state"] == "current"
-    assert run["messages"][0]["role"] == "assistant"
-    headers = {"X-Showcase-Key": key}
+    assert run["company"] == tenant.name and run["acting_name"] == hr_user.full_name
+    assert run["status"]["mode"] == "direct" and run["status"]["can_configure"] is False
 
-    said = await http.post(
-        f"{BASE}/public/showcase/{code}/runs/{run_id}/say",
-        json={"text": run["suggestions"][0]},
-        headers=headers,
-    )
-    assert said.status_code == 200, said.text
-    action = said.json()["autoplay"]["decide"]
-    decided = await http.post(
-        f"{BASE}/public/showcase/{code}/runs/{run_id}/decide",
-        json={"action_id": action, "confirm": True},
-        headers=headers,
-    )
-    assert decided.status_code == 200
-    assert [c["state"] for c in decided.json()["chapters"][:2]] == ["done", "done"]
+    # Real records of the workspace, as the admin: a colleague is found.
+    first = await _say(http, code, run, "Find Anita")
+    assert first.status_code == 200, first.text
+    reply = first.json()["messages"][1]
+    assert reply["tool"] == "search_people"
+    assert "Anita" in str(reply["cards"])
+    second = await _say(http, code, run, "who is Anita's manager?")
+    assert second.json()["conversation"]["id"] == first.json()["conversation"]["id"]
 
-    # The same click again is refused, not run twice.
+    # A reload carries on with the same chat.
+    again = await http.get(
+        f"{BASE}/public/showcase/{code}/runs/{run['run_id']}",
+        headers={"X-Showcase-Key": run["key"]},
+    )
+    assert again.status_code == 200
+    assert [m["role"] for m in again.json()["messages"]] == ["user", "assistant"] * 2
+
+    # It is the admin's own Ask Miraa conversation, audited as them.
+    conversation = await session.get(
+        CompanionConversation, uuid.UUID(first.json()["conversation"]["id"])
+    )
+    assert conversation is not None and conversation.user_id == hr_user.id
+    assert conversation.tenant_id == tenant.id
+    audited = (
+        await session.scalars(select(AuditLog).where(AuditLog.entity_type == "companion_message"))
+    ).all()
+    assert len(audited) == 2 and {row.actor_user_id for row in audited} == {hr_user.id}
+
+    row = await session.get(ShowcaseLink, uuid.UUID(link["id"]))
+    assert row is not None and row.visits == 1 and row.messages_today == 2
+
+
+async def test_a_pin_is_asked_for_and_wrong_ones_are_refused(
+    http: httpx.AsyncClient, super_admin: User, tenant: Tenant, hr_user: User, no_ai: None
+) -> None:
+    link = await _create(http, super_admin, tenant, hr_user, pin="2468")
+    code = link["code"]
+    assert (await http.get(f"{BASE}/public/showcase/{code}")).json()["needs_pin"] is True
+    for pin in (None, "", "1111", "24680"):
+        refused = await http.post(f"{BASE}/public/showcase/{code}/runs", json={"pin": pin})
+        assert refused.status_code == 403
+    run = await _start(http, code, " 2468 ")
+    assert run["run_id"]
+
+    # Guessing is slowed down: twenty wrong PINs from one address, then a pause.
+    public_guard.LIMITER.reset()
+    statuses = [
+        (await http.post(f"{BASE}/public/showcase/{code}/runs", json={"pin": "0000"})).status_code
+        for _ in range(22)
+    ]
+    assert statuses[:20] == [403] * 20 and statuses[-1] == 429
+
+
+async def test_visitors_never_see_each_others_chats_or_the_admins_own(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    other_tenant: Tenant,
+    other_hr_user: User,
+    no_ai: None,
+) -> None:
+    link = await _create(http, super_admin, tenant, hr_user)
+    code = link["code"]
+    one, two = await _start(http, code), await _start(http, code)
+    said = await _say(http, code, one, "Find Anita", client_ref="same-ref-123")
+    assert said.status_code == 200
+
+    # The second visitor's key does not open the first's chat.
+    peek = await http.get(
+        f"{BASE}/public/showcase/{code}/runs/{one['run_id']}",
+        headers={"X-Showcase-Key": two["key"]},
+    )
+    assert peek.status_code == 404
+    # The same message id from another visitor is a new message, never the first answer.
+    copied = await _say(http, code, two, "hello", client_ref="same-ref-123")
+    assert copied.status_code == 200
+    assert copied.json()["conversation"]["id"] != said.json()["conversation"]["id"]
+    assert copied.json().get("repeat") is not True
+    # A conversation id in the body is not taken.
+    named = await _say(http, code, two, "hi", conversation_id=said.json()["conversation"]["id"])
+    assert named.status_code == 422
+
+    # A retry of the same message (same id, same visitor) is answered once.
+    retry = await _say(http, code, one, "Find Anita", client_ref="same-ref-123")
+    assert retry.json()["repeat"] is True
+    mine = await session.scalar(
+        select(func.count()).select_from(CompanionMessage).where(CompanionMessage.role == "user")
+    )
+    assert mine == 2
+
+    # A wrong code with a right run, or no key at all, is refused the same way.
+    other = await _create(
+        http, super_admin, other_tenant, other_hr_user, label="Another workspace's expo"
+    )
+    crossed = await http.get(
+        f"{BASE}/public/showcase/{other['code']}/runs/{one['run_id']}",
+        headers={"X-Showcase-Key": one["key"]},
+    )
+    assert crossed.status_code == 404
+    keyless = await http.get(f"{BASE}/public/showcase/{code}/runs/{one['run_id']}")
+    assert keyless.status_code == 404
+
+
+async def test_switching_off_ending_or_the_admin_leaving_stops_open_pages(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    no_ai: None,
+) -> None:
+    link = await _create(http, super_admin, tenant, hr_user)
+    code = link["code"]
+    run = await _start(http, code)
+
+    await _patch(http, super_admin, link, is_active=False)
+    stopped = await _say(http, code, run, "Find Anita")
+    assert stopped.status_code == 410
+    assert stopped.headers["x-showcase-status"] == "off"
+    assert stopped.json()["detail"] == "This showcase link has been switched off."
+    described = (await http.get(f"{BASE}/public/showcase/{code}")).json()
+    assert described["status"] == "off" and "needs_pin" not in described
+
+    later = (datetime.now(UTC) + timedelta(hours=3)).isoformat()
+    await _patch(http, super_admin, link, is_active=True, starts_at=later)
+    early = await _say(http, code, run, "Find Anita")
+    assert early.headers["x-showcase-status"] == "scheduled"
+
+    now = datetime.now(UTC)
+    await _patch(
+        http,
+        super_admin,
+        link,
+        starts_at=(now - timedelta(days=2)).isoformat(),
+        ends_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+    assert (await _say(http, code, run, "Find Anita")).headers["x-showcase-status"] == "ended"
+
+    await _patch(http, super_admin, link, ends_at=(now + timedelta(days=1)).isoformat())
+    assert (await _say(http, code, run, "Find Anita")).status_code == 200
+    hr_user.is_active = False
+    await session.commit()
+    gone = await _say(http, code, run, "Find Anita")
+    assert gone.status_code == 410 and gone.headers["x-showcase-status"] == "unavailable"
+
+
+async def test_the_links_own_daily_cap_and_each_chats_cap(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    no_ai: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The admin's own daily count is not what stops a showcase: the link's is.
+    config = await companion_config.get_config(session, hr_user)
+    await companion_config.set_config(
+        session, hr_user, config.model_copy(update={"daily_messages_per_person": 5}), request=None
+    )
+    link = await _create(http, super_admin, tenant, hr_user, daily_messages=10)
+    code = link["code"]
+    monkeypatch.setattr(showcase_links, "MAX_TURNS", 7)
+    first = await _start(http, code)
+    for _ in range(7):
+        assert (await _say(http, code, first, "Find Anita")).status_code == 200
+    full = await _say(http, code, first, "Find Anita")
+    assert full.status_code == 429 and "Start a new chat" in full.json()["detail"]
+
+    second = await _start(http, code)
+    assert second["status"]["daily_limit"] - second["status"]["sent_today"] == 3
+    for _ in range(3):
+        assert (await _say(http, code, second, "Find Anita")).status_code == 200
+    day = await _say(http, code, second, "Find Anita")
+    assert day.status_code == 429 and "for today" in day.json()["detail"]
+
+
+async def test_an_offer_is_confirmed_only_from_the_chat_it_was_made_in(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+    casual: LeaveType,  # noqa: F811
+) -> None:
+    # The admin has an employee record, Ask Miraa on and their consent given.
+    hr_user.employee_id = employee.id
+    await session.commit()
+    await _ai_on(session, hr_user)
+    await _consent(session, tenant.id, employee.id)
+    link = await _create(http, super_admin, tenant, hr_user)
+    code = link["code"]
+    one, two = await _start(http, code), await _start(http, code)
+    day = _weekday_ahead(9)
+    model = FakeModel(
+        [tool_call("apply_leave", leave_type="CL", **{"from": day.isoformat()})],
+        "Press Confirm to send it.",
+        "Hello.",
+    )
+    with use_backend(model):
+        offered = await _say(http, code, one, "a casual leave next week")
+        assert offered.status_code == 200, offered.text
+        await _say(http, code, two, "hello")
+    card = offered.json()["messages"][1]["cards"][0]
+    assert card["type"] == "proposal"
+    action = card["action_id"]
+
+    stolen = await http.post(
+        f"{BASE}/public/showcase/{code}/runs/{two['run_id']}/actions/{action}/confirm",
+        headers={"X-Showcase-Key": two["key"]},
+    )
+    assert stolen.status_code == 404
+    done = await http.post(
+        f"{BASE}/public/showcase/{code}/runs/{one['run_id']}/actions/{action}/confirm",
+        headers={"X-Showcase-Key": one["key"]},
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["action"]["status"] == "done"
     again = await http.post(
-        f"{BASE}/public/showcase/{code}/runs/{run_id}/decide",
-        json={"action_id": action, "confirm": True},
-        headers=headers,
+        f"{BASE}/public/showcase/{code}/runs/{one['run_id']}/actions/{action}/cancel",
+        headers={"X-Showcase-Key": one["key"]},
     )
     assert again.status_code == 409
 
-    read = await http.get(f"{BASE}/public/showcase/{code}/runs/{run_id}", headers=headers)
-    assert read.status_code == 200 and read.json()["chapters"][1]["state"] == "done"
-    assert (await http.get(f"{BASE}/public/showcase/{code}/runs/{run_id}")).status_code == 404
-    wrong = await http.get(
-        f"{BASE}/public/showcase/{code}/runs/{run_id}", headers={"X-Showcase-Key": key + "x"}
-    )
-    assert wrong.status_code == 404
 
-    # Another link's code does not reach this story, even with the key.
-    other = await _create(http, super_admin, label="Another event")
-    crossed = await http.get(
-        f"{BASE}/public/showcase/{other['code']}/runs/{run_id}", headers=headers
-    )
-    assert crossed.status_code == 404
-
-    row = await session.get(ShowcaseLink, link["id"])
-    await session.refresh(row)
-    assert row.visits == 1 and row.last_visit_at is not None
-    stored = await session.get(ShowcaseRun, run_id)
-    assert stored is not None and stored.key_hash != key and stored.turns == 2
+async def test_a_bad_code_is_a_plain_not_found(http: httpx.AsyncClient) -> None:
+    for code in ("short", "x" * 80, "notarealcode123"):
+        response = await http.get(f"{BASE}/public/showcase/{code}")
+        assert response.status_code == 404
 
 
-async def test_switching_a_link_off_stops_an_open_page_on_its_next_step(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User
+async def test_old_chats_are_forgotten_when_a_new_one_starts(
+    http: httpx.AsyncClient,
+    session: AsyncSession,
+    super_admin: User,
+    tenant: Tenant,
+    hr_user: User,
 ) -> None:
-    link = await _create(http, super_admin)
+    link = await _create(http, super_admin, tenant, hr_user)
     run = await _start(http, link["code"])
-    headers = {"X-Showcase-Key": run["key"]}
-    off = await http.patch(
-        f"{BASE}/platform/showcase-links/{link['id']}",
-        json={"is_active": False},
-        headers=_bearer(super_admin),
-    )
-    assert off.status_code == 200 and off.json()["status"] == "off"
-    said = await http.post(
-        f"{BASE}/public/showcase/{link['code']}/runs/{run['run_id']}/say",
-        json={"text": "Book the order"},
-        headers=headers,
-    )
-    assert said.status_code == 410
-    assert said.headers["x-showcase-status"] == "off"
-    assert said.json()["detail"] == "This showcase link has been switched off."
-    described = (await http.get(f"{BASE}/public/showcase/{link['code']}")).json()
-    assert described == {
-        "status": "off",
-        "company": "AskMiraa",
-        "logo_url": None,
-        "message": "This showcase link has been switched off.",
-    }
-    assert (await http.post(f"{BASE}/public/showcase/{link['code']}/runs")).status_code == 410
-
-    switched = await _audits(session, AuditAction.UPDATE)
-    assert len(switched) == 1 and switched[0].summary.startswith("Showcase link switched off")
-
-    on = await http.patch(
-        f"{BASE}/platform/showcase-links/{link['id']}",
-        json={"is_active": True},
-        headers=_bearer(super_admin),
-    )
-    assert on.json()["status"] == "live"
-    said = await http.post(
-        f"{BASE}/public/showcase/{link['code']}/runs/{run['run_id']}/say",
-        json={"text": "Book the order"},
-        headers=headers,
-    )
-    assert said.status_code == 200
-
-
-async def test_a_link_outside_its_window_starts_no_story(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User
-) -> None:
-    now = datetime.now(UTC)
-    later = await _create(
-        http,
-        super_admin,
-        starts_at=(now + timedelta(days=1)).isoformat(),
-        ends_at=(now + timedelta(days=2)).isoformat(),
-    )
-    assert later["status"] == "scheduled"
-    described = (await http.get(f"{BASE}/public/showcase/{later['code']}")).json()
-    assert described["status"] == "scheduled" and "starts_at" in described
-    assert "client" not in described
-    refused = await http.post(f"{BASE}/public/showcase/{later['code']}/runs")
-    assert refused.status_code == 410 and refused.headers["x-showcase-status"] == "scheduled"
-
-    # Ended: move a live link's window into the past.
-    live = await _create(http, super_admin, label="Ended event")
-    row = await session.get(ShowcaseLink, live["id"])
-    row.starts_at = now - timedelta(days=3)
-    row.ends_at = now - timedelta(minutes=1)
+    row = await session.get(ShowcaseRun, uuid.UUID(run["run_id"]))
+    assert row is not None
+    row.updated_at = datetime.now(UTC) - timedelta(days=4)
     await session.commit()
-    assert (await http.get(f"{BASE}/public/showcase/{live['code']}")).json()["status"] == "ended"
-    assert (await http.post(f"{BASE}/public/showcase/{live['code']}/runs")).status_code == 410
-
-
-async def test_an_unknown_code_is_not_found(http: httpx.AsyncClient) -> None:
-    assert (await http.get(f"{BASE}/public/showcase/not-a-real-code")).status_code == 404
-    assert (await http.post(f"{BASE}/public/showcase/x/runs")).status_code == 404
-
-
-async def test_deleting_a_link_deletes_its_stories(
-    http: httpx.AsyncClient, session: AsyncSession, super_admin: User
-) -> None:
-    link = await _create(http, super_admin)
     await _start(http, link["code"])
-    await _start(http, link["code"])
-    deleted = await http.delete(
-        f"{BASE}/platform/showcase-links/{link['id']}", headers=_bearer(super_admin)
-    )
-    assert deleted.status_code == 204
-    assert await session.scalar(select(func.count()).select_from(ShowcaseRun)) == 0
-    assert await session.get(ShowcaseLink, link["id"]) is None
-    assert (await http.get(f"{BASE}/public/showcase/{link['code']}")).status_code == 404
-    assert len(await _audits(session, AuditAction.DELETE)) == 1
-
-
-async def test_bad_messages_are_refused_and_a_long_story_asks_for_a_fresh_start(
-    http: httpx.AsyncClient, super_admin: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    link = await _create(http, super_admin)
-    run = await _start(http, link["code"])
-    url = f"{BASE}/public/showcase/{link['code']}/runs/{run['run_id']}/say"
-    headers = {"X-Showcase-Key": run["key"]}
-    assert (await http.post(url, json={"text": ""}, headers=headers)).status_code == 422
-    assert (await http.post(url, json={"text": "x" * 501}, headers=headers)).status_code == 422
-    assert (await http.post(url, json={"text": "   "}, headers=headers)).status_code == 409
-
-    monkeypatch.setattr(story, "MAX_TURNS", 2)
-    assert (await http.post(url, json={"text": "help"}, headers=headers)).status_code == 200
-    assert (await http.post(url, json={"text": "help"}, headers=headers)).status_code == 200
-    capped = await http.post(url, json={"text": "help"}, headers=headers)
-    assert capped.status_code == 409 and "Start over" in capped.json()["detail"]
-
-
-async def test_the_whole_story_plays_through_the_api(
-    http: httpx.AsyncClient, super_admin: User
-) -> None:
-    link = await _create(http, super_admin)
-    run = await _start(http, link["code"])
-    base = f"{BASE}/public/showcase/{link['code']}/runs/{run['run_id']}"
-    headers = {"X-Showcase-Key": run["key"]}
-    view = run
-    for _ in range(40):
-        step = view["autoplay"]
-        if step is None:
-            break
-        if "say" in step:
-            response = await http.post(f"{base}/say", json={"text": step["say"]}, headers=headers)
-        else:
-            response = await http.post(
-                f"{base}/decide",
-                json={"action_id": step["decide"], "confirm": True},
-                headers=headers,
-            )
-        assert response.status_code == 200, response.text
-        view = response.json()
-    assert view["finished"]
-    assert view["board"]["pnl"]["net"] == "1634980.00"
-    assert view["board"]["cash"]["positive_from"] is not None
+    left = await session.scalar(select(func.count()).select_from(ShowcaseRun))
+    assert left == 1

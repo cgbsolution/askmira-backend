@@ -188,3 +188,29 @@ class SessionRead(BaseModel):
     tenant: TenantRead
     #: Their own company's name and logo, drawn at the top of the portal and app.
     company: CompanyBrand | None = None
+
+
+class SavedAccountRead(BaseModel):
+    """One account signed in on this browser, as the account switcher lists it."""
+
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    role: UserRole
+    photo_url: str | None = None
+    #: The workspace's sign-in slug, for signing in again when the session has ended.
+    workspace: str
+    workspace_name: str
+    logo_url: str | None = None
+    #: The account this browser is using right now.
+    current: bool = False
+
+
+class SavedAccountsRead(BaseModel):
+    accounts: list[SavedAccountRead]
+
+
+class SavedAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: uuid.UUID

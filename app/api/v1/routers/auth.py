@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import cookies
@@ -30,6 +31,8 @@ from app.schemas.auth import (
     MfaLoginRequest,
     RefreshRequest,
     ResetPasswordRequest,
+    SavedAccountRequest,
+    SavedAccountsRead,
     SessionRead,
     TenantRead,
     UserRead,
@@ -38,18 +41,22 @@ from app.services import auth as auth_service
 from app.services import branding
 from app.services import mfa as mfa_service
 from app.services.hiring.public_guard import Limit, throttle
-from app.services.identity import directory, social
+from app.services.identity import directory, saved_accounts, social
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _deliver(result: AuthResponse, request: Request, response: Response) -> AuthResponse:
-    """Always set the session cookies; strip the body tokens for the web app."""
+    """Always set the session cookies; strip the body tokens for the web app.
+
+    The account is also saved on this browser, for the account switcher.
+    """
     cookies.set_session_cookies(
         response,
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         access_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        request=request,
     )
     if cookies.wants_cookie_transport(request):
         return result.model_copy(update={"access_token": "", "refresh_token": ""})
@@ -299,11 +306,80 @@ async def reset_password(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def logout(user: CurrentUser, response: Response) -> None:
+async def logout(
+    user: CurrentUser, request: Request, response: Response, every_account: bool = False
+) -> None:
     """End the web session for this browser.
 
-    Clears the session cookies for the caller's own browser. Access tokens are
-    short-lived; signing out every device is `POST /opsec/sessions/revoke`.
+    Clears the session cookies for the caller's own browser and forgets the
+    account in its account switcher — or, with `every_account`, forgets every
+    account saved here. Access tokens are short-lived; signing out every device
+    is `POST /opsec/sessions/revoke`.
     """
-    _ = user.id  # the caller's own session only
     cookies.clear_session_cookies(response)
+    remaining = (
+        []
+        if every_account
+        else cookies.without_account(cookies.saved_account_tokens(request), str(user.id))
+    )
+    cookies.set_saved_account_tokens(response, remaining)
+
+
+# ── Accounts signed in on this browser ──────────────────────────────────────
+
+
+def _require_csrf(request: Request) -> None:
+    if not cookies.csrf_ok(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF check failed")
+
+
+@router.get("/accounts", response_model=SavedAccountsRead)
+async def list_saved_accounts(
+    session: DbSession, request: Request, response: Response
+) -> SavedAccountsRead:
+    """Every account signed in on this browser, for the account switcher.
+
+    Needs no session of its own: the sign-in page lists them too, after the
+    person signed out of one. Accounts whose session has ended are dropped.
+    """
+    accounts, kept = await saved_accounts.list_accounts(session, request)
+    if kept != cookies.saved_account_tokens(request):
+        cookies.set_saved_account_tokens(response, kept)
+    # The chooser on the sign-in page switches with a POST, which wants one.
+    cookies.ensure_csrf_cookie(request, response)
+    return SavedAccountsRead(accounts=accounts)
+
+
+@router.post("/accounts/switch", response_model=AuthResponse)
+async def switch_account(
+    payload: SavedAccountRequest, session: DbSession, request: Request, response: Response
+) -> AuthResponse | JSONResponse:
+    """Make another account saved on this browser the active one, without its password."""
+    _require_csrf(request)
+    try:
+        result = await saved_accounts.switch(session, request, payload.user_id)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_401_UNAUTHORIZED:
+            raise
+        # Its session has ended: forget it, so the switcher stops offering it.
+        ended = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        cookies.set_saved_account_tokens(
+            ended,
+            cookies.without_account(cookies.saved_account_tokens(request), str(payload.user_id)),
+        )
+        return ended
+    return _deliver(result, request, response)
+
+
+@router.post("/accounts/forget", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def forget_account(
+    payload: SavedAccountRequest, request: Request, response: Response
+) -> None:
+    """Remove an account from this browser. Removing the active one signs it out here."""
+    _require_csrf(request)
+    user_id = str(payload.user_id)
+    cookies.set_saved_account_tokens(
+        response, cookies.without_account(cookies.saved_account_tokens(request), user_id)
+    )
+    if cookies.refresh_subject(request.cookies.get(cookies.REFRESH_COOKIE)) == user_id:
+        cookies.clear_session_cookies(response)

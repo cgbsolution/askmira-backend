@@ -95,6 +95,7 @@ async def exit_client(
         access_token=result.access_token,
         refresh_token=result.refresh_token,
         access_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        request=request,
     )
     if cookies.wants_cookie_transport(request):
         return result.model_copy(update={"access_token": "", "refresh_token": ""})

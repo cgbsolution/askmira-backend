@@ -199,7 +199,7 @@ _UNSCOPED_BY_DESIGN = {
     # Fenced by `test_the_demo_request_service_reads_only_its_own_table_and_logins`.
     "demo_requests.py",
     # Showcase links belong to the platform, not a workspace (no tenant column);
-    # a visitor's story belongs to a link and is read by its id and key. Only the
+    # a visitor's chat belongs to a link and is read by its id and key. Only the
     # super admin manages links, checked in the service and on the route. Fenced
     # by `test_the_showcase_service_reads_only_its_own_tables`.
     "showcase_links.py",
@@ -13690,9 +13690,10 @@ def test_the_demo_request_service_reads_only_its_own_table_and_logins() -> None:
 
 def test_the_showcase_service_reads_only_its_own_tables() -> None:
     """`showcase_links.py` is exempt from tenant scoping because a showcase link
-    belongs to the platform and a visitor's story to its link. The exemption
-    holds only while the module selects its own two tables, reads a workspace by
-    primary key for its name and logo, and the showcase tables carry no tenant."""
+    belongs to the platform and a visitor's chat to its link. The exemption holds
+    only while the module selects its own two tables, reads a workspace and its
+    admin by primary key, and reaches anything inside the workspace through Ask
+    Miraa's own (tenant-scoped) service, never by a query of its own."""
     source = source_of(APP / "services" / "showcase" / "showcase_links.py")
     targets = set(re.findall(r"(?<![\w.])(?:select|delete)\s*\(\s*(\w+)", source))
     assert targets <= {"ShowcaseLink", "ShowcaseRun"}, (
@@ -13701,7 +13702,10 @@ def test_the_showcase_service_reads_only_its_own_tables() -> None:
     )
     assert re.findall(r"session\.get\(\s*(\w+)", source) and set(
         re.findall(r"session\.get\(\s*(\w+)", source)
-    ) <= {"Tenant", "ShowcaseLink", "ShowcaseRun"}
+    ) <= {"Tenant", "User", "ShowcaseLink", "ShowcaseRun"}
+    # A visitor never names the conversation: the run does.
+    assert "conversation_id=run.conversation_id" in source
+    assert "body.conversation_id" not in source
 
     from app.models.showcase import ShowcaseLink, ShowcaseRun
 
