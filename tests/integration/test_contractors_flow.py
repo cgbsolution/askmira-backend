@@ -259,10 +259,10 @@ async def test_26q_tds_is_tied_to_challans_and_stated_per_contractor(
 
     for bad, why in ((salary, "24Q"), (wrong_quarter, "Q2"), (small, "does not fit")):
         with pytest.raises(HTTPException) as refused:
-            await contractors.link_challan(session, hr_user, invoice_id, bad.id)
+            await contractors.link_challan(session, hr_user, invoice_id, challan_id=bad.id)
         assert why in refused.value.detail
 
-    linked = await contractors.link_challan(session, hr_user, invoice_id, right.id)
+    linked = await contractors.link_challan(session, hr_user, invoice_id, challan_id=right.id)
     assert linked["challan_id"] == str(right.id)
     position = await contractors.challan_position(
         session, hr_user, financial_year="2026-27", quarter=2

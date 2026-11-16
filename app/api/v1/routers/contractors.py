@@ -100,7 +100,7 @@ async def link_challan(
 ) -> dict[str, Any]:
     """Tie an invoice's TDS to the 26Q challan it was deposited under."""
     return await contractors.link_challan(
-        session, user, invoice_id, payload.challan_id, request=request
+        session, user, invoice_id, challan_id=payload.challan_id, request=request
     )
 
 

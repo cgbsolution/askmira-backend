@@ -206,7 +206,7 @@ async def test_link_challan_validations_for_a_payout_line(
             session,
             hr_user,
             uuid.uuid4(),
-            small.id,
+            challan_id=small.id,
             consultant_payout_line_id=line.id,
         )
     assert both_given.value.status_code == 422
@@ -254,8 +254,72 @@ async def test_a_challan_counts_invoices_and_payout_lines_together(
 
     # 8,800 already tied from the payout; the invoice's 6,000 TDS no longer fits in 10,000.
     with pytest.raises(HTTPException) as over:
-        await contractors.link_challan(session, hr_user, uuid.UUID(invoice["id"]), challan.id)
+        await contractors.link_challan(
+            session, hr_user, uuid.UUID(invoice["id"]), challan_id=challan.id
+        )
     assert over.value.status_code == 422 and "does not fit" in over.value.detail
+
+
+async def test_scoped_admin_sees_whole_deductor_for_26q_and_challans(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from sqlalchemy import select
+
+    from app.core import hr_scope
+
+    await _setup(session, tenant, hr_user)
+    inside = await _consultant(session, tenant, legal_entity, "CON1")
+    outside = await _consultant(session, tenant, legal_entity, "CON2")
+    for person in (inside, outside):
+        session.add(
+            ConsultantTdsOpening(
+                tenant_id=tenant.id,
+                employee_id=person.id,
+                fy_start=date(2026, 4, 1),
+                section=TdsSection.S194J_PROFESSIONAL,
+                fees_paid=Decimal("40000"),
+            )
+        )
+        await session.commit()
+        await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(run["id"]), confirm=_confirmed)
+    lines = {
+        line.employee_id: line
+        for line in (await session.scalars(select(ConsultantPayoutLine))).all()
+    }
+    # Room for one person's 8,800, not both. The out-of-scope consultant's is already tied.
+    challan = await _challan(session, tenant, legal_entity, "10000")
+    await contractors.link_challan(
+        session,
+        hr_user,
+        challan_id=challan.id,
+        consultant_payout_line_id=lines[outside.id].id,
+    )
+
+    hr_scope.set_scope(hr_scope.HrScope(employee_ids=(inside.id,)))
+    try:
+        with pytest.raises(HTTPException) as over:
+            await contractors.link_challan(
+                session,
+                hr_user,
+                challan_id=challan.id,
+                consultant_payout_line_id=lines[inside.id].id,
+            )
+        assert over.value.status_code == 422 and "does not fit" in over.value.detail
+        text = await contractors.form_26q_csv(session, hr_user, financial_year="2026-27", quarter=3)
+        position = await contractors.challan_position(
+            session, hr_user, financial_year="2026-27", quarter=3
+        )
+    finally:
+        hr_scope.set_scope(None)
+    names = {row["Deductee name"] for row in csv.DictReader(io.StringIO(text))}
+    assert names == {inside.full_name, outside.full_name}
+    assert position["challans"][0]["tied"] == "8800.00"
+    assert position["untied_invoices"] == 1
 
 
 async def _other_hr(session: AsyncSession, tenant):

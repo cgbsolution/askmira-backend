@@ -499,7 +499,12 @@ async def _consultant_deductions(
     )
     if employee_id is not None:
         stmt = stmt.where(ConsultantPayoutLine.employee_id == employee_id)
-    rows = (await session.execute(tenant_scoped(stmt, ConsultantPayoutLine, user))).all()
+    # 26Q and challans are for the whole deductor, not the caller's scope of people.
+    rows = (
+        await session.execute(
+            tenant_scoped(stmt, ConsultantPayoutLine, user).execution_options(hr_scope_bypass=True)
+        )
+    ).all()
     return [
         _Deduction(
             pan=person.pan,
@@ -667,7 +672,13 @@ async def _linked_total(
     if excluding_line is not None:
         lines = lines.where(ConsultantPayoutLine.id != excluding_line)
     amounts = list((await session.scalars(tenant_scoped(invoices, ContractorInvoice, user))).all())
-    amounts += (await session.scalars(tenant_scoped(lines, ConsultantPayoutLine, user))).all()
+    # Whole-deductor view: a scoped caller must still see consultants outside their scope, or
+    # they could tie more TDS to a challan than it deposited.
+    amounts += (
+        await session.scalars(
+            tenant_scoped(lines, ConsultantPayoutLine, user).execution_options(hr_scope_bypass=True)
+        )
+    ).all()
     return sum((_d(a) for a in amounts), Decimal(0))
 
 
@@ -695,8 +706,8 @@ async def link_challan(
     session: AsyncSession,
     user: User,
     invoice_id: uuid.UUID | None = None,
-    challan_id: uuid.UUID | None = None,
     *,
+    challan_id: uuid.UUID | None,
     consultant_payout_line_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> dict[str, Any]:
@@ -722,6 +733,7 @@ async def link_challan(
         credit_date = target.invoice_date
         statuses_ok = target.status in (InvoiceStatus.APPROVED, InvoiceStatus.PAID)
         not_ready = "Only an approved or paid invoice has TDS to deposit."
+        what_goes = "Contractor TDS goes under a 26Q one."
         entity_type = "contractor_invoice"
         excluding = {"excluding_invoice": target.id}
     else:
@@ -732,6 +744,7 @@ async def link_challan(
         credit_date = run.pay_date
         statuses_ok = run.status in (PayoutRunStatus.APPROVED, PayoutRunStatus.PAID)
         not_ready = "Only an approved or paid payout run has TDS to deposit."
+        what_goes = "This TDS goes under a 26Q one."
         entity_type = "consultant_payout_line"
         excluding = {"excluding_line": target.id}
     deducted = _d(target.tds_amount)
@@ -754,7 +767,7 @@ async def link_challan(
         if challan.form != "26Q":
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="That is a 24Q (salary) challan. Contractor TDS goes under a 26Q one.",
+                detail=f"That is a 24Q (salary) challan. {what_goes}",
             )
         start_year, quarter = _quarter_of(credit_date)
         if int(challan.financial_year[:4]) != start_year or challan.quarter != quarter:
