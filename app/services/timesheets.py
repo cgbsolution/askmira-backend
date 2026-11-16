@@ -50,7 +50,7 @@ from app.models.timesheets import (
 from app.models.user import User, UserRole
 from app.services import audit
 from app.services.approvals.email_actions import ApprovalRef
-from app.services.consultants import can_manage_consultant, is_consultant
+from app.services.consultants import can_manage_consultant, is_consultant, timesheet_approval
 from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
@@ -85,6 +85,14 @@ register_event(
     "{employee_name} submitted a timesheet",
     "{employee_name} submitted {hours} hours for the week of {week}. Decide it under "
     "Time, Timesheet approvals.",
+)
+register_event(
+    "timesheets.customer_request",
+    "Please approve {employee_name}'s hours for the week of {week}",
+    "Hello {contact_name},\n\n{employee_name} worked {hours} hours for {company} in the week "
+    "of {week}. Please choose Approve if those hours are right, or Reject and say what needs "
+    "changing. The link works once and expires in 14 days. If you have a question, reply to "
+    "this email.",
 )
 register_event(
     "timesheets.decided",
@@ -750,6 +758,8 @@ async def save_week(
             )
         )
     sheet.status = TimesheetStatus.DRAFT
+    # Whatever the customer was emailed no longer matches the hours.
+    await timesheet_approval.revoke_links(session, sheet.id)
     if target != user.employee_id:
         await audit.record(
             session,
@@ -805,6 +815,13 @@ async def submit_week(
 
     employee = await _employee(session, user, target)
     consultant = employee is not None and is_consultant(employee)
+    route_is_customer = consultant and (
+        (employee.timesheet_approver_route or ApproverRoute.INTERNAL) is ApproverRoute.CUSTOMER
+    )
+    if route_is_customer and not (employee.customer_contact_email or "").strip():
+        raise _unprocessable(
+            "Add the customer contact's email to this consultant before submitting the week."
+        )
     sheet.status = TimesheetStatus.SUBMITTED
     sheet.submitted_at = datetime.now(UTC)
     sheet.decision_note = None
@@ -856,7 +873,13 @@ async def submit_week(
         summary=f"Submitted the timesheet for the week of {start}",
         request=request,
     )
+    link = token = None
+    if route_is_customer:
+        # The link is made with the submission; the email goes once it is saved.
+        link, token = await timesheet_approval.issue_link(session, sheet, employee)
     await session.commit()
+    if link is not None and token is not None:
+        await timesheet_approval.deliver(session, link, token, employee)
     return await _read(session, user, sheet, week_start=start, employee_id=target)
 
 
@@ -1062,6 +1085,8 @@ async def decide(
     sheet.decided_by_user_id = user.id
     sheet.decided_at = datetime.now(UTC)
     sheet.decision_note = clean
+    # Decided here, so an emailed customer link no longer applies.
+    await timesheet_approval.revoke_links(session, sheet.id)
 
     pay_note = None
     # A consultant's week is paid by a consultant payout run, never payroll.
@@ -1181,6 +1206,7 @@ async def reopen_week(
     sheet.decided_at = None
     sheet.decision_note = None
     sheet.approval_proof = None
+    await timesheet_approval.revoke_links(session, sheet.id)
     await audit.record(
         session,
         tenant_id=user.tenant_id,

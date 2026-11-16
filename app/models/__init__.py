@@ -654,6 +654,7 @@ from app.models.timesheets import (
     Project,
     ProjectTask,
     Timesheet,
+    TimesheetApprovalLink,
     TimesheetEntry,
     TimesheetStatus,
 )
@@ -1211,6 +1212,7 @@ __all__ = [
     "TenantSessionPolicy",
     "TenantWhatsAppSettings",
     "Timesheet",
+    "TimesheetApprovalLink",
     "TimesheetEntry",
     "TimesheetStatus",
     "TimestampMixin",

@@ -31,6 +31,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -169,6 +170,37 @@ class TimesheetEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     hours: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class TimesheetApprovalLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """A single-use link that lets a customer approve or reject one consultant week.
+
+    Only a SHA-256 of the token is stored, so a leaked database holds nothing
+    that decides a week. `contents_hash` fingerprints the hours the customer
+    was shown: if the week changes, the link no longer applies. Used, revoked
+    or expired rows stay as the record of what was asked.
+    """
+
+    __tablename__ = "timesheet_approval_links"
+
+    timesheet_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("timesheets.id", ondelete="CASCADE", name="fk_timesheet_links_timesheet"),
+        nullable=False,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    contents_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    sent_to_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sent_to_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminders_sent: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    decided_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class HourlyRate(Base, UUIDMixin, TenantMixin, TimestampMixin):

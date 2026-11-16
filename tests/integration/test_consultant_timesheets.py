@@ -216,7 +216,13 @@ async def test_customer_route_only_records_the_route(
     session, tenant, hr_user, legal_entity
 ) -> None:
     consultant, consultant_login = await _consultant(
-        session, tenant, legal_entity, "CON1", route=ApproverRoute.CUSTOMER
+        session,
+        tenant,
+        legal_entity,
+        "CON1",
+        route=ApproverRoute.CUSTOMER,
+        customer_contact_name="Asha",
+        customer_contact_email="asha@client.example.com",
     )
     await timesheets.save_week(session, consultant_login, MONDAY, _hours((7, "8")))
     submitted = await timesheets.submit_week(session, consultant_login, MONDAY)

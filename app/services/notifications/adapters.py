@@ -123,6 +123,8 @@ class OutboundMessage:
     # found last time (None: look them up by email).
     actions: tuple[MessageAction, ...] = ()
     chat_address: str | None = None
+    #: Email only: where a reply goes, when not the sender.
+    reply_to: str | None = None
 
 
 class ChannelAdapter(ABC):
@@ -469,6 +471,8 @@ class SmtpEmailAdapter(ChannelAdapter):
         )
         email["To"] = address
         email["Subject"] = subject[:250]
+        if message.reply_to and "@" in message.reply_to and message.reply_to.isprintable():
+            email["Reply-To"] = message.reply_to
         message_id = make_msgid(domain=self._from_address.rsplit("@", 1)[-1])
         email["Message-ID"] = message_id
         email.set_content(message.body)

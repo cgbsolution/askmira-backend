@@ -1,0 +1,339 @@
+"""A customer approves or rejects a consultant's week from an emailed link."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.audit import AuditLog
+from app.models.employee import ApproverRoute, Employee, EmploymentStatus, EmploymentType
+from app.models.notifications import Notification
+from app.models.org import LegalEntity
+from app.models.tenant import Tenant
+from app.models.timesheets import Timesheet, TimesheetApprovalLink, TimesheetStatus
+from app.models.user import User, UserRole
+from app.services import timesheets
+from app.services.consultants import timesheet_approval
+from app.services.notifications import dispatch
+from app.services.notifications.adapters import ConsoleEmailAdapter
+from app.services.timesheets import EntryIn, RateIn
+from tests.integration.conftest import as_caller, requires_db
+from tests.integration.platform_support import client  # noqa: F401  (fixture)
+
+pytestmark = requires_db
+
+MONDAY = date(2026, 9, 7)
+CONTACT = "asha@client.example.com"
+
+
+@pytest.fixture(autouse=True)
+def _web_address(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "WEB_APP_URL", "https://app.example.test")
+
+
+@pytest.fixture
+def mail(monkeypatch) -> ConsoleEmailAdapter:
+    adapter = ConsoleEmailAdapter()
+    monkeypatch.setattr(dispatch, "_DEFAULT_EMAIL_ADAPTER", adapter)
+    return adapter
+
+
+async def _login(
+    session: AsyncSession, tenant: Tenant, entity: LegalEntity, code: str, **extra
+) -> tuple[Employee, User]:
+    person = Employee(
+        tenant_id=tenant.id,
+        employee_code=code,
+        first_name=code.title(),
+        work_email=f"{code.lower()}@acme-demo.com",
+        legal_entity_id=entity.id,
+        status=EmploymentStatus.ACTIVE,
+        **extra,
+    )
+    session.add(person)
+    await session.flush()
+    login = User(
+        tenant_id=tenant.id,
+        email=f"{code.lower()}.cta@acme-demo.com",
+        password_hash="x",
+        full_name=code.title(),
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
+    )
+    session.add(login)
+    await session.commit()
+    return person, await as_caller(session, login)
+
+
+async def _customer_consultant(session, tenant, entity, code, *, approver=None, email=CONTACT):
+    return await _login(
+        session,
+        tenant,
+        entity,
+        code,
+        employment_type=EmploymentType.CONSULTANT,
+        timesheet_approver_route=ApproverRoute.CUSTOMER,
+        customer_contact_name="Asha",
+        customer_contact_email=email,
+        internal_approver_user_id=approver.id if approver else None,
+    )
+
+
+async def _fill(session, login, *days: tuple[int, int]) -> None:
+    await timesheets.save_week(
+        session,
+        login,
+        MONDAY,
+        [EntryIn(work_date=date(2026, 9, d), hours=Decimal(h)) for d, h in days],
+    )
+
+
+def _token(mail: ConsoleEmailAdapter) -> str:
+    """The token in the newest email's Approve button."""
+    text = mail.sent[-1].html or ""
+    start = text.index("/timesheet/") + len("/timesheet/")
+    return text[start : text.index("?", start)]
+
+
+async def _submitted(session, tenant, hr_user, entity, mail, *, approver=None):
+    """A consultant on the customer route with 32 hours at 1200 an hour, submitted."""
+    consultant, login = await _customer_consultant(
+        session, tenant, entity, "CON1", approver=approver
+    )
+    await timesheets.add_rate(
+        session,
+        hr_user,
+        RateIn(employee_id=consultant.id, rate=Decimal("1200"), effective_from=date(2026, 1, 1)),
+        request=None,
+    )
+    await _fill(session, login, (7, 8), (8, 8), (9, 8), (10, 8))
+    submitted = await timesheets.submit_week(session, login, MONDAY)
+    return consultant, login, uuid.UUID(submitted["id"]), _token(mail)
+
+
+async def _sheet(session, sheet_id) -> Timesheet:
+    await session.rollback()
+    sheet = await session.scalar(select(Timesheet).where(Timesheet.id == sheet_id))
+    assert sheet is not None
+    await session.refresh(sheet)
+    return sheet
+
+
+async def test_submit_emails_customer_without_rate_or_amount(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, approver = await _login(session, tenant, legal_entity, "ADMN")
+    _, _, _, token = await _submitted(
+        session, tenant, hr_user, legal_entity, mail, approver=approver
+    )
+
+    assert [m.recipient_email for m in mail.sent] == [CONTACT]
+    message = mail.sent[0]
+    assert "32" in message.body
+    assert message.reply_to == approver.email
+    for text in (message.subject or "", message.body, message.html or ""):
+        assert "1200" not in text and "38400" not in text and "38,400" not in text
+    assert f"/timesheet/{token}?answer=approve" in (message.html or "")
+    assert f"/timesheet/{token}?answer=reject" in (message.html or "")
+
+    page = await timesheet_approval.describe(session, token)
+    assert page["state"] == "waiting"
+    assert page["total_hours"] == "32.00"
+    assert len(page["days"]) == 4
+    flat = repr(page).lower()
+    assert "rate" not in flat and "amount" not in flat and "1200" not in flat
+    row = await session.scalar(select(TimesheetApprovalLink))
+    assert row is not None and row.token_hash != token and len(row.token_hash) == 64
+    assert row.sent_at is not None and row.sent_to_email == CONTACT
+    assert row.expires_at > datetime.now(UTC) + timedelta(days=13)
+
+
+async def test_submit_needs_a_contact_email(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, login = await _customer_consultant(session, tenant, legal_entity, "CON2", email="")
+    await _fill(session, login, (7, 8))
+    with pytest.raises(HTTPException) as refused:
+        await timesheets.submit_week(session, login, MONDAY)
+    assert refused.value.status_code == 422
+    assert mail.sent == []
+
+
+async def test_send_failure_does_not_fail_the_submit(
+    session, tenant, hr_user, legal_entity, monkeypatch
+) -> None:
+    class Down(ConsoleEmailAdapter):
+        async def send(self, message):
+            raise RuntimeError("relay down")
+
+    monkeypatch.setattr(dispatch, "_DEFAULT_EMAIL_ADAPTER", Down())
+    _, login = await _customer_consultant(session, tenant, legal_entity, "CON3")
+    await _fill(session, login, (7, 8))
+    submitted = await timesheets.submit_week(session, login, MONDAY)
+    assert submitted["status"] == "submitted"
+    assert (await _sheet(session, uuid.UUID(submitted["id"]))).status is TimesheetStatus.SUBMITTED
+
+
+async def test_get_does_not_decide(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheet_approval.describe(session, token)
+    await timesheet_approval.describe(session, token)
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.SUBMITTED
+
+
+async def test_unknown_token_is_404(session) -> None:
+    with pytest.raises(HTTPException) as missing:
+        await timesheet_approval.describe(session, "not-a-token")
+    assert missing.value.status_code == 404
+    with pytest.raises(HTTPException) as missing:
+        await timesheet_approval.decide(session, "not-a-token", approve=True, reason=None, ip=None)
+    assert missing.value.status_code == 404
+
+
+async def test_customer_approves(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, login, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    consultant_login_id = login.id
+    done = await timesheet_approval.decide(
+        session, token, approve=True, reason=None, ip="203.0.113.9"
+    )
+    assert done["state"] == "decided"
+    sheet = await _sheet(session, sheet_id)
+    assert sheet.status is TimesheetStatus.APPROVED
+    assert sheet.decided_at is not None and sheet.decided_by_user_id is None
+    assert sheet.approval_proof and sheet.approval_proof["email"] == CONTACT
+    link = await session.scalar(select(TimesheetApprovalLink))
+    assert link is not None and link.used_at is not None and link.decided_ip == "203.0.113.9"
+
+    assert (await timesheet_approval.describe(session, token))["state"] == "decided"
+    with pytest.raises(HTTPException) as again:
+        await timesheet_approval.decide(session, token, approve=False, reason="no", ip=None)
+    assert again.value.status_code == 409
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.APPROVED
+
+    audit = await session.scalar(
+        select(AuditLog).where(AuditLog.entity_id == sheet_id, AuditLog.summary.contains(CONTACT))
+    )
+    assert audit is not None and audit.actor_user_id is None
+    told = (
+        await session.scalars(
+            select(Notification.recipient_user_id).where(
+                Notification.event_key == "timesheets.decided"
+            )
+        )
+    ).all()
+    assert consultant_login_id in told
+
+
+async def test_reject_needs_reason(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.decide(session, token, approve=False, reason=None, ip=None)
+    assert refused.value.status_code == 422
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.SUBMITTED
+
+    await timesheet_approval.decide(
+        session, token, approve=False, reason="Friday is wrong", ip=None
+    )
+    sheet = await _sheet(session, sheet_id)
+    assert sheet.status is TimesheetStatus.REJECTED
+    assert sheet.decision_note == "Friday is wrong"
+
+
+async def test_edit_or_resend_makes_old_link_stale(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, login, sheet_id, old = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheet_approval.decide(session, old, approve=False, reason="Fix Friday", ip=None)
+    await _fill(session, login, (7, 8), (8, 8), (9, 8), (10, 4))
+    resubmitted = await timesheets.submit_week(session, login, MONDAY)
+    assert resubmitted["status"] == "submitted"
+    new = _token(mail)
+    assert new != old and len(mail.sent) == 2
+
+    assert (await timesheet_approval.describe(session, old))["state"] == "changed"
+    with pytest.raises(HTTPException) as stale:
+        await timesheet_approval.decide(session, old, approve=True, reason=None, ip=None)
+    assert stale.value.status_code == 409
+    assert (await timesheet_approval.describe(session, new))["state"] == "waiting"
+    await timesheet_approval.decide(session, new, approve=True, reason=None, ip=None)
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.APPROVED
+
+
+async def test_sending_again_closes_the_earlier_link(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    consultant, _, sheet_id, old = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    sheet = await _sheet(session, sheet_id)
+    await session.refresh(consultant)
+    await timesheet_approval.send_to_customer(session, hr_user, sheet, consultant)
+    new = _token(mail)
+    assert new != old
+    assert (await timesheet_approval.describe(session, old))["state"] == "changed"
+    assert (await timesheet_approval.describe(session, new))["state"] == "waiting"
+
+
+async def test_manual_decision_revokes_link(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    assert (await timesheet_approval.describe(session, token))["state"] == "decided"
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.decide(session, token, approve=True, reason=None, ip=None)
+    assert refused.value.status_code == 409
+
+
+async def test_reopen_revokes_link_and_revoke_is_idempotent(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    await timesheets.reopen_week(session, hr_user, sheet_id)
+    assert (await timesheet_approval.describe(session, token))["state"] == "changed"
+    await timesheet_approval.revoke_links(session, sheet_id)
+    await timesheet_approval.revoke_links(session, sheet_id)
+    await session.commit()
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.decide(session, token, approve=True, reason=None, ip=None)
+    assert refused.value.status_code == 409
+
+
+async def test_expired_link(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    link = await session.scalar(select(TimesheetApprovalLink))
+    assert link is not None
+    link.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    await session.commit()
+
+    assert (await timesheet_approval.describe(session, token))["state"] == "expired"
+    with pytest.raises(HTTPException) as gone:
+        await timesheet_approval.decide(session, token, approve=True, reason=None, ip=None)
+    assert gone.value.status_code == 410
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.SUBMITTED
+
+
+async def test_public_routes_are_private_and_decide_over_http(
+    client, session, tenant, hr_user, legal_entity, mail  # noqa: F811
+) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    got = await client.get(f"/api/v1/public/timesheets/{token}")
+    assert got.status_code == 200, got.text
+    assert got.headers["cache-control"] == "private, no-store"
+    assert got.headers["x-robots-tag"] == "noindex"
+    assert "rate" not in got.text and "amount" not in got.text
+
+    refused = await client.post(
+        f"/api/v1/public/timesheets/{token}/decision", json={"approve": False}
+    )
+    assert refused.status_code == 422
+    done = await client.post(f"/api/v1/public/timesheets/{token}/decision", json={"approve": True})
+    assert done.status_code == 200, done.text
+    assert done.headers["cache-control"] == "private, no-store"
+    again = await client.post(f"/api/v1/public/timesheets/{token}/decision", json={"approve": True})
+    assert again.status_code == 409
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.APPROVED

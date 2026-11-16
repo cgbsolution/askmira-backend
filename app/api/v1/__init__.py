@@ -76,6 +76,7 @@ from app.api.v1.routers import (
     platform,
     positions,
     products,
+    public_timesheets,
     public_workspaces,
     recruiting,
     reports,
@@ -196,3 +197,4 @@ api_router.include_router(calendar_feed.router)
 api_router.include_router(public_workspaces.router)
 api_router.include_router(email_actions.router)
 api_router.include_router(letter_links.router)
+api_router.include_router(public_timesheets.router)
