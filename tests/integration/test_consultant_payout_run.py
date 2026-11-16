@@ -819,3 +819,58 @@ async def test_set_opening_upserts_and_needs_an_april_first(
     await attention.set_opening(session, hr_user, fy_start=date(2026, 4, 1), **args)
     rows = (await session.scalars(select(ConsultantTdsOpening))).all()
     assert [row.fees_paid for row in rows] == [Decimal("45000.00")]
+
+
+async def test_whoever_last_changed_the_figures_cannot_approve(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    other = await _second_hr(session, tenant)
+    run_id = uuid.UUID(run["id"])
+
+    # The checker recalculates A's draft: the figures are now theirs, so they cannot sign.
+    await payouts.recalculate(session, other, run_id)
+    with pytest.raises(HTTPException) as refused:
+        await payouts.approve_run(session, other, run_id, confirm=_confirmed)
+    assert refused.value.status_code == 403
+    # The drafter is no longer the last to change them, so now they can.
+    approved = await payouts.approve_run(session, hr_user, run_id, confirm=_confirmed)
+    assert approved["status"] == "approved"
+
+
+async def test_approval_needs_scope_over_everybody_on_the_run(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.core import hr_scope
+
+    await _setup(session, tenant, hr_user)
+    inside = await _consultant(session, tenant, legal_entity, "CON1")
+    outside = await _consultant(session, tenant, legal_entity, "CON2")
+    for person in (inside, outside):
+        await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    checker = await _second_hr(session, tenant)
+    run_id = uuid.UUID(run["id"])
+
+    hr_scope.set_scope(hr_scope.HrScope(employee_ids=(inside.id,)))
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+        assert refused.value.status_code == 403
+        assert "outside your department or location scope" in refused.value.detail
+    finally:
+        hr_scope.set_scope(None)
+    assert (await _run_row(session, run_id)).status.value == "draft"
+
+
+async def _run_row(session: AsyncSession, run_id: uuid.UUID):
+    from app.models.consultant_payouts import ConsultantPayoutRun
+
+    return await session.get(ConsultantPayoutRun, run_id)

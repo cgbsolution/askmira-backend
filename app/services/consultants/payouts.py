@@ -36,7 +36,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import permissions
+from app.core import hr_scope, permissions
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
@@ -56,6 +56,7 @@ from app.models.timesheets import Timesheet, TimesheetStatus
 from app.models.user import User
 from app.services import audit, tds_non_salary, timesheets
 from app.services.consultants import is_consultant
+from app.services.payroll.run import _require_scope_covers
 
 __all__ = [
     "approve_run",
@@ -462,23 +463,21 @@ async def _draft(session: AsyncSession, user: User, run_id: uuid.UUID) -> Consul
 
 
 async def _lines(
-    session: AsyncSession, user: User, run_ids: list[uuid.UUID]
+    session: AsyncSession, user: User, run_ids: list[uuid.UUID], *, everyone: bool = False
 ) -> list[ConsultantPayoutLine]:
+    """The runs' lines; `everyone` reads past the caller's HR scope (approval checks)."""
     if not run_ids:
         return []
-    return list(
-        (
-            await session.scalars(
-                tenant_scoped(
-                    select(ConsultantPayoutLine)
-                    .where(ConsultantPayoutLine.run_id.in_(run_ids))
-                    .order_by(ConsultantPayoutLine.created_at, ConsultantPayoutLine.id),
-                    ConsultantPayoutLine,
-                    user,
-                )
-            )
-        ).all()
+    stmt = tenant_scoped(
+        select(ConsultantPayoutLine)
+        .where(ConsultantPayoutLine.run_id.in_(run_ids))
+        .order_by(ConsultantPayoutLine.created_at, ConsultantPayoutLine.id),
+        ConsultantPayoutLine,
+        user,
     )
+    if everyone:
+        stmt = stmt.execution_options(hr_scope_bypass=True)
+    return list((await session.scalars(stmt)).all())
 
 
 async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> dict[str, Any]:
@@ -611,6 +610,7 @@ async def create_run(
         pay_date=pay_date,
         status=PayoutRunStatus.DRAFT,
         created_by_user_id=user.id,
+        computed_by_user_id=user.id,
     )
     session.add(run)
     try:
@@ -659,6 +659,7 @@ async def include_week(
     """Add one approved, unpaid week a run did not take on its own (one approved
     before payouts were released)."""
     run = await _draft(session, user, run_id)
+    run.computed_by_user_id = user.id
     sheet = await timesheets._locked_sheet(session, user, timesheet_id)
     if sheet is None:
         raise _not_found("Timesheet not found")
@@ -723,6 +724,7 @@ async def recalculate(
     A line whose problems are fixed comes back; a line HR took out stays out.
     """
     run = await _draft(session, user, run_id)
+    run.computed_by_user_id = user.id
     rule_set = await tds_non_salary.rules_on(session, user, run.pay_date)
     lines = [line for line in await _lines(session, user, [run.id]) if not line.excluded_reason]
     for line in lines:
@@ -759,6 +761,7 @@ async def exclude_line(
             detail="Say why this consultant is left out of the run.",
         )
     run = await _draft(session, user, run_id)
+    run.computed_by_user_id = user.id
     line = await session.scalar(
         tenant_scoped(
             select(ConsultantPayoutLine).where(
@@ -847,12 +850,25 @@ async def approve_run(
     be fixed and recalculated, or left out by hand, first.
     """
     run = await _draft(session, user, run_id)
-    if run.created_by_user_id is not None and run.created_by_user_id == user.id:
+    if run.computed_by_user_id is not None and run.computed_by_user_id == user.id:
         raise permissions.forbidden(
-            "You drafted this run, so somebody else has to approve it. Payouts are "
+            "You prepared these figures, so somebody else has to approve the run. Payouts are "
             "maker-checker: the person who prepares the numbers does not sign them off."
         )
-    lines = await _lines(session, user, [run.id])
+    # Approving locks everybody on the run, so the approver's department or location
+    # scope must cover them all, and the checks below must see them all.
+    if hr_scope.current_scope() is not None:
+        on_run = await session.scalars(
+            tenant_scoped(
+                select(ConsultantPayoutLine.employee_id).where(
+                    ConsultantPayoutLine.run_id == run.id
+                ),
+                ConsultantPayoutLine,
+                user,
+            ).execution_options(hr_scope_bypass=True)
+        )
+        _require_scope_covers(set(on_run.all()), doing="approve")
+    lines = await _lines(session, user, [run.id], everyone=True)
     held = [line for line in lines if line.excluded and not line.excluded_reason]
     if held:
         raise _conflict(

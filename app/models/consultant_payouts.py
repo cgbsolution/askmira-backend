@@ -70,6 +70,13 @@ class ConsultantPayoutRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL", name="fk_consultant_payout_runs_created_by"),
         nullable=True,
     )
+    #: Whoever last changed the figures (drafted, recalculated, added a week, left a line
+    #: out). They cannot approve the run.
+    computed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_consultant_payout_runs_computed_by"),
+        nullable=True,
+    )
     approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL", name="fk_consultant_payout_runs_approved_by"),
