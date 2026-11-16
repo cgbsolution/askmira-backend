@@ -53,7 +53,9 @@ async def prepare_consultant_batch(
     superseding: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> DisbursementBatch:
-    """Build the bank file paying an approved (or paid) consultant payout run.
+    """Build the bank file paying an approved consultant payout run.
+
+    A run already marked paid gets no file: it was paid by other means.
 
     One standing file per run, as for a payroll run: a second would pay every
     consultant again. `superseding` is the batch a regeneration replaces, the
@@ -70,7 +72,14 @@ async def prepare_consultant_batch(
     )
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payout run not found")
-    if run.status not in (PayoutRunStatus.APPROVED, PayoutRunStatus.PAID):
+    if run.status is PayoutRunStatus.PAID:
+        # Marked paid by HR, by some other means: nothing ties that payment to a
+        # file here, so a file now would pay every consultant a second time.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This payout run is marked paid. A bank file now would pay everyone again.",
+        )
+    if run.status is not PayoutRunStatus.APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(

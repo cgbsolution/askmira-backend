@@ -348,3 +348,51 @@ async def test_released_consultant_file_cannot_be_regenerated(
         await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
     assert refused.value.status_code == 409
     assert "sent to the bank" in refused.value.detail
+
+
+async def test_paid_run_gets_no_bank_file(session, tenant, hr_user, legal_entity) -> None:
+    run, _, checker = await _approved_run(session, tenant, hr_user, legal_entity)
+    await _approve(session, checker, run)
+    await payouts.mark_paid(
+        session, hr_user, uuid.UUID(run["id"]), paid_on=PAY_DATE, reference="UTR123"
+    )
+    profile = await _profile(session, tenant, legal_entity)
+
+    with pytest.raises(HTTPException) as refused:
+        await consultant_disbursement.prepare_consultant_batch(
+            session,
+            hr_user,
+            payout_run_id=uuid.UUID(run["id"]),
+            bank_profile_id=profile.id,
+            value_date=PAY_DATE,
+        )
+    assert refused.value.status_code == 409
+    assert refused.value.detail == (
+        "This payout run is marked paid. A bank file now would pay everyone again."
+    )
+
+
+async def test_a_file_made_before_the_run_was_marked_paid_stays_readable(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    run, checker, batch = await _prepared(session, tenant, hr_user, legal_entity)
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await session.commit()
+    await payouts.mark_paid(
+        session, hr_user, uuid.UUID(run["id"]), paid_on=PAY_DATE, reference="UTR123"
+    )
+
+    listed = await disbursement_service.list_batches(
+        session, hr_user, consultant_payout_run_id=uuid.UUID(run["id"])
+    )
+    assert [row[0].id for row in listed] == [batch.id]
+    fetched, _, _ = await disbursement_service.get_batch(session, hr_user, batch.id)
+    assert fetched.id == batch.id
+    content, _ = await disbursement_service.download_file(session, checker, batch_id=batch.id)
+    assert content
+    # Regenerating it would build a fresh file for a paid run, so it is refused too.
+    with pytest.raises(HTTPException) as refused:
+        await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
+    assert refused.value.status_code == 409
