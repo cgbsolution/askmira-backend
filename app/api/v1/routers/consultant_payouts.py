@@ -7,14 +7,17 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.v1.routers.disbursement import BatchRead, _named
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.core.step_up import confirmation
 from app.models.contractors import TdsSection
 from app.models.user import UserRole
 from app.services.consultants import attention, payouts, statement
+from app.services.disbursement import consultant as consultant_disbursement
+from app.services.disbursement import service as disbursement_service
 
 router = APIRouter(
     prefix="/consultant-payouts",
@@ -69,6 +72,13 @@ class PaidIn(BaseModel):
 
     paid_on: date
     reference: str = Field(min_length=1, max_length=200)
+
+
+class BankFileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bank_profile_id: uuid.UUID
+    value_date: date
 
 
 class EndSalariesIn(BaseModel):
@@ -201,3 +211,37 @@ async def mark_paid(
     return await payouts.mark_paid(
         session, user, run_id, paid_on=payload.paid_on, reference=payload.reference, request=request
     )
+
+
+@router.post("/{run_id}/bank-file", response_model=BatchRead, status_code=status.HTTP_201_CREATED)
+async def bank_file(
+    run_id: uuid.UUID,
+    payload: BankFileIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> BatchRead:
+    """Build the bank file paying an approved run; approved and released like a salary file."""
+    try:
+        batch = await consultant_disbursement.prepare_consultant_batch(
+            session,
+            user,
+            payout_run_id=run_id,
+            bank_profile_id=payload.bank_profile_id,
+            value_date=payload.value_date,
+            request=request,
+        )
+    except disbursement_service.BatchBlockedError as exc:
+        # The blocked batch is kept, with its exceptions, so HR can see what to fix.
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": str(exc),
+                "batch_id": str(exc.batch.id),
+                "exceptions": exc.result.as_list(),
+            },
+        ) from exc
+    await session.commit()
+    await session.refresh(batch)
+    return await _named(session, user, batch)

@@ -1,4 +1,7 @@
-"""Salary disbursement: bank profiles, batches, and the maker-checker record.
+"""Disbursement: bank profiles, batches, and the maker-checker record.
+
+A batch pays either a payroll run's salaries or a consultant payout run, never
+both and never neither.
 
 The control this schema exists to support is maker-checker: the person who
 prepares a disbursement batch must not be the person who releases it. That is
@@ -20,6 +23,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -135,7 +139,7 @@ class EmployeeBankAccount(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
 
 class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """One salary payment file, and who approved it.
+    """One payment file (a payroll run's salaries or a consultant payout run), and who approved it.
 
     A batch moves DRAFT → PENDING_APPROVAL → APPROVED → RELEASED. The
     interesting transitions are the two that refuse:
@@ -145,9 +149,27 @@ class DisbursementBatch(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """
 
     __tablename__ = "disbursement_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "(payroll_run_id IS NULL) <> (consultant_payout_run_id IS NULL)",
+            name="ck_disbursement_batch_one_run",
+        ),
+    )
 
-    payroll_run_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="RESTRICT"), nullable=False
+    #: The payroll run whose salaries this file pays, or None for a consultant payout file.
+    payroll_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="RESTRICT"), nullable=True
+    )
+    #: The consultant payout run this file pays, or None for a salary file.
+    consultant_payout_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "consultant_payout_runs.id",
+            ondelete="RESTRICT",
+            name="fk_disbursement_batches_consultant_payout_run",
+        ),
+        nullable=True,
+        index=True,
     )
     bank_profile_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("bank_profiles.id", ondelete="RESTRICT"), nullable=False
@@ -237,6 +259,16 @@ class DisbursementLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
     payslip_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("payslips.id", ondelete="SET NULL"), nullable=True
+    )
+    #: The consultant payout line this credit pays, on a consultant payout file.
+    consultant_payout_line_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(
+            "consultant_payout_lines.id",
+            ondelete="SET NULL",
+            name="fk_disbursement_lines_consultant_payout_line",
+        ),
+        nullable=True,
     )
 
     amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)

@@ -133,7 +133,10 @@ class BatchRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    payroll_run_id: uuid.UUID
+    #: The payroll run a salary file pays; None on a consultant payout file.
+    payroll_run_id: uuid.UUID | None
+    #: The consultant payout run a consultant file pays; None on a salary file.
+    consultant_payout_run_id: uuid.UUID | None = None
     bank_profile_id: uuid.UUID
     supplements_batch_id: uuid.UUID | None
     status: DisbursementStatus
@@ -418,8 +421,14 @@ async def list_batches(
     user: CurrentUser,
     session: DbSession,
     payroll_run_id: uuid.UUID | None = None,
+    consultant_payout_run_id: uuid.UUID | None = None,
 ) -> list[BatchRead]:
-    rows = await disbursement_service.list_batches(session, user, payroll_run_id=payroll_run_id)
+    rows = await disbursement_service.list_batches(
+        session,
+        user,
+        payroll_run_id=payroll_run_id,
+        consultant_payout_run_id=consultant_payout_run_id,
+    )
     return [_batch_read(batch, prepared, approved) for batch, prepared, approved in rows]
 
 

@@ -59,7 +59,9 @@ from app.services.filings import support
 from app.services.notifications.dispatch import notify
 
 __all__ = [
+    "NOT_FOR_CONSULTANTS",
     "BatchBlockedError",
+    "BatchPayee",
     "approve_batch",
     "download_file",
     "prepare_batch",
@@ -95,6 +97,16 @@ class HeldCredit:
     amount: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class BatchPayee:
+    """One person a file pays, and what it pays them."""
+
+    employee: Employee
+    amount: Decimal
+    payslip_id: uuid.UUID | None = None
+    payout_line_id: uuid.UUID | None = None
+
+
 class BatchBlockedError(Exception):
     """Validation stopped a batch being prepared. No file exists."""
 
@@ -119,6 +131,16 @@ async def _batch(session: AsyncSession, user: User, batch_id: uuid.UUID) -> Disb
             status_code=status.HTTP_404_NOT_FOUND, detail="Disbursement batch not found"
         )
     return batch
+
+
+#: Said by the salary-file operations a consultant payout file does not have yet.
+NOT_FOR_CONSULTANTS = "Not available for consultant payouts yet."
+
+
+def _salary_only(batch: DisbursementBatch) -> None:
+    """Refuse an operation that only knows how to rebuild or reissue a salary file."""
+    if batch.consultant_payout_run_id is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NOT_FOR_CONSULTANTS)
 
 
 async def _primary_account(
@@ -243,10 +265,6 @@ async def prepare_batch(
         )
     ).all()
 
-    threshold = name_match_threshold or Decimal(
-        str(profile.format_config.get("name_match_threshold", "0.5"))
-    )
-
     held = _held_entries(rows, hold)
     held_ids = {entry["employee_id"] for entry in held}
     rows = [(payslip, employee) for payslip, employee in rows if str(employee.id) not in held_ids]
@@ -265,12 +283,60 @@ async def prepare_batch(
             ),
         )
 
-    to_validate = []
-    resolved: list[tuple[Payslip, Employee, EmployeeBankAccount | None, str]] = []
+    return await _build_batch(
+        session,
+        user,
+        profile=profile,
+        value_date=value_date,
+        payees=[
+            BatchPayee(
+                employee=employee, amount=Decimal(str(payslip.net_pay)), payslip_id=payslip.id
+            )
+            for payslip, employee in rows
+        ],
+        batch_reference=f"SAL{run.period_year}{run.period_month:02d}",
+        file_stem=f"{run.period_year}{run.period_month:02d}_{run.id.hex[:8]}",
+        link={"payroll_run_id": run.id},
+        held=held,
+        notes=_batch_notes(held, nothing_due),
+        period=f"{run.period_month:02d}/{run.period_year}",
+        name_match_threshold=name_match_threshold,
+        request=request,
+    )
 
-    for payslip, employee in rows:
+
+async def _build_batch(
+    session: AsyncSession,
+    user: User,
+    *,
+    profile: BankProfile,
+    value_date: date,
+    payees: Sequence[BatchPayee],
+    batch_reference: str,
+    file_stem: str,
+    link: dict[str, uuid.UUID],
+    held: list[dict[str, Any]],
+    notes: str | None,
+    period: str,
+    name_match_threshold: Decimal | None = None,
+    request: Request | None = None,
+) -> DisbursementBatch:
+    """Check every payee's account and build the file paying them.
+
+    `link` names the run the batch pays (`payroll_run_id` or
+    `consultant_payout_run_id`). Any exception blocks: the batch is kept as
+    FAILED with the exceptions on it, and no file exists.
+    """
+    threshold = name_match_threshold or Decimal(
+        str(profile.format_config.get("name_match_threshold", "0.5"))
+    )
+    to_validate = []
+    resolved: list[tuple[BatchPayee, EmployeeBankAccount | None, str]] = []
+
+    for payee in payees:
+        employee = payee.employee
         account, number = await _primary_account(session, user, employee.id)
-        resolved.append((payslip, employee, account, number))
+        resolved.append((payee, account, number))
         to_validate.append(
             {
                 "subject": employee.employee_code,
@@ -278,7 +344,7 @@ async def prepare_batch(
                 "account_holder_name": account.account_holder_name if account else "",
                 "account_number": number,
                 "ifsc": account.ifsc if account else "",
-                "amount": Decimal(str(payslip.net_pay)),
+                "amount": payee.amount,
             }
         )
 
@@ -286,14 +352,14 @@ async def prepare_batch(
 
     batch = DisbursementBatch(
         tenant_id=user.tenant_id,
-        payroll_run_id=run.id,
+        **link,
         bank_profile_id=profile.id,
         value_date=value_date,
         prepared_by_user_id=user.id,
         prepared_at=datetime.now(UTC),
         validation_exceptions=result.as_list(),
         held=held,
-        notes=_batch_notes(held, nothing_due),
+        notes=notes,
     )
 
     if result.is_blocked:
@@ -322,10 +388,10 @@ async def prepare_batch(
             beneficiary_name=account.account_holder_name,
             account_number=number,
             ifsc=account.ifsc.upper(),
-            amount=Decimal(str(payslip.net_pay)),
-            employee_code=employee.employee_code,
+            amount=payee.amount,
+            employee_code=payee.employee.employee_code,
         )
-        for payslip, employee, account, number in resolved
+        for payee, account, number in resolved
         if account is not None
     ]
 
@@ -334,7 +400,7 @@ async def prepare_batch(
         debit_ifsc=profile.ifsc,
         corporate_id=profile.corporate_id or "",
         value_date=value_date,
-        batch_reference=f"SAL{run.period_year}{run.period_month:02d}",
+        batch_reference=batch_reference,
         lines=payment_lines,
     )
 
@@ -348,26 +414,24 @@ async def prepare_batch(
     batch.status = DisbursementStatus.PENDING_APPROVAL
     batch.employee_count = len(payment_lines)
     batch.total_amount = instruction.total_amount
-    batch.file_name = (
-        f"{profile.file_format.value.upper()}_{run.period_year}"
-        f"{run.period_month:02d}_{run.id.hex[:8]}.txt"
-    )
+    batch.file_name = f"{profile.file_format.value.upper()}_{file_stem}.txt"
     batch.file_hash = formats.file_hash(content)
-    # Encrypted at rest: this file is every employee's bank account and salary.
+    # Encrypted at rest: this file is every payee's bank account and pay.
     batch.encrypted_file = encrypt_secret(content, user.tenant_id)
     session.add(batch)
     await session.flush()
 
-    for payslip, employee, account, number in resolved:
+    for payee, account, number in resolved:
         if account is None:
             continue
         session.add(
             DisbursementLine(
                 tenant_id=user.tenant_id,
                 batch_id=batch.id,
-                employee_id=employee.id,
-                payslip_id=payslip.id,
-                amount=Decimal(str(payslip.net_pay)),
+                employee_id=payee.employee.id,
+                payslip_id=payee.payslip_id,
+                consultant_payout_line_id=payee.payout_line_id,
+                amount=payee.amount,
                 # Snapshotted: an account changed next month must not alter
                 # what this batch says was paid.
                 account_number=encrypt_secret(number, user.tenant_id),
@@ -385,7 +449,7 @@ async def prepare_batch(
         entity_id=batch.id,
         summary=(
             f"Prepared disbursement of {batch.total_amount} to {batch.employee_count} "
-            f"employees for {run.period_month:02d}/{run.period_year}"
+            f"employees for {period}"
         ),
         changes={
             "total_amount": str(batch.total_amount),
@@ -535,6 +599,7 @@ async def regenerate_batch(
     this function exists as its own operation rather than a silent rewrite.
     """
     batch = await _batch(session, user, batch_id)
+    _salary_only(batch)
     if batch.status in _SENT:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -792,6 +857,7 @@ async def reconcile(
     incident, so the caller is handed the failures to notify on.
     """
     batch = await _batch(session, user, batch_id)
+    _salary_only(batch)
     if batch.status not in (DisbursementStatus.RELEASED, DisbursementStatus.ACKNOWLEDGED):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -906,6 +972,7 @@ async def supplementary_batch(
     everybody.
     """
     original = await _batch(session, user, batch_id)
+    _salary_only(original)
     failed = (
         await session.scalars(
             tenant_scoped(
@@ -955,6 +1022,7 @@ async def pay_held(
     goes in the file, by regenerating it without the hold.
     """
     original = await _batch(session, user, batch_id)
+    _salary_only(original)
     waiting = [entry for entry in original.held or [] if not entry.get("paid_in_batch_id")]
     if not waiting:
         raise HTTPException(
@@ -1010,6 +1078,7 @@ async def _reissue(
     commonest failure, and its fix is the new account HR has since recorded.
     Checked as a full file is, and refused rather than built when it fails.
     """
+    _salary_only(original)
     profile = await session.scalar(
         tenant_scoped(
             select(BankProfile).where(BankProfile.id == original.bank_profile_id),
@@ -1252,12 +1321,18 @@ def _names_for(
 
 
 async def list_batches(
-    session: AsyncSession, user: User, *, payroll_run_id: uuid.UUID | None = None
+    session: AsyncSession,
+    user: User,
+    *,
+    payroll_run_id: uuid.UUID | None = None,
+    consultant_payout_run_id: uuid.UUID | None = None,
 ) -> list[tuple[DisbursementBatch, str | None, str | None]]:
     """Batches newest first, with who prepared and approved each by name."""
     stmt = select(DisbursementBatch).order_by(DisbursementBatch.created_at.desc())
     if payroll_run_id is not None:
         stmt = stmt.where(DisbursementBatch.payroll_run_id == payroll_run_id)
+    if consultant_payout_run_id is not None:
+        stmt = stmt.where(DisbursementBatch.consultant_payout_run_id == consultant_payout_run_id)
     batches = (await session.scalars(tenant_scoped(stmt, DisbursementBatch, user))).all()
     names = await _user_names(
         session,
