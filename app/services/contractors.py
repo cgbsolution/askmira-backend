@@ -29,12 +29,12 @@ import csv
 import io
 import uuid
 from datetime import UTC, date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -52,7 +52,7 @@ from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import audit
+from app.services import audit, tds_non_salary
 
 __all__ = [
     "ContractorIn",
@@ -69,7 +69,6 @@ __all__ = [
     "tds_statement_pdf",
 ]
 
-RULE_TYPE = "tds_non_salary"
 #: 26Q's section codes. Since FY 2020-21 section 194J is split in the statement:
 #: 194J(a), fees for technical services, and 194J(b), professional fees.
 _26Q_CODE = {
@@ -77,8 +76,6 @@ _26Q_CODE = {
     TdsSection.S194J_PROFESSIONAL: "4JB",
     TdsSection.S194J_TECHNICAL: "4JA",
 }
-_ONE = Decimal(1)
-_HUNDRED = Decimal(100)
 
 
 class ContractorIn(BaseModel):
@@ -101,11 +98,6 @@ class InvoiceIn(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     gst_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     section: TdsSection | None = None
-
-
-def _fy(day: date) -> tuple[date, date]:
-    start = date(day.year if day.month >= 4 else day.year - 1, 4, 1)
-    return start, date(start.year + 1, 3, 31)
 
 
 def _d(value: Any) -> Decimal:
@@ -203,48 +195,11 @@ async def _contractor(session: AsyncSession, user: User, contractor_id: uuid.UUI
 # ── TDS ─────────────────────────────────────────────────────────────────────
 
 
-async def _rules_on(session: AsyncSession, user: User, day: date) -> PayrollRuleSet:
-    row = await session.scalar(
-        tenant_scoped(
-            select(PayrollRuleSet)
-            .where(
-                PayrollRuleSet.rule_type == RULE_TYPE,
-                PayrollRuleSet.approved_at.is_not(None),
-                PayrollRuleSet.effective_from <= day,
-                or_(PayrollRuleSet.effective_to.is_(None), PayrollRuleSet.effective_to >= day),
-            )
-            .order_by(PayrollRuleSet.effective_from.desc())
-            .limit(1),
-            PayrollRuleSet,
-            user,
-        )
-    )
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"No approved TDS rule set for contractor payments covers {day}. Add a "
-                f"'{RULE_TYPE}' rule set under Payroll > Rule sets first."
-            ),
-        )
-    return row
-
-
-def _rate(rules: dict[str, Any], contractor: Contractor, section: TdsSection) -> Decimal:
-    if not contractor.pan:
-        return _d(rules["no_pan_rate"])
-    spec = rules["sections"][section.value]
-    if section is TdsSection.S194C:
-        individual = contractor.kind in (ContractorKind.INDIVIDUAL, ContractorKind.HUF)
-        return _d(spec["rate_individual"] if individual else spec["rate_other"])
-    return _d(spec["rate"])
-
-
-async def _untaxed_this_year(
+async def _year_to_date(
     session: AsyncSession, user: User, contractor: Contractor, section: TdsSection, day: date
-) -> tuple[Decimal, Decimal]:
-    """(everything invoiced this year so far, of which nothing was taxed yet)."""
-    start, end = _fy(day)
+) -> tds_non_salary.YearToDate:
+    """Everything invoiced this year so far, and how much of it was already taxed."""
+    start, end = tds_non_salary.fy_bounds(day)
     rows = (
         await session.scalars(
             tenant_scoped(
@@ -260,9 +215,10 @@ async def _untaxed_this_year(
             )
         )
     ).all()
-    total = sum((_d(r.amount) for r in rows), start=Decimal(0))
-    taxed = sum((_d(r.tds_base) for r in rows), start=Decimal(0))
-    return total, max(Decimal(0), total - taxed)
+    return tds_non_salary.YearToDate(
+        total=sum((_d(r.amount) for r in rows), start=Decimal(0)),
+        taxed_base=sum((_d(r.tds_base) for r in rows), start=Decimal(0)),
+    )
 
 
 async def _compute(
@@ -272,45 +228,12 @@ async def _compute(
     section: TdsSection,
     amount: Decimal,
     day: date,
-) -> tuple[Decimal, Decimal, Decimal, str | None, PayrollRuleSet]:
-    """(base, rate, tds, note, rule set) for one new invoice."""
-    rule_set = await _rules_on(session, user, day)
-    rules = rule_set.rules or {}
-    try:
-        spec = rules["sections"][section.value]
-        rate = _rate(rules, contractor, section)
-    except (KeyError, TypeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"The '{RULE_TYPE}' rule set has no entry for section {section.value}.",
-        ) from exc
-    year_total, untaxed_before = await _untaxed_this_year(session, user, contractor, section, day)
-    annual = _d(spec.get("annual_threshold", "0"))
-    single = _d(spec["single_threshold"]) if "single_threshold" in spec else None
-    after = year_total + amount
-    if single is not None and amount > single:
-        base, note = amount, None
-        if after > annual:
-            base, note = amount + untaxed_before, None
-    elif after > annual:
-        base = amount + untaxed_before
-        note = (
-            "The year's total crossed the threshold, so earlier untaxed invoices are taxed now."
-            if untaxed_before > 0
-            else None
-        )
-    else:
-        return (
-            Decimal(0),
-            Decimal(0),
-            Decimal(0),
-            (f"No TDS: below the {section.value} threshold so far this year."),
-            rule_set,
-        )
-    tds = (base * rate / _HUNDRED).quantize(_ONE, rounding=ROUND_HALF_UP)
-    if not contractor.pan:
-        note = (note + " " if note else "") + "No PAN on file: the higher rate applies."
-    return base, rate, tds, note, rule_set
+) -> tuple[tds_non_salary.TdsResult, PayrollRuleSet]:
+    """TDS for one new invoice, and the rule set it used."""
+    rule_set = await tds_non_salary.rules_on(session, user, day)
+    payee = tds_non_salary.Payee(pan=contractor.pan, kind=contractor.kind, section=section)
+    ytd = await _year_to_date(session, user, contractor, section, day)
+    return tds_non_salary.compute(rule_set, payee, amount, ytd), rule_set
 
 
 # ── Invoices ────────────────────────────────────────────────────────────────
@@ -344,9 +267,10 @@ async def create_invoice(
             detail="That invoice number is already entered for this contractor.",
         )
     section = payload.section or contractor.default_section
-    base, rate, tds, note, rule_set = await _compute(
+    result, rule_set = await _compute(
         session, user, contractor, section, payload.amount, payload.invoice_date
     )
+    base, rate, tds, note = result.base, result.rate, result.tds, result.note
     row = ContractorInvoice(
         tenant_id=user.tenant_id,
         contractor_id=contractor.id,
