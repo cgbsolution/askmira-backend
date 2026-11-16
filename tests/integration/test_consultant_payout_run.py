@@ -219,6 +219,97 @@ async def test_run_pays_hours_times_rate_plus_gst_minus_tds(
     assert logged is not None
 
 
+async def _earlier_line(
+    session: AsyncSession,
+    tenant: Tenant,
+    person: Employee,
+    *,
+    run_status,
+    pay_date: date = date(2026, 8, 1),
+    gross: str,
+    tds_base: str = "0",
+    section: TdsSection = TdsSection.S194J_PROFESSIONAL,
+    excluded: bool = False,
+):
+    from app.models.consultant_payouts import ConsultantPayoutLine, ConsultantPayoutRun
+
+    run = ConsultantPayoutRun(
+        tenant_id=tenant.id, cut_off=pay_date, pay_date=pay_date, status=run_status
+    )
+    session.add(run)
+    await session.flush()
+    line = ConsultantPayoutLine(
+        tenant_id=tenant.id,
+        run_id=run.id,
+        employee_id=person.id,
+        section=section,
+        gross=Decimal(gross),
+        tds_base=Decimal(tds_base),
+        excluded=excluded,
+    )
+    session.add(line)
+    await session.commit()
+    return line
+
+
+async def test_ytd_counts_only_approved_or_paid_runs_same_fy_and_section(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.models.consultant_payouts import PayoutRunStatus
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    approved = await _earlier_line(
+        session, tenant, person, run_status=PayoutRunStatus.APPROVED, gross="30000"
+    )
+    paid = await _earlier_line(
+        session, tenant, person, run_status=PayoutRunStatus.PAID, gross="10000"
+    )
+    # None of these count towards this year's 194J (professional) total.
+    await _earlier_line(session, tenant, person, run_status=PayoutRunStatus.DRAFT, gross="100000")
+    await _earlier_line(
+        session,
+        tenant,
+        person,
+        run_status=PayoutRunStatus.APPROVED,
+        gross="100000",
+        excluded=True,
+    )
+    await _earlier_line(
+        session,
+        tenant,
+        person,
+        run_status=PayoutRunStatus.APPROVED,
+        gross="100000",
+        section=TdsSection.S194J_TECHNICAL,
+    )
+    await _earlier_line(
+        session,
+        tenant,
+        person,
+        run_status=PayoutRunStatus.PAID,
+        pay_date=date(2026, 3, 15),  # the previous financial year
+        gross="100000",
+    )
+    await _week(session, tenant, person)
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    line = _line(run, person)
+    # 40000 paid untaxed this year + 48000 crosses 50000: all 88000 taxed.
+    assert line["tds_base"] == "88000.00"
+    assert line["tds_amount"] == "8800.00"
+
+    # Once those earlier fees were taxed, only this payout is.
+    approved.tds_base = Decimal("30000")
+    paid.tds_base = Decimal("10000")
+    await session.commit()
+    line = _line(await payouts.recalculate(session, hr_user, uuid.UUID(run["id"])), person)
+    assert line["tds_base"] == "48000.00"
+    assert line["tds_amount"] == "4800.00"
+
+
 async def test_second_draft_does_not_take_held_weeks(
     session, tenant, hr_user, legal_entity
 ) -> None:
