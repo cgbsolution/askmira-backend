@@ -1,8 +1,9 @@
 """A consultant's payout statement: one PDF per consultant per run.
 
-The weeks paid with their hours and rates, the gross fee, GST, TDS (section and
-rate), the net payable and the pay date. HR can issue any consultant's; a
-consultant gets only their own, once the run is approved.
+The weeks paid with their hours and rates, the gross fee, GST, TDS deducted
+(section and rate) and any TDS carried to the next payout, the net payable and
+the pay date. HR can issue any consultant's; a consultant gets only their own,
+once the run is approved.
 """
 
 from __future__ import annotations
@@ -104,6 +105,11 @@ async def payout_statement_pdf(
     gst_rate = Decimal(str(line.gst_rate)).normalize()
     tds_rate = Decimal(str(line.tds_rate)).quantize(Decimal("0.001"))
     note = f"<p>{escape(line.tds_note)}</p>" if line.tds_note else ""
+    carried = (
+        f"<tr><td>TDS carried to next payout</td><td>{_amount(line.tds_carried_out)}</td></tr>\n"
+        if Decimal(str(line.tds_carried_out)) > 0
+        else ""
+    )
     html = f"""
 <h2>Payout statement</h2>
 <p><b>Paid by:</b> {escape(payer)}<br/>
@@ -121,9 +127,9 @@ async def payout_statement_pdf(
 <tbody>
 <tr><td>Fee</td><td>{_amount(line.gross)}</td></tr>
 <tr><td>GST at {gst_rate:f}%</td><td>{_amount(line.gst_amount)}</td></tr>
-<tr><td>TDS under {_SECTION_NAME[line.section]} at {tds_rate}% on {_amount(line.tds_base)}</td>
-<td>-{_amount(line.tds_amount)}</td></tr>
-<tr><td><b>Net payable</b></td><td><b>{_amount(line.net_payable)}</b></td></tr>
+<tr><td>TDS deducted under {_SECTION_NAME[line.section]} at {tds_rate}% on {_amount(line.tds_base)}
+</td><td>-{_amount(line.tds_amount)}</td></tr>
+{carried}<tr><td><b>Net payable</b></td><td><b>{_amount(line.net_payable)}</b></td></tr>
 </tbody>
 </table>
 {note}

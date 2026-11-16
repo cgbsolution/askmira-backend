@@ -874,3 +874,141 @@ async def _run_row(session: AsyncSession, run_id: uuid.UUID):
     from app.models.consultant_payouts import ConsultantPayoutRun
 
     return await session.get(ConsultantPayoutRun, run_id)
+
+
+# ── TDS larger than the payment ─────────────────────────────────────────────
+
+SECOND_MONDAY = date(2026, 10, 5)
+SECOND_CUT_OFF = date(2026, 10, 11)
+SECOND_PAY_DATE = date(2026, 10, 20)
+
+
+async def _capped_first_run(session, tenant, hr_user, legal_entity):
+    """49000 paid untaxed this year, then 5000: 10% of 54000 is more than the 5000 paid."""
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1", rate="1000")
+    session.add(
+        ConsultantTdsOpening(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            fy_start=date(2026, 4, 1),
+            section=TdsSection.S194J_PROFESSIONAL,
+            fees_paid=Decimal("49000"),
+        )
+    )
+    await session.commit()
+    await _week(session, tenant, person, hours_per_day="5", days=1)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    return person, run
+
+
+async def test_tds_above_payment_is_capped_and_carried(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    person, run = await _capped_first_run(session, tenant, hr_user, legal_entity)
+
+    line = _line(run, person)
+    assert line["gross"] == "5000.00"
+    assert line["tds_base"] == "54000.00"
+    assert line["tds_due"] == "5400.00"
+    assert line["tds_amount"] == "5000.00"
+    assert line["net_payable"] == "0.00"
+    assert line["tds_carried_out"] == "400.00"
+    assert "₹400.00 of TDS is carried to the next payout." in line["tds_note"]
+    assert run["totals"]["tds_carried_out"] == "400.00"
+    assert Decimal(line["net_payable"]) >= 0
+
+
+async def test_carried_tds_is_taken_from_the_next_payout(
+    session, tenant, hr_user, legal_entity, monkeypatch
+) -> None:
+    from app.models.user import UserRole
+    from app.services.consultants import statement
+    from app.services.documents import pdf
+    from tests.integration.conftest import as_caller
+
+    person, first = await _capped_first_run(session, tenant, hr_user, legal_entity)
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
+    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+
+    second = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
+    )
+
+    line = _line(second, person)
+    assert line["gross"] == "10000.00"
+    # The earlier fees were taxed in the first run, so only this payout is: 1000, plus 400.
+    assert line["tds_base"] == "10000.00"
+    assert line["tds_due"] == "1400.00"
+    assert line["tds_amount"] == "1400.00"
+    assert line["net_payable"] == "8600.00"
+    assert line["tds_carried_out"] == "0.00"
+    assert "Includes ₹400.00 TDS carried from an earlier payout." in line["tds_note"]
+    assert Decimal(line["net_payable"]) >= 0
+
+    # The consultant sees what was deducted and what was carried.
+    login = User(
+        tenant_id=tenant.id,
+        email="con1@login.test",
+        password_hash="not-a-real-hash",
+        full_name=person.full_name,
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=person.id,
+    )
+    session.add(login)
+    await session.commit()
+    mine = await payouts.my_payouts(session, await as_caller(session, login))
+    assert [(row["tds_due"], row["tds_amount"], row["tds_carried_out"]) for row in mine] == [
+        ("5400.00", "5000.00", "400.00")
+    ]
+    seen: list[str] = []
+    real = pdf.render_pdf
+
+    def capture(*, merged_html, **kwargs):
+        seen.append(merged_html)
+        return real(merged_html=merged_html, **kwargs)
+
+    monkeypatch.setattr(pdf, "render_pdf", capture)
+    await statement.payout_statement_pdf(session, hr_user, uuid.UUID(_line(first, person)["id"]))
+    assert "TDS deducted" in seen[0] and "TDS carried to next payout" in seen[0]
+    await statement.payout_statement_pdf(session, hr_user, uuid.UUID(line["id"]))
+    assert "TDS deducted" in seen[1] and "TDS carried to next payout" not in seen[1]
+
+
+async def test_net_is_never_negative(session, tenant, hr_user, legal_entity) -> None:
+    person, run = await _capped_first_run(session, tenant, hr_user, legal_entity)
+    for line in run["lines"]:
+        assert Decimal(line["net_payable"]) >= 0
+        assert Decimal(line["tds_amount"]) <= Decimal(line["gross"]) + Decimal(line["gst_amount"])
+
+
+async def test_carried_tds_does_not_cross_financial_years(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.models.consultant_payouts import PayoutRunStatus
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    last_year = await _earlier_line(
+        session,
+        tenant,
+        person,
+        run_status=PayoutRunStatus.PAID,
+        pay_date=date(2026, 3, 15),
+        gross="1000",
+    )
+    last_year.tds_carried_out = Decimal("400")
+    await session.commit()
+    await _week(session, tenant, person)
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    line = _line(run, person)
+    # 48000 is below this year's threshold, and last year's 400 is not brought in.
+    assert line["tds_due"] == line["tds_amount"] == "0.00"
+    assert line["tds_carried_out"] == "0.00"

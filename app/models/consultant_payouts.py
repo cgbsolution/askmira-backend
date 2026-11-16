@@ -127,7 +127,12 @@ class ConsultantPayoutLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     #: was crossed and earlier fees are caught up.
     tds_base: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     tds_rate: Mapped[Decimal] = mapped_column(Numeric(6, 3), default=0, nullable=False)
+    #: All the TDS this line owes: its own plus any carried in from an earlier payout.
+    tds_due: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    #: The TDS actually deducted: `tds_due`, but never more than gross + GST.
     tds_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
+    #: TDS still owed after this line, taken from the consultant's next payout.
+    tds_carried_out: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     net_payable: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     tds_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     rule_set_id: Mapped[uuid.UUID | None] = mapped_column(

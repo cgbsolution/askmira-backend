@@ -15,7 +15,11 @@ Each line:
   financial year's thresholds and catch-up: the year so far is this
   consultant's lines in approved or paid runs paid that year, plus any opening
   figure HR entered;
-- net payable = gross + GST - TDS.
+- TDS is never more than gross + GST, so net pay is never below nil: what is
+  left over is carried to the consultant's next payout in the same financial
+  year (`tds_due` = this line's TDS plus any carried in; `tds_amount` = what is
+  deducted; `tds_carried_out` = what is still owed);
+- net payable = gross + GST - TDS deducted.
 
 A line with a problem HR must fix (no rate for a day worked, no bank account,
 GST without a GSTIN) is held back — excluded, keeping its weeks — until the data
@@ -70,6 +74,7 @@ __all__ = [
     "mark_paid",
     "my_payouts",
     "recalculate",
+    "tds_carried_in",
 ]
 
 DEFAULT_GST_RATE = Decimal("18")
@@ -243,27 +248,81 @@ async def _year_to_date(
     return tds_non_salary.YearToDate(total=total, taxed_base=taxed)
 
 
+async def tds_carried_in(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    *,
+    section: TdsSection,
+    before_run_id: uuid.UUID,
+    pay_date: date,
+) -> Decimal:
+    """TDS an earlier payout could not take, owed now: what the consultant's latest
+    line before this one (approved or paid, same section, same financial year) carried out.
+
+    Each line's carry already includes what it brought in, so only the latest counts.
+    Lines paid the same day are ordered by when their run was approved, then by id.
+    A carry never crosses into a new financial year.
+    """
+    start, _ = tds_non_salary.fy_bounds(pay_date)
+    carried = await session.scalar(
+        tenant_scoped(
+            select(ConsultantPayoutLine.tds_carried_out)
+            .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+            .where(
+                ConsultantPayoutLine.employee_id == employee_id,
+                ConsultantPayoutLine.section == section,
+                ConsultantPayoutLine.excluded.is_(False),
+                ConsultantPayoutLine.run_id != before_run_id,
+                ConsultantPayoutRun.status.in_([PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]),
+                ConsultantPayoutRun.pay_date >= start,
+                ConsultantPayoutRun.pay_date <= pay_date,
+            )
+            .order_by(
+                ConsultantPayoutRun.pay_date.desc(),
+                ConsultantPayoutRun.approved_at.desc().nulls_last(),
+                ConsultantPayoutLine.id.desc(),
+            )
+            .limit(1),
+            ConsultantPayoutLine,
+            user,
+        )
+    )
+    return _money(carried or 0)
+
+
 def _percent(rate: Decimal) -> str:
     return format(rate.normalize(), "f")
 
 
 def _tds_note(
-    result: tds_non_salary.TdsResult, gross: Decimal, payee: tds_non_salary.Payee
+    result: tds_non_salary.TdsResult,
+    gross: Decimal,
+    payee: tds_non_salary.Payee,
+    *,
+    carried_in: Decimal = Decimal(0),
+    carried_out: Decimal = Decimal(0),
 ) -> str | None:
-    """The line's TDS in words: below the threshold, caught up, or no PAN.
+    """The line's TDS in words: below the threshold, caught up, no PAN, carried.
 
     Worded for payouts rather than invoices; the amounts are `compute`'s own.
     """
-    if result.base == 0:
-        return result.note
     parts: list[str] = []
-    if result.base > gross:
-        parts.append(
-            "The year's total crossed the threshold, so fees paid earlier this year "
-            "without TDS are taxed now."
-        )
-    if not payee.pan:
-        parts.append(f"No PAN: TDS at {_percent(result.rate)}%.")
+    if result.base == 0:
+        if result.note:
+            parts.append(result.note)
+    else:
+        if result.base > gross:
+            parts.append(
+                "The year's total crossed the threshold, so fees paid earlier this year "
+                "without TDS are taxed now."
+            )
+        if not payee.pan:
+            parts.append(f"No PAN: TDS at {_percent(result.rate)}%.")
+    if carried_out > 0:
+        parts.append(f"₹{carried_out} of TDS is carried to the next payout.")
+    if carried_in > 0:
+        parts.append(f"Includes ₹{carried_in} TDS carried from an earlier payout.")
     return " ".join(parts) or None
 
 
@@ -343,7 +402,14 @@ async def _reprice(
     )
     ytd = await _year_to_date(session, user, run, employee.id, section)
     result = tds_non_salary.compute(rule_set, payee, gross, ytd)
-    tds = _money(result.tds)
+    carried_in = await tds_carried_in(
+        session, user, employee.id, section=section, before_run_id=run.id, pay_date=run.pay_date
+    )
+    # TDS is never more than this payout; the rest is taken from the next one.
+    tds_due = _money(result.tds) + carried_in
+    payable = gross + gst
+    tds = min(tds_due, payable)
+    carried_out = tds_due - tds
 
     line.hours = _money(hours)
     line.gross = gross
@@ -352,9 +418,11 @@ async def _reprice(
     line.section = section
     line.tds_base = _money(result.base)
     line.tds_rate = result.rate
+    line.tds_due = tds_due
     line.tds_amount = tds
-    line.net_payable = _money(gross + gst - tds)
-    line.tds_note = _tds_note(result, gross, payee)
+    line.tds_carried_out = carried_out
+    line.net_payable = _money(payable - tds)
+    line.tds_note = _tds_note(result, gross, payee, carried_in=carried_in, carried_out=carried_out)
     line.rule_set_id = result.rule_set_id
     line.problems = problems
     line.excluded = bool(problems)
@@ -376,7 +444,9 @@ def _totals(lines: list[ConsultantPayoutLine]) -> dict[str, Any]:
         "hours": total("hours"),
         "gross": total("gross"),
         "gst_amount": total("gst_amount"),
+        "tds_due": total("tds_due"),
         "tds_amount": total("tds_amount"),
+        "tds_carried_out": total("tds_carried_out"),
         "net_payable": total("net_payable"),
     }
 
@@ -415,7 +485,9 @@ def _line_read(
         "section": line.section.value,
         "tds_base": _text(line.tds_base),
         "tds_rate": str(Decimal(str(line.tds_rate)).quantize(Decimal("0.001"))),
+        "tds_due": _text(line.tds_due),
         "tds_amount": _text(line.tds_amount),
+        "tds_carried_out": _text(line.tds_carried_out),
         "net_payable": _text(line.net_payable),
         "tds_note": line.tds_note,
         "rule_set_id": str(line.rule_set_id) if line.rule_set_id else None,
@@ -786,6 +858,7 @@ async def exclude_line(
     line.excluded_reason = clean
     line.hours = line.gross = line.gst_amount = Decimal(0)
     line.tds_base = line.tds_rate = line.tds_amount = line.net_payable = Decimal(0)
+    line.tds_due = line.tds_carried_out = Decimal(0)
     line.tds_note = None
     await audit.record(
         session,
@@ -967,7 +1040,9 @@ async def my_payouts(session: AsyncSession, user: User) -> list[dict[str, Any]]:
             "gross": _text(line.gross),
             "gst_amount": _text(line.gst_amount),
             "section": line.section.value,
+            "tds_due": _text(line.tds_due),
             "tds_amount": _text(line.tds_amount),
+            "tds_carried_out": _text(line.tds_carried_out),
             "net_payable": _text(line.net_payable),
         }
         for line, run in rows
