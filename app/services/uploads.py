@@ -130,8 +130,7 @@ async def read_file(file: UploadFile, session: AsyncSession, tenant_id: uuid.UUI
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=(
-                f"The file is {size_label(size, up=True)}. "
-                f"The upload limit is {size_label(limit)}."
+                f"The file is {size_label(size, up=True)}. The upload limit is {size_label(limit)}."
             ),
         )
     return data

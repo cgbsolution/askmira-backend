@@ -825,17 +825,7 @@ async def submit_week(
                 location_id=employee.location_id,
             ),
         )
-    if consultant:
-        if route is ApproverRoute.INTERNAL:
-            approvers = (
-                [employee.internal_approver_user_id]
-                if employee.internal_approver_user_id
-                else await _hr_user_ids(session, user, not_employee_id=target)
-            )
-        else:
-            approvers = []  # the customer is asked by email (a later step), not notified here
-    else:
-        approvers = await _approvers(session, user, target, sheet)
+    approvers = await _waiting_on(session, user, employee, sheet)
     approvers = [uid for uid in approvers if uid != user.id]
     if approvers:
         hours = sum(
@@ -924,6 +914,20 @@ async def pending_for_approver(
             }
         )
     return out
+
+
+async def _waiting_on(
+    session: AsyncSession, user: User, employee: Employee | None, sheet: Timesheet
+) -> list[uuid.UUID]:
+    """Who a submitted week is waiting on: a consultant's internal approver (else HR) or,
+    for a customer-route week, nobody here; anyone else's per `_approvers`."""
+    if employee is not None and is_consultant(employee):
+        if sheet.approval_route != ApproverRoute.INTERNAL.value:
+            return []  # the customer is asked by email, not notified here
+        if employee.internal_approver_user_id:
+            return [employee.internal_approver_user_id]
+        return await _hr_user_ids(session, user, not_employee_id=employee.id)
+    return await _approvers(session, user, sheet.employee_id, sheet)
 
 
 async def _approvers(
@@ -1377,7 +1381,8 @@ async def send_timesheet_reminders(
     ).all()
     per_approver: dict[uuid.UUID, list[Timesheet]] = {}
     for sheet in waiting:
-        for approver in await _approvers(session, actor, sheet.employee_id, sheet):
+        person = await _employee(session, actor, sheet.employee_id)
+        for approver in await _waiting_on(session, actor, person, sheet):
             per_approver.setdefault(approver, []).append(sheet)
     for approver, sheets in per_approver.items():
         oldest = min(s.week_start for s in sheets)

@@ -47,6 +47,7 @@ from app.core.deps import tenant_scoped
 from app.models.attendance import AttendanceDay, shift_off_on
 from app.models.autonomy import AgentProposal, ProposalStatusEnum
 from app.models.cycle_config import ProbationReview
+from app.models.employee import Employee, EmploymentType
 from app.models.lifecycle import LifecycleEvent, LifecycleEventType, LifecycleStatus
 from app.models.timesheets import Timesheet, TimesheetEntry, TimesheetStatus
 from app.models.user import User
@@ -202,7 +203,13 @@ async def timesheet_agent(
     sheets = (
         await session.scalars(
             tenant_scoped(
-                select(Timesheet).where(Timesheet.status == TimesheetStatus.SUBMITTED),
+                select(Timesheet)
+                .join(Employee, Employee.id == Timesheet.employee_id)
+                .where(
+                    Timesheet.status == TimesheetStatus.SUBMITTED,
+                    # A consultant's week is decided by a person, never proposed by the agent.
+                    Employee.employment_type != EmploymentType.CONSULTANT,
+                ),
                 Timesheet,
                 user,
             )

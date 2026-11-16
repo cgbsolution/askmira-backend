@@ -906,9 +906,7 @@ async def assign_salaries(
     batch = SalaryBatch()
     refused = {id(item) for item in items if is_consultant(item[0])}
     batch.refused = [
-        (item[0].employee_code, CONSULTANT_SALARY_REFUSAL)
-        for item in items
-        if id(item) in refused
+        (item[0].employee_code, CONSULTANT_SALARY_REFUSAL) for item in items if id(item) in refused
     ]
     items = [item for item in items if id(item) not in refused]
     if not items:

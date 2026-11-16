@@ -290,3 +290,62 @@ async def test_reopen_returns_a_decided_week_to_draft(
     assert sheet is not None
     assert sheet.status is TimesheetStatus.DRAFT
     assert sheet.decided_by_user_id is None and sheet.decided_at is None
+
+
+async def test_pending_reminder_goes_to_internal_approver_not_line_manager(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.notifications import Notification
+
+    manager, _ = await _person(session, tenant, legal_entity, "MNGR")
+    _, admin = await _person(session, tenant, legal_entity, "ADMN")
+    consultant, consultant_login = await _consultant(
+        session, tenant, legal_entity, "CON1", approver=admin, manager_id=manager.id
+    )
+    await timesheets.save_week(session, consultant_login, MONDAY, _hours((7, "8")))
+    await timesheets.submit_week(session, consultant_login, MONDAY)
+
+    sent = await timesheets.send_timesheet_reminders(
+        session, hr_user, today=date(2026, 9, 30), now=datetime.now(UTC) + timedelta(days=3)
+    )
+    assert sent["approvers_reminded"] == 1
+    told = (
+        await session.scalars(
+            select(Notification.recipient_user_id).where(
+                Notification.event_key == "timesheets.reminder.pending"
+            )
+        )
+    ).all()
+    assert list(told) == [admin.id]
+
+
+async def test_timesheet_agent_leaves_consultant_weeks_to_people(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.models.attendance import AttendanceDay, AttendanceStatus
+    from app.models.autonomy import AgentProposal
+    from app.services.autonomy import agents
+
+    consultant, consultant_login = await _consultant(session, tenant, legal_entity, "CON1")
+    session.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=consultant.id,
+            attendance_date=date(2026, 9, 7),
+            worked_minutes=8 * 60,
+            status=AttendanceStatus.PRESENT,
+            payable_fraction=Decimal("1"),
+            computed_at=datetime(2026, 9, 8, tzinfo=UTC),
+        )
+    )
+    await session.commit()
+    await timesheets.save_week(session, consultant_login, MONDAY, _hours((7, "8")))
+    await timesheets.submit_week(session, consultant_login, MONDAY)
+
+    outcome = await agents.timesheet_agent(session, hr_user, today=date(2026, 9, 14))
+    assert outcome["proposed"] == 0 and outcome["held"] == []
+    assert await session.scalar(select(func.count()).select_from(AgentProposal)) == 0
