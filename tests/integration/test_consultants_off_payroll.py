@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.employee import EmploymentType
+from app.models.employee import Employee, EmploymentType
 from app.models.payroll import Payslip
 from app.models.user import UserRole
 from app.schemas.payroll import EmployeeSalaryCreate, EmployeeSalaryUpdate
@@ -66,15 +66,20 @@ async def test_assign_salary_refuses_consultant(session: AsyncSession, org, cons
     assert refused.value.detail == CONSULTANT_SALARY_REFUSAL
 
 
-async def test_assign_salaries_refuses_the_consultant_row(
+async def test_assign_salaries_refuses_the_consultant_row_and_assigns_the_rest(
     session: AsyncSession, org, consultant
 ) -> None:
-    with pytest.raises(HTTPException) as refused:
-        await salary_service.assign_salaries(
-            session, org["maker"], [(consultant, _salary(org), True)]
-        )
-    assert refused.value.status_code == 422
-    assert refused.value.detail == CONSULTANT_SALARY_REFUSAL
+    full_timer = await session.scalar(select(Employee).where(Employee.employee_code == "MEERA"))
+    batch = await salary_service.assign_salaries(
+        session,
+        org["maker"],
+        [
+            (consultant, _salary(org), True),
+            (full_timer, _salary(org, date(2026, 8, 1)), True),
+        ],
+    )
+    assert batch.refused == [("CNSLT1", CONSULTANT_SALARY_REFUSAL)]
+    assert [salary.employee_id for salary in batch.saved] == [full_timer.id]
 
 
 async def test_update_salary_refuses_consultant(session: AsyncSession, org, consultant) -> None:

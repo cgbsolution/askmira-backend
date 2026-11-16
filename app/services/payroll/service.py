@@ -876,13 +876,22 @@ async def _salary_audit(
     )
 
 
+@dataclass
+class SalaryBatch:
+    """What `assign_salaries` did: the revisions saved, and the people it refused."""
+
+    saved: list[EmployeeSalary] = field(default_factory=list)
+    #: (employee code, why) for each row left unsaved, in the order given.
+    refused: list[tuple[str, str]] = field(default_factory=list)
+
+
 async def assign_salaries(
     session: AsyncSession,
     user: User,
     items: list[tuple[Employee, EmployeeSalaryCreate, bool]],
     *,
     request: Request | None = None,
-) -> list[EmployeeSalary]:
+) -> SalaryBatch:
     """`assign_salary` for many people at once — the Salary master bulk upload.
 
     The same checks, revisions and audit entries, row for row, in the caller's
@@ -891,9 +900,19 @@ async def assign_salaries(
     rows are written in one flush: hundreds of salaries cost a handful of
     round trips to the database instead of ten each. `items` are (employee,
     payload, strict); a later row for the same person follows the earlier one.
+    A consultant's row is refused, not saved, and named in `refused`; the
+    other rows are still assigned.
     """
+    batch = SalaryBatch()
+    refused = {id(item) for item in items if is_consultant(item[0])}
+    batch.refused = [
+        (item[0].employee_code, CONSULTANT_SALARY_REFUSAL)
+        for item in items
+        if id(item) in refused
+    ]
+    items = [item for item in items if id(item) not in refused]
     if not items:
-        return []
+        return batch
     components = {
         c.code: c
         for c in (
@@ -920,14 +939,8 @@ async def assign_salaries(
     ).all():
         current[row.employee_id] = row  # the latest open one wins, as in assign_salary
 
-    saved: list[EmployeeSalary] = []
     with session.no_autoflush:
         for employee, payload, strict in items:
-            if is_consultant(employee):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=CONSULTANT_SALARY_REFUSAL,
-                )
             structure = structures[payload.structure_id]
             if payload.effective_from < structure.effective_from:
                 raise HTTPException(
@@ -969,9 +982,9 @@ async def assign_salaries(
                 flush=False,
             )
             current[employee.id] = salary
-            saved.append(salary)
+            batch.saved.append(salary)
     await session.flush()
-    return saved
+    return batch
 
 
 async def salary_history(
