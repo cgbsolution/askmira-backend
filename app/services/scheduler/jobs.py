@@ -455,6 +455,13 @@ async def _timesheet_reminders(session: AsyncSession, ctx: JobContext) -> dict[s
     )
 
 
+async def _customer_timesheet_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.consultants import timesheet_approval
+
+    assert ctx.actor is not None
+    return await timesheet_approval.send_reminders(session, ctx.actor, now=ctx.now)
+
+
 async def _approval_escalation(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services.approvals import rules
 
@@ -636,6 +643,18 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=10),
         handler=_timesheet_reminders,
         source="app.services.timesheets.send_timesheet_reminders",
+        module="leave",
+    ),
+    Job(
+        key="timesheets.customer_reminders",
+        name="Customer timesheet reminders",
+        description=(
+            "Emails a customer again when a consultant's week has waited three days for "
+            "their answer, at most twice."
+        ),
+        cadence=Cadence.daily(hour=10),
+        handler=_customer_timesheet_reminders,
+        source="app.services.consultants.timesheet_approval.send_reminders",
         module="leave",
     ),
     Job(

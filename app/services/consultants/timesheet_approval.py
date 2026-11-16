@@ -59,6 +59,7 @@ __all__ = [
     "describe",
     "issue_link",
     "revoke_links",
+    "send_reminders",
     "send_to_customer",
 ]
 
@@ -66,6 +67,10 @@ logger = logging.getLogger("askmira.timesheets")
 
 #: How long a customer has to decide.
 LINK_LIFETIME = timedelta(days=14)
+
+#: How long after an email goes out before the customer is nudged, and how many nudges.
+REMIND_AFTER = timedelta(days=3)
+MAX_REMINDERS = 2
 
 READ_LIMIT = Limit("timesheet_link_read", 240, 600)
 DECIDE_LIMIT = Limit("timesheet_link_decide", 20, 600)
@@ -304,6 +309,102 @@ async def send_to_customer(
     await session.commit()
     await deliver(session, link, token, employee)
     return link
+
+
+async def send_reminders(session: AsyncSession, actor: User, *, now: datetime) -> dict[str, int]:
+    """Nudge customers who have not answered: after 3 days, at most twice.
+
+    Each nudge is a fresh email with a new link (the old one closes) that carries
+    the count forward. A week whose email never went out is left alone.
+    """
+    # Plain values: each week commits, which expires the actor object.
+    scope = SimpleNamespace(tenant_id=actor.tenant_id)
+    actor_id = actor.id
+    candidates = (
+        await session.execute(
+            select(Timesheet.id, Timesheet.employee_id).where(
+                tenant_filter(Timesheet, scope),
+                Timesheet.status == TimesheetStatus.SUBMITTED,
+                Timesheet.approval_route == "customer",
+            )
+        )
+    ).all()
+    reminded = 0
+    for sheet_id, employee_id in candidates:
+        try:
+            sent = await _remind_one(session, scope, actor_id, sheet_id, employee_id, now)
+        except HTTPException:
+            # E.g. the contact's email was removed since: leave this week, carry on.
+            await session.rollback()
+            continue
+        reminded += 1 if sent else 0
+    return {"reminded": reminded}
+
+
+async def _remind_one(
+    session: AsyncSession,
+    scope: Any,
+    actor_id: uuid.UUID | None,
+    sheet_id: uuid.UUID,
+    employee_id: uuid.UUID,
+    now: datetime,
+) -> bool:
+    from app.services.consultants import is_consultant
+
+    # Sheet first, then its links, as everywhere else.
+    sheet = await session.scalar(
+        select(Timesheet)
+        .where(tenant_filter(Timesheet, scope), Timesheet.id == sheet_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        sheet is None
+        or sheet.status is not TimesheetStatus.SUBMITTED
+        or sheet.approval_route != "customer"
+    ):
+        await session.rollback()
+        return False
+    employee = await session.scalar(
+        select(Employee).where(tenant_filter(Employee, scope), Employee.id == employee_id)
+    )
+    newest = await session.scalar(
+        select(TimesheetApprovalLink)
+        .where(
+            tenant_filter(TimesheetApprovalLink, scope),
+            TimesheetApprovalLink.timesheet_id == sheet_id,
+        )
+        .order_by(TimesheetApprovalLink.created_at.desc())
+        .limit(1)
+    )
+    if (
+        employee is None
+        or not is_consultant(employee)
+        or newest is None
+        or newest.sent_at is None
+        or newest.used_at is not None
+        or newest.revoked_at is not None
+        or now - newest.sent_at < REMIND_AFTER
+        or newest.reminders_sent >= MAX_REMINDERS
+    ):
+        await session.rollback()
+        return False
+    carried = newest.reminders_sent + 1
+    link, token = await issue_link(session, sheet, employee)
+    link.reminders_sent = carried
+    await audit.record(
+        session,
+        tenant_id=sheet.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="timesheet",
+        entity_id=sheet.id,
+        actor_user_id=actor_id,
+        changes={"sent_to": link.sent_to_email, "reminder": carried},
+        summary=f"Reminded {link.sent_to_email} about the week of {sheet.week_start}",
+    )
+    await session.commit()
+    await deliver(session, link, token, employee)
+    return True
 
 
 # ── The customer's page ────────────────────────────────────────────────────

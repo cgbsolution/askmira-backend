@@ -453,3 +453,178 @@ async def test_revoke_links_is_tenant_scoped(session, tenant, hr_user, legal_ent
     link = await session.scalar(select(TimesheetApprovalLink))
     assert link is not None and link.revoked_at is None
     assert (await timesheet_approval.describe(session, token))["state"] == "waiting"
+
+
+# ── Reminders and manual approval with proof ───────────────────────────────
+
+PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"
+
+
+async def _link_sent_at(session, sheet_id, sent_at: datetime) -> None:
+    """Pretend the newest link went out at `sent_at`, so time is controlled, not slept."""
+    await session.rollback()
+    link = await session.scalar(
+        select(TimesheetApprovalLink)
+        .where(TimesheetApprovalLink.timesheet_id == sheet_id)
+        .order_by(TimesheetApprovalLink.created_at.desc())
+        .limit(1)
+    )
+    assert link is not None
+    link.sent_at = sent_at
+    await session.commit()
+
+
+async def test_reminder_after_three_days_at_most_twice(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, _, sheet_id, first = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    sent = datetime(2026, 9, 14, 9, 0, tzinfo=UTC)
+    await _link_sent_at(session, sheet_id, sent)
+    await session.refresh(hr_user)
+
+    await session.refresh(hr_user)
+
+    assert await timesheet_approval.send_reminders(
+        session, hr_user, now=sent + timedelta(days=2)
+    ) == {"reminded": 0}
+    assert len(mail.sent) == 1
+
+    await session.refresh(hr_user)
+
+    assert await timesheet_approval.send_reminders(
+        session, hr_user, now=sent + timedelta(days=3)
+    ) == {"reminded": 1}
+    second = _token(mail)
+    assert len(mail.sent) == 2 and second != first
+    assert (await timesheet_approval.describe(session, first))["state"] == "changed"
+    assert (await timesheet_approval.describe(session, second))["state"] == "waiting"
+
+    await _link_sent_at(session, sheet_id, sent + timedelta(days=3))
+    await session.refresh(hr_user)
+    assert await timesheet_approval.send_reminders(
+        session, hr_user, now=sent + timedelta(days=6)
+    ) == {"reminded": 1}
+    third = _token(mail)
+    assert third != second
+    links = (
+        await session.scalars(
+            select(TimesheetApprovalLink).order_by(TimesheetApprovalLink.created_at)
+        )
+    ).all()
+    assert [link.reminders_sent for link in links] == [0, 1, 2]
+
+    await _link_sent_at(session, sheet_id, sent + timedelta(days=6))
+    await session.refresh(hr_user)
+    assert await timesheet_approval.send_reminders(
+        session, hr_user, now=sent + timedelta(days=9)
+    ) == {"reminded": 0}
+    assert len(mail.sent) == 3
+
+
+async def test_no_reminder_for_a_decided_or_never_sent_week(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, _, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await session.refresh(hr_user)
+    later = datetime.now(UTC) + timedelta(days=5)
+    await session.rollback()
+    link = await session.scalar(select(TimesheetApprovalLink))
+    assert link is not None
+    link.sent_at = None
+    await session.commit()
+    await session.refresh(hr_user)
+    assert await timesheet_approval.send_reminders(session, hr_user, now=later) == {"reminded": 0}
+
+    await _link_sent_at(session, sheet_id, datetime.now(UTC) - timedelta(days=5))
+    await session.refresh(hr_user)
+    await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    await session.refresh(hr_user)
+    assert await timesheet_approval.send_reminders(session, hr_user, now=later) == {"reminded": 0}
+    assert len(mail.sent) == 1
+
+
+async def test_manual_approval_with_proof(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, approver = await _login(session, tenant, legal_entity, "APPR")
+    _, _, sheet_id, _ = await _submitted(
+        session, tenant, hr_user, legal_entity, mail, approver=approver
+    )
+    approver_id = str(approver.id)
+    await session.refresh(approver)
+    await timesheets.decide(
+        session,
+        approver,
+        sheet_id,
+        approve=True,
+        note=None,
+        proof=("approval.pdf", PDF),
+    )
+    sheet = await _sheet(session, sheet_id)
+    assert sheet.status is TimesheetStatus.APPROVED
+    proof = sheet.approval_proof or {}
+    assert proof["name"] == "approval.pdf"
+    assert proof["uploaded_by"] == approver_id
+    assert proof["key"] and proof["uploaded_at"]
+
+
+async def test_proof_must_be_a_real_document_on_a_consultant_week(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, _, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    with pytest.raises(HTTPException) as refused:
+        await timesheets.decide(
+            session, hr_user, sheet_id, approve=True, note=None, proof=("x.pdf", b"not a pdf")
+        )
+    assert refused.value.status_code == 422
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.SUBMITTED
+
+    await session.refresh(tenant)
+    await session.refresh(legal_entity)
+    await session.refresh(hr_user)
+    staff, staff_login = await _login(session, tenant, legal_entity, "STAF")
+    await _fill(session, staff_login, (7, 8))
+    week = await timesheets.submit_week(session, staff_login, MONDAY)
+    with pytest.raises(HTTPException) as other:
+        await timesheets.decide(
+            session, hr_user, uuid.UUID(week["id"]), approve=True, note=None, proof=("a.pdf", PDF)
+        )
+    assert other.value.status_code == 422
+
+
+async def test_consultant_cannot_approve_own_week(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, login, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    with pytest.raises(HTTPException) as refused:
+        await timesheets.decide(session, login, sheet_id, approve=True, note=None)
+    assert refused.value.status_code == 403
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.SUBMITTED
+
+
+async def test_manual_decide_route_takes_a_file(
+    client,  # noqa: F811
+    session,
+    tenant,
+    hr_user,
+    legal_entity,
+    mail,
+) -> None:
+    from app.core.deps import get_current_user
+    from app.main import app
+
+    _, _, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    app.dependency_overrides[get_current_user] = lambda: hr_user
+    try:
+        bad = await client.post(
+            f"/api/v1/timesheets/{sheet_id}/decide/manual",
+            data={"approve": "false"},
+        )
+        assert bad.status_code == 422
+        done = await client.post(
+            f"/api/v1/timesheets/{sheet_id}/decide/manual",
+            data={"approve": "true"},
+            files={"file": ("approval.pdf", PDF, "application/pdf")},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    assert done.status_code == 200, done.text
+    assert (await _sheet(session, sheet_id)).approval_proof["name"] == "approval.pdf"

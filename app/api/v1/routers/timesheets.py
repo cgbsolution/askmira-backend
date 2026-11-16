@@ -6,12 +6,12 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
-from app.services import timesheets
+from app.services import timesheets, uploads
 
 router = APIRouter(prefix="/timesheets", tags=["timesheets"])
 
@@ -205,6 +205,30 @@ async def decide(
 ) -> dict[str, Any]:
     return await timesheets.decide(
         session, user, timesheet_id, approve=payload.approve, note=payload.note, request=request
+    )
+
+
+@router.post("/{timesheet_id}/decide/manual")
+async def decide_manual(
+    timesheet_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    approve: bool = Form(...),
+    note: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+) -> dict[str, Any]:
+    """Decide a consultant's week on the customer's behalf, optionally with their
+    approval attached (PDF, PNG or JPEG, read by its contents, up to the upload limit)."""
+    data = await file.read(uploads.READ_CEILING) if file is not None else b""
+    return await timesheets.decide(
+        session,
+        user,
+        timesheet_id,
+        approve=approve,
+        note=note,
+        request=request,
+        proof=(file.filename or "approval", data) if file is not None and data else None,
     )
 
 

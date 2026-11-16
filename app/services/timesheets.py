@@ -1028,7 +1028,10 @@ async def decide(
     note: str | None,
     request: Request | None = None,
     commit: bool = True,
+    proof: tuple[str, bytes] | None = None,
 ) -> dict[str, Any]:
+    """Decide a week. A consultant week may carry the customer's approval as a file
+    (`proof` is its name and bytes), kept the way tax proofs are."""
     sheet = await _locked_sheet(session, user, timesheet_id)
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
@@ -1054,6 +1057,21 @@ async def decide(
     clean = (note or "").strip() or None
     if not approve and clean is None:
         raise _unprocessable("Say what needs changing.")
+    approval_proof: dict[str, str] | None = None
+    if proof is not None:
+        if not consultant:
+            raise _unprocessable("A proof of approval can only go with a consultant's week.")
+        from app.services.filings import support
+
+        stored = await support.store_upload(
+            session, user.tenant_id, "timesheet-approvals", proof[1]
+        )
+        approval_proof = {
+            "name": (proof[0] or "approval").strip()[:255] or "approval",
+            "key": stored.key,
+            "uploaded_by": str(user.id),
+            "uploaded_at": datetime.now(UTC).isoformat(),
+        }
     if chain:
         chain, outcome = await rules.decide(session, user, chain, approve=approve, note=clean)
         sheet.approval_chain = chain
@@ -1105,6 +1123,8 @@ async def decide(
     sheet.decided_by_user_id = user.id
     sheet.decided_at = datetime.now(UTC)
     sheet.decision_note = clean
+    if approval_proof is not None:
+        sheet.approval_proof = approval_proof
     # Decided here, so an emailed customer link no longer applies.
     await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
 
