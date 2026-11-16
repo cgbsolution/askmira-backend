@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 GROUP_SEP = " > "
@@ -290,6 +291,79 @@ FIELDS: tuple[Field, ...] = (
         ),
         hint='Their manager\'s Emp Code ("EMP0007" or "EMP0007 - Name").',
         example="EMP0007",
+    ),
+    # ── Consultant payouts: read only for a Consultant ──────────────────────
+    Field(
+        "tds_section",
+        "TDS Section",
+        "Job details",
+        ("tds section", "consultant tds section"),
+        choices=("194J professional", "194J technical", "194C"),
+        hint="Consultants only. Left blank, 194J professional.",
+        example="194J professional",
+    ),
+    Field(
+        "payee_kind",
+        "Paid As",
+        "Job details",
+        ("paid as", "payee type", "payee kind"),
+        choices=("Individual", "HUF", "Firm", "Company"),
+        hint="Consultants only. Only changes the 194C rate. Left blank, Individual.",
+        example="Individual",
+    ),
+    Field(
+        "gst_applicable",
+        "GST Applicable",
+        "Job details",
+        ("gst applicable", "consultant gst applicable"),
+        choices=("YES", "NO"),
+        hint="Consultants only: whether they charge GST on their fee.",
+        example="NO",
+    ),
+    Field(
+        "gst_rate",
+        "GST Rate (%)",
+        "Job details",
+        ("gst rate (%)", "gst rate", "gst %"),
+        hint="Consultants who charge GST. Left blank, 18.",
+        example="18",
+    ),
+    Field(
+        "gstin",
+        "GSTIN",
+        "Job details",
+        ("gstin", "gst number", "gst no"),
+        hint="Required when GST applies.",
+    ),
+    Field(
+        "contract_end_date",
+        "Contract End Date",
+        "Job details",
+        ("contract end date", "contract ends", "contract end"),
+        hint="Consultants only. DD-MM-YYYY.",
+    ),
+    Field(
+        "timesheet_approver_route",
+        "Timesheet Approver",
+        "Job details",
+        ("timesheet approver", "timesheet approver route", "timesheets approved by"),
+        choices=("Customer", "Internal"),
+        hint="Consultants only: the customer contact (by email) or someone inside the company.",
+        example="Customer",
+    ),
+    Field(
+        "customer_contact_name",
+        "Customer Contact Name",
+        "Job details",
+        ("customer contact name", "customer contact"),
+        hint="Required when the Customer approves their timesheets.",
+    ),
+    Field(
+        "customer_contact_email",
+        "Customer Contact Email",
+        "Job details",
+        ("customer contact email", "customer email"),
+        hint="Required when the Customer approves their timesheets.",
     ),
     # ── Personal ────────────────────────────────────────────────────────────
     Field(
@@ -632,6 +706,63 @@ def read_yes(raw: Any) -> bool | None:
     if lowered in {"no", "n", "false", "0"}:
         return False
     raise ValueError(f"'{value}' is not Yes or No")
+
+
+def read_percent(raw: Any) -> Decimal | None:
+    value = text(raw)
+    if value is None:
+        return None
+    try:
+        number = Decimal(value.rstrip("%").strip())
+    except InvalidOperation:
+        raise ValueError(f"'{value}' is not a percentage") from None
+    if not 0 <= number <= 100:
+        raise ValueError(f"'{value}' is not between 0 and 100")
+    return number.quantize(Decimal("0.01"))
+
+
+_TDS_SECTION = {
+    "194j professional": "194J_professional",
+    "194j professional fees": "194J_professional",
+    "194j": "194J_professional",
+    "professional": "194J_professional",
+    "194j technical": "194J_technical",
+    "194j technical fees": "194J_technical",
+    "technical": "194J_technical",
+    "194c": "194C",
+    "contract": "194C",
+}
+
+
+def read_tds_section(raw: Any) -> str | None:
+    return _lookup(raw, _TDS_SECTION, "TDS section", "194J professional, 194J technical or 194C")
+
+
+_PAYEE_KIND = {
+    "individual": "individual",
+    "huf": "huf",
+    "hindu undivided family": "huf",
+    "firm": "firm",
+    "partnership": "firm",
+    "company": "company",
+}
+
+
+def read_payee_kind(raw: Any) -> str | None:
+    return _lookup(raw, _PAYEE_KIND, "kind of payee", "Individual, HUF, Firm or Company")
+
+
+_APPROVER_ROUTE = {
+    "customer": "customer",
+    "customer contact": "customer",
+    "client": "customer",
+    "internal": "internal",
+    "inside": "internal",
+}
+
+
+def read_approver_route(raw: Any) -> str | None:
+    return _lookup(raw, _APPROVER_ROUTE, "timesheet approver", "Customer or Internal")
 
 
 def _lookup(raw: Any, table: dict[str, str], what: str, allowed: str) -> str | None:

@@ -51,13 +51,18 @@ from app.core.crypto import encrypt_secret
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.disbursement import EmployeeBankAccount, VerificationMethod
-from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
+from app.models.employee import (
+    CustomFieldDefinition,
+    Employee,
+    EmploymentStatus,
+    EmploymentType,
+)
 from app.models.org import Department, LegalEntity, Location
 from app.models.pay_grades import PayGrade
 from app.models.tax import PreviousEmployerIncome, ProofStatus
 from app.models.timesheets import Project
 from app.models.user import User
-from app.schemas.employee import EmployeeCreate
+from app.schemas.employee import EmployeeCreate, apply_consultant_defaults
 from app.schemas.employee_import import (
     ImportColumn,
     ImportColumnNotKept,
@@ -745,6 +750,16 @@ def _read_row(
         "date_of_joining": joining,
         "probation_end_date": probation_end,
         "notice_period_days": notice or None,
+        # Consultant payouts: a sheet's blanks are filled in below, once the row checks out.
+        "tds_section": read.get("tds_section", f.read_tds_section),
+        "payee_kind": read.get("payee_kind", f.read_payee_kind),
+        "gst_applicable": bool(read.get("gst_applicable", f.read_yes)),
+        "gst_rate": read.get("gst_rate", f.read_percent),
+        "gstin": read.limited("gstin", 15),
+        "contract_end_date": read.get("contract_end_date", f.read_date),
+        "timesheet_approver_route": read.get("timesheet_approver_route", f.read_approver_route),
+        "customer_contact_name": read.limited("customer_contact_name", 200),
+        "customer_contact_email": read.limited("customer_contact_email", 255),
     }
     if not row.errors:
         # Checked as AskMiraa would enter it; a leaver's missing email and a code
@@ -758,6 +773,7 @@ def _read_row(
             EmployeeCreate(**checked)
         except ValidationError as exc:
             row.errors.append(_first_error(exc))
+    apply_consultant_defaults(EmploymentType(record["employment_type"]), record)
     record["status"] = employment_status
     record["date_of_exit"] = exit_on
     values = _custom(read, custom, ws)
