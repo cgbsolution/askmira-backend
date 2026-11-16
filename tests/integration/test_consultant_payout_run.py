@@ -1012,3 +1012,83 @@ async def test_carried_tds_does_not_cross_financial_years(
     # 48000 is below this year's threshold, and last year's 400 is not brought in.
     assert line["tds_due"] == line["tds_amount"] == "0.00"
     assert line["tds_carried_out"] == "0.00"
+
+
+# ── Approval refuses stale figures ──────────────────────────────────────────
+
+STALE_MESSAGE = (
+    "The figures have changed since this run was priced (another run was approved, a rate or "
+    "opening changed, or a record was updated). Recalculate the run, check it, then approve."
+)
+
+
+async def test_approve_refuses_when_another_run_took_the_carry(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    person, first = await _capped_first_run(session, tenant, hr_user, legal_entity)
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
+    # Two drafts open at once: both bring in the 400 the first run could not take.
+    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+    draft_a = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
+    )
+    await _week(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
+    draft_b = await payouts.create_run(
+        session,
+        hr_user,
+        legal_entity_id=None,
+        cut_off=date(2026, 10, 18),
+        pay_date=date(2026, 10, 25),
+    )
+    assert _line(draft_a, person)["tds_due"] == _line(draft_b, person)["tds_due"] == "1400.00"
+    b_id = uuid.UUID(draft_b["id"])
+
+    await payouts.approve_run(session, checker, uuid.UUID(draft_a["id"]), confirm=_confirmed)
+    with pytest.raises(HTTPException) as stale:
+        await payouts.approve_run(session, checker, b_id, confirm=_confirmed)
+    assert stale.value.status_code == 409
+    assert stale.value.detail == STALE_MESSAGE
+    unchanged = await payouts.get_run(session, hr_user, b_id)
+    assert unchanged["status"] == "draft"
+    assert _line(unchanged, person)["tds_due"] == "1400.00"
+
+    line = _line(await payouts.recalculate(session, hr_user, b_id), person)
+    assert line["tds_due"] == line["tds_amount"] == "1000.00"
+    assert line["tds_carried_out"] == "0.00"
+    approved = await payouts.approve_run(session, checker, b_id, confirm=_confirmed)
+    assert approved["status"] == "approved"
+
+
+async def test_approve_refuses_after_opening_changed(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.services.consultants import attention
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    assert _line(run, person)["tds_amount"] == "0.00"
+    run_id = uuid.UUID(run["id"])
+    await attention.set_opening(
+        session,
+        hr_user,
+        employee_id=person.id,
+        fy_start=date(2026, 4, 1),
+        section=TdsSection.S194J_PROFESSIONAL,
+        fees_paid=Decimal("40000"),
+        taxed_base=Decimal("0"),
+        tds_deducted=Decimal("0"),
+    )
+    checker = await _second_hr(session, tenant)
+
+    with pytest.raises(HTTPException) as stale:
+        await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert stale.value.status_code == 409
+    assert stale.value.detail == STALE_MESSAGE
+    again = await payouts.get_run(session, hr_user, run_id)
+    assert again["status"] == "draft"
+    assert _line(again, person)["tds_amount"] == "0.00"

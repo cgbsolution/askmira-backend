@@ -356,19 +356,66 @@ async def _line_weeks(
     )
 
 
-async def _reprice(
+@dataclass
+class _LineFigures:
+    """A line priced from scratch, not yet written to it."""
+
+    weeks: list[tuple[ConsultantPayoutWeek, _PricedWeek]]
+    hours: Decimal
+    gross: Decimal
+    gst_rate: Decimal
+    gst_amount: Decimal
+    section: TdsSection
+    tds_base: Decimal
+    tds_rate: Decimal
+    tds_due: Decimal
+    tds_amount: Decimal
+    tds_carried_out: Decimal
+    net_payable: Decimal
+    tds_note: str | None
+    rule_set_id: uuid.UUID | None
+    problems: list[str]
+
+    #: The figures approval checks are still what is stored on the line.
+    COMPARED = (
+        "gross",
+        "gst_amount",
+        "tds_base",
+        "tds_rate",
+        "tds_due",
+        "tds_amount",
+        "tds_carried_out",
+        "net_payable",
+    )
+
+    def matches(self, line: ConsultantPayoutLine) -> bool:
+        return (
+            all(
+                Decimal(str(getattr(self, name))) == Decimal(str(getattr(line, name)))
+                for name in self.COMPARED
+            )
+            and list(self.problems) == list(line.problems or [])
+            and bool(self.problems) == line.excluded
+        )
+
+
+async def _price_line(
     session: AsyncSession,
     user: User,
     run: ConsultantPayoutRun,
     line: ConsultantPayoutLine,
     rule_set: PayrollRuleSet,
-) -> None:
-    """Price a line from scratch from its weeks and the consultant's record as it is now."""
+) -> _LineFigures:
+    """Price a line from scratch from its weeks and the consultant's record as it is now.
+
+    Reads only: nothing on the line or its weeks changes.
+    """
     employee = await _employee(session, user, line.employee_id)
     if employee is None:
         raise _not_found("Consultant not found")
     hours = gross = Decimal(0)
     missing: set[date] = set()
+    weeks: list[tuple[ConsultantPayoutWeek, _PricedWeek]] = []
     for week in await _line_weeks(session, user, line.id):
         sheet = await session.scalar(
             tenant_scoped(
@@ -376,7 +423,7 @@ async def _reprice(
             )
         )
         priced = await _price_week(session, user, sheet)
-        week.hours, week.gross, week.breakdown = priced.hours, priced.gross, priced.breakdown
+        weeks.append((week, priced))
         hours += priced.hours
         gross += priced.gross
         missing |= priced.missing
@@ -411,21 +458,51 @@ async def _reprice(
     tds = min(tds_due, payable)
     carried_out = tds_due - tds
 
-    line.hours = _money(hours)
-    line.gross = gross
-    line.gst_rate = gst_rate
-    line.gst_amount = gst
-    line.section = section
-    line.tds_base = _money(result.base)
-    line.tds_rate = result.rate
-    line.tds_due = tds_due
-    line.tds_amount = tds
-    line.tds_carried_out = carried_out
-    line.net_payable = _money(payable - tds)
-    line.tds_note = _tds_note(result, gross, payee, carried_in=carried_in, carried_out=carried_out)
-    line.rule_set_id = result.rule_set_id
-    line.problems = problems
-    line.excluded = bool(problems)
+    return _LineFigures(
+        weeks=weeks,
+        hours=_money(hours),
+        gross=gross,
+        gst_rate=gst_rate,
+        gst_amount=gst,
+        section=section,
+        tds_base=_money(result.base),
+        tds_rate=result.rate,
+        tds_due=tds_due,
+        tds_amount=tds,
+        tds_carried_out=carried_out,
+        net_payable=_money(payable - tds),
+        tds_note=_tds_note(result, gross, payee, carried_in=carried_in, carried_out=carried_out),
+        rule_set_id=result.rule_set_id,
+        problems=problems,
+    )
+
+
+async def _reprice(
+    session: AsyncSession,
+    user: User,
+    run: ConsultantPayoutRun,
+    line: ConsultantPayoutLine,
+    rule_set: PayrollRuleSet,
+) -> None:
+    """Price a line from scratch and write the figures to it and its weeks."""
+    figures = await _price_line(session, user, run, line, rule_set)
+    for week, priced in figures.weeks:
+        week.hours, week.gross, week.breakdown = priced.hours, priced.gross, priced.breakdown
+    line.hours = figures.hours
+    line.gross = figures.gross
+    line.gst_rate = figures.gst_rate
+    line.gst_amount = figures.gst_amount
+    line.section = figures.section
+    line.tds_base = figures.tds_base
+    line.tds_rate = figures.tds_rate
+    line.tds_due = figures.tds_due
+    line.tds_amount = figures.tds_amount
+    line.tds_carried_out = figures.tds_carried_out
+    line.net_payable = figures.net_payable
+    line.tds_note = figures.tds_note
+    line.rule_set_id = figures.rule_set_id
+    line.problems = figures.problems
+    line.excluded = bool(figures.problems)
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────
@@ -908,6 +985,34 @@ async def delete_run(
 # ── Approve, pay, and the consultant's own view ─────────────────────────────
 
 
+_STALE = (
+    "The figures have changed since this run was priced (another run was approved, a rate or "
+    "opening changed, or a record was updated). Recalculate the run, check it, then approve."
+)
+
+
+async def _require_figures_current(
+    session: AsyncSession,
+    user: User,
+    run: ConsultantPayoutRun,
+    lines: list[ConsultantPayoutLine],
+) -> None:
+    """Refuse approval when pricing the run again would give other figures.
+
+    Another run approved since (its fees count to the year so far, its carry is
+    used), a changed rate, opening or consultant record: HR recalculates and
+    checks before anyone signs. Pricing here reads only; nothing is written.
+    """
+    rule_set = await tds_non_salary.rules_on(session, user, run.pay_date)
+    with session.no_autoflush:
+        for line in lines:
+            if line.excluded_reason:
+                continue
+            figures = await _price_line(session, user, run, line, rule_set)
+            if not figures.matches(line):
+                raise _conflict(_STALE)
+
+
 async def approve_run(
     session: AsyncSession,
     user: User,
@@ -920,7 +1025,8 @@ async def approve_run(
 
     Like the regular payroll run, whoever prepared it cannot approve it, and
     approving needs fresh proof of identity. A line held back for a problem must
-    be fixed and recalculated, or left out by hand, first.
+    be fixed and recalculated, or left out by hand, first; and if the figures
+    would come out differently priced now, the run is recalculated first.
     """
     run = await _draft(session, user, run_id)
     if run.computed_by_user_id is not None and run.computed_by_user_id == user.id:
@@ -950,6 +1056,7 @@ async def approve_run(
         )
     if not any(not line.excluded for line in lines):
         raise _conflict("There is nobody to pay in this run.")
+    await _require_figures_current(session, user, run, lines)
     await confirm()
     run.status = PayoutRunStatus.APPROVED
     run.approved_by_user_id = user.id
