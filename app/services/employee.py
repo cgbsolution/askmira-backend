@@ -119,6 +119,18 @@ async def _validate_references(
         if found is None:
             raise _unprocessable(f"That {label} is not part of this workspace.")
 
+    approver_id = values.get("internal_approver_user_id")
+    if approver_id is not None:
+        active = await session.scalar(
+            tenant_scoped(
+                select(User.id).where(User.id == approver_id, User.is_active.is_(True)),
+                User,
+                user,
+            )
+        )
+        if active is None:
+            raise _unprocessable("That internal approver is not an active login in this workspace.")
+
     project_id = values.get("project_id")
     if project_id is not None:
         project = await session.scalar(
