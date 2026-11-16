@@ -28,6 +28,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
@@ -40,6 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.consultant_payouts import (
+    ConsultantPayoutLine,
+    ConsultantPayoutRun,
+    PayoutRunStatus,
+)
 from app.models.contractors import (
     Contractor,
     ContractorInvoice,
@@ -47,6 +53,7 @@ from app.models.contractors import (
     InvoiceStatus,
     TdsSection,
 )
+from app.models.employee import Employee
 from app.models.filings import TdsChallan
 from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
@@ -59,6 +66,7 @@ __all__ = [
     "InvoiceIn",
     "approve_invoice",
     "challan_position",
+    "consultant_tds_statement_pdf",
     "create_contractor",
     "create_invoice",
     "form_26q_csv",
@@ -406,6 +414,119 @@ async def mark_paid(
     return _invoice_read(row)
 
 
+@dataclass
+class _Deduction:
+    """One TDS line of the quarter, from a contractor invoice or a consultant payout."""
+
+    pan: str | None
+    name: str
+    company: bool
+    section: TdsSection
+    credit_date: date
+    amount: Decimal
+    rate: Decimal
+    tds: Decimal
+    paid_on: date | None
+    reference: str
+    challan_id: uuid.UUID | None
+
+
+async def _invoice_deductions(
+    session: AsyncSession,
+    user: User,
+    start: date,
+    end: date,
+    *,
+    contractor_id: uuid.UUID | None = None,
+    tds_only: bool = False,
+) -> list[_Deduction]:
+    stmt = (
+        select(ContractorInvoice, Contractor)
+        .join(Contractor, Contractor.id == ContractorInvoice.contractor_id)
+        .where(
+            ContractorInvoice.invoice_date >= start,
+            ContractorInvoice.invoice_date <= end,
+            ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
+        )
+    )
+    if contractor_id is not None:
+        stmt = stmt.where(ContractorInvoice.contractor_id == contractor_id)
+    if tds_only:
+        stmt = stmt.where(ContractorInvoice.tds_amount > 0)
+    rows = (await session.execute(tenant_scoped(stmt, ContractorInvoice, user))).all()
+    return [
+        _Deduction(
+            pan=contractor.pan,
+            name=contractor.name,
+            company=contractor.kind is ContractorKind.COMPANY,
+            section=invoice.section,
+            credit_date=invoice.invoice_date,
+            amount=_d(invoice.amount),
+            rate=_d(invoice.tds_rate),
+            tds=_d(invoice.tds_amount),
+            paid_on=invoice.paid_on,
+            reference=invoice.invoice_number,
+            challan_id=invoice.challan_id,
+        )
+        for invoice, contractor in rows
+    ]
+
+
+async def _consultant_deductions(
+    session: AsyncSession,
+    user: User,
+    start: date,
+    end: date,
+    *,
+    employee_id: uuid.UUID | None = None,
+) -> list[_Deduction]:
+    """Consultant payout lines that deducted TDS, dated by the run's pay date.
+
+    What was actually deducted is reported (`tds_amount`), never what was owed
+    (`tds_due`): TDS carried forward is reported on the payout that takes it.
+    """
+    stmt = (
+        select(ConsultantPayoutLine, ConsultantPayoutRun, Employee)
+        .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+        .join(Employee, Employee.id == ConsultantPayoutLine.employee_id)
+        .where(
+            ConsultantPayoutRun.pay_date >= start,
+            ConsultantPayoutRun.pay_date <= end,
+            ConsultantPayoutRun.status.in_([PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]),
+            ConsultantPayoutLine.excluded.is_(False),
+            ConsultantPayoutLine.tds_amount > 0,
+        )
+    )
+    if employee_id is not None:
+        stmt = stmt.where(ConsultantPayoutLine.employee_id == employee_id)
+    rows = (await session.execute(tenant_scoped(stmt, ConsultantPayoutLine, user))).all()
+    return [
+        _Deduction(
+            pan=person.pan,
+            name=person.full_name,
+            company=person.payee_kind is ContractorKind.COMPANY,
+            section=line.section,
+            credit_date=run.pay_date,
+            amount=_d(line.gross),
+            rate=_d(line.tds_rate),
+            tds=_d(line.tds_amount),
+            paid_on=run.paid_on,
+            reference=f"Payout {run.pay_date.isoformat()}",
+            challan_id=line.challan_id,
+        )
+        for line, run, person in rows
+    ]
+
+
+async def _deductions(
+    session: AsyncSession, user: User, start: date, end: date, *, tds_only: bool = False
+) -> list[_Deduction]:
+    """Every TDS line in a date range: contractor invoices and consultant payouts."""
+    found = await _invoice_deductions(session, user, start, end, tds_only=tds_only)
+    found += await _consultant_deductions(session, user, start, end)
+    return sorted(found, key=lambda row: row.credit_date)
+
+
 _QUARTERS = {1: (4, 6), 2: (7, 9), 3: (10, 12), 4: (1, 3)}
 
 
@@ -420,8 +541,9 @@ async def form_26q_csv(
     """The quarter's deductee lines, for the return-preparation utility.
 
     A working file, not the FVU text file: the deductee details, section code,
-    date and amounts the 26Q annexure asks for, from invoices credited in the
-    quarter. Validation by the FVU and filing stay with the deductor.
+    date and amounts the 26Q annexure asks for, from contractor invoices and
+    consultant payouts credited in the quarter. Validation by the FVU and filing
+    stay with the deductor.
     """
     permissions.require_hr(user, detail="26Q is for HR and finance.")
     if quarter not in _QUARTERS:
@@ -430,22 +552,7 @@ async def form_26q_csv(
         )
     start, end = _quarter_bounds(financial_year, quarter)
     challans = await _challans_by_id(session, user, financial_year, quarter)
-    rows = (
-        await session.execute(
-            tenant_scoped(
-                select(ContractorInvoice, Contractor)
-                .join(Contractor, Contractor.id == ContractorInvoice.contractor_id)
-                .where(
-                    ContractorInvoice.invoice_date >= start,
-                    ContractorInvoice.invoice_date <= end,
-                    ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
-                )
-                .order_by(ContractorInvoice.invoice_date),
-                ContractorInvoice,
-                user,
-            )
-        )
-    ).all()
+    rows = await _deductions(session, user, start, end)
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
     writer.writerow(
@@ -466,21 +573,21 @@ async def form_26q_csv(
             "Challan serial",
         ]
     )
-    for invoice, contractor in rows:
-        challan = challans.get(invoice.challan_id) if invoice.challan_id else None
+    for row in rows:
+        challan = challans.get(row.challan_id) if row.challan_id else None
         writer.writerow(
             [
-                contractor.pan or "PANNOTAVBL",
-                contractor.name,
-                "01" if contractor.kind is ContractorKind.COMPANY else "02",
-                _26Q_CODE[invoice.section],
-                invoice.invoice_date.isoformat(),
-                str(invoice.amount),
-                str(invoice.tds_rate),
-                str(invoice.tds_amount),
-                invoice.paid_on.isoformat() if invoice.paid_on else "",
-                invoice.invoice_number,
-                "C" if not contractor.pan else "",
+                row.pan or "PANNOTAVBL",
+                row.name,
+                "01" if row.company else "02",
+                _26Q_CODE[row.section],
+                row.credit_date.isoformat(),
+                str(row.amount),
+                str(row.rate),
+                str(row.tds),
+                row.paid_on.isoformat() if row.paid_on else "",
+                row.reference,
+                "C" if not row.pan else "",
                 challan.bsr_code if challan else "",
                 challan.deposit_date.isoformat() if challan else "",
                 challan.challan_serial if challan else "",
@@ -541,51 +648,103 @@ async def _challans_by_id(
 
 
 async def _linked_total(
-    session: AsyncSession, user: User, challan_id: uuid.UUID, *, excluding: uuid.UUID
+    session: AsyncSession,
+    user: User,
+    challan_id: uuid.UUID,
+    *,
+    excluding_invoice: uuid.UUID | None = None,
+    excluding_line: uuid.UUID | None = None,
 ) -> Decimal:
-    amounts = (
-        await session.scalars(
+    """TDS already tied to a challan, from invoices and consultant payout lines."""
+    invoices = select(ContractorInvoice.tds_amount).where(
+        ContractorInvoice.challan_id == challan_id
+    )
+    if excluding_invoice is not None:
+        invoices = invoices.where(ContractorInvoice.id != excluding_invoice)
+    lines = select(ConsultantPayoutLine.tds_amount).where(
+        ConsultantPayoutLine.challan_id == challan_id
+    )
+    if excluding_line is not None:
+        lines = lines.where(ConsultantPayoutLine.id != excluding_line)
+    amounts = list((await session.scalars(tenant_scoped(invoices, ContractorInvoice, user))).all())
+    amounts += (await session.scalars(tenant_scoped(lines, ConsultantPayoutLine, user))).all()
+    return sum((_d(a) for a in amounts), Decimal(0))
+
+
+async def _payout_line(
+    session: AsyncSession, user: User, line_id: uuid.UUID
+) -> tuple[ConsultantPayoutLine, ConsultantPayoutRun, Employee]:
+    found = (
+        await session.execute(
             tenant_scoped(
-                select(ContractorInvoice.tds_amount).where(
-                    ContractorInvoice.challan_id == challan_id,
-                    ContractorInvoice.id != excluding,
-                ),
-                ContractorInvoice,
+                select(ConsultantPayoutLine, ConsultantPayoutRun, Employee)
+                .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+                .join(Employee, Employee.id == ConsultantPayoutLine.employee_id)
+                .where(ConsultantPayoutLine.id == line_id),
+                ConsultantPayoutLine,
                 user,
             )
         )
-    ).all()
-    return sum((_d(a) for a in amounts), Decimal(0))
+    ).first()
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payout line not found")
+    return found[0], found[1], found[2]
 
 
 async def link_challan(
     session: AsyncSession,
     user: User,
-    invoice_id: uuid.UUID,
-    challan_id: uuid.UUID | None,
+    invoice_id: uuid.UUID | None = None,
+    challan_id: uuid.UUID | None = None,
     *,
+    consultant_payout_line_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> dict[str, Any]:
-    """Say which 26Q challan an invoice's TDS was deposited under (None unlinks).
+    """Say which 26Q challan an invoice's or a consultant payout line's TDS was deposited under.
 
-    The challan must be a 26Q deposit for the quarter the TDS was deducted in,
-    and the invoices tied to it cannot add up to more TDS than it deposited.
+    Give an invoice or a consultant payout line, not both; a challan of None
+    unlinks. The challan must be a 26Q deposit for the quarter the TDS was
+    deducted in (an invoice's date, a payout's pay date), and what is tied to it
+    cannot add up to more TDS than it deposited.
     """
     permissions.require_hr(user, detail="Challans are recorded by HR or finance.")
-    row = await _invoice(session, user, invoice_id)
-    if challan_id is None:
-        row.challan_id = None
-        summary = f"Unlinked invoice {row.invoice_number} from its challan"
+    if (invoice_id is None) == (consultant_payout_line_id is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Give either an invoice or a consultant payout line, not both.",
+        )
+    target: Any
+    excluding: dict[str, uuid.UUID]
+    if invoice_id is not None:
+        target = await _invoice(session, user, invoice_id)
+        label = f"invoice {target.invoice_number}"
+        what = "invoice"
+        credit_date = target.invoice_date
+        statuses_ok = target.status in (InvoiceStatus.APPROVED, InvoiceStatus.PAID)
+        not_ready = "Only an approved or paid invoice has TDS to deposit."
+        entity_type = "contractor_invoice"
+        excluding = {"excluding_invoice": target.id}
     else:
-        if row.status not in (InvoiceStatus.APPROVED, InvoiceStatus.PAID):
+        assert consultant_payout_line_id is not None
+        target, run, person = await _payout_line(session, user, consultant_payout_line_id)
+        label = f"the payout to {person.full_name} on {run.pay_date.isoformat()}"
+        what = "payout"
+        credit_date = run.pay_date
+        statuses_ok = run.status in (PayoutRunStatus.APPROVED, PayoutRunStatus.PAID)
+        not_ready = "Only an approved or paid payout run has TDS to deposit."
+        entity_type = "consultant_payout_line"
+        excluding = {"excluding_line": target.id}
+    deducted = _d(target.tds_amount)
+    if challan_id is None:
+        target.challan_id = None
+        summary = f"Unlinked {label} from its challan"
+    else:
+        if not statuses_ok:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=not_ready)
+        if deducted <= 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Only an approved or paid invoice has TDS to deposit.",
-            )
-        if _d(row.tds_amount) <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="No TDS was deducted on this invoice, so there is no deposit to link.",
+                detail=f"No TDS was deducted on this {what}, so there is no deposit to link.",
             )
         challan = await session.scalar(
             tenant_scoped(select(TdsChallan).where(TdsChallan.id == challan_id), TdsChallan, user)
@@ -597,7 +756,7 @@ async def link_challan(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="That is a 24Q (salary) challan. Contractor TDS goes under a 26Q one.",
             )
-        start_year, quarter = _quarter_of(row.invoice_date)
+        start_year, quarter = _quarter_of(credit_date)
         if int(challan.financial_year[:4]) != start_year or challan.quarter != quarter:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -606,64 +765,58 @@ async def link_challan(
                     f"the challan is for Q{challan.quarter} of {challan.financial_year}."
                 ),
             )
-        linked = await _linked_total(session, user, challan.id, excluding=row.id)
-        if linked + _d(row.tds_amount) > _d(challan.tds_amount):
+        linked = await _linked_total(session, user, challan.id, **excluding)
+        if linked + deducted > _d(challan.tds_amount):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
                     f"The challan deposited {_money(challan.tds_amount)} of TDS and "
-                    f"{_money(linked)} is already tied to it; this invoice's "
-                    f"{_money(row.tds_amount)} does not fit."
+                    f"{_money(linked)} is already tied to it; this {what}'s "
+                    f"{_money(deducted)} does not fit."
                 ),
             )
-        row.challan_id = challan.id
-        summary = f"Tied invoice {row.invoice_number} to challan {challan.challan_serial}"
+        target.challan_id = challan.id
+        summary = f"Tied {label} to challan {challan.challan_serial}"
     await audit.record(
         session,
         tenant_id=user.tenant_id,
         action=AuditAction.UPDATE,
-        entity_type="contractor_invoice",
-        entity_id=row.id,
+        entity_type=entity_type,
+        entity_id=target.id,
         actor=user,
         changes={"challan_id": str(challan_id) if challan_id else None},
         summary=summary,
         request=request,
     )
     await session.commit()
-    return _invoice_read(row)
+    if invoice_id is not None:
+        return _invoice_read(target)
+    return {
+        "id": str(target.id),
+        "challan_id": str(target.challan_id) if target.challan_id else None,
+        "tds_amount": _money(target.tds_amount),
+    }
 
 
 async def challan_position(
     session: AsyncSession, user: User, *, financial_year: str, quarter: int
 ) -> dict[str, Any]:
-    """For a quarter: each 26Q challan against what is tied to it, and TDS not yet tied."""
+    """For a quarter: each 26Q challan against what is tied to it, and TDS not yet tied.
+
+    Counts contractor invoices and consultant payouts alike.
+    """
     permissions.require_hr(user, detail="26Q is for HR and finance.")
     start, end = _quarter_bounds(financial_year, quarter)
     challans = await _challans_by_id(session, user, financial_year, quarter)
-    invoices = (
-        await session.scalars(
-            tenant_scoped(
-                select(ContractorInvoice).where(
-                    ContractorInvoice.invoice_date >= start,
-                    ContractorInvoice.invoice_date <= end,
-                    ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
-                    ContractorInvoice.tds_amount > 0,
-                ),
-                ContractorInvoice,
-                user,
-            )
-        )
-    ).all()
+    deductions = await _deductions(session, user, start, end, tds_only=True)
     tied: dict[uuid.UUID, Decimal] = {}
     untied = Decimal(0)
     untied_count = 0
-    for invoice in invoices:
-        if invoice.challan_id in challans:
-            tied[invoice.challan_id] = tied.get(invoice.challan_id, Decimal(0)) + _d(
-                invoice.tds_amount
-            )
+    for row in deductions:
+        if row.challan_id in challans:
+            tied[row.challan_id] = tied.get(row.challan_id, Decimal(0)) + row.tds
         else:
-            untied += _d(invoice.tds_amount)
+            untied += row.tds
             untied_count += 1
     return {
         "financial_year": financial_year,
@@ -701,35 +854,85 @@ async def tds_statement_pdf(
     statement carries the same lines so the contractor can match them against
     their Form 26AS before then.
     """
-    from html import escape
-
-    from app.services.documents.pdf import Letterhead, render_pdf
-
     permissions.require_hr(user, detail="TDS statements are issued by HR or finance.")
     contractor = await _contractor(session, user, contractor_id)
     start, end = _quarter_bounds(financial_year, quarter)
-    challans = await _challans_by_id(session, user, financial_year, quarter)
-    invoices = (
-        await session.scalars(
-            tenant_scoped(
-                select(ContractorInvoice)
-                .where(
-                    ContractorInvoice.contractor_id == contractor.id,
-                    ContractorInvoice.invoice_date >= start,
-                    ContractorInvoice.invoice_date <= end,
-                    ContractorInvoice.status.in_([InvoiceStatus.APPROVED, InvoiceStatus.PAID]),
-                )
-                .order_by(ContractorInvoice.invoice_date),
-                ContractorInvoice,
-                user,
-            )
-        )
-    ).all()
-    if not invoices:
+    rows = await _invoice_deductions(session, user, start, end, contractor_id=contractor.id)
+    if not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No approved invoices from this contractor in that quarter.",
         )
+    return await _statement(
+        session,
+        user,
+        rows,
+        payee_name=contractor.name,
+        pan=contractor.pan,
+        entity_type="contractor_tds_statement",
+        entity_id=contractor.id,
+        financial_year=financial_year,
+        quarter=quarter,
+        request=request,
+    )
+
+
+async def consultant_tds_statement_pdf(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    *,
+    financial_year: str,
+    quarter: int,
+    request: Request | None = None,
+) -> tuple[bytes, str]:
+    """A quarter's TDS deductions for one consultant, with the challans they went under."""
+    permissions.require_hr(user, detail="TDS statements are issued by HR or finance.")
+    person = await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consultant not found")
+    start, end = _quarter_bounds(financial_year, quarter)
+    rows = await _consultant_deductions(session, user, start, end, employee_id=person.id)
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No TDS was deducted from this consultant in that quarter.",
+        )
+    return await _statement(
+        session,
+        user,
+        rows,
+        payee_name=person.full_name,
+        pan=person.pan,
+        entity_type="consultant_tds_statement",
+        entity_id=person.id,
+        financial_year=financial_year,
+        quarter=quarter,
+        request=request,
+    )
+
+
+async def _statement(
+    session: AsyncSession,
+    user: User,
+    rows: list[_Deduction],
+    *,
+    payee_name: str,
+    pan: str | None,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    financial_year: str,
+    quarter: int,
+    request: Request | None,
+) -> tuple[bytes, str]:
+    from html import escape
+
+    from app.services.documents.pdf import Letterhead, render_pdf
+
+    start, end = _quarter_bounds(financial_year, quarter)
+    challans = await _challans_by_id(session, user, financial_year, quarter)
     tenant = await session.get(Tenant, user.tenant_id)
     entity_ids = {c.legal_entity_id for c in challans.values()}
     entity = (
@@ -737,24 +940,24 @@ async def tds_statement_pdf(
     )
     deductor = entity.name if entity else (tenant.name if tenant else "Deductor")
     tan = entity.tan if entity and entity.tan else "—"
-    pan = contractor.pan or "PANNOTAVBL"
+    pan = pan or "PANNOTAVBL"
     lines = []
     total_credit = total_tds = Decimal(0)
-    for invoice in invoices:
-        challan = challans.get(invoice.challan_id) if invoice.challan_id else None
-        total_credit += _d(invoice.amount)
-        total_tds += _d(invoice.tds_amount)
+    for row in sorted(rows, key=lambda r: r.credit_date):
+        challan = challans.get(row.challan_id) if row.challan_id else None
+        total_credit += row.amount
+        total_tds += row.tds
         lines.append(
             "<tr>"
-            f"<td>{escape(invoice.invoice_number)}</td>"
-            f"<td>{invoice.invoice_date.isoformat()}</td>"
-            f"<td>{_26Q_CODE[invoice.section]}</td>"
-            f"<td>{_money(invoice.amount)}</td>"
-            f"<td>{_d(invoice.tds_rate).quantize(Decimal('0.001'))}%</td>"
-            f"<td>{_money(invoice.tds_amount)}</td>"
+            f"<td>{escape(row.reference)}</td>"
+            f"<td>{row.credit_date.isoformat()}</td>"
+            f"<td>{_26Q_CODE[row.section]}</td>"
+            f"<td>{_money(row.amount)}</td>"
+            f"<td>{row.rate.quantize(Decimal('0.001'))}%</td>"
+            f"<td>{_money(row.tds)}</td>"
             f"<td>{escape(challan.bsr_code) if challan else 'Not yet deposited'}</td>"
-            f"<td>{challan.deposit_date.isoformat() if challan else ''}</td>"
-            f"<td>{escape(challan.challan_serial) if challan else ''}</td>"
+            f"<td>{challan.deposit_date.isoformat() if challan else '-'}</td>"
+            f"<td>{escape(challan.challan_serial) if challan else '-'}</td>"
             "</tr>"
         )
     html = f"""
@@ -762,9 +965,9 @@ async def tds_statement_pdf(
 <p>Financial year {escape(financial_year)}, quarter {quarter}
 ({start.isoformat()} to {end.isoformat()})</p>
 <p><b>Deductor:</b> {escape(deductor)} &nbsp; <b>TAN:</b> {escape(tan)}<br/>
-<b>Deductee:</b> {escape(contractor.name)} &nbsp; <b>PAN:</b> {escape(pan)}</p>
+<b>Deductee:</b> {escape(payee_name)} &nbsp; <b>PAN:</b> {escape(pan)}</p>
 <table class="ctc-table">
-<thead><tr><th>Invoice</th><th>Date of credit</th><th>Section</th><th>Amount credited</th>
+<thead><tr><th>Ref.</th><th>Date of credit</th><th>Section</th><th>Amount credited</th>
 <th>Rate</th><th>TDS</th><th>BSR code</th><th>Deposited on</th><th>Challan serial</th></tr></thead>
 <tbody>{"".join(lines)}</tbody>
 <tfoot><tr><td colspan="3">Total</td><td>{_money(total_credit)}</td><td></td>
@@ -783,13 +986,13 @@ against your Form 26AS in the meantime.</p>
         session,
         tenant_id=user.tenant_id,
         action=AuditAction.EXPORT,
-        entity_type="contractor_tds_statement",
-        entity_id=contractor.id,
+        entity_type=entity_type,
+        entity_id=entity_id,
         actor=user,
         changes={"financial_year": financial_year, "quarter": quarter},
-        summary=f"Issued the {financial_year} Q{quarter} TDS statement for {contractor.name}",
+        summary=f"Issued the {financial_year} Q{quarter} TDS statement for {payee_name}",
         request=request,
     )
     await session.commit()
-    safe = "".join(ch for ch in contractor.name if ch.isalnum())[:40] or "contractor"
+    safe = "".join(ch for ch in payee_name if ch.isalnum())[:40] or "payee"
     return data, f"TDS-{safe}-{financial_year}-Q{quarter}.pdf"

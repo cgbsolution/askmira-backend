@@ -104,6 +104,24 @@ async def link_challan(
     )
 
 
+@router.post("/consultant-payout-lines/{line_id}/challan")
+async def link_payout_challan(
+    line_id: uuid.UUID,
+    payload: ChallanLinkIn,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> dict[str, Any]:
+    """Tie a consultant payout line's TDS to the 26Q challan it was deposited under."""
+    return await contractors.link_challan(
+        session,
+        user,
+        challan_id=payload.challan_id,
+        consultant_payout_line_id=line_id,
+        request=request,
+    )
+
+
 @router.get("/form-26q/challans")
 async def challan_position(
     user: CurrentUser,
@@ -131,6 +149,34 @@ async def tds_statement(
         session,
         user,
         contractor_id,
+        financial_year=financial_year,
+        quarter=quarter,
+        request=request,
+    )
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/consultant-payees/{employee_id}/tds-statement")
+async def consultant_tds_statement(
+    employee_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    financial_year: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    quarter: int = Query(ge=1, le=4),
+) -> Response:
+    """A consultant's TDS deductions for a quarter with their challans, as a PDF."""
+    data, filename = await contractors.consultant_tds_statement_pdf(
+        session,
+        user,
+        employee_id,
         financial_year=financial_year,
         quarter=quarter,
         request=request,

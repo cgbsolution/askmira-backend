@@ -65,6 +65,7 @@ from app.services.payroll.run import _require_scope_covers
 
 __all__ = [
     "approve_run",
+    "consultant_cost_by_month",
     "create_run",
     "delete_run",
     "eligible_weeks",
@@ -1191,3 +1192,40 @@ async def my_payouts(session: AsyncSession, user: User) -> list[dict[str, Any]]:
         }
         for line, run in rows
     ]
+
+
+async def consultant_cost_by_month(
+    session: AsyncSession, user: User, *, start: date, end: date
+) -> dict[tuple[uuid.UUID, int, int], Decimal]:
+    """What each consultant cost, by the month the work was done: (employee, year, month).
+
+    Taken from the priced days of weeks in approved or paid payout runs, left-out
+    lines excluded: the fee before GST, which a company claims back. A week
+    worked on 28 Sep to 4 Oct and paid on 15 Oct costs September for the days
+    in September and October for the rest; nothing lands in the month paid.
+    """
+    rows = await session.execute(
+        tenant_scoped(
+            select(ConsultantPayoutLine.employee_id, ConsultantPayoutWeek.breakdown)
+            .join(ConsultantPayoutLine, ConsultantPayoutLine.id == ConsultantPayoutWeek.line_id)
+            .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutWeek.run_id)
+            .join(Timesheet, Timesheet.id == ConsultantPayoutWeek.timesheet_id)
+            .where(
+                ConsultantPayoutLine.excluded.is_(False),
+                ConsultantPayoutRun.status.in_([PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]),
+                Timesheet.week_start >= start - timedelta(days=6),
+                Timesheet.week_start <= end,
+            ),
+            ConsultantPayoutWeek,
+            user,
+        )
+    )
+    costs: dict[tuple[uuid.UUID, int, int], Decimal] = {}
+    for employee_id, breakdown in rows:
+        for day in breakdown or []:
+            worked = date.fromisoformat(day["work_date"])
+            if not start <= worked <= end:
+                continue
+            key = (employee_id, worked.year, worked.month)
+            costs[key] = costs.get(key, Decimal(0)) + _money(day["amount"])
+    return costs

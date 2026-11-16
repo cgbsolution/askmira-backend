@@ -56,6 +56,7 @@ from app.schemas.accounts import (
 from app.services import audit, uploads
 from app.services.accounts import pnl as math
 from app.services.attendance.service import local_today
+from app.services.consultants.payouts import consultant_cost_by_month
 from app.services.employee_import.fields import read_date, text
 
 __all__ = [
@@ -1200,7 +1201,14 @@ async def delete_allocation(
 async def _payroll_costs(
     session: AsyncSession, user: User, months: list[tuple[int, int]]
 ) -> tuple[dict[tuple[uuid.UUID, int, int], Decimal], set[str]]:
-    """Each person's cost to company per month from payroll, and the months not final yet."""
+    """Each person's cost per month, and the months not final yet.
+
+    Payroll's cost to company on each payslip, plus consultants' fees from their
+    payout runs, counted in the month the work was done. A consultant has no
+    payslips, so the two do not overlap; should a person and month have both, the
+    payslip cost stands and the payout fee is left out rather than counted twice.
+    Payout runs only count once approved, so they never make a month pending.
+    """
     period = or_(
         *[and_(PayrollRun.period_year == y, PayrollRun.period_month == m) for y, m in months]
     )
@@ -1231,6 +1239,14 @@ async def _payroll_costs(
         costs[(employee_id, year, month)] += Decimal(amount)
         if run_status not in _FINAL:
             pending.add(math.month_key(year, month))
+    first = math.month_bounds(*months[0])[0]
+    last = math.month_bounds(*months[-1])[1]
+    wanted = set(months)
+    for (employee_id, year, month), amount in (
+        await consultant_cost_by_month(session, user, start=first, end=last)
+    ).items():
+        if (year, month) in wanted and (employee_id, year, month) not in costs:
+            costs[(employee_id, year, month)] = amount
     return costs, pending
 
 
@@ -1359,7 +1375,8 @@ async def _compute(
 def _notes(out: _Computed, months: list[tuple[int, int]]) -> list[str]:
     notes = [
         "People cost is what payroll paid (cost to company on each payslip, all runs of the "
-        "month that were not cancelled), shared out by each person's account mapping for the "
+        "month that were not cancelled; for consultants, the fee on approved payout runs in the "
+        "month the work was done), shared out by each person's account mapping for the "
         "days of the month it covers."
     ]
     if out.pending:
