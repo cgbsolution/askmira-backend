@@ -109,9 +109,6 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
                     "code": person.employee_code,
                     "name": person.full_name,
                     "reasons": reasons,
-                    "old_gst_amount": (
-                        _text(person.gst_amount) if person.gst_amount is not None else None
-                    ),
                 }
             )
     return out

@@ -25,13 +25,11 @@ def consultant_billing_problem(
     route: ApproverRoute | None,
     contact_name: str | None,
     contact_email: str | None,
-    gst_amount: Decimal | None = None,
 ) -> str | None:
     """What is wrong with a record's consultant fields, or None.
 
     Only a consultant carries them: nothing would act on them for anybody else,
-    and a figure nobody acts on is worse than none. `gst_amount` is the
-    older monthly figure, still refused elsewhere.
+    and a figure nobody acts on is worse than none.
     """
     if employment_type is not EmploymentType.CONSULTANT:
         if any(
@@ -43,7 +41,6 @@ def consultant_billing_problem(
                 route is not None,
                 contact_name,
                 contact_email,
-                gst_amount is not None,
             )
         ):
             return "GST, TDS and approver details are set only for a consultant."
@@ -99,10 +96,8 @@ class EmployeeBase(BaseModel):
     probation_end_date: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
 
-    #: Consultant billing, read by payroll only for a consultant: GST paid on
-    #: top of the fee each month (the older figure; payouts use the GST rate).
+    #: Consultant billing, used by payouts only for a consultant.
     gst_applicable: bool = False
-    gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
 
     #: Consultant payouts: how they are taxed and billed, and who approves their time.
     tds_section: TdsSection | None = None
@@ -150,7 +145,6 @@ class EmployeeCreate(EmployeeBase):
             route=self.timesheet_approver_route,
             contact_name=self.customer_contact_name,
             contact_email=self.customer_contact_email,
-            gst_amount=self.gst_amount,
         )
         if problem:
             raise ValueError(problem)
@@ -193,7 +187,6 @@ class EmployeeUpdate(BaseModel):
     probation_end_date: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
     gst_applicable: bool | None = None
-    gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     tds_section: TdsSection | None = None
     payee_kind: ContractorKind | None = None
     gst_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)

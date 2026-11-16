@@ -409,7 +409,8 @@ _EMPLOYEE = Entity(
                     ),
                 ),
                 description="Restricted. The live salary row only; superseded "
-                "revisions are excluded by the entity's own filter.",
+                "revisions are excluded by the entity's own filter. Consultants have no "
+                "salary: they are paid through Consultant payouts.",
             ),
         ]
     ),

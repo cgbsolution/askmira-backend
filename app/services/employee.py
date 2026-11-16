@@ -68,7 +68,6 @@ _NOT_NULL = ("first_name", "work_email", "employment_type", "status")
 #: What somebody who is not a consultant carries of it: nothing.
 _CONSULTANT_CLEARED: dict[str, Any] = {
     "gst_applicable": False,
-    "gst_amount": None,
     "gst_rate": None,
     "gstin": None,
     "tds_section": None,
@@ -534,8 +533,7 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "custom_fields": {},
         # What a consultant is paid is for HR and the consultant, managers included.
         "gst_applicable": False,
-        "gst_amount": None,
-            "gst_rate": None,
+        "gst_rate": None,
         "gstin": None,
         "tds_section": None,
         "payee_kind": None,
@@ -769,7 +767,7 @@ async def update_employee(
             if key not in changes and getattr(employee, key) != cleared:
                 changes[key] = cleared
     if changes.get("gst_applicable") is False:
-        for key in ("gst_amount", "gst_rate", "gstin"):
+        for key in ("gst_rate", "gstin"):
             changes.setdefault(key, None)
 
     def _merged(key: str) -> Any:
@@ -802,7 +800,6 @@ async def update_employee(
         route=_merged("timesheet_approver_route"),
         contact_name=_merged("customer_contact_name"),
         contact_email=_merged("customer_contact_email"),
-        gst_amount=_merged("gst_amount"),
     )
     if problem:
         raise _unprocessable(problem)

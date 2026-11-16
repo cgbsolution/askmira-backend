@@ -729,7 +729,7 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     from app.services.consultants import attention
 
     await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1", gst_amount=Decimal("1800"))
+    person = await _consultant(session, tenant, legal_entity, "CON1")
     await _consultant(session, tenant, legal_entity, "CON2", internal_approver_user_id=hr_user.id)
     unrated = await _consultant(session, tenant, legal_entity, "CON3")
     rates = await session.scalars(select(HourlyRate).where(HourlyRate.employee_id == unrated.id))
@@ -769,7 +769,7 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
 
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
     assert listed["CON1"]["reasons"] == ["Has a current salary", "No timesheet approver"]
-    assert listed["CON1"]["old_gst_amount"] == "1800.00"
+    assert "old_gst_amount" not in listed["CON1"]
     assert "No hourly rate" in listed["CON3"]["reasons"]
     assert "CON2" not in listed
     pending = await attention.pending_adjustments(session, hr_user)
@@ -1015,9 +1015,7 @@ async def test_carried_tds_is_taken_from_the_next_payout(
 
 async def test_net_is_never_negative(session, tenant, hr_user, legal_entity) -> None:
     # A capped line without GST, and one with GST whose payable has paise.
-    person, first = await _capped_first_run(
-        session, tenant, hr_user, legal_entity, gst_code="CON2"
-    )
+    person, first = await _capped_first_run(session, tenant, hr_user, legal_entity, gst_code="CON2")
     assert len(first["lines"]) == 2
     _assert_never_negative(first)
     checker = await _second_hr(session, tenant)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 from pydantic import ValidationError
 
@@ -16,25 +14,24 @@ C = EmploymentType.CONSULTANT
 
 
 @pytest.mark.parametrize(
-    ("kind", "amount", "ok"),
+    ("kind", "gst_applicable", "ok"),
     [
-        (C, Decimal("1000"), True),
-        (C, None, True),
-        (EmploymentType.FULL_TIME, Decimal("1000"), False),  # only a consultant has a GST amount
-        (EmploymentType.FULL_TIME, None, True),
+        (C, True, False),  # GST applicable needs a rate and GSTIN
+        (C, False, True),
+        (EmploymentType.FULL_TIME, True, False),  # only a consultant has GST details
+        (EmploymentType.FULL_TIME, False, True),
     ],
 )
-def test_consultant_billing_rules(kind, amount, ok) -> None:
+def test_consultant_billing_rules(kind, gst_applicable, ok) -> None:
     problem = consultant_billing_problem(
         kind,
-        gst_applicable=False,
+        gst_applicable=gst_applicable,
         gst_rate=None,
         gstin=None,
         tds_section=None,
         route=None,
         contact_name=None,
         contact_email=None,
-        gst_amount=amount,
     )
     assert (problem is None) is ok
 

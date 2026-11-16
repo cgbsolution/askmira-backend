@@ -134,7 +134,6 @@ async def test_legacy_gst_consultant_can_be_edited_without_gstin(session, tenant
         work_email="l1@acme.example.com",
         employment_type=EmploymentType.CONSULTANT,
         gst_applicable=True,
-        gst_amount=Decimal("1800"),
     )
     session.add(legacy)
     await session.commit()
