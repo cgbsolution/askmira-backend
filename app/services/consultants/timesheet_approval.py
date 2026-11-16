@@ -16,6 +16,7 @@ reads as "changed" (or "decided") and cannot decide anything.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import secrets
@@ -29,6 +30,7 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import permissions
 from app.core.deps import tenant_filter
 from app.models.audit import AuditAction
 from app.models.employee import Employee
@@ -107,12 +109,18 @@ async def _entries(session: AsyncSession, sheet: Timesheet) -> list[TimesheetEnt
 # ── Sending ────────────────────────────────────────────────────────────────
 
 
-async def revoke_links(session: AsyncSession, timesheet_id: uuid.UUID) -> None:
-    """Close every link of this week that is still open. Safe to call twice."""
+async def revoke_links(
+    session: AsyncSession, tenant_id: uuid.UUID, timesheet_id: uuid.UUID
+) -> None:
+    """Close every link of this week that is still open. Safe to call twice.
+
+    Callers hold the sheet's lock already (sheet first, then links).
+    """
     now = datetime.now(UTC)
     open_links = (
         await session.scalars(
             select(TimesheetApprovalLink).where(
+                tenant_filter(TimesheetApprovalLink, tenant_id),
                 TimesheetApprovalLink.timesheet_id == timesheet_id,
                 TimesheetApprovalLink.revoked_at.is_(None),
             )
@@ -136,7 +144,7 @@ async def issue_link(
             "Add the customer contact's email to this consultant before sending the week "
             "for approval.",
         )
-    await revoke_links(session, sheet.id)
+    await revoke_links(session, sheet.tenant_id, sheet.id)
     token = secrets.token_urlsafe(32)
     link = TimesheetApprovalLink(
         tenant_id=sheet.tenant_id,
@@ -189,67 +197,110 @@ async def deliver(
     from app.services.notifications.dispatch import email_adapter_for, email_wording, render
 
     try:
-        sheet = await session.get(Timesheet, link.timesheet_id)
-        tenant = await session.get(Tenant, link.tenant_id)
-        if sheet is None or tenant is None:
-            return False
-        entries = await _entries(session, sheet)
-        hours = sum((Decimal(str(e.hours)) for e in entries), Decimal(0))
-        base = web_app_url()
-        if not base:
-            logger.warning("No web address is set; the customer link for %s was not sent", sheet.id)
-            return False
-        page = f"{base}/timesheet/{token}"
-        payload = {
-            "company": tenant.name,
-            "employee_name": employee.full_name,
-            "contact_name": link.sent_to_name or "there",
-            "hours": f"{hours.normalize():f}",
-            "week": f"{sheet.week_start:%d %b %Y}",
-        }
-        wording = await email_wording(session, link.tenant_id, EVENT_KEY)
-        if wording is None:
-            return False
-        subject, body = render(wording[0], payload), render(wording[1], payload)
-        rendered = await email_brand.compose(
-            session,
-            link.tenant_id,
-            subject=subject,
-            body=body,
-            audience="letter",
-            actions=(
-                EmailAction(label="Approve", url=f"{page}?answer=approve"),
-                EmailAction(label="Reject", url=f"{page}?answer=reject"),
-            ),
-        )
-        adapter, _relay = await email_adapter_for(session, link.tenant_id)
-        reply_to = await _reply_to(session, employee)
-        await adapter.send(
-            OutboundMessage(
-                recipient_name=link.sent_to_name or link.sent_to_email,
-                recipient_email=link.sent_to_email,
-                recipient_phone=None,
-                subject=subject,
-                event_key=EVENT_KEY,
-                reply_to=reply_to,
-                **email_brand.as_message_fields(rendered),
+        # A savepoint: if a lookup fails, only this work is undone and the
+        # caller's objects stay loaded.
+        async with session.begin_nested():
+            sheet = await session.scalar(
+                select(Timesheet).where(
+                    tenant_filter(Timesheet, link.tenant_id), Timesheet.id == link.timesheet_id
+                )
             )
-        )
-        link.sent_at = datetime.now(UTC)
+            tenant = await session.scalar(select(Tenant).where(Tenant.id == link.tenant_id))
+            if sheet is None or tenant is None:
+                return False
+            entries = await _entries(session, sheet)
+            hours = sum((Decimal(str(e.hours)) for e in entries), Decimal(0))
+            base = web_app_url()
+            if not base:
+                logger.warning(
+                    "No web address is set; the customer link for %s was not sent", sheet.id
+                )
+                return False
+            page = f"{base}/timesheet/{token}"
+            payload = {
+                "company": tenant.name,
+                "employee_name": employee.full_name,
+                "contact_name": link.sent_to_name or "there",
+                "hours": f"{hours.normalize():f}",
+                "week": f"{sheet.week_start:%d %b %Y}",
+            }
+            wording = await email_wording(session, link.tenant_id, EVENT_KEY)
+            if wording is None:
+                return False
+            subject, body = render(wording[0], payload), render(wording[1], payload)
+            rendered = await email_brand.compose(
+                session,
+                link.tenant_id,
+                subject=subject,
+                body=body,
+                audience="letter",
+                actions=(
+                    EmailAction(label="Approve", url=f"{page}?answer=approve"),
+                    EmailAction(label="Reject", url=f"{page}?answer=reject"),
+                ),
+            )
+            adapter, _relay = await email_adapter_for(session, link.tenant_id)
+            reply_to = await _reply_to(session, employee)
+            await adapter.send(
+                OutboundMessage(
+                    recipient_name=link.sent_to_name or link.sent_to_email,
+                    recipient_email=link.sent_to_email,
+                    recipient_phone=None,
+                    subject=subject,
+                    event_key=EVENT_KEY,
+                    reply_to=reply_to,
+                    **email_brand.as_message_fields(rendered),
+                )
+            )
+            link.sent_at = datetime.now(UTC)
         await session.commit()
         return True
     except Exception:
         logger.warning(
             "Customer timesheet email for %s did not go", link.timesheet_id, exc_info=True
         )
+        with contextlib.suppress(Exception):
+            await session.rollback()
         return False
 
 
 async def send_to_customer(
     session: AsyncSession, user: User, sheet: Timesheet, employee: Employee
 ) -> TimesheetApprovalLink:
-    """Mint a fresh link for the week, commit it and email it (closing any earlier one)."""
-    link, token = await issue_link(session, sheet, employee)
+    """Email the customer a fresh link for a week waiting on them; the earlier link closes.
+
+    Only HR or the consultant's internal approver may, and only for a submitted
+    customer-route week. Audited.
+    """
+    from app.services.consultants import can_manage_consultant
+
+    if not await can_manage_consultant(session, user, employee):
+        raise permissions.forbidden("Only HR or their approver can send this week again.")
+    sheet_id = sheet.id
+    locked = await session.scalar(
+        select(Timesheet)
+        .where(tenant_filter(Timesheet, user), Timesheet.id == sheet_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked is None:
+        raise _error(status.HTTP_404_NOT_FOUND, "Timesheet not found")
+    if locked.status is not TimesheetStatus.SUBMITTED or locked.approval_route != "customer":
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "Only a submitted week on the customer route can be sent to the customer.",
+        )
+    link, token = await issue_link(session, locked, employee)
+    await audit.record(
+        session,
+        tenant_id=locked.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="timesheet",
+        entity_id=locked.id,
+        actor=user,
+        changes={"sent_to": link.sent_to_email},
+        summary=f"Sent the week of {locked.week_start} to {link.sent_to_email} again",
+    )
     await session.commit()
     await deliver(session, link, token, employee)
     return link
@@ -264,16 +315,26 @@ async def _resolve(
     stmt = select(TimesheetApprovalLink).where(
         TimesheetApprovalLink.token_hash == _token_hash(token)
     )
-    link = await session.scalar(stmt.with_for_update() if lock else stmt)
+    link = await session.scalar(stmt)
     if link is None:
         raise _error(
             status.HTTP_404_NOT_FOUND,
             "This link is not valid. Check you opened the whole link from the email.",
         )
     scope = SimpleNamespace(tenant_id=link.tenant_id)
-    sheet = await session.scalar(
-        select(Timesheet).where(tenant_filter(Timesheet, scope), Timesheet.id == link.timesheet_id)
+    sheet_stmt = select(Timesheet).where(
+        tenant_filter(Timesheet, scope), Timesheet.id == link.timesheet_id
     )
+    if lock:
+        # Sheet first, then the link, as every other writer does; re-read both fresh.
+        sheet_stmt = sheet_stmt.with_for_update().execution_options(populate_existing=True)
+    sheet = await session.scalar(sheet_stmt)
+    if lock and sheet is not None:
+        link = await session.scalar(
+            stmt.with_for_update().execution_options(populate_existing=True)
+        )
+        if link is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "This link is not valid.")
     employee = (
         await session.scalar(
             select(Employee).where(tenant_filter(Employee, scope), Employee.id == sheet.employee_id)
@@ -307,7 +368,7 @@ async def describe(
         throttle(request, READ_LIMIT)
     link, sheet, employee, entries = await _resolve(session, token)
     scope = SimpleNamespace(tenant_id=link.tenant_id)
-    tenant = await session.get(Tenant, link.tenant_id)
+    tenant = await session.scalar(select(Tenant).where(Tenant.id == link.tenant_id))
     project_ids = {e.project_id for e in entries if e.project_id}
     task_ids = {e.task_id for e in entries if e.task_id}
     projects = {

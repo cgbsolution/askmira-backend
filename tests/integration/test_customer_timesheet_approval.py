@@ -272,6 +272,7 @@ async def test_sending_again_closes_the_earlier_link(
     consultant, _, sheet_id, old = await _submitted(session, tenant, hr_user, legal_entity, mail)
     sheet = await _sheet(session, sheet_id)
     await session.refresh(consultant)
+    await session.refresh(hr_user)
     await timesheet_approval.send_to_customer(session, hr_user, sheet, consultant)
     new = _token(mail)
     assert new != old
@@ -295,8 +296,8 @@ async def test_reopen_revokes_link_and_revoke_is_idempotent(
     await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
     await timesheets.reopen_week(session, hr_user, sheet_id)
     assert (await timesheet_approval.describe(session, token))["state"] == "changed"
-    await timesheet_approval.revoke_links(session, sheet_id)
-    await timesheet_approval.revoke_links(session, sheet_id)
+    await timesheet_approval.revoke_links(session, tenant.id, sheet_id)
+    await timesheet_approval.revoke_links(session, tenant.id, sheet_id)
     await session.commit()
     with pytest.raises(HTTPException) as refused:
         await timesheet_approval.decide(session, token, approve=True, reason=None, ip=None)
@@ -318,7 +319,12 @@ async def test_expired_link(session, tenant, hr_user, legal_entity, mail) -> Non
 
 
 async def test_public_routes_are_private_and_decide_over_http(
-    client, session, tenant, hr_user, legal_entity, mail  # noqa: F811
+    client,  # noqa: F811
+    session,
+    tenant,
+    hr_user,
+    legal_entity,
+    mail,
 ) -> None:
     _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
     got = await client.get(f"/api/v1/public/timesheets/{token}")
@@ -337,3 +343,113 @@ async def test_public_routes_are_private_and_decide_over_http(
     again = await client.post(f"/api/v1/public/timesheets/{token}/decision", json={"approve": True})
     assert again.status_code == 409
     assert (await _sheet(session, sheet_id)).status is TimesheetStatus.APPROVED
+
+
+async def test_decided_sheet_cannot_be_decided_again_by_the_other_path(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    # Customer decides first: an internal decision is then refused, and the status stands.
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheet_approval.decide(session, token, approve=False, reason="Wrong", ip=None)
+    with pytest.raises(HTTPException) as refused:
+        await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    assert refused.value.status_code == 409
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.REJECTED
+    link = await session.scalar(select(TimesheetApprovalLink))
+    assert link is not None and link.used_at is not None
+
+
+async def test_internal_decision_first_then_customer_post_is_409(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.decide(session, token, approve=False, reason="Wrong", ip=None)
+    assert refused.value.status_code == 409
+    assert (await timesheet_approval.describe(session, token))["state"] == "decided"
+    assert (await _sheet(session, sheet_id)).status is TimesheetStatus.APPROVED
+
+
+async def test_email_build_failure_does_not_break_the_submit(
+    session, tenant, hr_user, legal_entity, monkeypatch
+) -> None:
+    from sqlalchemy import text
+
+    async def broken(sess, *args, **kwargs):
+        await sess.execute(text("select 1/0"))
+
+    monkeypatch.setattr(dispatch, "email_wording", broken)
+    _, login = await _customer_consultant(session, tenant, legal_entity, "CON4")
+    await _fill(session, login, (7, 8))
+    submitted = await timesheets.submit_week(session, login, MONDAY)
+    assert submitted["status"] == "submitted"
+
+
+async def test_send_again_is_authorised_checked_and_audited(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    consultant, login, sheet_id, old = await _submitted(
+        session, tenant, hr_user, legal_entity, mail
+    )
+    _, stranger = await _login(session, tenant, legal_entity, "STRN")
+    sheet = await _sheet(session, sheet_id)
+    await session.refresh(consultant)
+    await session.refresh(hr_user)
+    await session.refresh(stranger)
+    await session.refresh(login)
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.send_to_customer(session, stranger, sheet, consultant)
+    assert refused.value.status_code == 403
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.send_to_customer(session, login, sheet, consultant)
+    assert refused.value.status_code == 403
+
+    sheet = await _sheet(session, sheet_id)
+    await session.refresh(consultant)
+    await session.refresh(hr_user)
+    await timesheet_approval.send_to_customer(session, hr_user, sheet, consultant)
+    audit = await session.scalar(
+        select(AuditLog).where(AuditLog.entity_id == sheet_id, AuditLog.summary.contains("again"))
+    )
+    assert audit is not None and audit.actor_user_id == hr_user.id and CONTACT in audit.summary
+
+    await timesheets.decide(session, hr_user, sheet_id, approve=True, note=None)
+    sheet = await _sheet(session, sheet_id)
+    await session.refresh(consultant)
+    await session.refresh(hr_user)
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.send_to_customer(session, hr_user, sheet, consultant)
+    assert refused.value.status_code == 409
+
+
+async def test_send_again_refuses_an_internal_route_week(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    consultant, login = await _login(
+        session,
+        tenant,
+        legal_entity,
+        "CON5",
+        employment_type=EmploymentType.CONSULTANT,
+        timesheet_approver_route=ApproverRoute.INTERNAL,
+        customer_contact_email=CONTACT,
+    )
+    await _fill(session, login, (7, 8))
+    submitted = await timesheets.submit_week(session, login, MONDAY)
+    sheet = await _sheet(session, uuid.UUID(submitted["id"]))
+    await session.refresh(consultant)
+    await session.refresh(hr_user)
+    with pytest.raises(HTTPException) as refused:
+        await timesheet_approval.send_to_customer(session, hr_user, sheet, consultant)
+    assert refused.value.status_code == 409
+    assert mail.sent == []
+
+
+async def test_revoke_links_is_tenant_scoped(session, tenant, hr_user, legal_entity, mail) -> None:
+    _, _, sheet_id, token = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await timesheet_approval.revoke_links(session, uuid.uuid4(), sheet_id)
+    await session.commit()
+    link = await session.scalar(select(TimesheetApprovalLink))
+    assert link is not None and link.revoked_at is None
+    assert (await timesheet_approval.describe(session, token))["state"] == "waiting"

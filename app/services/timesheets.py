@@ -505,16 +505,32 @@ async def delete_project(
 
 
 async def _sheet(
-    session: AsyncSession, user: User, employee_id: uuid.UUID, week_start: date
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    week_start: date,
+    *,
+    lock: bool = False,
 ) -> Timesheet | None:
+    stmt = tenant_scoped(
+        select(Timesheet).where(
+            Timesheet.employee_id == employee_id, Timesheet.week_start == week_start
+        ),
+        Timesheet,
+        user,
+    )
+    if lock:
+        # Sheet first, then its links, everywhere: two deciders never wait on each other.
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return await session.scalar(stmt)
+
+
+async def _locked_sheet(session: AsyncSession, user: User, timesheet_id: uuid.UUID):
+    """The sheet by id, locked and freshly read, or None."""
     return await session.scalar(
-        tenant_scoped(
-            select(Timesheet).where(
-                Timesheet.employee_id == employee_id, Timesheet.week_start == week_start
-            ),
-            Timesheet,
-            user,
-        )
+        tenant_scoped(select(Timesheet).where(Timesheet.id == timesheet_id), Timesheet, user)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
 
@@ -674,7 +690,7 @@ async def person_week(
     """A consultant's week, for HR or their internal approver (your own is `my_week`)."""
     target = await _target_employee_id(session, user, employee_id)
     start = _monday(week_of)
-    sheet = await _sheet(session, user, target, start)
+    sheet = await _sheet(session, user, target, start, lock=True)
     return await _read(session, user, sheet, week_start=start, employee_id=target)
 
 
@@ -733,7 +749,7 @@ async def save_week(
                 "into tasks."
             )
 
-    sheet = await _sheet(session, user, target, start)
+    sheet = await _sheet(session, user, target, start, lock=True)
     if sheet is None:
         sheet = Timesheet(tenant_id=user.tenant_id, employee_id=target, week_start=start)
         session.add(sheet)
@@ -759,7 +775,7 @@ async def save_week(
         )
     sheet.status = TimesheetStatus.DRAFT
     # Whatever the customer was emailed no longer matches the hours.
-    await timesheet_approval.revoke_links(session, sheet.id)
+    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
     if target != user.employee_id:
         await audit.record(
             session,
@@ -805,7 +821,7 @@ async def submit_week(
 ) -> dict[str, Any]:
     target = await _target_employee_id(session, user, employee_id)
     start = _monday(week_of)
-    sheet = await _sheet(session, user, target, start)
+    sheet = await _sheet(session, user, target, start, lock=True)
     if sheet is None or not await _entries(session, user, sheet):
         raise _unprocessable("Add some hours before submitting the week.")
     if sheet.status not in (TimesheetStatus.DRAFT, TimesheetStatus.REJECTED):
@@ -878,8 +894,14 @@ async def submit_week(
         # The link is made with the submission; the email goes once it is saved.
         link, token = await timesheet_approval.issue_link(session, sheet, employee)
     await session.commit()
-    if link is not None and token is not None:
-        await timesheet_approval.deliver(session, link, token, employee)
+    if (
+        link is not None
+        and token is not None
+        and not await timesheet_approval.deliver(session, link, token, employee)
+    ):
+        # A failed send may have rolled the session back; load what we return again.
+        await session.refresh(user)
+        await session.refresh(sheet)
     return await _read(session, user, sheet, week_start=start, employee_id=target)
 
 
@@ -1007,9 +1029,7 @@ async def decide(
     request: Request | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    sheet = await session.scalar(
-        tenant_scoped(select(Timesheet).where(Timesheet.id == timesheet_id), Timesheet, user)
-    )
+    sheet = await _locked_sheet(session, user, timesheet_id)
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
     from app.services.approvals import rules
@@ -1086,7 +1106,7 @@ async def decide(
     sheet.decided_at = datetime.now(UTC)
     sheet.decision_note = clean
     # Decided here, so an emailed customer link no longer applies.
-    await timesheet_approval.revoke_links(session, sheet.id)
+    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
 
     pay_note = None
     # A consultant's week is paid by a consultant payout run, never payroll.
@@ -1178,9 +1198,7 @@ async def reopen_week(
     request: Request | None = None,
 ) -> dict[str, Any]:
     """Take a decided consultant week back to draft so it can be fixed and sent again."""
-    sheet = await session.scalar(
-        tenant_scoped(select(Timesheet).where(Timesheet.id == timesheet_id), Timesheet, user)
-    )
+    sheet = await _locked_sheet(session, user, timesheet_id)
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
     person = await _employee(session, user, sheet.employee_id)
@@ -1206,7 +1224,7 @@ async def reopen_week(
     sheet.decided_at = None
     sheet.decision_note = None
     sheet.approval_proof = None
-    await timesheet_approval.revoke_links(session, sheet.id)
+    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
