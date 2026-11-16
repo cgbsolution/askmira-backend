@@ -333,9 +333,12 @@ async def send_reminders(session: AsyncSession, actor: User, *, now: datetime) -
     for sheet_id, employee_id in candidates:
         try:
             sent = await _remind_one(session, scope, actor_id, sheet_id, employee_id, now)
-        except HTTPException:
-            # E.g. the contact's email was removed since: leave this week, carry on.
-            await session.rollback()
+        except Exception:
+            # One week failing (a removed contact email, a database error) must not
+            # stop the rest: leave it for tomorrow and carry on.
+            logger.warning("Reminder for timesheet %s did not go", sheet_id, exc_info=True)
+            with contextlib.suppress(Exception):
+                await session.rollback()
             continue
         reminded += 1 if sent else 0
     return {"reminded": reminded}

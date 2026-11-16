@@ -628,3 +628,51 @@ async def test_manual_decide_route_takes_a_file(
         app.dependency_overrides.pop(get_current_user, None)
     assert done.status_code == 200, done.text
     assert (await _sheet(session, sheet_id)).approval_proof["name"] == "approval.pdf"
+
+
+async def test_one_failing_week_does_not_stop_other_reminders(
+    session, tenant, hr_user, legal_entity, mail, monkeypatch
+) -> None:
+    _, _, first_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await session.refresh(tenant)
+    await session.refresh(legal_entity)
+    _, other_login = await _customer_consultant(session, tenant, legal_entity, "CON2")
+    await _fill(session, other_login, (7, 8))
+    second_id = uuid.UUID((await timesheets.submit_week(session, other_login, MONDAY))["id"])
+    old = datetime.now(UTC) - timedelta(days=5)
+    for sheet_id in (first_id, second_id):
+        await _link_sent_at(session, sheet_id, old)
+
+    real = timesheet_approval.issue_link
+
+    async def flaky(sess, sheet, employee):
+        if sheet.id == first_id:
+            raise RuntimeError("boom")
+        return await real(sess, sheet, employee)
+
+    monkeypatch.setattr(timesheet_approval, "issue_link", flaky)
+    before = len(mail.sent)
+    await session.refresh(hr_user)
+    result = await timesheet_approval.send_reminders(
+        session, hr_user, now=datetime.now(UTC)
+    )
+    assert result == {"reminded": 1}
+    assert len(mail.sent) == before + 1
+
+
+async def test_reminders_never_touch_another_workspace(
+    session, tenant, hr_user, legal_entity, mail, other_tenant, other_hr_user
+) -> None:
+    _, _, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    await _link_sent_at(session, sheet_id, datetime.now(UTC) - timedelta(days=5))
+    await session.refresh(other_hr_user)
+    sent_before = len(mail.sent)
+
+    result = await timesheet_approval.send_reminders(
+        session, other_hr_user, now=datetime.now(UTC)
+    )
+
+    assert result == {"reminded": 0}
+    assert len(mail.sent) == sent_before
+    links = (await session.scalars(select(TimesheetApprovalLink))).all()
+    assert len(links) == 1 and links[0].revoked_at is None
