@@ -16,15 +16,15 @@ C = EmploymentType.CONSULTANT
 
 
 @pytest.mark.parametrize(
-    ("kind", "tds", "ok"),
+    ("kind", "amount", "ok"),
     [
         (C, Decimal("1000"), True),
         (C, None, True),
-        (EmploymentType.FULL_TIME, Decimal("1000"), False),  # only a consultant has a fixed TDS
+        (EmploymentType.FULL_TIME, Decimal("1000"), False),  # only a consultant has a GST amount
         (EmploymentType.FULL_TIME, None, True),
     ],
 )
-def test_consultant_billing_rules(kind, tds, ok) -> None:
+def test_consultant_billing_rules(kind, amount, ok) -> None:
     problem = consultant_billing_problem(
         kind,
         gst_applicable=False,
@@ -34,7 +34,7 @@ def test_consultant_billing_rules(kind, tds, ok) -> None:
         route=None,
         contact_name=None,
         contact_email=None,
-        fixed_tds_amount=tds,
+        gst_amount=amount,
     )
     assert (problem is None) is ok
 

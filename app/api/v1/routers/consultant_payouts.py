@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.deps import CurrentUser, DbSession, require_roles
+from app.core.step_up import confirmation
+from app.models.contractors import TdsSection
 from app.models.user import UserRole
-from app.services.consultants import payouts
+from app.services.consultants import attention, payouts, statement
 
 router = APIRouter(
     prefix="/consultant-payouts",
@@ -61,6 +64,77 @@ async def create_run(
     )
 
 
+class PaidIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paid_on: date
+    reference: str = Field(min_length=1, max_length=200)
+
+
+class EndSalariesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employee_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    effective_to: date
+
+
+class OpeningIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: uuid.UUID
+    fy_start: date
+    section: TdsSection
+    fees_paid: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    taxed_base: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    tds_deducted: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+
+
+# Fixed paths come before `/{run_id}` so they are not read as a run id.
+
+
+@router.get("/attention")
+async def attention_list(user: CurrentUser, session: DbSession) -> dict[str, Any]:
+    """Consultants to sort out before payouts start, and payroll adjustments still pending."""
+    return {
+        "consultants": await attention.attention_list(session, user),
+        "pending_adjustments": await attention.pending_adjustments(session, user),
+    }
+
+
+@router.post("/attention/end-salaries")
+async def end_salaries(
+    payload: EndSalariesIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, int]:
+    """End these consultants' current salaries; they are paid through payouts instead."""
+    ended = await attention.end_salaries(
+        session, user, payload.employee_ids, effective_to=payload.effective_to, request=request
+    )
+    return {"salaries_ended": ended}
+
+
+@router.put("/openings")
+async def set_opening(
+    payload: OpeningIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Fees already paid to a consultant earlier in the financial year, for the TDS threshold."""
+    return await attention.set_opening(session, user, **payload.model_dump(), request=request)
+
+
+@router.get("/lines/{line_id}/pdf", response_model=None)
+async def line_pdf(line_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """One consultant's payout statement as a PDF."""
+    filename, data = await statement.payout_statement_pdf(session, user, line_id)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     return await payouts.get_run(session, user, run_id)
@@ -103,3 +177,27 @@ async def include_week(
 ) -> dict[str, Any]:
     """Add an older approved, unpaid week the run did not take on its own."""
     return await payouts.include_week(session, user, run_id, payload.timesheet_id, request=request)
+
+
+@router.post("/{run_id}/approve")
+async def approve_run(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Maker-checker sign-off, with fresh proof of identity. Locks the run."""
+    return await payouts.approve_run(
+        session,
+        user,
+        run_id,
+        confirm=confirmation(session, user, "payroll.run_approve"),
+        request=request,
+    )
+
+
+@router.post("/{run_id}/paid")
+async def mark_paid(
+    run_id: uuid.UUID, payload: PaidIn, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Record that an approved run was paid, with the bank reference."""
+    return await payouts.mark_paid(
+        session, user, run_id, paid_on=payload.paid_on, reference=payload.reference, request=request
+    )

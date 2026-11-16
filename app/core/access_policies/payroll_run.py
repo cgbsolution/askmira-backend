@@ -21,6 +21,14 @@ ENDPOINTS: dict[str, str] = {
         "own: the PDF of a payslip that belongs to user.employee_id and is published; any "
         "other id is a 404."
     ),
+    "GET /payroll/my-payouts": (
+        "own: lists only the caller's own payout lines in approved or paid runs, by "
+        "user.employee_id from the token; takes no person id."
+    ),
+    "GET /payroll/my-payouts/{line_id}/pdf": (
+        "own: the statement of a line that belongs to user.employee_id in an approved or paid "
+        "run; another person's line is a 403, an unknown id a 404."
+    ),
     "GET /payroll/my-total-rewards": (
         "own: the caller's own statement, by user.employee_id from the token; takes no person id."
     ),

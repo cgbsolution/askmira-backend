@@ -147,8 +147,6 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     )
     #: GST paid every month on top of the fee, as a non-taxable payslip line.
     gst_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
-    #: TDS deducted every month instead of the projected salary tax.
-    fixed_tds_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
 
     # ── Consultant payouts (set only for a consultant) ──────────────────────
     #: The TDS section their fee is deducted under; 194J (professional) if unset.

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
+from app.core.step_up import Confirm
 from app.models.audit import AuditAction
 from app.models.consultant_payouts import (
     ConsultantPayoutLine,
@@ -57,6 +58,7 @@ from app.services import audit, tds_non_salary, timesheets
 from app.services.consultants import is_consultant
 
 __all__ = [
+    "approve_run",
     "create_run",
     "delete_run",
     "eligible_weeks",
@@ -64,6 +66,8 @@ __all__ = [
     "get_run",
     "include_week",
     "list_runs",
+    "mark_paid",
+    "my_payouts",
     "recalculate",
 ]
 
@@ -823,3 +827,132 @@ async def delete_run(
         )
     )
     await session.commit()
+
+
+# ── Approve, pay, and the consultant's own view ─────────────────────────────
+
+
+async def approve_run(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    confirm: Confirm,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Lock a draft run for payment. From here its figures are never priced again.
+
+    Like the regular payroll run, whoever prepared it cannot approve it, and
+    approving needs fresh proof of identity. A line held back for a problem must
+    be fixed and recalculated, or left out by hand, first.
+    """
+    run = await _draft(session, user, run_id)
+    if run.created_by_user_id is not None and run.created_by_user_id == user.id:
+        raise permissions.forbidden(
+            "You drafted this run, so somebody else has to approve it. Payouts are "
+            "maker-checker: the person who prepares the numbers does not sign them off."
+        )
+    lines = await _lines(session, user, [run.id])
+    held = [line for line in lines if line.excluded and not line.excluded_reason]
+    if held:
+        raise _conflict(
+            f"{len(held)} consultant(s) are held back for a problem. Fix it and recalculate, "
+            "or leave them out of the run, before approving."
+        )
+    if not any(not line.excluded for line in lines):
+        raise _conflict("There is nobody to pay in this run.")
+    await confirm()
+    run.status = PayoutRunStatus.APPROVED
+    run.approved_by_user_id = user.id
+    run.approved_at = datetime.now(UTC)
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.APPROVE,
+        entity_type="consultant_payout_run",
+        entity_id=run.id,
+        actor=user,
+        changes={"step": "approve", **_totals(lines)},
+        summary=f"Approved the consultant payout run paying {run.pay_date:%d %b %Y}",
+        request=request,
+    )
+    await session.commit()
+    return await get_run(session, user, run.id)
+
+
+async def mark_paid(
+    session: AsyncSession,
+    user: User,
+    run_id: uuid.UUID,
+    *,
+    paid_on: date,
+    reference: str,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Record that an approved run was paid, with the bank reference."""
+    permissions.require_hr(user, detail=_HR_ONLY)
+    clean = (reference or "").strip()
+    if not clean:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter the payment reference from the bank.",
+        )
+    run = await _run(session, user, run_id, lock=True)
+    if run.status is not PayoutRunStatus.APPROVED:
+        raise _conflict("Only an approved payout run can be marked paid.")
+    run.status = PayoutRunStatus.PAID
+    run.paid_on = paid_on
+    run.payment_reference = clean
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="consultant_payout_run",
+        entity_id=run.id,
+        actor=user,
+        changes={"step": "paid", "paid_on": paid_on.isoformat(), "payment_reference": clean},
+        summary=f"Marked the consultant payout run paying {run.pay_date:%d %b %Y} as paid",
+        request=request,
+    )
+    await session.commit()
+    return await get_run(session, user, run.id)
+
+
+async def my_payouts(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """The caller's own payouts from approved and paid runs, newest pay date first."""
+    if user.employee_id is None:
+        return []
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(ConsultantPayoutLine, ConsultantPayoutRun)
+                .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+                .where(
+                    ConsultantPayoutLine.employee_id == user.employee_id,
+                    ConsultantPayoutLine.excluded.is_(False),
+                    ConsultantPayoutRun.status.in_(
+                        [PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]
+                    ),
+                )
+                .order_by(ConsultantPayoutRun.pay_date.desc(), ConsultantPayoutLine.id),
+                ConsultantPayoutLine,
+                user,
+            )
+        )
+    ).all()
+    return [
+        {
+            "line_id": str(line.id),
+            "run_id": str(run.id),
+            "pay_date": run.pay_date.isoformat(),
+            "status": run.status.value,
+            "paid_on": run.paid_on.isoformat() if run.paid_on else None,
+            "hours": _text(line.hours),
+            "gross": _text(line.gross),
+            "gst_amount": _text(line.gst_amount),
+            "section": line.section.value,
+            "tds_amount": _text(line.tds_amount),
+            "net_payable": _text(line.net_payable),
+        }
+        for line, run in rows
+    ]

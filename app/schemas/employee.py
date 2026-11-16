@@ -26,13 +26,12 @@ def consultant_billing_problem(
     contact_name: str | None,
     contact_email: str | None,
     gst_amount: Decimal | None = None,
-    fixed_tds_amount: Decimal | None = None,
 ) -> str | None:
     """What is wrong with a record's consultant fields, or None.
 
     Only a consultant carries them: nothing would act on them for anybody else,
-    and a figure nobody acts on is worse than none. `gst_amount` and
-    `fixed_tds_amount` are the older monthly figures, still refused elsewhere.
+    and a figure nobody acts on is worse than none. `gst_amount` is the
+    older monthly figure, still refused elsewhere.
     """
     if employment_type is not EmploymentType.CONSULTANT:
         if any(
@@ -45,7 +44,6 @@ def consultant_billing_problem(
                 contact_name,
                 contact_email,
                 gst_amount is not None,
-                fixed_tds_amount is not None,
             )
         ):
             return "GST, TDS and approver details are set only for a consultant."
@@ -102,10 +100,9 @@ class EmployeeBase(BaseModel):
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
 
     #: Consultant billing, read by payroll only for a consultant: GST paid on
-    #: top of the fee each month, and TDS deducted instead of the salary tax.
+    #: top of the fee each month (the older figure; payouts use the GST rate).
     gst_applicable: bool = False
     gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
-    fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
 
     #: Consultant payouts: how they are taxed and billed, and who approves their time.
     tds_section: TdsSection | None = None
@@ -154,7 +151,6 @@ class EmployeeCreate(EmployeeBase):
             contact_name=self.customer_contact_name,
             contact_email=self.customer_contact_email,
             gst_amount=self.gst_amount,
-            fixed_tds_amount=self.fixed_tds_amount,
         )
         if problem:
             raise ValueError(problem)
@@ -198,7 +194,6 @@ class EmployeeUpdate(BaseModel):
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
     gst_applicable: bool | None = None
     gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
-    fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     tds_section: TdsSection | None = None
     payee_kind: ContractorKind | None = None
     gst_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)

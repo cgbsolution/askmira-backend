@@ -564,3 +564,258 @@ async def test_payout_api(
     assert recalculated.status_code == 200
     deleted = await client.delete(f"/api/v1/consultant-payouts/{run_id}", headers=bearer(hr_user))
     assert deleted.status_code == 204
+
+
+# ── Approve, pay, statements, attention ─────────────────────────────────────
+
+
+async def _confirmed() -> None:
+    """Stands in for the step-up the route passes."""
+
+
+async def _second_hr(session: AsyncSession, tenant: Tenant) -> User:
+    from app.models.user import UserRole
+
+    checker = User(
+        tenant_id=tenant.id,
+        email="checker@acme.test",
+        password_hash="not-a-real-hash",
+        full_name="Second Checker",
+        role=UserRole.ADMIN,
+        is_active=True,
+    )
+    session.add(checker)
+    await session.commit()
+    await session.refresh(checker)
+    return checker
+
+
+async def test_approved_run_is_locked_and_never_repriced(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    checker = await _second_hr(session, tenant)
+    run_id = uuid.UUID(run["id"])
+
+    # The person who drafted it cannot approve it.
+    with pytest.raises(HTTPException) as refused:
+        await payouts.approve_run(session, hr_user, run_id, confirm=_confirmed)
+    assert refused.value.status_code == 403
+
+    approved = await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert approved["status"] == "approved"
+    assert approved["approved_by_user_id"] == str(checker.id)
+
+    session.add(
+        HourlyRate(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            rate=Decimal("5000"),
+            effective_from=date(2026, 9, 1),
+        )
+    )
+    await session.commit()
+    with pytest.raises(HTTPException) as locked:
+        await payouts.recalculate(session, hr_user, run_id)
+    assert locked.value.status_code == 409
+    again = await payouts.get_run(session, hr_user, run_id)
+    assert _line(again, person)["gross"] == "48000.00"
+
+    with pytest.raises(HTTPException) as blank:
+        await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference=" ")
+    assert blank.value.status_code == 422
+    paid = await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR123")
+    assert paid["status"] == "paid" and paid["payment_reference"] == "UTR123"
+    with pytest.raises(HTTPException) as twice:
+        await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR123")
+    assert twice.value.status_code == 409
+
+
+async def test_cannot_approve_with_problem_lines(session, tenant, hr_user, legal_entity) -> None:
+    await _setup(session, tenant, hr_user)
+    good = await _consultant(session, tenant, legal_entity, "CONB")
+    held = await _consultant(session, tenant, legal_entity, "CONA", bank=False)
+    for person in (good, held):
+        await _week(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    checker = await _second_hr(session, tenant)
+    run_id = uuid.UUID(run["id"])
+
+    with pytest.raises(HTTPException) as refused:
+        await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert refused.value.status_code == 409
+
+    # Leaving the held line out clears the way.
+    await payouts.exclude_line(
+        session, hr_user, run_id, uuid.UUID(_line(run, held)["id"]), reason="Bank details pending"
+    )
+    approved = await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert approved["status"] == "approved"
+
+
+async def test_cannot_approve_an_empty_run(session, tenant, hr_user, legal_entity) -> None:
+    await _setup(session, tenant, hr_user)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    checker = await _second_hr(session, tenant)
+    with pytest.raises(HTTPException) as refused:
+        await payouts.approve_run(session, checker, uuid.UUID(run["id"]), confirm=_confirmed)
+    assert refused.value.status_code == 409
+
+
+async def test_statement_and_my_payouts(session, tenant, hr_user, legal_entity) -> None:
+    from app.models.user import UserRole
+    from app.services.consultants import statement
+    from tests.integration.conftest import as_caller
+
+    await _setup(session, tenant, hr_user)
+    mine = await _consultant(session, tenant, legal_entity, "CON1")
+    other = await _consultant(session, tenant, legal_entity, "CON2")
+    for person in (mine, other):
+        await _week(session, tenant, person)
+    logins = []
+    for person in (mine, other):
+        login = User(
+            tenant_id=tenant.id,
+            email=f"{person.employee_code.lower()}@login.test",
+            password_hash="not-a-real-hash",
+            full_name=person.full_name,
+            role=UserRole.EMPLOYEE,
+            is_active=True,
+            employee_id=person.id,
+        )
+        session.add(login)
+        logins.append(login)
+    await session.commit()
+    mine_login, other_login = [await as_caller(session, login) for login in logins]
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    run_id = uuid.UUID(run["id"])
+    line_id = uuid.UUID(_line(run, mine)["id"])
+
+    # Nothing to see while it is a draft.
+    assert await payouts.my_payouts(session, mine_login) == []
+    with pytest.raises(HTTPException) as draft:
+        await statement.payout_statement_pdf(session, mine_login, line_id)
+    assert draft.value.status_code == 404
+
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+
+    listed = await payouts.my_payouts(session, mine_login)
+    assert [row["line_id"] for row in listed] == [str(line_id)]
+    assert listed[0]["net_payable"] == "48000.00"
+    filename, data = await statement.payout_statement_pdf(session, mine_login, line_id)
+    assert data.startswith(b"%PDF") and filename.endswith(".pdf")
+    _, hr_data = await statement.payout_statement_pdf(session, hr_user, line_id)
+    assert hr_data.startswith(b"%PDF")
+    with pytest.raises(HTTPException) as foreign:
+        await statement.payout_statement_pdf(session, other_login, line_id)
+    assert foreign.value.status_code == 403
+    assert [r["line_id"] for r in await payouts.my_payouts(session, other_login)] != [str(line_id)]
+
+
+async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_entity) -> None:
+    from app.models.payroll import EmployeeSalary, SalaryStructure
+    from app.services.consultants import attention
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1", gst_amount=Decimal("1800"))
+    await _consultant(session, tenant, legal_entity, "CON2", internal_approver_user_id=hr_user.id)
+    unrated = await _consultant(session, tenant, legal_entity, "CON3")
+    rates = await session.scalars(select(HourlyRate).where(HourlyRate.employee_id == unrated.id))
+    for rate in rates.all():
+        await session.delete(rate)
+    structure = SalaryStructure(
+        tenant_id=tenant.id, name="Standard", effective_from=date(2026, 1, 1)
+    )
+    session.add(structure)
+    await session.flush()
+    salary = EmployeeSalary(
+        tenant_id=tenant.id,
+        employee_id=person.id,
+        structure_id=structure.id,
+        ctc_annual=Decimal("600000"),
+        effective_from=date(2026, 4, 1),
+    )
+    session.add(salary)
+    session.add(
+        PayrollAdjustment(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            kind=AdjustmentKind.EARNING,
+            category=AdjustmentCategory.OTHER_EARNING,
+            name="Hours, week of 07 Sep 2026",
+            amount=Decimal("9600"),
+            recurrence=AdjustmentRecurrence.ONE_TIME,
+            start_year=2026,
+            start_month=9,
+            reference=f"timesheet:{uuid.uuid4()}",
+            reason="Approved timesheet, 40 hours.",
+            status=AdjustmentStatus.PENDING,
+            created_by_user_id=hr_user.id,
+        )
+    )
+    await session.commit()
+
+    listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
+    assert listed["CON1"]["reasons"] == ["Has a current salary", "No timesheet approver"]
+    assert listed["CON1"]["old_gst_amount"] == "1800.00"
+    assert "No hourly rate" in listed["CON3"]["reasons"]
+    assert "CON2" not in listed
+    pending = await attention.pending_adjustments(session, hr_user)
+    assert [(p["employee_code"], p["amount"]) for p in pending] == [("CON1", "9600.00")]
+
+    ended = await attention.end_salaries(
+        session, hr_user, [person.id], effective_to=date(2026, 9, 30)
+    )
+    assert ended == 1
+    await session.refresh(salary)
+    assert salary.effective_to == date(2026, 9, 30)
+    # Ended in the past: the salary reason is gone.
+    after = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
+    assert after["CON1"]["reasons"] == ["No timesheet approver"]
+
+
+async def test_end_salaries_refuses_non_consultants(
+    session, tenant, hr_user, legal_entity, employee
+) -> None:
+    from app.services.consultants import attention
+
+    with pytest.raises(HTTPException) as refused:
+        await attention.end_salaries(
+            session, hr_user, [employee.id], effective_to=date(2026, 9, 30)
+        )
+    assert refused.value.status_code == 409
+
+
+async def test_set_opening_upserts_and_needs_an_april_first(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.services.consultants import attention
+
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    args = {
+        "employee_id": person.id,
+        "section": TdsSection.S194J_PROFESSIONAL,
+        "fees_paid": Decimal("40000"),
+        "taxed_base": Decimal("0"),
+        "tds_deducted": Decimal("0"),
+    }
+    with pytest.raises(HTTPException) as refused:
+        await attention.set_opening(session, hr_user, fy_start=date(2026, 5, 1), **args)
+    assert refused.value.status_code == 422
+    await attention.set_opening(session, hr_user, fy_start=date(2026, 4, 1), **args)
+    args["fees_paid"] = Decimal("45000")
+    await attention.set_opening(session, hr_user, fy_start=date(2026, 4, 1), **args)
+    rows = (await session.scalars(select(ConsultantTdsOpening))).all()
+    assert [row.fees_paid for row in rows] == [Decimal("45000.00")]

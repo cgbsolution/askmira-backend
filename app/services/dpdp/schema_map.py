@@ -414,7 +414,6 @@ TABLES: dict[str, TableClassification] = {
             "bank_account_number": "financial",
             "bank_ifsc": "financial",
             "gst_amount": "financial",
-            "fixed_tds_amount": "financial",
         },
     ),
     "employee_work_locations": _p(EMP, "attendance"),

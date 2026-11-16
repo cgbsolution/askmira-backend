@@ -69,7 +69,6 @@ _NOT_NULL = ("first_name", "work_email", "employment_type", "status")
 _CONSULTANT_CLEARED: dict[str, Any] = {
     "gst_applicable": False,
     "gst_amount": None,
-    "fixed_tds_amount": None,
     "gst_rate": None,
     "gstin": None,
     "tds_section": None,
@@ -536,8 +535,7 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         # What a consultant is paid is for HR and the consultant, managers included.
         "gst_applicable": False,
         "gst_amount": None,
-        "fixed_tds_amount": None,
-        "gst_rate": None,
+            "gst_rate": None,
         "gstin": None,
         "tds_section": None,
         "payee_kind": None,
@@ -805,7 +803,6 @@ async def update_employee(
         contact_name=_merged("customer_contact_name"),
         contact_email=_merged("customer_contact_email"),
         gst_amount=_merged("gst_amount"),
-        fixed_tds_amount=_merged("fixed_tds_amount"),
     )
     if problem:
         raise _unprocessable(problem)

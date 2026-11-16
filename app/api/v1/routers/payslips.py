@@ -16,6 +16,8 @@ from app.core import permissions
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
 from app.schemas.payroll_run import PayslipRead, PayslipSummaryRead, SalaryRecordRead
+from app.services.consultants import payouts as consultant_payouts
+from app.services.consultants import statement as payout_statement
 from app.services.payroll import payslips as payslip_service
 from app.services.payroll import total_rewards
 
@@ -38,6 +40,27 @@ async def my_payslip(payslip_id: uuid.UUID, user: CurrentUser, session: DbSessio
 async def my_payslip_pdf(payslip_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
     """One of your published payslips as a PDF to keep."""
     data, filename = await payslip_service.my_payslip_pdf(session, user, payslip_id)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/my-payouts")
+async def my_payouts(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    """A consultant's own payouts from approved and paid runs, newest first."""
+    return await consultant_payouts.my_payouts(session, user)
+
+
+@router.get("/my-payouts/{line_id}/pdf", response_model=None)
+async def my_payout_pdf(line_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """One of your payout statements as a PDF to keep."""
+    filename, data = await payout_statement.payout_statement_pdf(session, user, line_id)
     return Response(
         content=data,
         media_type="application/pdf",
