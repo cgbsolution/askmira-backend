@@ -689,8 +689,19 @@ async def update_employee(
     def _merged(key: str) -> Any:
         return changes[key] if key in changes else getattr(employee, key)
 
+    # Consultants saved before GST rate and GSTIN existed have neither: they are
+    # asked for them only when GST itself is being edited or they become one.
+    gst_edited = any(key in changes for key in ("gst_applicable", "gst_rate", "gstin"))
+    became_consultant = (
+        kind is EmploymentType.CONSULTANT
+        and employee.employment_type is not EmploymentType.CONSULTANT
+    )
+    check_gst = gst_edited or became_consultant
     defaults = {
-        key: _merged(key) for key in ("tds_section", "payee_kind", "gst_applicable", "gst_rate")
+        "tds_section": _merged("tds_section"),
+        "payee_kind": _merged("payee_kind"),
+        "gst_applicable": bool(_merged("gst_applicable")) and check_gst,
+        "gst_rate": _merged("gst_rate"),
     }
     apply_consultant_defaults(kind, defaults)
     for key in ("tds_section", "payee_kind", "gst_rate"):
@@ -698,9 +709,9 @@ async def update_employee(
             changes[key] = defaults[key]
     problem = consultant_billing_problem(
         kind,
-        gst_applicable=bool(_merged("gst_applicable")),
-        gst_rate=_merged("gst_rate"),
-        gstin=_merged("gstin"),
+        gst_applicable=bool(_merged("gst_applicable")) and check_gst,
+        gst_rate=_merged("gst_rate") if check_gst else None,
+        gstin=_merged("gstin") if check_gst else None,
         tds_section=_merged("tds_section"),
         route=_merged("timesheet_approver_route"),
         contact_name=_merged("customer_contact_name"),
