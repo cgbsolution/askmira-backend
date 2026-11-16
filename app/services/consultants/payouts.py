@@ -22,7 +22,8 @@ Each line:
 - net payable = gross + GST - TDS deducted.
 
 A line with a problem HR must fix (no rate for a day worked, no bank account,
-GST without a GSTIN) is held back — excluded, keeping its weeks — until the data
+GST without a GSTIN, a pay date before one of theirs already approved this
+year) is held back — excluded, keeping its weeks — until the data
 is fixed and the run recalculated. A line HR excludes by hand releases its
 weeks for a later run. Only a draft changes.
 """
@@ -32,11 +33,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -291,6 +292,35 @@ async def tds_carried_in(
     return _money(carried or 0)
 
 
+async def _latest_approved_pay_date(
+    session: AsyncSession, user: User, run: ConsultantPayoutRun, employee_id: uuid.UUID
+) -> date | None:
+    """The latest pay date this financial year of the consultant's lines in other
+    approved or paid runs.
+
+    A run may not be dated before it: the year so far and the TDS carried would then
+    disagree, and a carry already taken could be taken again.
+    """
+    start, end = tds_non_salary.fy_bounds(run.pay_date)
+    return await session.scalar(
+        tenant_scoped(
+            select(func.max(ConsultantPayoutRun.pay_date))
+            .select_from(ConsultantPayoutLine)
+            .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+            .where(
+                ConsultantPayoutLine.employee_id == employee_id,
+                ConsultantPayoutLine.excluded.is_(False),
+                ConsultantPayoutLine.run_id != run.id,
+                ConsultantPayoutRun.status.in_([PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]),
+                ConsultantPayoutRun.pay_date >= start,
+                ConsultantPayoutRun.pay_date <= end,
+            ),
+            ConsultantPayoutLine,
+            user,
+        )
+    )
+
+
 def _percent(rate: Decimal) -> str:
     return format(rate.normalize(), "f")
 
@@ -434,6 +464,12 @@ async def _price_line(
         problems.append(NO_BANK_ACCOUNT)
     if employee.gst_applicable and not (employee.gstin or "").strip():
         problems.append(NO_GSTIN)
+    later = await _latest_approved_pay_date(session, user, run, employee.id)
+    if later is not None and later > run.pay_date:
+        problems.append(
+            f"Paid on {later.isoformat()} in an approved run; this run's pay date is earlier. "
+            "Change the pay date."
+        )
 
     gst_rate = (
         Decimal(str(employee.gst_rate if employee.gst_rate is not None else DEFAULT_GST_RATE))
@@ -452,10 +488,11 @@ async def _price_line(
     carried_in = await tds_carried_in(
         session, user, employee.id, section=section, before_run_id=run.id, pay_date=run.pay_date
     )
-    # TDS is never more than this payout; the rest is taken from the next one.
+    # TDS is never more than this payout, in whole rupees (the paise are paid);
+    # the rest is taken from the next one.
     tds_due = _money(result.tds) + carried_in
     payable = gross + gst
-    tds = min(tds_due, payable)
+    tds = _money(min(tds_due, payable.to_integral_value(rounding=ROUND_FLOOR)))
     carried_out = tds_due - tds
 
     return _LineFigures(

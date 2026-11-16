@@ -883,25 +883,59 @@ SECOND_CUT_OFF = date(2026, 10, 11)
 SECOND_PAY_DATE = date(2026, 10, 20)
 
 
-async def _capped_first_run(session, tenant, hr_user, legal_entity):
-    """49000 paid untaxed this year, then 5000: 10% of 54000 is more than the 5000 paid."""
-    await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1", rate="1000")
+async def _untaxed_opening(session, tenant, person: Employee, fees: str) -> None:
     session.add(
         ConsultantTdsOpening(
             tenant_id=tenant.id,
             employee_id=person.id,
             fy_start=date(2026, 4, 1),
             section=TdsSection.S194J_PROFESSIONAL,
-            fees_paid=Decimal("49000"),
+            fees_paid=Decimal(fees),
         )
     )
     await session.commit()
+
+
+async def _gst_capped_consultant(session, tenant, legal_entity, code: str) -> Employee:
+    """59000 paid untaxed, then 5005 + 18% GST (900.90): TDS on 64005 beats the 5905.90 paid."""
+    person = await _consultant(
+        session,
+        tenant,
+        legal_entity,
+        code,
+        rate="1001",
+        gst_applicable=True,
+        gst_rate=Decimal("18"),
+        gstin="29ABCDE1234F1Z5",
+    )
+    await _untaxed_opening(session, tenant, person, "59000")
     await _week(session, tenant, person, hours_per_day="5", days=1)
+    return person
+
+
+async def _capped_first_run(session, tenant, hr_user, legal_entity, *, gst_code: str | None = None):
+    """49000 paid untaxed this year, then 5000: 10% of 54000 is more than the 5000 paid."""
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1", rate="1000")
+    await _untaxed_opening(session, tenant, person, "49000")
+    await _week(session, tenant, person, hours_per_day="5", days=1)
+    if gst_code:
+        await _gst_capped_consultant(session, tenant, legal_entity, gst_code)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
     return person, run
+
+
+def _assert_never_negative(run: dict) -> None:
+    for line in run["lines"]:
+        payable = Decimal(line["gross"]) + Decimal(line["gst_amount"])
+        assert Decimal(line["net_payable"]) >= 0
+        assert Decimal(line["tds_amount"]) <= payable
+        assert Decimal(line["net_payable"]) == payable - Decimal(line["tds_amount"])
+        assert Decimal(line["tds_due"]) == Decimal(line["tds_amount"]) + Decimal(
+            line["tds_carried_out"]
+        )
 
 
 async def test_tds_above_payment_is_capped_and_carried(
@@ -980,10 +1014,81 @@ async def test_carried_tds_is_taken_from_the_next_payout(
 
 
 async def test_net_is_never_negative(session, tenant, hr_user, legal_entity) -> None:
-    person, run = await _capped_first_run(session, tenant, hr_user, legal_entity)
-    for line in run["lines"]:
-        assert Decimal(line["net_payable"]) >= 0
-        assert Decimal(line["tds_amount"]) <= Decimal(line["gross"]) + Decimal(line["gst_amount"])
+    # A capped line without GST, and one with GST whose payable has paise.
+    person, first = await _capped_first_run(
+        session, tenant, hr_user, legal_entity, gst_code="CON2"
+    )
+    assert len(first["lines"]) == 2
+    _assert_never_negative(first)
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
+
+    # The 400 carried is more than the whole next payout (250): it is capped again.
+    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="0.25", days=1)
+    second = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
+    )
+    _assert_never_negative(second)
+    line = _line(second, person)
+    assert line["gross"] == "250.00"
+    assert line["tds_amount"] == "250.00"
+    assert line["net_payable"] == "0.00"
+    assert line["tds_carried_out"] == "175.00"  # 25 on this payout + 400 brought in - 250
+
+
+async def test_capped_tds_stays_in_whole_rupees(session, tenant, hr_user, legal_entity) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _gst_capped_consultant(session, tenant, legal_entity, "CON2")
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    line = _line(run, person)
+    assert line["gross"] == "5005.00" and line["gst_amount"] == "900.90"
+    # TDS is capped at the whole rupees of the 5905.90 payable; the paise are paid.
+    assert line["tds_amount"] == "5905.00"
+    assert line["net_payable"] == "0.90"
+    assert line["tds_carried_out"].endswith(".00")
+    assert Decimal(line["tds_carried_out"]) > 0
+    _assert_never_negative(run)
+
+
+async def test_backdated_run_cannot_take_a_carry_twice(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    person, first = await _capped_first_run(session, tenant, hr_user, legal_entity)
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
+    # Run A, paid 25 Oct, takes the 400 carried and is approved.
+    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+    run_a = await payouts.create_run(
+        session,
+        hr_user,
+        legal_entity_id=None,
+        cut_off=SECOND_CUT_OFF,
+        pay_date=date(2026, 10, 25),
+    )
+    assert _line(run_a, person)["tds_due"] == "1400.00"
+    await payouts.approve_run(session, checker, uuid.UUID(run_a["id"]), confirm=_confirmed)
+
+    # Run B is dated 20 Oct, before A: it would find the first run's 400 again.
+    await _week(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
+    run_b = await payouts.create_run(
+        session,
+        hr_user,
+        legal_entity_id=None,
+        cut_off=date(2026, 10, 18),
+        pay_date=date(2026, 10, 20),
+    )
+    line = _line(run_b, person)
+    assert line["excluded"] is True
+    assert line["problems"] == [
+        "Paid on 2026-10-25 in an approved run; this run's pay date is earlier. "
+        "Change the pay date."
+    ]
+    with pytest.raises(HTTPException) as refused:
+        await payouts.approve_run(session, checker, uuid.UUID(run_b["id"]), confirm=_confirmed)
+    assert refused.value.status_code == 409
+    assert (await _run_row(session, uuid.UUID(run_b["id"]))).status.value == "draft"
 
 
 async def test_carried_tds_does_not_cross_financial_years(
