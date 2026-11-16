@@ -5,8 +5,9 @@ maker-checker on approve and release), paying each consultant's net payable
 from the run. Only lines still in the run with something to pay go in the
 file; a line HR left out, or one with nothing to pay, does not.
 
-Rebuilding the file, reissuing failed credits, paying held credits and reading
-the bank's response are salary-file operations not yet built for consultants;
+A file not yet sent is regenerated as a salary file is (voiding its
+approval). Reissuing failed credits, paying held credits and reading the
+bank's response are salary-file operations not yet built for consultants;
 they refuse a consultant file rather than guess.
 """
 
@@ -49,12 +50,14 @@ async def prepare_consultant_batch(
     payout_run_id: uuid.UUID,
     bank_profile_id: uuid.UUID,
     value_date: date,
+    superseding: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> DisbursementBatch:
     """Build the bank file paying an approved (or paid) consultant payout run.
 
     One standing file per run, as for a payroll run: a second would pay every
-    consultant again. Every validation exception blocks, as it does for
+    consultant again. `superseding` is the batch a regeneration replaces, the
+    one standing file allowed. Every validation exception blocks, as it does for
     salaries; the blocked batch is kept as FAILED with its exceptions.
     """
     permissions.require_hr(user, detail=_HR_ONLY)
@@ -76,27 +79,26 @@ async def prepare_consultant_batch(
             ),
         )
 
-    existing = await session.scalar(
-        tenant_scoped(
-            select(DisbursementBatch)
-            .where(
-                DisbursementBatch.consultant_payout_run_id == run.id,
-                DisbursementBatch.supplements_batch_id.is_(None),
-                DisbursementBatch.status.in_(_STANDING),
-            )
-            .limit(1),
-            DisbursementBatch,
-            user,
-        )
+    standing = select(DisbursementBatch).where(
+        DisbursementBatch.consultant_payout_run_id == run.id,
+        DisbursementBatch.supplements_batch_id.is_(None),
+        DisbursementBatch.status.in_(_STANDING),
     )
+    if superseding is not None:
+        standing = standing.where(DisbursementBatch.id != superseding)
+    existing = await session.scalar(tenant_scoped(standing.limit(1), DisbursementBatch, user))
     if existing is not None:
-        state = "sent to the bank" if existing.status in _SENT else "awaiting payment"
+        remedy = (
+            ""
+            if existing.status in _SENT
+            else " Regenerate that file instead; regenerating voids its approval."
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "This payout run already has a bank file that is "
-                f"{existing.status.value.replace('_', ' ')} ({state}). A second file would "
-                "pay everyone again."
+                f"{existing.status.value.replace('_', ' ')}. A second file would pay "
+                f"everyone again.{remedy}"
             ),
         )
 

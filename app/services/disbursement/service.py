@@ -599,7 +599,6 @@ async def regenerate_batch(
     this function exists as its own operation rather than a silent rewrite.
     """
     batch = await _batch(session, user, batch_id)
-    _salary_only(batch)
     if batch.status in _SENT:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -634,6 +633,19 @@ async def regenerate_batch(
             original=await _batch(session, user, batch.supplements_batch_id),
             credits=list(own_lines),
             value_date=value_date,
+            request=request,
+        )
+    elif batch.consultant_payout_run_id is not None:
+        # Imported here: the consultant module builds on this one.
+        from app.services.disbursement.consultant import prepare_consultant_batch
+
+        rebuilt = await prepare_consultant_batch(
+            session,
+            user,
+            payout_run_id=batch.consultant_payout_run_id,
+            bank_profile_id=batch.bank_profile_id,
+            value_date=value_date,
+            superseding=batch.id,
             request=request,
         )
     else:

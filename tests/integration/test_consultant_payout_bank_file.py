@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.core.crypto import decrypt_secret, encrypt_secret
+from app.models.audit import AuditLog
 from app.models.disbursement import (
     BankFileFormat,
     DisbursementLine,
@@ -241,7 +242,6 @@ async def test_salary_only_operations_refuse_a_consultant_file(
     await session.commit()
 
     attempts = [
-        disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id),
         disbursement_service.supplementary_batch(
             session, hr_user, batch_id=batch.id, value_date=PAY_DATE
         ),
@@ -283,3 +283,68 @@ async def test_bank_file_api(client, session, tenant, hr_user, legal_entity) -> 
     )
     assert listed.status_code == 200, listed.text
     assert [row["id"] for row in listed.json()] == [body["id"]]
+
+
+async def _prepared(session, tenant, hr_user, legal_entity):
+    run, _, checker = await _approved_run(session, tenant, hr_user, legal_entity)
+    await _approve(session, checker, run)
+    profile = await _profile(session, tenant, legal_entity)
+    batch = await consultant_disbursement.prepare_consultant_batch(
+        session,
+        hr_user,
+        payout_run_id=uuid.UUID(run["id"]),
+        bank_profile_id=profile.id,
+        value_date=PAY_DATE,
+    )
+    await session.commit()
+    return run, checker, batch
+
+
+async def test_unsent_consultant_file_can_be_regenerated(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    run, checker, batch = await _prepared(session, tenant, hr_user, legal_entity)
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await session.commit()
+
+    rebuilt = await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
+    await session.commit()
+
+    assert rebuilt.id != batch.id
+    assert rebuilt.consultant_payout_run_id == uuid.UUID(run["id"])
+    assert rebuilt.payroll_run_id is None
+    assert rebuilt.status is DisbursementStatus.PENDING_APPROVAL
+    assert rebuilt.approved_by_user_id is None
+    assert rebuilt.employee_count == 2
+    assert batch.status is DisbursementStatus.FAILED
+    assert str(rebuilt.id) in (batch.notes or "")
+    entries = (await session.scalars(select(AuditLog).where(AuditLog.entity_id == batch.id))).all()
+    assert any("Approval voided" in (e.summary or "") for e in entries)
+    # The rebuilt file is the one standing file now.
+    with pytest.raises(HTTPException) as again:
+        await consultant_disbursement.prepare_consultant_batch(
+            session,
+            hr_user,
+            payout_run_id=uuid.UUID(run["id"]),
+            bank_profile_id=batch.bank_profile_id,
+            value_date=PAY_DATE,
+        )
+    assert again.value.status_code == 409
+
+
+async def test_released_consultant_file_cannot_be_regenerated(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    _, checker, batch = await _prepared(session, tenant, hr_user, legal_entity)
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await disbursement_service.release_batch(session, checker, batch_id=batch.id)
+    await session.commit()
+
+    with pytest.raises(HTTPException) as refused:
+        await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
+    assert refused.value.status_code == 409
+    assert "sent to the bank" in refused.value.detail
