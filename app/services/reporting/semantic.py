@@ -1469,7 +1469,7 @@ _ACCOUNT_ENTRY = Entity(
     personal=False,
     description=(
         "What was billed to each client account, and its other direct costs, by month "
-        "(Payroll → Account P&L). kind is billing or cost."
+        "(the Account P&L page). kind is billing or cost."
     ),
     default_date="entry_month",
     fields=(

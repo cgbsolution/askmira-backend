@@ -27,7 +27,12 @@ from sqlalchemy.orm import load_only
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
+from app.models.employee import (
+    CustomFieldDefinition,
+    Employee,
+    EmploymentStatus,
+    EmploymentType,
+)
 from app.models.org import Department, LegalEntity, Location
 from app.models.timesheets import Project
 from app.models.user import User
@@ -41,6 +46,7 @@ from app.schemas.employee import (
     EntityMoveSkip,
     ProjectMoveRequest,
     ProjectMoveResult,
+    consultant_billing_problem,
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
@@ -492,6 +498,10 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "date_of_birth": None,
         "gender": None,
         "custom_fields": {},
+        # What a consultant is paid is for HR and the consultant, managers included.
+        "gst_applicable": False,
+        "gst_amount": None,
+        "fixed_tds_amount": None,
     }
     from app.services.dpdp.gates import hidden_photo_ids
 
@@ -628,6 +638,27 @@ async def update_employee(
         raise _unprocessable("Probation cannot end before the date of joining")
     if joining and exit_date and exit_date < joining:
         raise _unprocessable("The date of exit cannot be before the date of joining")
+
+    # Somebody who stops being a consultant stops carrying consultant billing.
+    kind = changes.get("employment_type") or employee.employment_type
+    if kind is not EmploymentType.CONSULTANT:
+        for key, cleared in (
+            ("gst_applicable", False),
+            ("gst_amount", None),
+            ("fixed_tds_amount", None),
+        ):
+            if key not in changes and getattr(employee, key) != cleared:
+                changes[key] = cleared
+    if changes.get("gst_applicable") is False and "gst_amount" not in changes:
+        changes["gst_amount"] = None
+    problem = consultant_billing_problem(
+        kind,
+        bool(changes.get("gst_applicable", employee.gst_applicable)),
+        changes.get("gst_amount", employee.gst_amount),
+        changes.get("fixed_tds_amount", employee.fixed_tds_amount),
+    )
+    if problem:
+        raise _unprocessable(problem)
 
     diff = _diff(employee, changes)
     if changes.get("work_email") is not None:

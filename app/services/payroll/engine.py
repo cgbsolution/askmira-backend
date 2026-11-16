@@ -288,6 +288,10 @@ class PayrollInput:
     # zero — right for a structure-only recomputation, and the run refuses to be
     # approved without it (see `run.py`).
     tds: TdsContext | None = None
+    # A consultant's TDS typed on their record: deducted every month instead of
+    # the projected salary tax. Not on a supplementary payslip, whose regular
+    # run already took it. TDS MANUAL on the salary master still wins.
+    fixed_tds: Decimal | None = None
     # Set for an off-cycle payslip of somebody already paid by this month's
     # regular run: pays the input lines only. See `SupplementaryContext`.
     supplementary: SupplementaryContext | None = None
@@ -765,6 +769,16 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         else:
             tds = result.amount
             tds_working = result.working
+    if payroll_input.fixed_tds is not None and supplementary is None:
+        tds = _money(payroll_input.fixed_tds)
+        tds_working = {
+            **(tds_working or {}),
+            "fixed_tds": str(tds),
+            "note": (
+                "Consultant: the TDS amount on their record is deducted instead of the "
+                "projected monthly tax."
+            ),
+        }
     if "tds" in overrides:
         tds = overrides["tds"]
         tds_working = {

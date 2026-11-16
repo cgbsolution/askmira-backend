@@ -58,7 +58,7 @@ from app.core import hr_scope
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import Employee, EmploymentStatus, EmploymentType
 from app.models.org import LegalEntity
 from app.models.payroll import (
     RUN_ORIGIN_IMPORTED,
@@ -1019,6 +1019,12 @@ async def compute_run(
                         else tuple(collected.loans.get(employee.id, []))
                     ),
                     tds=tds_context,
+                    fixed_tds=(
+                        Decimal(str(employee.fixed_tds_amount))
+                        if employee.employment_type is EmploymentType.CONSULTANT
+                        and employee.fixed_tds_amount is not None
+                        else None
+                    ),
                     supplementary=supplementary,
                 )
             )

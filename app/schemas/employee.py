@@ -4,11 +4,34 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.employee import EmploymentStatus, EmploymentType, Gender
+
+
+def consultant_billing_problem(
+    employment_type: EmploymentType,
+    gst_applicable: bool,
+    gst_amount: Decimal | None,
+    fixed_tds_amount: Decimal | None,
+) -> str | None:
+    """What is wrong with a record's GST / TDS fields, or None.
+
+    Only a consultant carries them: payroll would ignore them on anybody else,
+    and a figure nobody acts on is worse than none.
+    """
+    if employment_type is not EmploymentType.CONSULTANT:
+        if gst_applicable or gst_amount is not None or fixed_tds_amount is not None:
+            return "GST and TDS amounts are set only for a consultant."
+        return None
+    if gst_applicable and not gst_amount:
+        return "Enter the GST amount, or set GST applicable to No."
+    if not gst_applicable and gst_amount is not None:
+        return "A GST amount needs GST applicable set to Yes."
+    return None
 
 
 class EmployeeBase(BaseModel):
@@ -38,6 +61,12 @@ class EmployeeBase(BaseModel):
     probation_end_date: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
 
+    #: Consultant billing, read by payroll only for a consultant: GST paid on
+    #: top of the fee each month, and TDS deducted instead of the salary tax.
+    gst_applicable: bool = False
+    gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+
 
 class EmployeeCreate(EmployeeBase):
     """`tenant_id` is deliberately absent — it comes from the caller's token."""
@@ -54,6 +83,11 @@ class EmployeeCreate(EmployeeBase):
             and self.probation_end_date < self.date_of_joining
         ):
             raise ValueError("Probation cannot end before the date of joining")
+        problem = consultant_billing_problem(
+            self.employment_type, self.gst_applicable, self.gst_amount, self.fixed_tds_amount
+        )
+        if problem:
+            raise ValueError(problem)
         return self
 
 
@@ -92,6 +126,9 @@ class EmployeeUpdate(BaseModel):
     date_of_exit: date | None = None
     probation_end_date: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
+    gst_applicable: bool | None = None
+    gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
 
     custom_fields: dict[str, Any] | None = None
 

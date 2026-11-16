@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -16,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -129,6 +131,16 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     date_of_exit: Mapped[date | None] = mapped_column(Date, nullable=True)
     probation_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     notice_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ── Consultant billing (read by payroll only for a consultant) ──────────
+    #: Whether the consultant charges GST on their fee.
+    gst_applicable: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    #: GST paid every month on top of the fee, as a non-taxable payslip line.
+    gst_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    #: TDS deducted every month instead of the projected salary tax.
+    fixed_tds_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
 
     # ── Statutory identifiers (India) ───────────────────────────────────────
     # Encrypted at rest by the column type; plaintext to the application.
