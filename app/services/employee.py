@@ -34,7 +34,8 @@ from app.models.employee import (
     EmploymentType,
 )
 from app.models.org import Department, LegalEntity, Location
-from app.models.timesheets import Project
+from app.models.payroll import EmployeeSalary
+from app.models.timesheets import Project, Timesheet, TimesheetStatus
 from app.models.user import User
 from app.schemas.employee import (
     EmployeeCreate,
@@ -51,6 +52,7 @@ from app.schemas.employee import (
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
+from app.services.consultants import is_consultant
 from app.services.employee_profile import HIRING_KEYS
 from app.services.payroll import grades
 
@@ -621,6 +623,52 @@ def _diff(employee: Employee, changes: dict[str, Any]) -> dict[str, dict[str, st
     }
 
 
+async def _has_current_salary(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether the person has a salary revision still open.
+
+    Same meaning as payroll's "current": the revision with no end date.
+    """
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(EmployeeSalary.id)
+                .where(
+                    EmployeeSalary.employee_id == employee_id,
+                    EmployeeSalary.effective_to.is_(None),
+                )
+                .limit(1),
+                EmployeeSalary,
+                user,
+            )
+        )
+        is not None
+    )
+
+
+async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether a consultant has approved timesheet weeks that nobody has paid yet.
+
+    For now "paid" means picked up by a payroll adjustment; the consultant payout
+    run will narrow this to "not in a payout week".
+    """
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(Timesheet.id)
+                .where(
+                    Timesheet.employee_id == employee_id,
+                    Timesheet.status == TimesheetStatus.APPROVED,
+                    Timesheet.payroll_adjustment_id.is_(None),
+                )
+                .limit(1),
+                Timesheet,
+                user,
+            )
+        )
+        is not None
+    )
+
+
 async def update_employee(
     session: AsyncSession,
     user: User,
@@ -656,6 +704,30 @@ async def update_employee(
         and employee.status is not EmploymentStatus.EXITED
     ):
         raise _unprocessable(_EXIT_THROUGH_EXITS)
+
+    new_kind = changes.get("employment_type")
+    if new_kind is EmploymentType.CONSULTANT and not is_consultant(employee):
+        if await _has_current_salary(session, user, employee.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This person has a current salary, and consultants are paid through "
+                    "Consultant payouts, not a salary. End their salary first."
+                ),
+            )
+    elif (
+        new_kind is not None
+        and new_kind is not EmploymentType.CONSULTANT
+        and is_consultant(employee)
+        and await _has_unpaid_weeks(session, user, employee.id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This consultant has approved weeks not yet paid. Pay them in a "
+                "Consultant payout before changing their employment type."
+            ),
+        )
 
     if "custom_fields" in changes:
         if changes["custom_fields"] is None:
