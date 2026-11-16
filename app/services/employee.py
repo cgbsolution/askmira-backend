@@ -46,6 +46,7 @@ from app.schemas.employee import (
     EntityMoveSkip,
     ProjectMoveRequest,
     ProjectMoveResult,
+    apply_consultant_defaults,
     consultant_billing_problem,
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
@@ -57,6 +58,21 @@ from app.services.payroll import grades
 MAX_CHAIN = 25
 
 _NOT_NULL = ("first_name", "work_email", "employment_type", "status")
+#: What somebody who is not a consultant carries of it: nothing.
+_CONSULTANT_CLEARED: dict[str, Any] = {
+    "gst_applicable": False,
+    "gst_amount": None,
+    "fixed_tds_amount": None,
+    "gst_rate": None,
+    "gstin": None,
+    "tds_section": None,
+    "payee_kind": None,
+    "contract_end_date": None,
+    "timesheet_approver_route": None,
+    "customer_contact_name": None,
+    "customer_contact_email": None,
+    "internal_approver_user_id": None,
+}
 
 _EXIT_THROUGH_EXITS = (
     "An employee leaves through People > Exits, which runs clearance, the settlement and "
@@ -502,6 +518,15 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "gst_applicable": False,
         "gst_amount": None,
         "fixed_tds_amount": None,
+        "gst_rate": None,
+        "gstin": None,
+        "tds_section": None,
+        "payee_kind": None,
+        "contract_end_date": None,
+        "timesheet_approver_route": None,
+        "customer_contact_name": None,
+        "customer_contact_email": None,
+        "internal_approver_user_id": None,
     }
     from app.services.dpdp.gates import hidden_photo_ids
 
@@ -639,23 +664,37 @@ async def update_employee(
     if joining and exit_date and exit_date < joining:
         raise _unprocessable("The date of exit cannot be before the date of joining")
 
-    # Somebody who stops being a consultant stops carrying consultant billing.
+    # Somebody who stops being a consultant stops carrying consultant details.
     kind = changes.get("employment_type") or employee.employment_type
     if kind is not EmploymentType.CONSULTANT:
-        for key, cleared in (
-            ("gst_applicable", False),
-            ("gst_amount", None),
-            ("fixed_tds_amount", None),
-        ):
+        for key, cleared in _CONSULTANT_CLEARED.items():
             if key not in changes and getattr(employee, key) != cleared:
                 changes[key] = cleared
-    if changes.get("gst_applicable") is False and "gst_amount" not in changes:
-        changes["gst_amount"] = None
+    if changes.get("gst_applicable") is False:
+        for key in ("gst_amount", "gst_rate", "gstin"):
+            changes.setdefault(key, None)
+
+    def _merged(key: str) -> Any:
+        return changes[key] if key in changes else getattr(employee, key)
+
+    defaults = {
+        key: _merged(key) for key in ("tds_section", "payee_kind", "gst_applicable", "gst_rate")
+    }
+    apply_consultant_defaults(kind, defaults)
+    for key in ("tds_section", "payee_kind", "gst_rate"):
+        if defaults[key] != _merged(key):
+            changes[key] = defaults[key]
     problem = consultant_billing_problem(
         kind,
-        bool(changes.get("gst_applicable", employee.gst_applicable)),
-        changes.get("gst_amount", employee.gst_amount),
-        changes.get("fixed_tds_amount", employee.fixed_tds_amount),
+        gst_applicable=bool(_merged("gst_applicable")),
+        gst_rate=_merged("gst_rate"),
+        gstin=_merged("gstin"),
+        tds_section=_merged("tds_section"),
+        route=_merged("timesheet_approver_route"),
+        contact_name=_merged("customer_contact_name"),
+        contact_email=_merged("customer_contact_email"),
+        gst_amount=_merged("gst_amount"),
+        fixed_tds_amount=_merged("fixed_tds_amount"),
     )
     if problem:
         raise _unprocessable(problem)

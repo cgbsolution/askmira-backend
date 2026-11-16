@@ -77,23 +77,31 @@ C = EmploymentType.CONSULTANT
 
 
 @pytest.mark.parametrize(
-    ("kind", "applicable", "gst", "tds", "ok"),
+    ("kind", "tds", "ok"),
     [
-        (C, True, Decimal("1800"), Decimal("1000"), True),
-        (C, False, None, Decimal("1000"), True),
-        (C, False, None, None, True),
-        (C, True, None, None, False),  # GST yes needs an amount
-        (C, False, Decimal("1800"), None, False),  # an amount needs GST yes
-        (EmploymentType.FULL_TIME, False, None, Decimal("1000"), False),
-        (EmploymentType.FULL_TIME, False, None, None, True),
+        (C, Decimal("1000"), True),
+        (C, None, True),
+        (EmploymentType.FULL_TIME, Decimal("1000"), False),  # only a consultant has a fixed TDS
+        (EmploymentType.FULL_TIME, None, True),
     ],
 )
-def test_consultant_billing_rules(kind, applicable, gst, tds, ok) -> None:
-    assert (consultant_billing_problem(kind, applicable, gst, tds) is None) is ok
+def test_consultant_billing_rules(kind, tds, ok) -> None:
+    problem = consultant_billing_problem(
+        kind,
+        gst_applicable=False,
+        gst_rate=None,
+        gstin=None,
+        tds_section=None,
+        route=None,
+        contact_name=None,
+        contact_email=None,
+        fixed_tds_amount=tds,
+    )
+    assert (problem is None) is ok
 
 
-def test_create_refuses_gst_without_an_amount() -> None:
-    with pytest.raises(ValidationError, match="GST amount"):
+def test_create_refuses_gst_without_a_gstin() -> None:
+    with pytest.raises(ValidationError, match="GSTIN"):
         EmployeeCreate(
             employee_code="C1",
             first_name="A",

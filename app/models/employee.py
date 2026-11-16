@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, SoftDeleteMixin, TenantMixin, TimestampMixin, UUIDMixin
+from app.models.contractors import ContractorKind, TdsSection
 from app.models.types import EncryptedText
 
 if TYPE_CHECKING:
@@ -48,6 +49,13 @@ class EmploymentType(str, enum.Enum):
     CONTRACT = "contract"
     INTERN = "intern"
     CONSULTANT = "consultant"
+
+
+class ApproverRoute(str, enum.Enum):
+    """Who approves a consultant's timesheets."""
+
+    CUSTOMER = "customer"
+    INTERNAL = "internal"
 
 
 class Gender(str, enum.Enum):
@@ -141,6 +149,29 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     gst_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     #: TDS deducted every month instead of the projected salary tax.
     fixed_tds_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+
+    # ── Consultant payouts (set only for a consultant) ──────────────────────
+    #: The TDS section their fee is deducted under; 194J (professional) if unset.
+    tds_section: Mapped[TdsSection | None] = mapped_column(
+        Enum(TdsSection, name="tds_section", create_type=False), nullable=True
+    )
+    #: Individual, HUF, firm or company: decides the TDS rate.
+    payee_kind: Mapped[ContractorKind | None] = mapped_column(
+        Enum(ContractorKind, name="contractor_kind", create_type=False), nullable=True
+    )
+    #: GST charged on their fee, in percent, when `gst_applicable`.
+    gst_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    gstin: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    contract_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Who approves their weekly timesheets: the customer, or somebody inside.
+    timesheet_approver_route: Mapped[ApproverRoute | None] = mapped_column(
+        Enum(ApproverRoute, name="approver_route"), nullable=True
+    )
+    customer_contact_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    customer_contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    internal_approver_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # ── Statutory identifiers (India) ───────────────────────────────────────
     # Encrypted at rest by the column type; plaintext to the application.

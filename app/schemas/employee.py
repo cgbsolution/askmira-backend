@@ -9,29 +9,69 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from app.models.employee import EmploymentStatus, EmploymentType, Gender
+from app.models.contractors import ContractorKind, TdsSection
+from app.models.employee import ApproverRoute, EmploymentStatus, EmploymentType, Gender
+
+DEFAULT_GST_RATE = Decimal("18")
 
 
 def consultant_billing_problem(
     employment_type: EmploymentType,
+    *,
     gst_applicable: bool,
-    gst_amount: Decimal | None,
-    fixed_tds_amount: Decimal | None,
+    gst_rate: Decimal | None,
+    gstin: str | None,
+    tds_section: TdsSection | None,
+    route: ApproverRoute | None,
+    contact_name: str | None,
+    contact_email: str | None,
+    gst_amount: Decimal | None = None,
+    fixed_tds_amount: Decimal | None = None,
 ) -> str | None:
-    """What is wrong with a record's GST / TDS fields, or None.
+    """What is wrong with a record's consultant fields, or None.
 
-    Only a consultant carries them: payroll would ignore them on anybody else,
-    and a figure nobody acts on is worse than none.
+    Only a consultant carries them: nothing would act on them for anybody else,
+    and a figure nobody acts on is worse than none. `gst_amount` and
+    `fixed_tds_amount` are the older monthly figures, still refused elsewhere.
     """
     if employment_type is not EmploymentType.CONSULTANT:
-        if gst_applicable or gst_amount is not None or fixed_tds_amount is not None:
-            return "GST and TDS amounts are set only for a consultant."
+        if any(
+            (
+                gst_applicable,
+                gst_rate is not None,
+                gstin,
+                tds_section is not None,
+                route is not None,
+                contact_name,
+                contact_email,
+                gst_amount is not None,
+                fixed_tds_amount is not None,
+            )
+        ):
+            return "GST, TDS and approver details are set only for a consultant."
         return None
-    if gst_applicable and not gst_amount:
-        return "Enter the GST amount, or set GST applicable to No."
-    if not gst_applicable and gst_amount is not None:
-        return "A GST amount needs GST applicable set to Yes."
+    if gst_applicable:
+        if gst_rate is None:
+            return "Enter the GST rate, or set GST applicable to No."
+        if not gstin:
+            return "Enter the consultant's GSTIN, or set GST applicable to No."
+    elif gst_rate is not None or gstin:
+        return "A GST rate or GSTIN needs GST applicable set to Yes."
+    if route is ApproverRoute.CUSTOMER and not (contact_name and contact_email):
+        return "Enter the customer contact's name and email: they approve the timesheets."
     return None
+
+
+def apply_consultant_defaults(employment_type: EmploymentType, values: dict[str, Any]) -> None:
+    """Fill what a consultant was saved without: 194J (professional), an individual, 18% GST."""
+    if employment_type is not EmploymentType.CONSULTANT:
+        return
+    if values.get("tds_section") is None:
+        values["tds_section"] = TdsSection.S194J_PROFESSIONAL
+    if values.get("payee_kind") is None:
+        values["payee_kind"] = ContractorKind.INDIVIDUAL
+    if values.get("gst_applicable") and values.get("gst_rate") is None:
+        values["gst_rate"] = DEFAULT_GST_RATE
 
 
 class EmployeeBase(BaseModel):
@@ -67,6 +107,17 @@ class EmployeeBase(BaseModel):
     gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
 
+    #: Consultant payouts: how they are taxed and billed, and who approves their time.
+    tds_section: TdsSection | None = None
+    payee_kind: ContractorKind | None = None
+    gst_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    gstin: str | None = Field(default=None, max_length=15)
+    contract_end_date: date | None = None
+    timesheet_approver_route: ApproverRoute | None = None
+    customer_contact_name: str | None = Field(default=None, max_length=200)
+    customer_contact_email: EmailStr | None = None
+    internal_approver_user_id: uuid.UUID | None = None
+
 
 class EmployeeCreate(EmployeeBase):
     """`tenant_id` is deliberately absent — it comes from the caller's token."""
@@ -83,8 +134,27 @@ class EmployeeCreate(EmployeeBase):
             and self.probation_end_date < self.date_of_joining
         ):
             raise ValueError("Probation cannot end before the date of joining")
+        values: dict[str, Any] = {
+            "tds_section": self.tds_section,
+            "payee_kind": self.payee_kind,
+            "gst_applicable": self.gst_applicable,
+            "gst_rate": self.gst_rate,
+        }
+        apply_consultant_defaults(self.employment_type, values)
+        self.tds_section = values["tds_section"]
+        self.payee_kind = values["payee_kind"]
+        self.gst_rate = values["gst_rate"]
         problem = consultant_billing_problem(
-            self.employment_type, self.gst_applicable, self.gst_amount, self.fixed_tds_amount
+            self.employment_type,
+            gst_applicable=self.gst_applicable,
+            gst_rate=self.gst_rate,
+            gstin=self.gstin,
+            tds_section=self.tds_section,
+            route=self.timesheet_approver_route,
+            contact_name=self.customer_contact_name,
+            contact_email=self.customer_contact_email,
+            gst_amount=self.gst_amount,
+            fixed_tds_amount=self.fixed_tds_amount,
         )
         if problem:
             raise ValueError(problem)
@@ -129,6 +199,15 @@ class EmployeeUpdate(BaseModel):
     gst_applicable: bool | None = None
     gst_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     fixed_tds_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    tds_section: TdsSection | None = None
+    payee_kind: ContractorKind | None = None
+    gst_rate: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    gstin: str | None = Field(default=None, max_length=15)
+    contract_end_date: date | None = None
+    timesheet_approver_route: ApproverRoute | None = None
+    customer_contact_name: str | None = Field(default=None, max_length=200)
+    customer_contact_email: EmailStr | None = None
+    internal_approver_user_id: uuid.UUID | None = None
 
     custom_fields: dict[str, Any] | None = None
 
@@ -159,6 +238,7 @@ class EmployeeRead(EmployeeBase):
     #: reserved TLD) turns the whole directory into a 500.
     work_email: str
     personal_email: str | None = None
+    customer_contact_email: str | None = None
 
     id: uuid.UUID
     tenant_id: uuid.UUID
