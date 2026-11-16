@@ -141,6 +141,13 @@ from app.models.competency import (
     RatingScaleLevel,
     ScaleType,
 )
+from app.models.consultant_payouts import (
+    ConsultantPayoutLine,
+    ConsultantPayoutRun,
+    ConsultantPayoutWeek,
+    ConsultantTdsOpening,
+    PayoutRunStatus,
+)
 from app.models.contractors import (
     Contractor,
     ContractorInvoice,
@@ -811,6 +818,10 @@ __all__ = [
     "ConsentCapturedVia",
     "ConsentPurpose",
     "ConsentRecord",
+    "ConsultantPayoutLine",
+    "ConsultantPayoutRun",
+    "ConsultantPayoutWeek",
+    "ConsultantTdsOpening",
     "Contractor",
     "ContractorInvoice",
     "ContractorKind",
@@ -1043,6 +1054,7 @@ __all__ = [
     "PanelistRole",
     "PasswordResetToken",
     "PayGrade",
+    "PayoutRunStatus",
     "PayoutStatusEnum",
     "PayrollAdjustment",
     "PayrollAdjustmentApplication",

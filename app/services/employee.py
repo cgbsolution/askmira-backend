@@ -27,6 +27,11 @@ from sqlalchemy.orm import load_only
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.consultant_payouts import (
+    ConsultantPayoutRun,
+    ConsultantPayoutWeek,
+    PayoutRunStatus,
+)
 from app.models.employee import (
     CustomFieldDefinition,
     Employee,
@@ -648,9 +653,19 @@ async def _has_current_salary(session: AsyncSession, user: User, employee_id: uu
 async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
     """Whether a consultant has approved timesheet weeks that nobody has paid yet.
 
-    For now "paid" means picked up by a payroll adjustment; the consultant payout
-    run will narrow this to "not in a payout week".
+    Paid means picked up by a payroll adjustment (before payouts existed), or in
+    a consultant payout run marked paid. A week in a draft or approved run is
+    not paid yet.
     """
+    paid_in_a_run = (
+        select(ConsultantPayoutWeek.id)
+        .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutWeek.run_id)
+        .where(
+            ConsultantPayoutWeek.timesheet_id == Timesheet.id,
+            ConsultantPayoutRun.status == PayoutRunStatus.PAID,
+        )
+        .exists()
+    )
     return (
         await session.scalar(
             tenant_scoped(
@@ -659,6 +674,7 @@ async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid
                     Timesheet.employee_id == employee_id,
                     Timesheet.status == TimesheetStatus.APPROVED,
                     Timesheet.payroll_adjustment_id.is_(None),
+                    ~paid_in_a_run,
                 )
                 .limit(1),
                 Timesheet,

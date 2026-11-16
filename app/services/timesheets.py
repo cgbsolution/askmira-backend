@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.consultant_payouts import ConsultantPayoutWeek
 from app.models.employee import ApproverRoute, Employee, EmploymentStatus
 from app.models.org import LegalEntity
 from app.models.payroll_inputs import (
@@ -1206,8 +1207,19 @@ async def decide(
 
 
 async def _in_payout_run(session: AsyncSession, user: User, sheet: Timesheet) -> bool:
-    """Whether the week is already in a consultant payout run (checked once payouts exist)."""
-    return False
+    """Whether the week is in a consultant payout run (draft, approved or paid)."""
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(ConsultantPayoutWeek.id).where(
+                    ConsultantPayoutWeek.timesheet_id == sheet.id
+                ),
+                ConsultantPayoutWeek,
+                user,
+            )
+        )
+        is not None
+    )
 
 
 async def reopen_week(

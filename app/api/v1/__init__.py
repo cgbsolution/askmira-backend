@@ -24,6 +24,7 @@ from app.api.v1.routers import (
     company_documents,
     competency,
     connectors,
+    consultant_payouts,
     contractors,
     culture,
     culture_depth,
@@ -176,6 +177,7 @@ api_router.include_router(learning.router)
 api_router.include_router(esop.router)
 api_router.include_router(ewa.router, dependencies=_module("payroll"))
 api_router.include_router(contractors.router, dependencies=_module("payroll"))
+api_router.include_router(consultant_payouts.router, dependencies=_module("payroll"))
 api_router.include_router(benefits.router, dependencies=_module("payroll"))
 api_router.include_router(ai.router)
 api_router.include_router(companion.router)
