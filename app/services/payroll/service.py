@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentType
 from app.models.payroll import (
     DEFAULT_WAGE_GROUP,
     STATUTORY_OVERRIDE_CODES,
@@ -54,6 +54,7 @@ from app.schemas.payroll_run import (
     StructureComponentDetailRead,
 )
 from app.services import audit
+from app.services.consultants import CONSULTANT_SALARY_REFUSAL, is_consultant
 from app.services.payroll.salary_structure import (
     ResolvedComponent,
     SalaryBreakdown,
@@ -738,6 +739,10 @@ async def assign_salary(
     )
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if is_consultant(employee):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=CONSULTANT_SALARY_REFUSAL
+        )
 
     structure = await get_structure(session, user, payload.structure_id)
 
@@ -918,6 +923,11 @@ async def assign_salaries(
     saved: list[EmployeeSalary] = []
     with session.no_autoflush:
         for employee, payload, strict in items:
+            if is_consultant(employee):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=CONSULTANT_SALARY_REFUSAL,
+                )
             structure = structures[payload.structure_id]
             if payload.effective_from < structure.effective_from:
                 raise HTTPException(
@@ -1007,6 +1017,7 @@ def filter_salary_people(stmt: Any, user: User, filters: SalaryListFilters | Non
     from app.services.employee import filter_directory
 
     f = filters or SalaryListFilters()
+    stmt = stmt.where(Employee.employment_type != EmploymentType.CONSULTANT)
     stmt = filter_directory(
         stmt,
         search=f.search,

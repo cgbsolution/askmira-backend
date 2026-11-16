@@ -43,6 +43,7 @@ from app.schemas.payroll import (
     SalaryTrailEntryRead,
 )
 from app.services import audit
+from app.services.consultants import CONSULTANT_SALARY_REFUSAL, is_consultant
 from app.services.documents.vault import _checked, _download_name
 from app.services.payroll.salary_structure import ResolvedComponent, SalaryBreakdown
 from app.services.payroll.service import (
@@ -516,6 +517,8 @@ async def update_salary(
     Everything is checked before anything is written.
     """
     employee = await _employee(session, user, employee_id)
+    if is_consultant(employee):
+        raise _unprocessable(CONSULTANT_SALARY_REFUSAL)
     series = await _series(session, user, employee_id)
     index = next((i for i, s in enumerate(series) if s.id == salary_id), None)
     if index is None:

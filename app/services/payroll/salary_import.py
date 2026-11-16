@@ -73,6 +73,7 @@ from app.schemas.payroll import (
     SalaryListFilters,
 )
 from app.services import audit, uploads
+from app.services.consultants import CONSULTANT_SALARY_REFUSAL, is_consultant
 from app.services.employee_import.fields import read_date, text
 from app.services.payroll.salary_master import revision_locks, revision_snapshot
 from app.services.payroll.service import (
@@ -793,6 +794,8 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
         # Somebody who has left: a record of what they were paid, kept as typed.
         record_only = employee is not None and employee.status is EmploymentStatus.EXITED
         try:
+            if employee is not None and is_consultant(employee):
+                raise ValueError(CONSULTANT_SALARY_REFUSAL)
             ctc = _money(cell(values, CTC), CTC)
             given: dict[str, tuple[str, Decimal]] = {}
             for index, header, wage_code in wage_columns:

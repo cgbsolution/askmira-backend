@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import tenant_filter, tenant_scoped
 from app.models.arrears import ArrearBatch, ArrearLine, ArrearStatus
 from app.models.attendance import AttendanceDay, AttendanceStatus, Shift
-from app.models.employee import Employee, EmploymentType
+from app.models.employee import Employee
 from app.models.exit_benefits import EncashmentRequest, EncashmentStatus
 from app.models.expenses import (
     AdvanceSettlement,
@@ -70,8 +70,6 @@ from app.models.payroll import (
     BonusComputation,
     BonusStatus,
     PayrollRun,
-    PayrollRunStatus,
-    Payslip,
 )
 from app.models.payroll_inputs import (
     AdjustmentKind,
@@ -1987,93 +1985,6 @@ class ShiftAllowanceProvider(InputProvider):
         )
 
 
-# ── Consultant GST ──────────────────────────────────────────────────────────
-
-
-class ConsultantGstProvider(InputProvider):
-    """GST a consultant charges on their fee, paid with it every month.
-
-    The amount is typed on the consultant's record. It is cash but not income:
-    no TDS on it, no PF, ESI or Professional Tax. Paid once per person and
-    month — a month an approved run already paid it for is skipped.
-    """
-
-    key = "consultant_gst"
-    label = "Consultant GST"
-    source_type = "consultant_gst"
-
-    async def collect(self, session: AsyncSession, user: User, scope: RunScope) -> ProviderOutput:
-        output = ProviderOutput()
-        if not scope.employee_ids:
-            return output
-        consultants = (
-            await session.scalars(
-                tenant_scoped(
-                    select(Employee).where(
-                        Employee.id.in_(scope.employee_ids),
-                        Employee.employment_type == EmploymentType.CONSULTANT,
-                        Employee.gst_applicable.is_(True),
-                        Employee.gst_amount > 0,
-                    ),
-                    Employee,
-                    user,
-                )
-            )
-        ).all()
-        for employee in consultants:
-            if any(
-                (line.get("source") or {}).get("type") == self.source_type
-                and (line.get("source") or {}).get("period") == scope.period
-                and not line.get("skipped")
-                for line in scope.prior_input_lines.get(employee.id, [])
-            ):
-                continue
-            amount = _d(employee.gst_amount)
-            output.lines[employee.id].append(
-                InputLine(
-                    provider=self.key,
-                    code="GST",
-                    name="GST",
-                    kind=InputKind.EARNING,
-                    amount=amount,
-                    taxable_amount=ZERO,
-                    basis=f"GST on the consultant's fee for {scope.period}, as on their record.",
-                    source={
-                        "type": self.source_type,
-                        "id": f"{employee.id}:{scope.period}",
-                        "employee_id": str(employee.id),
-                        "period": scope.period,
-                    },
-                )
-            )
-        return output
-
-    async def consume(
-        self, session: AsyncSession, user: User, run: PayrollRun, line: dict[str, Any]
-    ) -> None:
-        # Nothing to mark: the payslip is the record. Refuse a month another
-        # run was approved for after this one was computed.
-        source = line["source"]
-        paid = await session.scalar(
-            tenant_scoped(
-                select(Payslip.id)
-                .join(PayrollRun, Payslip.run_id == PayrollRun.id)
-                .where(
-                    Payslip.employee_id == uuid.UUID(source["employee_id"]),
-                    PayrollRun.id != run.id,
-                    PayrollRun.status.in_((PayrollRunStatus.APPROVED, PayrollRunStatus.PAID)),
-                    PayrollRun.period_year == run.period_year,
-                    PayrollRun.period_month == run.period_month,
-                    Payslip.input_lines.contains([{"source": {"id": source["id"]}}]),
-                ),
-                Payslip,
-                user,
-            ).limit(1)
-        )
-        if paid is not None:
-            raise _conflict("A consultant's GST on this run")
-
-
 PROVIDERS: tuple[InputProvider, ...] = (
     StatutoryBonusProvider(),
     ArrearsProvider(),
@@ -2091,7 +2002,6 @@ PROVIDERS: tuple[InputProvider, ...] = (
     AdjustmentProvider(),
     OvertimeProvider(),
     ShiftAllowanceProvider(),
-    ConsultantGstProvider(),
 )
 
 _BY_SOURCE = {provider.source_type: provider for provider in PROVIDERS}

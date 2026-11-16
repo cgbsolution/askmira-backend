@@ -356,6 +356,7 @@ async def create_run(
                             Employee.id.in_(employee_ids),
                             Employee.id.in_(in_company),
                             Employee.deleted_at.is_(None),
+                            Employee.employment_type != EmploymentType.CONSULTANT,
                         ),
                         Employee,
                         user,
@@ -554,6 +555,7 @@ async def compute_run(
         return [
             Employee.id.in_(members),
             Employee.deleted_at.is_(None),
+            Employee.employment_type != EmploymentType.CONSULTANT,
             or_(
                 Employee.status.in_(
                     [
@@ -1019,12 +1021,6 @@ async def compute_run(
                         else tuple(collected.loans.get(employee.id, []))
                     ),
                     tds=tds_context,
-                    fixed_tds=(
-                        Decimal(str(employee.fixed_tds_amount))
-                        if employee.employment_type is EmploymentType.CONSULTANT
-                        and employee.fixed_tds_amount is not None
-                        else None
-                    ),
                     supplementary=supplementary,
                 )
             )
