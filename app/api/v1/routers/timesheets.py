@@ -151,11 +151,48 @@ async def submit_my_week(
     return await timesheets.submit_week(session, user, week_of, request=request)
 
 
+@router.get("/people/{employee_id}/weeks/{week_of}")
+async def person_week(
+    employee_id: uuid.UUID, week_of: date, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """A consultant's week, for HR or their internal approver."""
+    return await timesheets.person_week(session, user, employee_id, week_of)
+
+
+@router.put("/people/{employee_id}/weeks/{week_of}")
+async def save_person_week(
+    employee_id: uuid.UUID, week_of: date, payload: WeekIn, user: CurrentUser, session: DbSession
+) -> dict[str, Any]:
+    """Fill in a consultant's week on their behalf while it is a draft or was sent back."""
+    return await timesheets.save_week(
+        session, user, week_of, payload.entries, employee_id=employee_id
+    )
+
+
+@router.post("/people/{employee_id}/weeks/{week_of}/submit")
+async def submit_person_week(
+    employee_id: uuid.UUID, week_of: date, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    return await timesheets.submit_week(
+        session, user, week_of, employee_id=employee_id, request=request
+    )
+
+
 @router.get("/pending")
-async def pending(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+async def pending(
+    user: CurrentUser, session: DbSession, consultant_only: bool = False
+) -> list[dict[str, Any]]:
     """Submitted weeks waiting for you: a chain step that is yours, older weeks from
-    your reporting line, or everyone's for HR."""
-    return await timesheets.pending_for_approver(session, user)
+    your reporting line, or everyone's for HR. `consultant_only` keeps consultant weeks."""
+    return await timesheets.pending_for_approver(session, user, consultant_only=consultant_only)
+
+
+@router.post("/{timesheet_id}/reopen")
+async def reopen(
+    timesheet_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+) -> dict[str, Any]:
+    """Take a decided consultant week back to draft (not once it is in a payout)."""
+    return await timesheets.reopen_week(session, user, timesheet_id, request=request)
 
 
 @router.post("/{timesheet_id}/decide")

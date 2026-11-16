@@ -24,13 +24,13 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import ApproverRoute, Employee, EmploymentStatus
 from app.models.org import LegalEntity
 from app.models.payroll_inputs import (
     AdjustmentCategory,
@@ -47,9 +47,10 @@ from app.models.timesheets import (
     TimesheetEntry,
     TimesheetStatus,
 )
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services import audit
 from app.services.approvals.email_actions import ApprovalRef
+from app.services.consultants import can_manage_consultant, is_consultant
 from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
@@ -66,11 +67,14 @@ __all__ = [
     "list_rates",
     "my_week",
     "pending_for_approver",
+    "person_week",
+    "reopen_week",
     "save_week",
     "send_timesheet_reminders",
     "submit_week",
     "update_project",
     "update_task",
+    "week_amount",
 ]
 
 #: A submitted week waiting longer than this is worth reminding its approver of.
@@ -529,8 +533,11 @@ async def _read(
     *,
     week_start: date,
     employee_id: uuid.UUID,
+    employee: Employee | None = None,
 ) -> dict[str, Any]:
     entries = await _entries(session, user, sheet) if sheet else []
+    if employee is None:
+        employee = await _employee(session, user, employee_id)
     task_names = (
         {
             t.id: t.name
@@ -568,13 +575,16 @@ async def _read(
         else {}
     )
     total = sum((Decimal(str(e.hours)) for e in entries), start=Decimal(0))
-    return {
+    consultant = employee is not None and is_consultant(employee)
+    out: dict[str, Any] = {
         "id": str(sheet.id) if sheet else None,
         "employee_id": str(employee_id),
         "week_start": week_start.isoformat(),
         "status": sheet.status.value if sheet else "draft",
         "decision_note": sheet.decision_note if sheet else None,
         "approval_chain": list(sheet.approval_chain or []) if sheet else [],
+        "consultant": consultant,
+        "approval_route": sheet.approval_route if sheet else None,
         "total_hours": str(total),
         "entries": [
             {
@@ -590,6 +600,57 @@ async def _read(
             for e in entries
         ],
     }
+    # What a week pays is for HR and the consultant's own approver only: nobody
+    # else, the consultant included, gets the key at all.
+    if (
+        consultant
+        and employee is not None
+        and employee.id != user.employee_id
+        and (permissions.is_hr(user) or employee.internal_approver_user_id == user.id)
+    ):
+        amount = await _price(session, user, employee_id, entries)
+        out["amount"] = str(amount) if amount is not None else None
+    return out
+
+
+async def _employee(session: AsyncSession, user: User, employee_id: uuid.UUID) -> Employee | None:
+    return await session.scalar(
+        tenant_scoped(select(Employee).where(Employee.id == employee_id), Employee, user)
+    )
+
+
+async def _price(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, entries: list[TimesheetEntry]
+) -> Decimal | None:
+    """The entries priced entry by entry at the rate in force that day; None if any day has none."""
+    total = Decimal(0)
+    for entry in entries:
+        rate = await _rate_on(session, user, employee_id, entry.work_date, entry.project_id)
+        if rate is None:
+            return None
+        total += Decimal(str(entry.hours)) * rate
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+async def week_amount(session: AsyncSession, user: User, sheet: Timesheet) -> Decimal | None:
+    """What the week pays (rate x hours, by day and project); None if any day has no rate."""
+    return await _price(session, user, sheet.employee_id, await _entries(session, user, sheet))
+
+
+async def _target_employee_id(
+    session: AsyncSession, user: User, employee_id: uuid.UUID | None
+) -> uuid.UUID:
+    """Whose week this is: the caller's own, or a consultant's the caller may fill for."""
+    if employee_id is None or employee_id == user.employee_id:
+        return permissions.own_employee_id(user)
+    employee = await _employee(session, user, employee_id)
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    if not await can_manage_consultant(session, user, employee):
+        raise permissions.forbidden(
+            "Only HR or their approver can fill in a consultant's timesheet."
+        )
+    return employee.id
 
 
 async def my_week(session: AsyncSession, user: User, week_of: date) -> dict[str, Any]:
@@ -599,11 +660,29 @@ async def my_week(session: AsyncSession, user: User, week_of: date) -> dict[str,
     return await _read(session, user, sheet, week_start=start, employee_id=user.employee_id)
 
 
-async def save_week(
-    session: AsyncSession, user: User, week_of: date, entries: list[EntryIn]
+async def person_week(
+    session: AsyncSession, user: User, employee_id: uuid.UUID, week_of: date
 ) -> dict[str, Any]:
-    """Replace the week's entries. Only a draft or rejected week changes."""
-    permissions.own_employee_id(user)
+    """A consultant's week, for HR or their internal approver (your own is `my_week`)."""
+    target = await _target_employee_id(session, user, employee_id)
+    start = _monday(week_of)
+    sheet = await _sheet(session, user, target, start)
+    return await _read(session, user, sheet, week_start=start, employee_id=target)
+
+
+async def save_week(
+    session: AsyncSession,
+    user: User,
+    week_of: date,
+    entries: list[EntryIn],
+    *,
+    employee_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Replace the week's entries. Only a draft or rejected week changes.
+
+    HR, or a consultant's internal approver, can fill it in for that consultant.
+    """
+    target = await _target_employee_id(session, user, employee_id)
     start = _monday(week_of)
     end = start + timedelta(days=6)
     for entry in entries:
@@ -646,9 +725,9 @@ async def save_week(
                 "into tasks."
             )
 
-    sheet = await _sheet(session, user, user.employee_id, start)
+    sheet = await _sheet(session, user, target, start)
     if sheet is None:
-        sheet = Timesheet(tenant_id=user.tenant_id, employee_id=user.employee_id, week_start=start)
+        sheet = Timesheet(tenant_id=user.tenant_id, employee_id=target, week_start=start)
         session.add(sheet)
         await session.flush()
     elif sheet.status not in (TimesheetStatus.DRAFT, TimesheetStatus.REJECTED):
@@ -671,16 +750,52 @@ async def save_week(
             )
         )
     sheet.status = TimesheetStatus.DRAFT
+    if target != user.employee_id:
+        await audit.record(
+            session,
+            tenant_id=user.tenant_id,
+            action=AuditAction.UPDATE,
+            entity_type="timesheet",
+            entity_id=sheet.id,
+            actor=user,
+            changes={"entries": len(entries), "on_behalf_of": str(target)},
+            summary=f"Filled in the timesheet for the week of {start} on their behalf",
+        )
     await session.commit()
-    return await _read(session, user, sheet, week_start=start, employee_id=user.employee_id)
+    return await _read(session, user, sheet, week_start=start, employee_id=target)
+
+
+async def _hr_user_ids(
+    session: AsyncSession, user: User, *, not_employee_id: uuid.UUID
+) -> list[uuid.UUID]:
+    return list(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.id).where(
+                        User.role.in_([UserRole.ADMIN, UserRole.SUB_ADMIN]),
+                        User.is_active.is_(True),
+                        or_(User.employee_id.is_(None), User.employee_id != not_employee_id),
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
 
 
 async def submit_week(
-    session: AsyncSession, user: User, week_of: date, *, request: Request | None = None
+    session: AsyncSession,
+    user: User,
+    week_of: date,
+    *,
+    employee_id: uuid.UUID | None = None,
+    request: Request | None = None,
 ) -> dict[str, Any]:
-    permissions.own_employee_id(user)
+    target = await _target_employee_id(session, user, employee_id)
     start = _monday(week_of)
-    sheet = await _sheet(session, user, user.employee_id, start)
+    sheet = await _sheet(session, user, target, start)
     if sheet is None or not await _entries(session, user, sheet):
         raise _unprocessable("Add some hours before submitting the week.")
     if sheet.status not in (TimesheetStatus.DRAFT, TimesheetStatus.REJECTED):
@@ -688,13 +803,18 @@ async def submit_week(
     from app.models.approval_rules import ApprovalProcess
     from app.services.approvals import rules
 
-    employee = await session.scalar(
-        tenant_scoped(select(Employee).where(Employee.id == user.employee_id), Employee, user)
-    )
+    employee = await _employee(session, user, target)
+    consultant = employee is not None and is_consultant(employee)
     sheet.status = TimesheetStatus.SUBMITTED
     sheet.submitted_at = datetime.now(UTC)
     sheet.decision_note = None
-    if employee is not None:
+    if consultant:
+        # A consultant week skips the general approval rules; its route decides.
+        route = employee.timesheet_approver_route or ApproverRoute.INTERNAL
+        sheet.approval_route = route.value
+        sheet.approval_chain = []
+    elif employee is not None:
+        sheet.approval_route = None
         sheet.approval_chain = await rules.attach(
             session,
             user,
@@ -705,9 +825,18 @@ async def submit_week(
                 location_id=employee.location_id,
             ),
         )
-    approvers = [
-        uid for uid in await _approvers(session, user, user.employee_id, sheet) if uid != user.id
-    ]
+    if consultant:
+        if route is ApproverRoute.INTERNAL:
+            approvers = (
+                [employee.internal_approver_user_id]
+                if employee.internal_approver_user_id
+                else await _hr_user_ids(session, user, not_employee_id=target)
+            )
+        else:
+            approvers = []  # the customer is asked by email (a later step), not notified here
+    else:
+        approvers = await _approvers(session, user, target, sheet)
+    approvers = [uid for uid in approvers if uid != user.id]
     if approvers:
         hours = sum(
             (Decimal(str(e.hours)) for e in await _entries(session, user, sheet)), Decimal(0)
@@ -738,12 +867,17 @@ async def submit_week(
         request=request,
     )
     await session.commit()
-    return await _read(session, user, sheet, week_start=start, employee_id=user.employee_id)
+    return await _read(session, user, sheet, week_start=start, employee_id=target)
 
 
-async def pending_for_approver(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+async def pending_for_approver(
+    session: AsyncSession, user: User, *, consultant_only: bool = False
+) -> list[dict[str, Any]]:
     """Weeks waiting on the caller: the chain's current step is theirs (or someone
-    they stand in for); older weeks from their reporting line; everything for HR."""
+    they stand in for); older weeks from their reporting line; everything for HR.
+
+    A consultant's week is seen only by HR and that consultant's internal approver.
+    """
     from app.services.approvals import rules
 
     stmt = (
@@ -756,19 +890,30 @@ async def pending_for_approver(session: AsyncSession, user: User) -> list[dict[s
     rows = (
         await session.execute(tenant_scoped(stmt.order_by(Timesheet.week_start), Timesheet, user))
     ).all()
+    if consultant_only:
+        rows = [(sheet, employee) for sheet, employee in rows if is_consultant(employee)]
     if not permissions.is_hr(user):
         line = set(await permissions.reporting_line(session, user))
         acting = {str(a) for a in await rules.acting_for(session, user)}
         rows = [
             (sheet, employee)
             for sheet, employee in rows
-            if (sheet.approval_chain and rules.waiting_on(sheet.approval_chain, acting))
-            or (not sheet.approval_chain and sheet.employee_id in line)
+            if (
+                employee.internal_approver_user_id == user.id
+                if is_consultant(employee)
+                else (sheet.approval_chain and rules.waiting_on(sheet.approval_chain, acting))
+                or (not sheet.approval_chain and sheet.employee_id in line)
+            )
         ]
     out = []
     for sheet, employee in rows:
         read = await _read(
-            session, user, sheet, week_start=sheet.week_start, employee_id=employee.id
+            session,
+            user,
+            sheet,
+            week_start=sheet.week_start,
+            employee_id=employee.id,
+            employee=employee,
         )
         out.append(
             {
@@ -844,8 +989,13 @@ async def decide(
 
     if sheet.employee_id == user.employee_id:
         raise permissions.forbidden("Somebody else approves your timesheet.")
-    chain = list(sheet.approval_chain or [])
-    if not chain and not (
+    person = await _employee(session, user, sheet.employee_id)
+    consultant = person is not None and is_consultant(person)
+    chain = [] if consultant else list(sheet.approval_chain or [])
+    if consultant:
+        if not await can_manage_consultant(session, user, person):
+            raise permissions.forbidden("Only HR or their approver decides this timesheet.")
+    elif not chain and not (
         permissions.is_hr(user)
         or await permissions.is_line_manager_of(session, user, sheet.employee_id)
     ):
@@ -910,20 +1060,11 @@ async def decide(
     sheet.decision_note = clean
 
     pay_note = None
-    if approve:
+    # A consultant's week is paid by a consultant payout run, never payroll.
+    if approve and not consultant:
         entries = await _entries(session, user, sheet)
-        total = Decimal(0)
-        priced = True
-        for entry in entries:
-            rate = await _rate_on(
-                session, user, sheet.employee_id, entry.work_date, entry.project_id
-            )
-            if rate is None:
-                priced = False
-                break
-            total += Decimal(str(entry.hours)) * rate
-        if priced and total > 0:
-            amount = total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        amount = await _price(session, user, sheet.employee_id, entries)
+        if amount is not None and amount > 0:
             week_end = sheet.week_start + timedelta(days=6)
             adjustment = PayrollAdjustment(
                 tenant_id=user.tenant_id,
@@ -993,6 +1134,69 @@ async def decide(
         session, user, sheet, week_start=sheet.week_start, employee_id=sheet.employee_id
     )
     return {**read, "pay": pay_note}
+
+
+async def _in_payout_run(session: AsyncSession, user: User, sheet: Timesheet) -> bool:
+    """Whether the week is already in a consultant payout run (checked once payouts exist)."""
+    return False
+
+
+async def reopen_week(
+    session: AsyncSession,
+    user: User,
+    timesheet_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    """Take a decided consultant week back to draft so it can be fixed and sent again."""
+    sheet = await session.scalar(
+        tenant_scoped(select(Timesheet).where(Timesheet.id == timesheet_id), Timesheet, user)
+    )
+    if sheet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
+    person = await _employee(session, user, sheet.employee_id)
+    if person is None or not is_consultant(person):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a consultant's week can be reopened.",
+        )
+    if not await can_manage_consultant(session, user, person):
+        raise permissions.forbidden("Only HR or their approver can reopen this timesheet.")
+    if sheet.status not in (TimesheetStatus.APPROVED, TimesheetStatus.REJECTED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Only a decided week can be reopened."
+        )
+    if await _in_payout_run(session, user, sheet):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This week is already in a consultant payout.",
+        )
+    before = sheet.status.value
+    sheet.status = TimesheetStatus.DRAFT
+    sheet.decided_by_user_id = None
+    sheet.decided_at = None
+    sheet.decision_note = None
+    sheet.approval_proof = None
+    await audit.record(
+        session,
+        tenant_id=user.tenant_id,
+        action=AuditAction.UPDATE,
+        entity_type="timesheet",
+        entity_id=sheet.id,
+        actor=user,
+        changes={"status": {"from": before, "to": "draft"}},
+        summary=f"Reopened the timesheet for the week of {sheet.week_start}",
+        request=request,
+    )
+    await session.commit()
+    return await _read(
+        session,
+        user,
+        sheet,
+        week_start=sheet.week_start,
+        employee_id=sheet.employee_id,
+        employee=person,
+    )
 
 
 # ── Rates ───────────────────────────────────────────────────────────────────

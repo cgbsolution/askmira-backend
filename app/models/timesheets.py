@@ -136,6 +136,11 @@ class Timesheet(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ),
         nullable=True,
     )
+    #: A consultant's week: "customer" or "internal", set when it is submitted.
+    approval_route: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Where a consultant week's decision came from (the customer's details, or a
+    #: note and attachment recorded by the internal approver).
+    approval_proof: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class TimesheetEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
