@@ -227,6 +227,9 @@ class EmployeeRead(EmployeeBase):
     work_email: str
     personal_email: str | None = None
     customer_contact_email: str | None = None
+    #: Legacy, read-only: the old fixed monthly GST figure, shown to HR as a hint.
+    #: Never accepted on create or update.
+    gst_amount: Decimal | None = None
 
     id: uuid.UUID
     tenant_id: uuid.UUID

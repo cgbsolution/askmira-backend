@@ -134,6 +134,7 @@ async def test_legacy_gst_consultant_can_be_edited_without_gstin(session, tenant
         work_email="l1@acme.example.com",
         employment_type=EmploymentType.CONSULTANT,
         gst_applicable=True,
+        gst_amount=Decimal("1800"),
     )
     session.add(legacy)
     await session.commit()
@@ -143,6 +144,11 @@ async def test_legacy_gst_consultant_can_be_edited_without_gstin(session, tenant
     )
     assert edited.phone == "9999999999"
     assert edited.gst_rate is None and edited.gstin is None
+    # The old fixed GST figure is kept read-only: HR sees it, nobody can set it.
+    assert edited.gst_amount == Decimal("1800")
+    assert "gst_amount" not in EmployeeUpdate.model_fields
+    seen_by_hr = await employee_service.employee_view(session, caller, legacy)
+    assert seen_by_hr.gst_amount == Decimal("1800")
 
     with pytest.raises(HTTPException) as refused:
         await employee_service.update_employee(
@@ -218,3 +224,4 @@ async def test_only_hr_sees_the_consultant_fields(session, tenant, hr_user) -> N
         session, await as_caller(session, manager), created
     )
     assert all(getattr(seen_by_manager, key) is None for key in NINE)
+    assert seen_by_manager.gst_amount is None

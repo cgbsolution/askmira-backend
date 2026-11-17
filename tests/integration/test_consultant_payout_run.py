@@ -729,8 +729,19 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     from app.services.consultants import attention
 
     await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1")
+    person = await _consultant(session, tenant, legal_entity, "CON1", gst_amount=Decimal("1800"))
     await _consultant(session, tenant, legal_entity, "CON2", internal_approver_user_id=hr_user.id)
+    # A record from before payouts: GST applies, the old fixed amount, no rate yet.
+    await _consultant(
+        session,
+        tenant,
+        legal_entity,
+        "CON4",
+        internal_approver_user_id=hr_user.id,
+        gst_applicable=True,
+        gstin="29ABCDE1234F1Z5",
+        gst_amount=Decimal("1800"),
+    )
     unrated = await _consultant(session, tenant, legal_entity, "CON3")
     rates = await session.scalars(select(HourlyRate).where(HourlyRate.employee_id == unrated.id))
     for rate in rates.all():
@@ -769,7 +780,10 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
 
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
     assert listed["CON1"]["reasons"] == ["Has a current salary", "No timesheet approver"]
-    assert "old_gst_amount" not in listed["CON1"]
+    # The old figure is a hint only while GST applies and no rate is set.
+    assert listed["CON1"]["old_gst_amount"] is None
+    assert listed["CON4"]["reasons"] == ["No GST rate"]
+    assert listed["CON4"]["old_gst_amount"] == "1800.00"
     assert "No hourly rate" in listed["CON3"]["reasons"]
     assert "CON2" not in listed
     pending = await attention.pending_adjustments(session, hr_user)

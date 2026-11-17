@@ -413,6 +413,7 @@ TABLES: dict[str, TableClassification] = {
             "pf_number": "statutory_identifier",
             "bank_account_number": "financial",
             "bank_ifsc": "financial",
+            "gst_amount": "financial",
         },
     ),
     "employee_work_locations": _p(EMP, "attendance"),

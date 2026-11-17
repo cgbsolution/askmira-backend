@@ -145,6 +145,10 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     gst_applicable: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
     )
+    #: Legacy, read-only: the fixed monthly GST typed on a consultant's record
+    #: before payouts worked GST out per line. Shown to HR as a hint while they
+    #: set the GST rate; dropped in a later release.
+    gst_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
 
     # ── Consultant payouts (set only for a consultant) ──────────────────────
     #: The TDS section their fee is deducted under; 194J (professional) if unset.

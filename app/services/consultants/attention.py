@@ -35,6 +35,7 @@ __all__ = ["attention_list", "end_salaries", "pending_adjustments", "set_opening
 HAS_SALARY = "Has a current salary"
 NO_RATE = "No hourly rate"
 NO_APPROVER = "No timesheet approver"
+NO_GST_RATE = "No GST rate"
 
 _HR_ONLY = "Consultant payouts are run by HR."
 
@@ -102,6 +103,11 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
                 reasons.append(NO_APPROVER)
         elif person.internal_approver_user_id is None:
             reasons.append(NO_APPROVER)
+        # Records from before payouts may charge GST with no rate yet; the old
+        # fixed monthly figure is shown as a guide until HR sets one.
+        no_gst_rate = person.gst_applicable and person.gst_rate is None
+        if no_gst_rate:
+            reasons.append(NO_GST_RATE)
         if reasons:
             out.append(
                 {
@@ -109,6 +115,11 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
                     "code": person.employee_code,
                     "name": person.full_name,
                     "reasons": reasons,
+                    "old_gst_amount": (
+                        _text(person.gst_amount)
+                        if no_gst_rate and person.gst_amount is not None
+                        else None
+                    ),
                 }
             )
     return out
