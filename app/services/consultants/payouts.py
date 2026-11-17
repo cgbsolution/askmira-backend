@@ -151,6 +151,12 @@ async def eligible_entries(
 # ── Pricing ─────────────────────────────────────────────────────────────────
 
 
+def by_the_day(entry: ConsultantHoursEntry) -> bool:
+    """Whether the hours were given day by day. A grid of day statuses with no hours
+    (Week-offs marked, the total typed) is a total-only entry."""
+    return any(Decimal(str(day.get("hours") or 0)) > 0 for day in entry.days or [])
+
+
 def rate_changed(period: str) -> str:
     """Why a total-only entry is held: the rate moved inside its period."""
     return f"The hourly rate changed during {period}. Enter the hours day by day."
@@ -173,7 +179,7 @@ async def _price_entry(
     """The entry at the rate in force: day by day when the days were given, else
     the total at the rate on the last day, provided that rate held all period."""
     priced = _PricedEntry()
-    if entry.days:
+    if by_the_day(entry):
         for day in entry.days:
             hours = Decimal(str(day["hours"]))
             if hours <= 0:
@@ -1216,6 +1222,40 @@ async def my_payouts(session: AsyncSession, user: User) -> list[dict[str, Any]]:
     ]
 
 
+def _split_by_working_days(
+    entry: ConsultantHoursEntry, amount: Decimal
+) -> list[tuple[date, Decimal]]:
+    """A total-only entry's fee spread over the months it covers.
+
+    By working days: days not marked Week-off (a day with no status counts as worked),
+    or by calendar days when no statuses were given. Each month gets its share, and
+    the last month what is left, so the shares add up to the fee exactly.
+    """
+    span = [
+        entry.period_start + timedelta(days=offset)
+        for offset in range((entry.period_end - entry.period_start).days + 1)
+    ]
+    week_off = {
+        date.fromisoformat(day["date"])
+        for day in entry.days or []
+        if day.get("status") == "week_off"
+    }
+    worked = [day for day in span if day not in week_off] or span
+    months: dict[tuple[int, int], int] = {}
+    for day in worked:
+        months[(day.year, day.month)] = months.get((day.year, day.month), 0) + 1
+    shares: list[tuple[date, Decimal]] = []
+    left = amount
+    keys = sorted(months)
+    for index, (year, month) in enumerate(keys):
+        share = (
+            left if index == len(keys) - 1 else _money(amount * months[(year, month)] / len(worked))
+        )
+        left -= share
+        shares.append((date(year, month, 1), share))
+    return shares
+
+
 async def consultant_cost_by_month(
     session: AsyncSession, user: User, *, start: date, end: date
 ) -> dict[tuple[uuid.UUID, int, int], Decimal]:
@@ -1223,11 +1263,16 @@ async def consultant_cost_by_month(
 
     Taken from the priced hours entries in approved or paid payout runs, left-out
     lines excluded: the fee before GST, which a company claims back. Day-by-day
-    hours cost the month of each day; nothing lands in the month paid.
+    hours cost the month of each day; a total-only entry crossing a month end is
+    split by working days (`_split_by_working_days`). Nothing lands in the month paid.
     """
     rows = await session.execute(
         tenant_scoped(
-            select(ConsultantPayoutLine.employee_id, ConsultantPayoutEntry.breakdown)
+            select(
+                ConsultantPayoutLine.employee_id,
+                ConsultantPayoutEntry.breakdown,
+                ConsultantHoursEntry,
+            )
             .join(ConsultantPayoutLine, ConsultantPayoutLine.id == ConsultantPayoutEntry.line_id)
             .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutEntry.run_id)
             .join(ConsultantHoursEntry, ConsultantHoursEntry.id == ConsultantPayoutEntry.entry_id)
@@ -1242,12 +1287,19 @@ async def consultant_cost_by_month(
         )
     )
     costs: dict[tuple[uuid.UUID, int, int], Decimal] = {}
-    for employee_id, breakdown in rows:
-        for day in breakdown or []:
-            # A total-only entry counts in the month of its last day for now.
-            worked = date.fromisoformat(day.get("date") or day["period_end"])
-            if not start <= worked <= end:
-                continue
-            key = (employee_id, worked.year, worked.month)
-            costs[key] = costs.get(key, Decimal(0)) + _money(day["amount"])
+    first, last = (start.year, start.month), (end.year, end.month)
+    for employee_id, breakdown, entry in rows:
+        for item in breakdown or []:
+            if "date" in item:
+                worked = date.fromisoformat(item["date"])
+                shares = [(worked, _money(item["amount"]))] if start <= worked <= end else []
+            else:
+                shares = [
+                    (month, share)
+                    for month, share in _split_by_working_days(entry, _money(item["amount"]))
+                    if first <= (month.year, month.month) <= last
+                ]
+            for worked, amount in shares:
+                key = (employee_id, worked.year, worked.month)
+                costs[key] = costs.get(key, Decimal(0)) + amount
     return costs

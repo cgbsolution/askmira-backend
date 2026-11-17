@@ -212,9 +212,11 @@ async def test_internal_route_without_an_approver_tells_hr(
     assert list(told) == [hr_user.id]
 
 
-async def test_customer_route_only_records_the_route(
+async def test_a_legacy_customer_route_week_is_decided_here(
     session, tenant, hr_user, legal_entity
 ) -> None:
+    """Customer approval by email is no longer used: an older record still set to the
+    customer route has its week waiting on HR here, and no email goes out."""
     consultant, consultant_login = await _consultant(
         session,
         tenant,
@@ -227,7 +229,9 @@ async def test_customer_route_only_records_the_route(
     await timesheets.save_week(session, consultant_login, MONDAY, _hours((7, "8")))
     submitted = await timesheets.submit_week(session, consultant_login, MONDAY)
     assert submitted["status"] == "submitted"
-    assert submitted["approval_route"] == "customer"
+    assert submitted["approval_route"] == "internal"
+    pending = await timesheets.pending_for_approver(session, hr_user, consultant_only=True)
+    assert [row["id"] for row in pending] == [submitted["id"]]
 
 
 async def test_hourly_employee_unchanged(session, tenant, hr_user, legal_entity) -> None:

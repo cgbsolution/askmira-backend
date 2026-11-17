@@ -19,6 +19,7 @@ from app.models.payroll import PayrollRun, PayrollRunStatus, PayrollRunType, Pay
 from app.models.user import User, UserRole
 from app.services.consultants import hours
 from tests.integration.conftest import as_caller, requires_db
+from tests.integration.platform_support import client  # noqa: F401  (fixture)
 
 pytestmark = requires_db
 
@@ -544,3 +545,121 @@ async def test_people_without_a_right_to_the_hours_see_nothing(session, tenant, 
         with pytest.raises(HTTPException) as no_decide:
             await hours.decide_entry(session, who, entry_id, approve=True, note=None)
         assert no_decide.value.status_code == 404
+
+
+# ── Status grid, the missing-month check, the customer route retired ────────
+
+
+async def test_a_status_grid_with_a_typed_total_is_a_total_only_entry(session, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    days = [
+        {
+            "date": date(2026, 10, 1) + timedelta(days=i),
+            "hours": "0",
+            "status": "week_off"
+            if (date(2026, 10, 1) + timedelta(days=i)).weekday() >= 5
+            else "present",
+        }
+        for i in range(31)
+    ]
+    made = await hours.create_entry(session, a, _body(person, days=days))
+    assert made["total_billable_hours"] == "170.00"
+    assert len(made["days"]) == 31
+
+
+async def test_attention_flags_missing_last_month(session, tenant, hr_user, legal_entity):
+    from app.models.employee import ApproverRoute, EmploymentStatus
+    from app.services.attendance.service import local_today
+    from app.services.consultants import attention
+
+    today = await local_today(session, hr_user)
+    first_this_month = today.replace(day=1)
+    last_month_end = first_this_month - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+    expected = f"No hours entered for {last_month_start:%b %Y}"
+
+    def person(code: str, **extra) -> Employee:
+        return Employee(
+            tenant_id=tenant.id,
+            employee_code=code,
+            first_name=code.title(),
+            work_email=f"{code.lower()}@acme-demo.com",
+            legal_entity_id=legal_entity.id,
+            status=EmploymentStatus.ACTIVE,
+            employment_type=EmploymentType.CONSULTANT,
+            timesheet_approver_route=ApproverRoute.INTERNAL,
+            internal_approver_user_id=hr_user.id,
+            **extra,
+        )
+
+    nothing = person("CONA")
+    rejected = person("CONB")
+    covered = person("CONC")
+    joined_now = person("COND", date_of_joining=first_this_month)
+    left_before = person("CONE", date_of_exit=last_month_start - timedelta(days=1))
+    session.add_all([nothing, rejected, covered, joined_now, left_before])
+    await session.flush()
+    session.add(
+        _entry(tenant, rejected, last_month_start, last_month_end, status=HoursEntryStatus.REJECTED)
+    )
+    # A draft touching just the last day of the month counts as entered.
+    session.add(_entry(tenant, covered, last_month_end, last_month_end + timedelta(days=3)))
+    await session.commit()
+
+    listed = {
+        row["code"]: row["reasons"] for row in await attention.attention_list(session, hr_user)
+    }
+    assert expected in listed["CONA"]
+    assert expected in listed["CONB"]
+    assert expected not in listed.get("CONC", [])
+    assert expected not in listed.get("COND", [])
+    assert expected not in listed.get("CONE", [])
+
+
+async def test_customer_route_refused_on_record(session, tenant, hr_user, employee):
+    from pydantic import ValidationError
+
+    from app.models.employee import ApproverRoute
+    from app.schemas.employee import EmployeeCreate, EmployeeUpdate
+
+    message = "Customer approval by email is no longer used."
+    with pytest.raises(ValidationError) as on_create:
+        EmployeeCreate(
+            employee_code="CONX",
+            first_name="Pat",
+            work_email="pat.conx@acme.example.com",
+            employment_type=EmploymentType.CONSULTANT,
+            timesheet_approver_route=ApproverRoute.CUSTOMER,
+            customer_contact_name="Asha",
+            customer_contact_email="asha@client.example.com",
+        )
+    assert message in str(on_create.value)
+    with pytest.raises(ValidationError) as on_update:
+        EmployeeUpdate(timesheet_approver_route=ApproverRoute.CUSTOMER)
+    assert message in str(on_update.value)
+    # The internal route is still fine.
+    assert EmployeeUpdate(timesheet_approver_route=ApproverRoute.INTERNAL)
+
+
+async def test_customer_route_refused_over_http(client, session, tenant, hr_user, employee):  # noqa: F811
+    from tests.integration.platform_support import bearer
+
+    await _consultant(session, employee)
+    refused = await client.patch(
+        f"/api/v1/employees/{employee.id}",
+        json={"timesheet_approver_route": "customer"},
+        headers=bearer(hr_user),
+    )
+    assert refused.status_code == 422
+    assert "Customer approval by email is no longer used." in refused.text
+
+
+async def test_public_timesheet_routes_are_gone(client):  # noqa: F811
+    from app.main import app
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert not any(path.startswith("/api/v1/public/timesheets") for path in paths)
+    assert (await client.get("/api/v1/public/timesheets/x")).status_code == 404
+    gone = await client.post("/api/v1/public/timesheets/x/decision", json={"approve": True})
+    assert gone.status_code == 404

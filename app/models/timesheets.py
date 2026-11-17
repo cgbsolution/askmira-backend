@@ -173,7 +173,11 @@ class TimesheetEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
 
 
 class TimesheetApprovalLink(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """A single-use link that lets a customer approve or reject one consultant week.
+    """A single-use link that let a customer approve or reject one consultant week.
+
+    No longer used: customer approval by email was taken out of use, and nothing
+    issues or reads these rows. The table is kept, empty, to be dropped in a later
+    clean-up.
 
     Only a SHA-256 of the token is stored, so a leaked database holds nothing
     that decides a week. `contents_hash` fingerprints the hours the customer

@@ -1,7 +1,8 @@
 """Consultants who need HR's attention when payouts start, and their opening TDS figures.
 
 On release, a consultant who still has a salary, has no hourly rate or has no
-timesheet approver is listed so HR can fix them. Salaries are ended from the
+timesheet approver is listed so HR can fix them, and so is one with no hours
+entered for last month, so finance notices a missing timesheet. Salaries are ended from the
 list. A consultant timesheet adjustment still pending in payroll is listed too,
 so HR can cancel it or let it through once and nothing is paid twice.
 """
@@ -9,7 +10,7 @@ so HR can cancel it or let it through once and nothing is paid twice.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.consultant_hours import ConsultantHoursEntry, HoursEntryStatus
 from app.models.consultant_payouts import (
     ConsultantPayoutLine,
     ConsultantPayoutRun,
@@ -27,7 +29,7 @@ from app.models.consultant_payouts import (
     PayoutRunStatus,
 )
 from app.models.contractors import TdsSection
-from app.models.employee import ApproverRoute, Employee, EmploymentStatus, EmploymentType
+from app.models.employee import Employee, EmploymentStatus, EmploymentType
 from app.models.payroll import EmployeeSalary
 from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import HourlyRate
@@ -47,6 +49,46 @@ _HR_ONLY = "Consultant payouts are run by HR."
 
 def _text(value: Any) -> str:
     return str(Decimal(str(value)).quantize(Decimal("0.01")))
+
+
+def no_hours_for(month_start: date) -> str:
+    return f"No hours entered for {month_start:%b %Y}"
+
+
+async def _without_hours_last_month(
+    session: AsyncSession, user: User, people: list[Employee]
+) -> tuple[set[uuid.UUID], date]:
+    """Consultants working last month (in the workspace's time zone) with no entry
+    that is not rejected covering any day of it; and the month's first day."""
+    from app.services.attendance.service import local_today
+
+    end = (await local_today(session, user)).replace(day=1) - timedelta(days=1)
+    start = end.replace(day=1)
+    working = [
+        person
+        for person in people
+        if (person.date_of_joining is None or person.date_of_joining <= end)
+        and (person.date_of_exit is None or person.date_of_exit >= start)
+    ]
+    if not working:
+        return set(), start
+    entered = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(ConsultantHoursEntry.employee_id).where(
+                        ConsultantHoursEntry.employee_id.in_([p.id for p in working]),
+                        ConsultantHoursEntry.status != HoursEntryStatus.REJECTED,
+                        ConsultantHoursEntry.period_start <= end,
+                        ConsultantHoursEntry.period_end >= start,
+                    ),
+                    ConsultantHoursEntry,
+                    user,
+                )
+            )
+        ).all()
+    )
+    return {p.id for p in working if p.id not in entered}, start
 
 
 def _current_salary():
@@ -97,6 +139,7 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
         ).all()
     )
     owed = await _tds_left_owing(session, user, people)
+    missing, last_month = await _without_hours_last_month(session, user, list(people))
     out: list[dict[str, Any]] = []
     for person in people:
         reasons: list[str] = []
@@ -104,10 +147,7 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
             reasons.append(HAS_SALARY)
         if person.id not in rated:
             reasons.append(NO_RATE)
-        if (person.timesheet_approver_route or ApproverRoute.INTERNAL) is ApproverRoute.CUSTOMER:
-            if not (person.customer_contact_email or "").strip():
-                reasons.append(NO_APPROVER)
-        elif person.internal_approver_user_id is None:
+        if person.internal_approver_user_id is None:
             reasons.append(NO_APPROVER)
         # Records from before payouts may charge GST with no rate yet; the old
         # fixed monthly figure is shown as a guide until HR sets one.
@@ -116,6 +156,8 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
             reasons.append(NO_GST_RATE)
         if person.id in owed:
             reasons.append(owed[person.id])
+        if person.id in missing:
+            reasons.append(no_hours_for(last_month))
         if reasons:
             out.append(
                 {

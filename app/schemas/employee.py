@@ -7,12 +7,22 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.contractors import ContractorKind, TdsSection
 from app.models.employee import ApproverRoute, EmploymentStatus, EmploymentType, Gender
 
 DEFAULT_GST_RATE = Decimal("18")
+
+#: Customer approval of consultant weeks by email was taken out of use: finance enters
+#: consultant hours with the customer's sheet attached instead.
+CUSTOMER_ROUTE_RETIRED = "Customer approval by email is no longer used."
+
+
+def _refuse_customer_route(route: ApproverRoute | None) -> ApproverRoute | None:
+    if route is ApproverRoute.CUSTOMER:
+        raise ValueError(CUSTOMER_ROUTE_RETIRED)
+    return route
 
 
 def consultant_billing_problem(
@@ -118,6 +128,8 @@ class EmployeeCreate(EmployeeBase):
     status: EmploymentStatus = EmploymentStatus.ACTIVE
     custom_fields: dict[str, Any] = Field(default_factory=dict)
 
+    _no_customer_route = field_validator("timesheet_approver_route")(_refuse_customer_route)
+
     @model_validator(mode="after")
     def _dates_in_order(self) -> EmployeeCreate:
         if (
@@ -198,6 +210,8 @@ class EmployeeUpdate(BaseModel):
     internal_approver_user_id: uuid.UUID | None = None
 
     custom_fields: dict[str, Any] | None = None
+
+    _no_customer_route = field_validator("timesheet_approver_route")(_refuse_customer_route)
 
 
 class EmployeeSelfUpdate(BaseModel):

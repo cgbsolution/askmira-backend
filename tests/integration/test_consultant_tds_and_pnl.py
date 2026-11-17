@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -469,3 +469,118 @@ async def test_pnl_leaves_out_excluded_lines_and_adds_payslip_and_fee(
         )
         == {}
     )
+
+
+async def _paid_in_a_run(session, tenant, hr_user, *, cut_off: date, pay_date: date) -> None:
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=cut_off, pay_date=pay_date
+    )
+    assert all(not line["excluded"] for line in run["lines"]), run["lines"]
+    checker = await _second_hr(session, tenant)
+    await payouts.approve_run(session, checker, uuid.UUID(run["id"]), confirm=_confirmed)
+
+
+def _days(start: date, end: date, week_off: set[date]) -> list[dict]:
+    """A grid of day statuses with no hours: Week-offs marked, the total typed."""
+    out = []
+    day = start
+    while day <= end:
+        status = "week_off" if day in week_off else "present"
+        out.append({"date": day.isoformat(), "hours": 0, "status": status})
+        day += timedelta(days=1)
+    return out
+
+
+async def test_pnl_month_crossing_total_entry_splits_by_working_days(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    # 80 hours over 25 Oct to 7 Nov at 1,200 (96,000), Saturdays and Sundays marked
+    # Week-off: five working days each side of the month end.
+    fortnight = await _consultant(session, tenant, legal_entity, "CON1")
+    weekend = {date(2026, 10, 25), date(2026, 10, 31), date(2026, 11, 1), date(2026, 11, 7)}
+    entry = await _hours(
+        session,
+        tenant,
+        fortnight,
+        monday=date(2026, 10, 25),
+        period_end=date(2026, 11, 7),
+        total="80",
+    )
+    entry.days = _days(date(2026, 10, 25), date(2026, 11, 7), weekend)
+    # 35 hours over Thursday 29 Oct to Wednesday 4 Nov (42,000), the weekend off:
+    # two working days in October, three in November.
+    short = await _consultant(session, tenant, legal_entity, "CON2")
+    other = await _hours(
+        session,
+        tenant,
+        short,
+        monday=date(2026, 10, 29),
+        period_end=date(2026, 11, 4),
+        total="35",
+    )
+    other.days = _days(
+        date(2026, 10, 29), date(2026, 11, 4), {date(2026, 10, 31), date(2026, 11, 1)}
+    )
+    # The same, no statuses given: by calendar days, three in October and four in November.
+    plain = await _consultant(session, tenant, legal_entity, "CON3")
+    await _hours(
+        session,
+        tenant,
+        plain,
+        monday=date(2026, 10, 29),
+        period_end=date(2026, 11, 4),
+        total="35",
+    )
+    await session.commit()
+    await _paid_in_a_run(
+        session, tenant, hr_user, cut_off=date(2026, 11, 7), pay_date=date(2026, 11, 15)
+    )
+
+    costs = await payouts.consultant_cost_by_month(
+        session, hr_user, start=date(2026, 10, 1), end=date(2026, 11, 30)
+    )
+    assert costs == {
+        (fortnight.id, 2026, 10): Decimal("48000.00"),
+        (fortnight.id, 2026, 11): Decimal("48000.00"),
+        (short.id, 2026, 10): Decimal("16800.00"),
+        (short.id, 2026, 11): Decimal("25200.00"),
+        (plain.id, 2026, 10): Decimal("18000.00"),
+        (plain.id, 2026, 11): Decimal("24000.00"),
+    }
+    october = await payouts.consultant_cost_by_month(
+        session, hr_user, start=date(2026, 10, 1), end=date(2026, 10, 31)
+    )
+    assert october[(short.id, 2026, 10)] == Decimal("16800.00")
+    assert (short.id, 2026, 11) not in october
+
+
+async def test_pnl_day_grid_by_day(session, tenant, hr_user, legal_entity) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    # 29 Oct to 2 Nov, 6 hours a day at 1,200 (a holiday among them still carries hours):
+    # three days in October, two in November, each costed on its own day.
+    entry = await _hours(
+        session,
+        tenant,
+        person,
+        monday=date(2026, 10, 29),
+        period_end=date(2026, 11, 2),
+        hours_per_day="6",
+        days=5,
+    )
+    grid = list(entry.days)
+    grid[2] = {**grid[2], "status": "holiday"}
+    entry.days = grid
+    await session.commit()
+    await _paid_in_a_run(
+        session, tenant, hr_user, cut_off=date(2026, 11, 2), pay_date=date(2026, 11, 10)
+    )
+
+    costs = await payouts.consultant_cost_by_month(
+        session, hr_user, start=date(2026, 10, 1), end=date(2026, 11, 30)
+    )
+    assert costs == {
+        (person.id, 2026, 10): Decimal("21600.00"),
+        (person.id, 2026, 11): Decimal("14400.00"),
+    }

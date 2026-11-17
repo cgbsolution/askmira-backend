@@ -429,6 +429,10 @@ def _figures(data: HoursIn) -> tuple[Decimal, list[dict[str, Any]] | None]:
             for d in sorted(data.days, key=lambda d: d.date)
         ]
         summed = sum((d.hours for d in data.days), Decimal(0))
+        if summed == 0 and total is not None:
+            # Only the days' statuses (Week-offs marked) with the total typed:
+            # a total-only entry; the statuses split its cost by working days.
+            return total, days
         if total is not None and total != summed:
             raise _error(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,

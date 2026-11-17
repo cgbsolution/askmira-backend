@@ -161,6 +161,17 @@ async def _hours(
     return entry
 
 
+async def _no_hours_reason(session: AsyncSession, user: User) -> str:
+    """The attention reason for a consultant with no hours entered for last month."""
+    from app.services.attendance.service import local_today
+    from app.services.consultants import attention
+
+    last_month = ((await local_today(session, user)).replace(day=1) - timedelta(days=1)).replace(
+        day=1
+    )
+    return attention.no_hours_for(last_month)
+
+
 def _line(run: dict, person: Employee) -> dict:
     return next(line for line in run["lines"] if line["employee_id"] == str(person.id))
 
@@ -905,14 +916,20 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     )
     await session.commit()
 
+    no_hours = await _no_hours_reason(session, hr_user)
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
-    assert listed["CON1"]["reasons"] == ["Has a current salary", "No timesheet approver"]
+    assert listed["CON1"]["reasons"] == [
+        "Has a current salary",
+        "No timesheet approver",
+        no_hours,
+    ]
     # The old figure is a hint only while GST applies and no rate is set.
     assert listed["CON1"]["old_gst_amount"] is None
-    assert listed["CON4"]["reasons"] == ["No GST rate"]
+    assert listed["CON4"]["reasons"] == ["No GST rate", no_hours]
     assert listed["CON4"]["old_gst_amount"] == "1800.00"
     assert "No hourly rate" in listed["CON3"]["reasons"]
-    assert "CON2" not in listed
+    # Nothing to fix but last month's hours.
+    assert listed["CON2"]["reasons"] == [no_hours]
     pending = await attention.pending_adjustments(session, hr_user)
     assert sorted((p["employee_code"], p["amount"]) for p in pending) == [
         ("CON1", "4800.00"),
@@ -927,7 +944,7 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     assert salary.effective_to == date(2026, 9, 30)
     # Ended in the past: the salary reason is gone.
     after = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
-    assert after["CON1"]["reasons"] == ["No timesheet approver"]
+    assert after["CON1"]["reasons"] == ["No timesheet approver", no_hours]
 
 
 async def test_end_salaries_refuses_non_consultants(
@@ -1410,13 +1427,17 @@ async def test_attention_lists_tds_still_owed_after_year_end_or_a_section_change
 
     this_year = tds_non_salary.fy_bounds(date.today())[0].year
     fy = f"{this_year}-{(this_year + 1) % 100:02d}"
+    no_hours = await _no_hours_reason(session, hr_user)
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
     assert listed["CON1"]["reasons"] == [
         "TDS still owed from an earlier payout: ₹1,500.00 (194J (professional fees), "
-        "FY 2024-25). Settle it by hand."
+        "FY 2024-25). Settle it by hand.",
+        no_hours,
     ]
     assert listed["CON2"]["reasons"] == [
         f"TDS still owed from an earlier payout: ₹250.00 (194C (contractors), FY {fy}). "
-        "Settle it by hand."
+        "Settle it by hand.",
+        no_hours,
     ]
-    assert "CON3" not in listed
+    # Its carry is taken by the next payout: only last month's hours to see to.
+    assert listed["CON3"]["reasons"] == [no_hours]

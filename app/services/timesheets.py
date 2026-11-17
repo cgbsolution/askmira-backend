@@ -50,7 +50,7 @@ from app.models.timesheets import (
 from app.models.user import User, UserRole
 from app.services import audit
 from app.services.approvals.email_actions import ApprovalRef
-from app.services.consultants import can_manage_consultant, is_consultant, timesheet_approval
+from app.services.consultants import can_manage_consultant, is_consultant
 from app.services.notifications.dispatch import notify, register_event
 
 __all__ = [
@@ -85,14 +85,6 @@ register_event(
     "{employee_name} submitted a timesheet",
     "{employee_name} submitted {hours} hours for the week of {week}. Decide it under "
     "Time, Timesheet approvals.",
-)
-register_event(
-    "timesheets.customer_request",
-    "Please approve {employee_name}'s hours for the week of {week}",
-    "Hello {contact_name},\n\n{employee_name} worked {hours} hours for {company} in the week "
-    "of {week}. Please choose Approve if those hours are right, or Reject and say what needs "
-    "changing. The link works once and expires in 14 days. If you have a question, reply to "
-    "this email.",
 )
 register_event(
     "timesheets.decided",
@@ -774,8 +766,6 @@ async def save_week(
             )
         )
     sheet.status = TimesheetStatus.DRAFT
-    # Whatever the customer was emailed no longer matches the hours.
-    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
     if target != user.employee_id:
         await audit.record(
             session,
@@ -831,20 +821,14 @@ async def submit_week(
 
     employee = await _employee(session, user, target)
     consultant = employee is not None and is_consultant(employee)
-    route_is_customer = consultant and (
-        (employee.timesheet_approver_route or ApproverRoute.INTERNAL) is ApproverRoute.CUSTOMER
-    )
-    if route_is_customer and not (employee.customer_contact_email or "").strip():
-        raise _unprocessable(
-            "Add the customer contact's email to this consultant before submitting the week."
-        )
     sheet.status = TimesheetStatus.SUBMITTED
     sheet.submitted_at = datetime.now(UTC)
     sheet.decision_note = None
     if consultant:
-        # A consultant week skips the general approval rules; its route decides.
-        route = employee.timesheet_approver_route or ApproverRoute.INTERNAL
-        sheet.approval_route = route.value
+        # A consultant week skips the general approval rules and is decided here, by
+        # their approver or HR. It is tracking only: consultants are paid from hours
+        # entries, never from weeks. Customer approval by email is no longer used.
+        sheet.approval_route = ApproverRoute.INTERNAL.value
         sheet.approval_chain = []
     elif employee is not None:
         sheet.approval_route = None
@@ -889,19 +873,7 @@ async def submit_week(
         summary=f"Submitted the timesheet for the week of {start}",
         request=request,
     )
-    link = token = None
-    if route_is_customer:
-        # The link is made with the submission; the email goes once it is saved.
-        link, token = await timesheet_approval.issue_link(session, sheet, employee)
     await session.commit()
-    if (
-        link is not None
-        and token is not None
-        and not await timesheet_approval.deliver(session, link, token, employee)
-    ):
-        # A failed send may have rolled the session back; load what we return again.
-        await session.refresh(user)
-        await session.refresh(sheet)
     return await _read(session, user, sheet, week_start=start, employee_id=target)
 
 
@@ -964,11 +936,9 @@ async def pending_for_approver(
 async def _waiting_on(
     session: AsyncSession, user: User, employee: Employee | None, sheet: Timesheet
 ) -> list[uuid.UUID]:
-    """Who a submitted week is waiting on: a consultant's internal approver (else HR) or,
-    for a customer-route week, nobody here; anyone else's per `_approvers`."""
+    """Who a submitted week is waiting on: a consultant's internal approver (else HR);
+    anyone else's per `_approvers`."""
     if employee is not None and is_consultant(employee):
-        if sheet.approval_route != ApproverRoute.INTERNAL.value:
-            return []  # the customer is asked by email, not notified here
         if employee.internal_approver_user_id:
             return [employee.internal_approver_user_id]
         return await _hr_user_ids(session, user, not_employee_id=employee.id)
@@ -1125,8 +1095,6 @@ async def decide(
     sheet.decision_note = clean
     if approval_proof is not None:
         sheet.approval_proof = approval_proof
-    # Decided here, so an emailed customer link no longer applies.
-    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
 
     pay_note = None
     # A consultant's week is paid by a consultant payout run, never payroll.
@@ -1234,7 +1202,6 @@ async def reopen_week(
     sheet.decided_at = None
     sheet.decision_note = None
     sheet.approval_proof = None
-    await timesheet_approval.revoke_links(session, sheet.tenant_id, sheet.id)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
