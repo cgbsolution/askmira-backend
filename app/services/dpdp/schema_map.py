@@ -414,7 +414,13 @@ TABLES: dict[str, TableClassification] = {
             "bank_account_number": "financial",
             "bank_ifsc": "financial",
             "gst_amount": "financial",
+            # A consultant's customer contact, who approves their timesheets:
+            # somebody outside the workforce, so an access request from them
+            # has to reach this row too.
+            "customer_contact_name": "identity",
+            "customer_contact_email": "identity",
         },
+        secondary_principal=THIRD,
     ),
     "employee_work_locations": _p(EMP, "attendance"),
     "employee_documents": _p(
@@ -573,7 +579,27 @@ TABLES: dict[str, TableClassification] = {
     "project_tasks": _none("A task within a project that people log time against."),
     "timesheets": _p(EMP, "attendance"),
     "timesheet_entries": _p(EMP, "attendance"),
+    # The link a consultant's week is emailed to their customer with. It names
+    # the customer contact it went to and the address they decided from.
+    "timesheet_approval_links": _p(
+        EMP,
+        "attendance",
+        {
+            "token_hash": "account_security",
+            "sent_to_name": "identity",
+            "sent_to_email": "identity",
+            "decided_ip": "account_security",
+        },
+        secondary_principal=THIRD,
+    ),
     "hourly_rates": _p(EMP, "compensation"),
+    "consultant_payout_runs": _none(
+        "A consultant payout run's header: company, cut-off, pay date, status. The "
+        "per-person amounts are in consultant_payout_lines."
+    ),
+    "consultant_payout_lines": _p(EMP, "compensation"),
+    "consultant_payout_weeks": _p(EMP, "compensation"),
+    "consultant_tds_openings": _p(EMP, "tax"),
     "client_accounts": _none(
         "A client engagement the company bills: its code, name and who looks after it."
     ),

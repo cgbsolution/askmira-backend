@@ -60,7 +60,7 @@ async def my_payouts(user: CurrentUser, session: DbSession) -> list[dict[str, An
 @router.get("/my-payouts/{line_id}/pdf", response_model=None)
 async def my_payout_pdf(line_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
     """One of your payout statements as a PDF to keep."""
-    filename, data = await payout_statement.payout_statement_pdf(session, user, line_id)
+    filename, data = await payout_statement.my_payout_statement_pdf(session, user, line_id)
     return Response(
         content=data,
         media_type="application/pdf",

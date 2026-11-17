@@ -27,7 +27,8 @@ ENDPOINTS: dict[str, str] = {
     ),
     "GET /payroll/my-payouts/{line_id}/pdf": (
         "own: the statement of a line that belongs to user.employee_id in an approved or paid "
-        "run; another person's line is a 403, an unknown id a 404."
+        "run; another person's line is a 403 for everybody, HR included (HR uses "
+        "/consultant-payouts/lines/{line_id}/pdf), an unknown id a 404."
     ),
     "GET /payroll/my-total-rewards": (
         "own: the caller's own statement, by user.employee_id from the token; takes no person id."

@@ -671,7 +671,13 @@ async def test_cannot_approve_an_empty_run(session, tenant, hr_user, legal_entit
     assert refused.value.status_code == 409
 
 
-async def test_statement_and_my_payouts(session, tenant, hr_user, legal_entity) -> None:
+async def test_statement_and_my_payouts(
+    session,
+    tenant,
+    hr_user,
+    legal_entity,
+    client,  # noqa: F811
+) -> None:
     from app.models.user import UserRole
     from app.services.consultants import statement
     from tests.integration.conftest import as_caller
@@ -722,6 +728,15 @@ async def test_statement_and_my_payouts(session, tenant, hr_user, legal_entity) 
         await statement.payout_statement_pdf(session, other_login, line_id)
     assert foreign.value.status_code == 403
     assert [r["line_id"] for r in await payouts.my_payouts(session, other_login)] != [str(line_id)]
+    # My pay is the caller's own only: HR opens other people's from Consultant payouts.
+    hr_self_service = await client.get(
+        f"/api/v1/payroll/my-payouts/{line_id}/pdf", headers=bearer(hr_user)
+    )
+    assert hr_self_service.status_code in (403, 404)
+    hr_route = await client.get(
+        f"/api/v1/consultant-payouts/lines/{line_id}/pdf", headers=bearer(hr_user)
+    )
+    assert hr_route.status_code == 200
 
 
 async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_entity) -> None:

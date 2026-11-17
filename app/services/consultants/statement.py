@@ -28,7 +28,7 @@ from app.models.user import User
 from app.services import audit
 from app.services.consultants import payouts
 
-__all__ = ["payout_statement_pdf"]
+__all__ = ["my_payout_statement_pdf", "payout_statement_pdf"]
 
 _SECTION_NAME = {
     TdsSection.S194C: "194C (contractors)",
@@ -42,8 +42,11 @@ def _amount(value: object) -> str:
     return f"{Decimal(str(value)):,.2f}"
 
 
-async def _line_for(session: AsyncSession, user: User, line_id: uuid.UUID) -> ConsultantPayoutLine:
-    """The line this caller may read: any for HR, only their own for a consultant."""
+async def _line_for(
+    session: AsyncSession, user: User, line_id: uuid.UUID, *, own: bool = False
+) -> ConsultantPayoutLine:
+    """The line this caller may read: any for HR, only their own for a consultant
+    (and for anybody, HR included, when `own`)."""
     line = await session.scalar(
         tenant_scoped(
             select(ConsultantPayoutLine).where(ConsultantPayoutLine.id == line_id),
@@ -53,28 +56,45 @@ async def _line_for(session: AsyncSession, user: User, line_id: uuid.UUID) -> Co
     )
     if line is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
-    if permissions.is_hr(user):
+    if permissions.is_hr(user) and not own:
         return line
     if user.employee_id is None or line.employee_id != user.employee_id:
         raise permissions.forbidden("You can only open your own payout statements.")
     return line
 
 
+async def my_payout_statement_pdf(
+    session: AsyncSession, user: User, line_id: uuid.UUID
+) -> tuple[str, bytes]:
+    """My pay: the caller's own statement, once the run is approved.
+
+    Own only, HR included: HR opens other people's from Consultant payouts.
+    """
+    if user.employee_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
+    return await payout_statement_pdf(session, user, line_id, own=True)
+
+
 async def payout_statement_pdf(
-    session: AsyncSession, user: User, line_id: uuid.UUID, *, request: Request | None = None
+    session: AsyncSession,
+    user: User,
+    line_id: uuid.UUID,
+    *,
+    own: bool = False,
+    request: Request | None = None,
 ) -> tuple[str, bytes]:
     """The statement for one payout line as (file name, PDF bytes).
 
     A line left out of its run has nothing to state. A consultant sees theirs
-    only once the run is approved.
+    only once the run is approved; so does anybody asking for their `own`.
     """
     from app.services.documents.pdf import Letterhead, render_pdf
 
-    line = await _line_for(session, user, line_id)
+    line = await _line_for(session, user, line_id, own=own)
     run = await payouts._run(session, user, line.run_id)
     if line.excluded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
-    if not permissions.is_hr(user) and run.status not in (
+    if (own or not permissions.is_hr(user)) and run.status not in (
         PayoutRunStatus.APPROVED,
         PayoutRunStatus.PAID,
     ):

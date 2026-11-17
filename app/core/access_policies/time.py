@@ -19,6 +19,30 @@ ENDPOINTS: dict[str, str] = {
         "permissions: the current step's approver, their delegate or HR (the line manager "
         "or HR for a week from before chains); never the caller's own week."
     ),
+    # A consultant's week, filled in, submitted, reopened or decided by somebody
+    # other than the consultant: HR, or that consultant's internal approver
+    # (consultants.can_manage_consultant), never anybody else.
+    "GET /timesheets/people/{employee_id}/weeks/{week_of}": (
+        "scoped:_target_employee_id: the caller's own week, or a consultant's for HR or that "
+        "consultant's internal approver (can_manage_consultant); anybody else is a 403."
+    ),
+    "PUT /timesheets/people/{employee_id}/weeks/{week_of}": (
+        "scoped:_target_employee_id: fills in the caller's own week, or a consultant's for HR "
+        "or that consultant's internal approver (can_manage_consultant); anybody else is a 403."
+    ),
+    "POST /timesheets/people/{employee_id}/weeks/{week_of}/submit": (
+        "scoped:_target_employee_id: submits the caller's own week, or a consultant's for HR "
+        "or that consultant's internal approver (can_manage_consultant); anybody else is a 403."
+    ),
+    "POST /timesheets/{timesheet_id}/reopen": (
+        "permissions: HR or the consultant's internal approver (can_manage_consultant); "
+        "never the consultant's own week, nor a week already in a payout run."
+    ),
+    "POST /timesheets/{timesheet_id}/decide/manual": (
+        "permissions: the same rule as /decide, with the customer's approval attached: for a "
+        "consultant week HR or their internal approver (can_manage_consultant); never the "
+        "caller's own week."
+    ),
     "GET /attendance/regularisations/pending": (
         "permissions: corrections whose approval chain's current step names the caller or "
         "someone they stand in for, older ones from their reporting line, everything for HR; "
