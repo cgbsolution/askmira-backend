@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.core.crypto import decrypt_secret, encrypt_secret
 from app.models.audit import AuditLog
+from app.models.consultant_payouts import ConsultantPayoutRun, PayoutRunStatus
 from app.models.disbursement import (
     BankFileFormat,
     DisbursementLine,
@@ -380,9 +381,10 @@ async def test_a_file_made_before_the_run_was_marked_paid_stays_readable(
         session, checker, batch_id=batch.id, file_hash=batch.file_hash
     )
     await session.commit()
-    await payouts.mark_paid(
-        session, hr_user, uuid.UUID(run["id"]), paid_on=PAY_DATE, reference="UTR123"
-    )
+    # Marked paid before a standing file stopped that (mark_paid now refuses).
+    paid_run = await session.get(ConsultantPayoutRun, uuid.UUID(run["id"]))
+    paid_run.status = PayoutRunStatus.PAID
+    await session.commit()
 
     listed = await disbursement_service.list_batches(
         session, hr_user, consultant_payout_run_id=uuid.UUID(run["id"])
@@ -396,3 +398,58 @@ async def test_a_file_made_before_the_run_was_marked_paid_stays_readable(
     with pytest.raises(HTTPException) as refused:
         await disbursement_service.regenerate_batch(session, hr_user, batch_id=batch.id)
     assert refused.value.status_code == 409
+
+
+async def test_a_run_with_an_unsent_file_cannot_be_marked_paid(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    run, checker, batch = await _prepared(session, tenant, hr_user, legal_entity)
+    run_id = uuid.UUID(run["id"])
+    with pytest.raises(HTTPException) as waiting:
+        await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR1")
+    assert waiting.value.status_code == 409
+    assert waiting.value.detail == (
+        "This run has a bank file that hasn't been sent. Release it or cancel it before "
+        "marking the run paid."
+    )
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await session.commit()
+    with pytest.raises(HTTPException) as approved:
+        await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR1")
+    assert approved.value.status_code == 409
+
+    # Once the file is sent, the run is marked paid with the bank's reference.
+    await disbursement_service.release_batch(session, checker, batch_id=batch.id)
+    await session.commit()
+    paid = await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR1")
+    assert paid["status"] == "paid"
+
+
+async def test_a_file_for_a_run_no_longer_approved_is_not_approved_or_released(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    run, checker, batch = await _prepared(session, tenant, hr_user, legal_entity)
+    payout_run = await session.get(ConsultantPayoutRun, uuid.UUID(run["id"]))
+    payout_run.status = PayoutRunStatus.PAID
+    await session.commit()
+    with pytest.raises(HTTPException) as approving:
+        await disbursement_service.approve_batch(
+            session, checker, batch_id=batch.id, file_hash=batch.file_hash
+        )
+    assert approving.value.status_code == 409
+
+    payout_run.status = PayoutRunStatus.APPROVED
+    await session.commit()
+    await disbursement_service.approve_batch(
+        session, checker, batch_id=batch.id, file_hash=batch.file_hash
+    )
+    await session.commit()
+    payout_run.status = PayoutRunStatus.PAID
+    await session.commit()
+    with pytest.raises(HTTPException) as releasing:
+        await disbursement_service.release_batch(session, checker, batch_id=batch.id)
+    assert releasing.value.status_code == 409
+    await session.refresh(batch)
+    assert batch.status is DisbursementStatus.APPROVED

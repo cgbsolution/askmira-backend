@@ -86,6 +86,8 @@ _STANDING = frozenset(
 )
 #: Sent to the bank. Nothing about the file can change after this.
 _SENT = frozenset({DisbursementStatus.RELEASED, DisbursementStatus.ACKNOWLEDGED})
+#: Standing but not yet sent: the file may still pay everyone on its run.
+UNSENT_STANDING = _STANDING - _SENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +137,40 @@ async def _batch(session: AsyncSession, user: User, batch_id: uuid.UUID) -> Disb
 
 #: Said by the salary-file operations a consultant payout file does not have yet.
 NOT_FOR_CONSULTANTS = "Not available for consultant payouts yet."
+
+
+async def _require_payout_run_approved(
+    session: AsyncSession, user: User, batch: DisbursementBatch
+) -> None:
+    """A consultant file moves only while its payout run is approved.
+
+    The run is locked first: `mark_paid` locks it too before checking for an
+    unsent file, so the two cannot both go through.
+    """
+    if batch.consultant_payout_run_id is None:
+        return
+    from app.models.consultant_payouts import ConsultantPayoutRun, PayoutRunStatus
+
+    run = await session.scalar(
+        tenant_scoped(
+            select(ConsultantPayoutRun).where(
+                ConsultantPayoutRun.id == batch.consultant_payout_run_id
+            ),
+            ConsultantPayoutRun,
+            user,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if run is None or run.status is not PayoutRunStatus.APPROVED:
+        state = run.status.value if run is not None else "gone"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This file's payout run is '{state}', no longer approved. Money is only "
+                "ever disbursed against an approved run."
+            ),
+        )
 
 
 def _salary_only(batch: DisbursementBatch) -> None:
@@ -535,6 +571,7 @@ async def approve_batch(
     refuses.
     """
     batch = await _batch(session, user, batch_id)
+    await _require_payout_run_approved(session, user, batch)
 
     if batch.status is not DisbursementStatus.PENDING_APPROVAL:
         raise HTTPException(
@@ -707,6 +744,7 @@ async def release_batch(
     the status column.
     """
     batch = await _batch(session, user, batch_id)
+    await _require_payout_run_approved(session, user, batch)
 
     if batch.status is not DisbursementStatus.APPROVED:
         raise HTTPException(

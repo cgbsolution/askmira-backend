@@ -1152,6 +1152,27 @@ async def mark_paid(
     run = await _run(session, user, run_id, lock=True)
     if run.status is not PayoutRunStatus.APPROVED:
         raise _conflict("Only an approved payout run can be marked paid.")
+    # A file still on its way to the bank would pay everyone a second time.
+    from app.models.disbursement import DisbursementBatch
+    from app.services.disbursement.service import UNSENT_STANDING
+
+    unsent = await session.scalar(
+        tenant_scoped(
+            select(DisbursementBatch.id)
+            .where(
+                DisbursementBatch.consultant_payout_run_id == run.id,
+                DisbursementBatch.status.in_(UNSENT_STANDING),
+            )
+            .limit(1),
+            DisbursementBatch,
+            user,
+        )
+    )
+    if unsent is not None:
+        raise _conflict(
+            "This run has a bank file that hasn't been sent. Release it or cancel it before "
+            "marking the run paid."
+        )
     run.status = PayoutRunStatus.PAID
     run.paid_on = paid_on
     run.payment_reference = clean
