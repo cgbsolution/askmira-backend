@@ -620,6 +620,7 @@ async def test_consultants_the_caller_may_act_on(
         "code": "ACM001",
         "name": "Anita Sharma",
         "project": None,
+        "pay_basis": "hourly",
     }
     assert [row["code"] for row in await hours.list_consultants(session, finance)] == ["ACM001"]
     assert await hours.list_consultants(session, stranger) == []

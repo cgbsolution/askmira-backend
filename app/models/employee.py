@@ -58,6 +58,13 @@ class ApproverRoute(str, enum.Enum):
     INTERNAL = "internal"
 
 
+class ConsultantPayBasis(str, enum.Enum):
+    """How a consultant is paid: by the hour, or a fixed fee a month prorated by calendar days."""
+
+    HOURLY = "hourly"
+    FIXED_MONTHLY = "fixed_monthly"
+
+
 class Gender(str, enum.Enum):
     FEMALE = "female"
     MALE = "male"
@@ -166,6 +173,10 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     #: Who approves their weekly timesheets: the customer, or somebody inside.
     timesheet_approver_route: Mapped[ApproverRoute | None] = mapped_column(
         Enum(ApproverRoute, name="approver_route"), nullable=True
+    )
+    #: Hourly (at their hourly rates) or fixed monthly (their monthly fee). Unset is hourly.
+    pay_basis: Mapped[ConsultantPayBasis | None] = mapped_column(
+        Enum(ConsultantPayBasis, name="consultant_pay_basis"), nullable=True
     )
     customer_contact_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)

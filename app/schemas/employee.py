@@ -10,7 +10,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.models.contractors import ContractorKind, TdsSection
-from app.models.employee import ApproverRoute, EmploymentStatus, EmploymentType, Gender
+from app.models.employee import (
+    ApproverRoute,
+    ConsultantPayBasis,
+    EmploymentStatus,
+    EmploymentType,
+    Gender,
+)
 
 DEFAULT_GST_RATE = Decimal("18")
 
@@ -35,6 +41,7 @@ def consultant_billing_problem(
     route: ApproverRoute | None,
     contact_name: str | None,
     contact_email: str | None,
+    pay_basis: ConsultantPayBasis | None = None,
 ) -> str | None:
     """What is wrong with a record's consultant fields, or None.
 
@@ -51,9 +58,10 @@ def consultant_billing_problem(
                 route is not None,
                 contact_name,
                 contact_email,
+                pay_basis is not None,
             )
         ):
-            return "GST, TDS and approver details are set only for a consultant."
+            return "GST, TDS, pay basis and approver details are set only for a consultant."
         return None
     if gst_applicable:
         if gst_rate is None:
@@ -119,6 +127,8 @@ class EmployeeBase(BaseModel):
     customer_contact_name: str | None = Field(default=None, max_length=200)
     customer_contact_email: EmailStr | None = None
     internal_approver_user_id: uuid.UUID | None = None
+    #: Hourly or a fixed monthly fee; a new consultant is hourly unless told otherwise.
+    pay_basis: ConsultantPayBasis | None = None
 
 
 class EmployeeCreate(EmployeeBase):
@@ -148,6 +158,8 @@ class EmployeeCreate(EmployeeBase):
         self.tds_section = values["tds_section"]
         self.payee_kind = values["payee_kind"]
         self.gst_rate = values["gst_rate"]
+        if self.employment_type is EmploymentType.CONSULTANT and self.pay_basis is None:
+            self.pay_basis = ConsultantPayBasis.HOURLY
         problem = consultant_billing_problem(
             self.employment_type,
             gst_applicable=self.gst_applicable,
@@ -157,6 +169,7 @@ class EmployeeCreate(EmployeeBase):
             route=self.timesheet_approver_route,
             contact_name=self.customer_contact_name,
             contact_email=self.customer_contact_email,
+            pay_basis=self.pay_basis,
         )
         if problem:
             raise ValueError(problem)
@@ -208,6 +221,7 @@ class EmployeeUpdate(BaseModel):
     customer_contact_name: str | None = Field(default=None, max_length=200)
     customer_contact_email: EmailStr | None = None
     internal_approver_user_id: uuid.UUID | None = None
+    pay_basis: ConsultantPayBasis | None = None
 
     custom_fields: dict[str, Any] | None = None
 

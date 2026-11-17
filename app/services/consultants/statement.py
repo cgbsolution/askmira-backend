@@ -1,6 +1,7 @@
 """A consultant's payout statement: one PDF per consultant per run.
 
-The hours entries paid, each with its period, hours and rate, the gross fee, GST, TDS deducted
+The hours entries paid, each with its period, hours and rate (or the monthly fee and
+days, for a fixed-monthly consultant), the gross fee, GST, TDS deducted
 (section and rate) and any TDS carried to the next payout, the net payable and
 the pay date. HR can issue any consultant's; a consultant gets only their own,
 once the run is approved.
@@ -44,6 +45,21 @@ def section_name(section: TdsSection) -> str:
 
 def _amount(value: object) -> str:
     return f"{Decimal(str(value)):,.2f}"
+
+
+def _rate_text(breakdown: list[dict]) -> str:
+    """What an entry was priced at: its hourly rates, or for a fixed monthly fee each
+    month part as "Fixed monthly ₹X x N/M days" (with a multiplication sign)."""
+    parts = [
+        f"Fixed monthly ₹{_amount(at['fee'])} × {at['days']}/{item['days_in_month']} days"  # noqa: RUF001
+        for item in breakdown
+        if "month" in item
+        for at in item.get("fees") or []
+    ]
+    if parts:
+        return "; ".join(parts)
+    rates = sorted({Decimal(b["rate"]) for b in breakdown if b.get("rate")})
+    return ", ".join(_amount(rate) for rate in rates)
 
 
 async def _line_for(
@@ -114,12 +130,11 @@ async def payout_statement_pdf(
 
     rows = []
     for paid, entry in await _entries(session, user, line):
-        rates = sorted({Decimal(b["rate"]) for b in paid.breakdown or [] if b.get("rate")})
         rows.append(
             "<tr>"
             f"<td>{entry.period_start.isoformat()} to {entry.period_end.isoformat()}</td>"
             f"<td>{_amount(paid.hours)}</td>"
-            f"<td>{escape(', '.join(_amount(rate) for rate in rates))}</td>"
+            f"<td>{escape(_rate_text(paid.breakdown or []))}</td>"
             f"<td>{_amount(paid.gross)}</td>"
             "</tr>"
         )
@@ -139,7 +154,7 @@ async def payout_statement_pdf(
 {f"&nbsp; <b>GSTIN:</b> {escape(employee.gstin)}" if employee.gstin else ""}<br/>
 <b>Work up to:</b> {run.cut_off.isoformat()} &nbsp; <b>Pay date:</b> {run.pay_date.isoformat()}</p>
 <table class="ctc-table">
-<thead><tr><th>Period</th><th>Hours</th><th>Rate per hour</th><th>Fee</th></tr></thead>
+<thead><tr><th>Period</th><th>Hours</th><th>Rate</th><th>Fee</th></tr></thead>
 <tbody>{"".join(rows)}</tbody>
 <tfoot><tr><td>Total</td><td>{_amount(line.hours)}</td><td>&nbsp;</td><td>{_amount(line.gross)}</td>
 </tr></tfoot>

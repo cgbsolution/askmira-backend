@@ -82,6 +82,7 @@ _SEGMENT_AREA: dict[str, str] = {
             "encashment",
             "gst",
             "accounts",
+            "consultant-fees",
             "consultant-hours",
             "consultant-payouts",
             "contractors",

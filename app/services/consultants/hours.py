@@ -31,7 +31,7 @@ from app.models.consultant_hours import (
     HoursEntryStatus,
 )
 from app.models.consultant_payouts import ConsultantPayoutEntry
-from app.models.employee import Employee, EmploymentType
+from app.models.employee import ConsultantPayBasis, Employee, EmploymentType
 from app.models.notifications import Channel, DigestMode
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.payroll_inputs import PayrollAdjustment
@@ -1030,6 +1030,8 @@ async def list_consultants(session: AsyncSession, user: User) -> list[dict[str, 
             "code": person.employee_code,
             "name": person.full_name,
             "project": project_name,
+            # Fixed monthly: the hours are a record for the customer, never paid.
+            "pay_basis": (person.pay_basis or ConsultantPayBasis.HOURLY).value,
         }
         for person, project_name in rows
         if is_consultant(person) and person.id != user.employee_id

@@ -414,6 +414,8 @@ TABLES: dict[str, TableClassification] = {
             "bank_account_number": "financial",
             "bank_ifsc": "financial",
             "gst_amount": "financial",
+            # Hourly or a fixed monthly fee: how a consultant is paid.
+            "pay_basis": "compensation",
             # A consultant's customer contact, who approves their timesheets:
             # somebody outside the workforce, so an access request from them
             # has to reach this row too.
@@ -593,6 +595,7 @@ TABLES: dict[str, TableClassification] = {
         secondary_principal=THIRD,
     ),
     "hourly_rates": _p(EMP, "compensation"),
+    "consultant_monthly_fees": _p(EMP, "compensation"),
     "consultant_payout_runs": _none(
         "A consultant payout run's header: company, cut-off, pay date, status. The "
         "per-person amounts are in consultant_payout_lines."

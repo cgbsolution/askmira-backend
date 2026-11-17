@@ -8,7 +8,9 @@ Each line:
 - gross = the hours of each of the consultant's entries at the rate in force:
   an entry given day by day at each day's rate (the consultant's rate for the
   entry's project, else their general rate); an entry given as a total at the
-  rate on its last day, held back if the rate changed during the period;
+  rate on its last day, held back if the rate changed during the period; a
+  fixed-monthly consultant's entries instead at their monthly fee, each calendar
+  day worth the fee in force that day over the days in its month (hours not priced);
 - GST = gross x their GST rate, where they charge GST (not part of the TDS base);
 - TDS on the gross under their section (194J by default), from the
   `tds_non_salary` rule set in force on the run's pay date, with the
@@ -21,15 +23,17 @@ Each line:
   deducted; `tds_carried_out` = what is still owed);
 - net payable = gross + GST - TDS deducted.
 
-A line with a problem HR must fix (no rate for a day worked, a rate change
-inside a total-only period, no bank account, GST without a GSTIN, a pay date
-before one of theirs already approved this year) is held back — excluded,
-keeping its entries — until the data is fixed and the run recalculated. A line
-HR excludes by hand releases its entries for a later run. Only a draft changes.
+A line with a problem HR must fix (no rate for a day worked, no monthly fee for
+a day of a fixed-monthly period, a rate change inside a total-only period, no
+bank account, GST without a GSTIN, a pay date before one of theirs already
+approved this year) is held back — excluded, keeping its entries — until the
+data is fixed and the run recalculated. A line HR excludes by hand releases its
+entries for a later run. Only a draft changes.
 """
 
 from __future__ import annotations
 
+import calendar
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -58,11 +62,12 @@ from app.models.consultant_payouts import (
     PayoutRunStatus,
 )
 from app.models.contractors import ContractorKind, TdsSection
-from app.models.employee import Employee, EmploymentType
+from app.models.employee import ConsultantPayBasis, Employee, EmploymentType
 from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
 from app.models.user import User
 from app.services import audit, tds_non_salary, timesheets
+from app.services.consultants import fees
 from app.services.consultants.hours import period_label
 from app.services.payroll.run import _require_scope_covers
 
@@ -180,11 +185,77 @@ class _PricedEntry:
     problems: list[str] = field(default_factory=list)
 
 
+def no_monthly_fee(period: str) -> str:
+    """Why a fixed-monthly entry is held: a day in its period has no fee in force."""
+    return f"No monthly fee for {period}"
+
+
+def _entry_hours(entry: ConsultantHoursEntry) -> Decimal:
+    """The billable hours on the entry: the days' hours when given day by day, else the total."""
+    if by_the_day(entry):
+        return sum((Decimal(str(day.get("hours") or 0)) for day in entry.days), Decimal(0))
+    return Decimal(str(entry.total_billable_hours))
+
+
+def _price_fixed_entry(
+    entry: ConsultantHoursEntry, history: list[tuple[date, Decimal]]
+) -> _PricedEntry:
+    """A fixed-monthly consultant's entry: each calendar day of its period is worth the
+    fee in force that day divided by the days in its month. Each month's days are
+    summed exactly and rounded to the paisa once, so a full month is the fee exactly.
+
+    The hours are kept for the record and never priced. A day with no fee holds
+    the whole entry back.
+    """
+    priced = _PricedEntry(hours=_entry_hours(entry))
+    period = period_label(entry.period_start, entry.period_end)
+    # (year, month) -> fee -> days at that fee, in the order the fees came.
+    months: dict[tuple[int, int], dict[Decimal, int]] = {}
+    missing_fee = False
+    for offset in range((entry.period_end - entry.period_start).days + 1):
+        day = entry.period_start + timedelta(days=offset)
+        fee = fees.in_force(history, day)
+        if fee is None:
+            missing_fee = True
+            fee = Decimal(0)
+        at_fee = months.setdefault((day.year, day.month), {})
+        at_fee[fee] = at_fee.get(fee, 0) + 1
+    if missing_fee:
+        priced.problems.append(no_monthly_fee(period))
+    for (year, month), at_fee in months.items():
+        in_month = calendar.monthrange(year, month)[1]
+        exact = sum((fee * days / in_month for fee, days in at_fee.items()), Decimal(0))
+        amount = Decimal("0.00") if missing_fee else _money(exact)
+        priced.gross += amount
+        shown = [{"fee": _text(fee), "days": days} for fee, days in at_fee.items() if fee > 0]
+        priced.breakdown.append(
+            {
+                "month": f"{year:04d}-{month:02d}",
+                "days": sum(at_fee.values()),
+                "days_in_month": in_month,
+                "fee": shown[0]["fee"] if len(shown) == 1 and not missing_fee else None,
+                "fees": shown,
+                "amount": _text(amount),
+            }
+        )
+    priced.gross = _money(priced.gross)
+    return priced
+
+
 async def _price_entry(
-    session: AsyncSession, user: User, entry: ConsultantHoursEntry
+    session: AsyncSession,
+    user: User,
+    entry: ConsultantHoursEntry,
+    fee_history: list[tuple[date, Decimal]] | None = None,
 ) -> _PricedEntry:
     """The entry at the rate in force: day by day when the days were given, else
-    the total at the rate on the last day, provided that rate held all period."""
+    the total at the rate on the last day, provided that rate held all period.
+
+    A fixed-monthly consultant's entry (`fee_history` given) is priced from their
+    monthly fee instead (`_price_fixed_entry`).
+    """
+    if fee_history is not None:
+        return _price_fixed_entry(entry, fee_history)
     priced = _PricedEntry()
     if by_the_day(entry):
         for day in entry.days:
@@ -512,8 +583,15 @@ async def _price_line(
     entries: list[tuple[ConsultantPayoutEntry, _PricedEntry]] = []
     rows = await _line_entries(session, user, line.id)
     sources = await _hours_entries(session, user, [row.entry_id for row in rows])
+    # The basis in force is the consultant's current one: a change is refused while
+    # any of their hours are unpaid, so no unpaid entry straddles one.
+    fee_history = (
+        await fees.fee_history(session, user, employee.id)
+        if employee.pay_basis is ConsultantPayBasis.FIXED_MONTHLY
+        else None
+    )
     for row in sorted(rows, key=lambda r: sources[r.entry_id].period_start):
-        priced = await _price_entry(session, user, sources[row.entry_id])
+        priced = await _price_entry(session, user, sources[row.entry_id], fee_history)
         entries.append((row, priced))
         hours += priced.hours
         gross += priced.gross
@@ -1276,7 +1354,8 @@ async def consultant_cost_by_month(
     Taken from the priced hours entries in approved or paid payout runs, left-out
     lines excluded: the fee before GST, which a company claims back. Day-by-day
     hours cost the month of each day; a total-only entry crossing a month end is
-    split by working days (`_split_by_working_days`). Nothing lands in the month paid.
+    split by working days (`_split_by_working_days`); a fixed monthly fee is already
+    split by month. Nothing lands in the month paid.
     """
     rows = await session.execute(
         tenant_scoped(
@@ -1305,6 +1384,14 @@ async def consultant_cost_by_month(
             if "date" in item:
                 worked = date.fromisoformat(item["date"])
                 shares = [(worked, _money(item["amount"]))] if start <= worked <= end else []
+            elif "month" in item:
+                # A fixed monthly fee, already split by the month the days fell in.
+                month = date.fromisoformat(f"{item['month']}-01")
+                shares = (
+                    [(month, _money(item["amount"]))]
+                    if first <= (month.year, month.month) <= last
+                    else []
+                )
             else:
                 shares = [
                     (month, share)

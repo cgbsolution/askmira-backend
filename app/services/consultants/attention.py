@@ -1,10 +1,11 @@
 """Consultants who need HR's attention when payouts start, and their opening TDS figures.
 
-On release, a consultant who still has a salary, has no hourly rate or has no
-timesheet approver is listed so HR can fix them, and so is one with no hours
-entered for last month, so finance notices a missing timesheet. Salaries are ended from the
-list. A consultant timesheet adjustment still pending in payroll is listed too,
-so HR can cancel it or let it through once and nothing is paid twice.
+On release, a consultant who still has a salary, has no hourly rate (no monthly
+fee in force, for one paid a fixed monthly fee) or has no timesheet approver is
+listed so HR can fix them, and so is one with no hours entered for last month,
+so finance notices a missing timesheet. Salaries are ended from the list. A
+consultant timesheet adjustment still pending in payroll is listed too, so HR
+can cancel it or let it through once and nothing is paid twice.
 """
 
 from __future__ import annotations
@@ -29,7 +30,12 @@ from app.models.consultant_payouts import (
     PayoutRunStatus,
 )
 from app.models.contractors import TdsSection
-from app.models.employee import Employee, EmploymentStatus, EmploymentType
+from app.models.employee import (
+    ConsultantPayBasis,
+    Employee,
+    EmploymentStatus,
+    EmploymentType,
+)
 from app.models.payroll import EmployeeSalary
 from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import HourlyRate
@@ -41,6 +47,7 @@ __all__ = ["attention_list", "end_salaries", "pending_adjustments", "set_opening
 
 HAS_SALARY = "Has a current salary"
 NO_RATE = "No hourly rate"
+NO_FEE = "No monthly fee"
 NO_APPROVER = "No finance approver (HR approves)"
 NO_GST_RATE = "No GST rate"
 
@@ -89,6 +96,30 @@ async def _without_hours_last_month(
         ).all()
     )
     return {p.id for p in working if p.id not in entered}, start
+
+
+async def _without_a_fee(
+    session: AsyncSession, user: User, people: list[Employee], last_month: date
+) -> set[uuid.UUID]:
+    """Fixed-monthly consultants with no monthly fee in force today, or on the first
+    day of last month they were working (from joining, when they joined during it)."""
+    from app.services.attendance.service import local_today
+    from app.services.consultants import fees
+
+    if not people:
+        return set()
+    today = await local_today(session, user)
+    last_month_end = today.replace(day=1) - timedelta(days=1)
+    out: set[uuid.UUID] = set()
+    for person in people:
+        history = await fees.fee_history(session, user, person.id)
+        days = [today]
+        joined = person.date_of_joining
+        if joined is None or joined <= last_month_end:
+            days.append(max(last_month, joined) if joined else last_month)
+        if any(fees.in_force(history, day) is None for day in days):
+            out.add(person.id)
+    return out
 
 
 def _current_salary():
@@ -140,12 +171,21 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
     )
     owed = await _tds_left_owing(session, user, people)
     missing, last_month = await _without_hours_last_month(session, user, list(people))
+    no_fee = await _without_a_fee(
+        session,
+        user,
+        [p for p in people if p.pay_basis is ConsultantPayBasis.FIXED_MONTHLY],
+        last_month,
+    )
     out: list[dict[str, Any]] = []
     for person in people:
         reasons: list[str] = []
         if person.id in salaried:
             reasons.append(HAS_SALARY)
-        if person.id not in rated:
+        if person.pay_basis is ConsultantPayBasis.FIXED_MONTHLY:
+            if person.id in no_fee:
+                reasons.append(NO_FEE)
+        elif person.id not in rated:
             reasons.append(NO_RATE)
         if person.internal_approver_user_id is None:
             reasons.append(NO_APPROVER)

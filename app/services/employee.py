@@ -34,6 +34,7 @@ from app.models.consultant_payouts import (
     PayoutRunStatus,
 )
 from app.models.employee import (
+    ConsultantPayBasis,
     CustomFieldDefinition,
     Employee,
     EmploymentStatus,
@@ -83,6 +84,14 @@ _CONSULTANT_CLEARED: dict[str, Any] = {
     "customer_contact_name": None,
     "customer_contact_email": None,
     "internal_approver_user_id": None,
+    "pay_basis": None,
+}
+
+#: Hours entries a pay basis change would reprice: everything not rejected, until paid.
+_NOT_YET_PAID = (HoursEntryStatus.DRAFT, HoursEntryStatus.SUBMITTED, HoursEntryStatus.APPROVED)
+_BASIS_NAME = {
+    ConsultantPayBasis.HOURLY: "hourly",
+    ConsultantPayBasis.FIXED_MONTHLY: "fixed monthly",
 }
 
 _EXIT_THROUGH_EXITS = (
@@ -549,6 +558,7 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
         "customer_contact_name": None,
         "customer_contact_email": None,
         "internal_approver_user_id": None,
+        "pay_basis": None,
     }
     from app.services.dpdp.gates import hidden_photo_ids
 
@@ -696,8 +706,15 @@ async def _has_open_hours(session: AsyncSession, user: User, employee_id: uuid.U
     )
 
 
-async def _has_unpaid_hours(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
-    """Whether a consultant has approved hours entries that nobody has paid yet.
+async def _has_unpaid_hours(
+    session: AsyncSession,
+    user: User,
+    employee_id: uuid.UUID,
+    *,
+    statuses: tuple[HoursEntryStatus, ...] = (HoursEntryStatus.APPROVED,),
+) -> bool:
+    """Whether a consultant has hours entries (approved, unless `statuses` says
+    otherwise) that nobody has paid yet.
 
     Paid means in a consultant payout run marked paid. An entry in a draft or
     approved run is not paid yet.
@@ -717,7 +734,7 @@ async def _has_unpaid_hours(session: AsyncSession, user: User, employee_id: uuid
                 select(ConsultantHoursEntry.id)
                 .where(
                     ConsultantHoursEntry.employee_id == employee_id,
-                    ConsultantHoursEntry.status == HoursEntryStatus.APPROVED,
+                    ConsultantHoursEntry.status.in_(statuses),
                     ~paid_in_a_run,
                 )
                 .limit(1),
@@ -802,6 +819,23 @@ async def update_employee(
                     "Consultant payout before changing their employment type."
                 ),
             )
+    if (
+        "pay_basis" in changes
+        and is_consultant(employee)
+        and (new_kind is None or new_kind is EmploymentType.CONSULTANT)
+    ):
+        before = employee.pay_basis or ConsultantPayBasis.HOURLY
+        after = changes["pay_basis"] or ConsultantPayBasis.HOURLY
+        if before is not after and await _has_unpaid_hours(
+            session, user, employee.id, statuses=_NOT_YET_PAID
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Their hours not yet paid were entered on the {_BASIS_NAME[before]} "
+                    "basis. Pay or reject them before changing how they're paid."
+                ),
+            )
 
     if "custom_fields" in changes:
         if changes["custom_fields"] is None:
@@ -842,6 +876,8 @@ async def update_employee(
         kind is EmploymentType.CONSULTANT
         and employee.employment_type is not EmploymentType.CONSULTANT
     )
+    if became_consultant and _merged("pay_basis") is None:
+        changes["pay_basis"] = ConsultantPayBasis.HOURLY
     check_gst = gst_edited or became_consultant
     defaults = {
         "tds_section": _merged("tds_section"),
@@ -862,6 +898,7 @@ async def update_employee(
         route=_merged("timesheet_approver_route"),
         contact_name=_merged("customer_contact_name"),
         contact_email=_merged("customer_contact_email"),
+        pay_basis=_merged("pay_basis"),
     )
     if problem:
         raise _unprocessable(problem)
