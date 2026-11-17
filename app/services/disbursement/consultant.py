@@ -30,6 +30,7 @@ from app.models.consultant_payouts import (
 from app.models.disbursement import BankProfile, DisbursementBatch
 from app.models.employee import Employee
 from app.models.user import User
+from app.services.disbursement import formats
 from app.services.disbursement.service import (
     _SENT,
     _STANDING,
@@ -170,5 +171,7 @@ async def prepare_consultant_batch(
         held=[],
         notes=None,
         period=f"the consultant payout run paying {run.pay_date:%d %b %Y}",
+        # Labelled as fees at the bank, never as salary.
+        purpose=formats.PaymentPurpose.PROFESSIONAL_FEES,
         request=request,
     )

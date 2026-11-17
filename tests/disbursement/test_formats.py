@@ -160,8 +160,7 @@ def test_a_zero_amount_is_refused_at_the_serialiser_too() -> None:
 def test_the_hdfc_file_matches_the_golden_output() -> None:
     output = serialise(instruction(), BankFileFormat.HDFC)
     assert output == (
-        "N,00110123456789,50100123456789,HDFC0001234,Anita Sharma,48200.00,N,"
-        "30/06/2026,SALARY\r\n"
+        "N,00110123456789,50100123456789,HDFC0001234,Anita Sharma,48200.00,N,30/06/2026,SALARY\r\n"
     )
 
 
@@ -241,25 +240,19 @@ def test_the_profile_config_overrides_the_name_length() -> None:
     """Banks set a different limit for one customer, so the spec is a default."""
     long_name = line(beneficiary_name="Anita Kumari Sharma Venkataraman")
     default = serialise(instruction(long_name), BankFileFormat.HDFC)
-    narrow = serialise(
-        instruction(long_name), BankFileFormat.HDFC, config={"name_length": 12}
-    )
+    narrow = serialise(instruction(long_name), BankFileFormat.HDFC, config={"name_length": 12})
     assert "Anita Kumari Sharma Venkataraman" in default
     assert "Anita Kumari" in narrow
     assert "Venkataraman" not in narrow.split(",")[4]
 
 
 def test_the_profile_config_overrides_the_transaction_code() -> None:
-    output = serialise(
-        instruction(), BankFileFormat.HDFC, config={"transaction_code": "RTGS"}
-    )
+    output = serialise(instruction(), BankFileFormat.HDFC, config={"transaction_code": "RTGS"})
     assert "RTGS" in output
 
 
 def test_the_profile_config_overrides_the_date_format() -> None:
-    output = serialise(
-        instruction(), BankFileFormat.HDFC, config={"date_format": "%Y-%m-%d"}
-    )
+    output = serialise(instruction(), BankFileFormat.HDFC, config={"date_format": "%Y-%m-%d"})
     assert "2026-06-30" in output
 
 
@@ -281,7 +274,21 @@ def test_the_file_hash_changes_when_one_amount_changes() -> None:
 
 
 def test_serialisation_is_deterministic() -> None:
-    assert (
-        serialise(instruction(), BankFileFormat.HDFC)
-        == serialise(instruction(), BankFileFormat.HDFC)
+    assert serialise(instruction(), BankFileFormat.HDFC) == serialise(
+        instruction(), BankFileFormat.HDFC
     )
+
+
+def test_a_professional_fees_file_carries_its_own_narration_and_code() -> None:
+    from dataclasses import replace
+
+    from app.services.disbursement.formats import FORMATS, PaymentPurpose
+
+    fees = replace(instruction(), purpose=PaymentPurpose.PROFESSIONAL_FEES)
+    for bank_format in FORMATS:
+        content = serialise(fees, bank_format)
+        assert "PROFESSIONAL FEES" in content
+        assert "SALARY" not in content
+    # A salary file is unchanged.
+    assert "SALARY" in serialise(instruction(), BankFileFormat.ICICI)
+    assert FORMATS[BankFileFormat.SBI].non_salary_transaction_code == "NEFT"

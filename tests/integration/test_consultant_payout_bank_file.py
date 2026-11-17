@@ -90,6 +90,9 @@ async def test_bank_file_for_approved_payout_run(session, tenant, hr_user, legal
     assert batch.file_name == f"ICICI_CON20261005_{uuid.UUID(run['id']).hex[:8]}.txt"
     content = decrypt_secret(batch.encrypted_file, tenant.id) or ""
     assert "CON20261005" in content
+    # A consultant's fee is never labelled a salary at the bank.
+    assert "PROFESSIONAL FEES" in content
+    assert "SALARY" not in content
 
     lines = (
         await session.scalars(select(DisbursementLine).where(DisbursementLine.batch_id == batch.id))
@@ -453,3 +456,21 @@ async def test_a_file_for_a_run_no_longer_approved_is_not_approved_or_released(
     assert releasing.value.status_code == 409
     await session.refresh(batch)
     assert batch.status is DisbursementStatus.APPROVED
+
+
+async def test_an_sbi_consultant_file_is_professional_fees(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    run, _, checker = await _approved_run(session, tenant, hr_user, legal_entity)
+    await _approve(session, checker, run)
+    profile = await _profile(session, tenant, legal_entity, file_format=BankFileFormat.SBI)
+    batch = await consultant_disbursement.prepare_consultant_batch(
+        session,
+        hr_user,
+        payout_run_id=uuid.UUID(run["id"]),
+        bank_profile_id=profile.id,
+        value_date=PAY_DATE,
+    )
+    content = decrypt_secret(batch.encrypted_file, tenant.id) or ""
+    assert content.count("PROFESSIONAL FEES") == 2
+    assert "SALARY" not in content and "SAL" not in content

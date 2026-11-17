@@ -26,6 +26,7 @@ configured length, and on a word boundary where one is available.
 
 from __future__ import annotations
 
+import enum
 import hashlib
 from dataclasses import dataclass, field
 from datetime import date
@@ -39,6 +40,7 @@ __all__ = [
     "FormatSpec",
     "PaymentInstruction",
     "PaymentLine",
+    "PaymentPurpose",
     "file_hash",
     "serialise",
     "truncate_name",
@@ -52,6 +54,22 @@ class FormatError(ValueError):
 # ── The canonical structure ─────────────────────────────────────────────────
 
 
+class PaymentPurpose(str, enum.Enum):
+    """What a file pays. The bank sees it in each credit's narration and, where the
+    format has one, its transaction-type code."""
+
+    SALARY = "salary"
+    #: A consultant's fee: never labelled a salary.
+    PROFESSIONAL_FEES = "professional_fees"
+
+
+#: The narration each credit carries, by what the file pays.
+NARRATION: dict[PaymentPurpose, str] = {
+    PaymentPurpose.SALARY: "SALARY",
+    PaymentPurpose.PROFESSIONAL_FEES: "PROFESSIONAL FEES",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class PaymentLine:
     beneficiary_name: str
@@ -59,7 +77,8 @@ class PaymentLine:
     ifsc: str
     amount: Decimal
     employee_code: str
-    narration: str = "SALARY"
+    #: None: the instruction's narration for its purpose.
+    narration: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +89,11 @@ class PaymentInstruction:
     value_date: date
     batch_reference: str
     lines: list[PaymentLine] = field(default_factory=list)
+    #: What the file pays; a salary file unless said otherwise.
+    purpose: PaymentPurpose = PaymentPurpose.SALARY
+
+    def narration_for(self, line: PaymentLine) -> str:
+        return line.narration if line.narration is not None else NARRATION[self.purpose]
 
     @property
     def total_amount(self) -> Decimal:
@@ -93,6 +117,9 @@ class FormatSpec:
     line_ending: str = "\r\n"
     # Fixed-width formats only: (field, width) in order.
     widths: tuple[tuple[str, int], ...] = ()
+    #: The transaction-type code for a credit that is not a salary, where the
+    #: format's own code is a salary code (SBI's SAL). None: the same code.
+    non_salary_transaction_code: str | None = None
 
 
 HDFC = FormatSpec(
@@ -129,6 +156,9 @@ SBI = FormatSpec(
     transaction_code="SAL",
     has_header=True,
     has_trailer=True,
+    # Not written in the fixed-width rows below, but kept right for a profile
+    # that reads it: a fee is an ordinary NEFT credit, not a salary one.
+    non_salary_transaction_code="NEFT",
     widths=(
         ("record_type", 2),
         ("account_number", 18),
@@ -266,6 +296,8 @@ def serialise(
         raise FormatError("A disbursement file with no payment lines would be rejected.")
 
     spec = _apply_config(spec, config or {})
+    if instruction.purpose is not PaymentPurpose.SALARY:
+        spec = _non_salary(spec, config or {})
     if spec.delimiter is None:
         return _fixed_width(instruction, spec)
     return _delimited(instruction, spec)
@@ -282,6 +314,15 @@ def _apply_config(spec: FormatSpec, config: dict) -> FormatSpec:
     if "date_format" in config:
         overrides["date_format"] = str(config["date_format"])
     return replace(spec, **overrides) if overrides else spec
+
+
+def _non_salary(spec: FormatSpec, config: dict) -> FormatSpec:
+    """The spec for a file that is not salaries: the format's (or the profile's)
+    non-salary transaction code, where it has one."""
+    from dataclasses import replace
+
+    code = config.get("non_salary_transaction_code") or spec.non_salary_transaction_code
+    return replace(spec, transaction_code=str(code)) if code else spec
 
 
 def _delimited(instruction: PaymentInstruction, spec: FormatSpec) -> str:
@@ -317,7 +358,7 @@ def _delimited(instruction: PaymentInstruction, spec: FormatSpec) -> str:
                     _amount(line.amount, in_paise=spec.amount_in_paise),
                     spec.transaction_code,
                     instruction.value_date.strftime(spec.date_format),
-                    _guard(line.narration, d, "narration"),
+                    _guard(instruction.narration_for(line), d, "narration"),
                 ]
             )
         )
@@ -359,7 +400,7 @@ def _fixed_width(instruction: PaymentInstruction, spec: FormatSpec) -> str:
             "ifsc": line.ifsc.ljust(11),
             "beneficiary_name": truncate_name(line.beneficiary_name, spec.name_length),
             "amount": _amount(line.amount, in_paise=spec.amount_in_paise).rjust(15, "0"),
-            "narration": line.narration,
+            "narration": instruction.narration_for(line),
         }
         row = ""
         for name, width in spec.widths:

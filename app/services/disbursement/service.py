@@ -355,9 +355,13 @@ async def _build_batch(
     notes: str | None,
     period: str,
     name_match_threshold: Decimal | None = None,
+    purpose: formats.PaymentPurpose = formats.PaymentPurpose.SALARY,
     request: Request | None = None,
 ) -> DisbursementBatch:
     """Check every payee's account and build the file paying them.
+
+    `purpose` is what the bank is told the credits are: salaries unless said
+    otherwise (a consultant file pays professional fees).
 
     `link` names the run the batch pays (`payroll_run_id` or
     `consultant_payout_run_id`). Any exception blocks: the batch is kept as
@@ -438,6 +442,7 @@ async def _build_batch(
         value_date=value_date,
         batch_reference=batch_reference,
         lines=payment_lines,
+        purpose=purpose,
     )
 
     try:
