@@ -1,6 +1,6 @@
 """A consultant's payout statement: one PDF per consultant per run.
 
-The weeks paid with their hours and rates, the gross fee, GST, TDS deducted
+The hours entries paid, each with its period, hours and rate, the gross fee, GST, TDS deducted
 (section and rate) and any TDS carried to the next payout, the net payable and
 the pay date. HR can issue any consultant's; a consultant gets only their own,
 once the run is approved.
@@ -23,7 +23,6 @@ from app.models.consultant_payouts import ConsultantPayoutLine, PayoutRunStatus
 from app.models.contractors import TdsSection
 from app.models.org import LegalEntity
 from app.models.tenant import Tenant
-from app.models.timesheets import Timesheet
 from app.models.user import User
 from app.services import audit
 from app.services.consultants import payouts
@@ -114,17 +113,14 @@ async def payout_statement_pdf(
     payer = entity.name if entity else (tenant.name if tenant else "Company")
 
     rows = []
-    for week in sorted(await _weeks(session, user, line), key=lambda pair: pair[1].week_start):
-        week_row, sheet = week
-        rates = sorted(
-            {Decimal(b["rate"]) for b in week_row.breakdown or [] if b.get("rate")},
-        )
+    for paid, entry in await _entries(session, user, line):
+        rates = sorted({Decimal(b["rate"]) for b in paid.breakdown or [] if b.get("rate")})
         rows.append(
             "<tr>"
-            f"<td>{sheet.week_start.isoformat()}</td>"
-            f"<td>{_amount(week_row.hours)}</td>"
+            f"<td>{entry.period_start.isoformat()} to {entry.period_end.isoformat()}</td>"
+            f"<td>{_amount(paid.hours)}</td>"
             f"<td>{escape(', '.join(_amount(rate) for rate in rates))}</td>"
-            f"<td>{_amount(week_row.gross)}</td>"
+            f"<td>{_amount(paid.gross)}</td>"
             "</tr>"
         )
     gst_rate = Decimal(str(line.gst_rate)).normalize()
@@ -143,7 +139,7 @@ async def payout_statement_pdf(
 {f"&nbsp; <b>GSTIN:</b> {escape(employee.gstin)}" if employee.gstin else ""}<br/>
 <b>Work up to:</b> {run.cut_off.isoformat()} &nbsp; <b>Pay date:</b> {run.pay_date.isoformat()}</p>
 <table class="ctc-table">
-<thead><tr><th>Week starting</th><th>Hours</th><th>Rate per hour</th><th>Fee</th></tr></thead>
+<thead><tr><th>Period</th><th>Hours</th><th>Rate per hour</th><th>Fee</th></tr></thead>
 <tbody>{"".join(rows)}</tbody>
 <tfoot><tr><td>Total</td><td>{_amount(line.hours)}</td><td>&nbsp;</td><td>{_amount(line.gross)}</td>
 </tr></tfoot>
@@ -180,18 +176,9 @@ async def payout_statement_pdf(
     return f"Payout-{safe}-{run.pay_date.isoformat()}.pdf", data
 
 
-async def _weeks(session: AsyncSession, user: User, line: ConsultantPayoutLine):
-    rows = await payouts._line_weeks(session, user, line.id)
-    sheets = {
-        sheet.id: sheet
-        for sheet in (
-            await session.scalars(
-                tenant_scoped(
-                    select(Timesheet).where(Timesheet.id.in_([w.timesheet_id for w in rows])),
-                    Timesheet,
-                    user,
-                )
-            )
-        ).all()
-    }
-    return [(week, sheets[week.timesheet_id]) for week in rows]
+async def _entries(session: AsyncSession, user: User, line: ConsultantPayoutLine):
+    """The line's paid entries with the hours entries they pay, earliest period first."""
+    rows = await payouts._line_entries(session, user, line.id)
+    sources = await payouts._hours_entries(session, user, [row.entry_id for row in rows])
+    pairs = [(row, sources[row.entry_id]) for row in rows]
+    return sorted(pairs, key=lambda pair: pair[1].period_start)

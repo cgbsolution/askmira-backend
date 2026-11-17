@@ -1,4 +1,4 @@
-"""Consultant payout runs: approved weeks priced, GST added, TDS taken, weeks held once."""
+"""Consultant payout runs: approved hours priced, GST added, TDS taken, entries held once."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import encrypt_secret
 from app.models.audit import AuditLog
+from app.models.consultant_hours import ConsultantHoursEntry, HoursEntryStatus
 from app.models.consultant_payouts import ConsultantTdsOpening
 from app.models.contractors import TdsSection
 from app.models.disbursement import EmployeeBankAccount
@@ -27,10 +28,9 @@ from app.models.payroll_inputs import (
     PayrollAdjustment,
 )
 from app.models.tenant import Tenant
-from app.models.timesheets import HourlyRate, Timesheet, TimesheetEntry, TimesheetStatus
+from app.models.timesheets import HourlyRate
 from app.models.user import User
-from app.services import timesheets
-from app.services.consultants import payouts
+from app.services.consultants import hours, payouts
 from tests.integration.conftest import requires_db
 from tests.integration.platform_support import bearer, client  # noqa: F401  (fixture)
 
@@ -50,7 +50,6 @@ RULES = {
     },
 }
 
-RELEASE = date(2026, 9, 1)
 MONDAY = date(2026, 9, 7)
 CUT_OFF = date(2026, 9, 30)
 PAY_DATE = date(2026, 10, 5)
@@ -58,7 +57,6 @@ APPROVED_AT = datetime(2026, 9, 14, 6, 0, tzinfo=UTC)
 
 
 async def _setup(session: AsyncSession, tenant: Tenant, hr_user: User) -> None:
-    tenant.consultant_payouts_from = RELEASE
     session.add(
         PayrollRuleSet(
             tenant_id=tenant.id,
@@ -123,7 +121,7 @@ async def _consultant(
     return person
 
 
-async def _week(
+async def _hours(
     session: AsyncSession,
     tenant: Tenant,
     person: Employee,
@@ -131,40 +129,43 @@ async def _week(
     monday: date = MONDAY,
     hours_per_day: str = "8",
     days: int = 5,
-    decided_at: datetime = APPROVED_AT,
-    payroll_adjustment_id: uuid.UUID | None = None,
-) -> Timesheet:
-    sheet = Timesheet(
+    period_end: date | None = None,
+    total: str | None = None,
+    entry_status: HoursEntryStatus = HoursEntryStatus.APPROVED,
+) -> ConsultantHoursEntry:
+    """Hours for the week starting `monday` (or to `period_end`), approved by default:
+    day by day (`days` days of `hours_per_day`), or as a `total` with no days."""
+    grid = None
+    billable = Decimal(total) if total is not None else Decimal(hours_per_day) * days
+    if total is None:
+        grid = [
+            {
+                "date": (monday + timedelta(days=offset)).isoformat(),
+                "hours": float(Decimal(hours_per_day)),
+                "status": "present",
+            }
+            for offset in range(days)
+        ]
+    entry = ConsultantHoursEntry(
         tenant_id=tenant.id,
         employee_id=person.id,
-        week_start=monday,
-        status=TimesheetStatus.APPROVED,
-        decided_at=decided_at,
-        approval_route="internal",
-        payroll_adjustment_id=payroll_adjustment_id,
+        period_start=monday,
+        period_end=period_end or monday + timedelta(days=6),
+        total_billable_hours=billable,
+        days=grid,
+        status=entry_status,
+        decided_at=APPROVED_AT if entry_status is HoursEntryStatus.APPROVED else None,
     )
-    session.add(sheet)
-    await session.flush()
-    for offset in range(days):
-        session.add(
-            TimesheetEntry(
-                tenant_id=tenant.id,
-                timesheet_id=sheet.id,
-                work_date=monday + timedelta(days=offset),
-                hours=Decimal(hours_per_day),
-            )
-        )
+    session.add(entry)
     await session.commit()
-    return sheet
+    return entry
 
 
 def _line(run: dict, person: Employee) -> dict:
     return next(line for line in run["lines"] if line["employee_id"] == str(person.id))
 
 
-async def test_run_pays_hours_times_rate_plus_gst_minus_tds(
-    session, tenant, hr_user, legal_entity
-) -> None:
+async def test_run_pays_approved_entries(session, tenant, hr_user, legal_entity) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(
         session,
@@ -185,7 +186,7 @@ async def test_run_pays_hours_times_rate_plus_gst_minus_tds(
         )
     )
     await session.commit()
-    sheet = await _week(session, tenant, person)
+    entry = await _hours(session, tenant, person)  # 40 hours, day by day
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -204,10 +205,13 @@ async def test_run_pays_hours_times_rate_plus_gst_minus_tds(
     assert line["tds_rate"] == "10.000"
     assert line["tds_amount"] == "8800.00"
     assert line["net_payable"] == "47840.00"
-    assert [w["timesheet_id"] for w in line["weeks"]] == [str(sheet.id)]
-    assert line["weeks"][0]["breakdown"][0] == {
-        "work_date": "2026-09-07",
-        "project_id": None,
+    paid = line["entries"]
+    assert [e["entry_id"] for e in paid] == [str(entry.id)]
+    assert (paid[0]["period_start"], paid[0]["period_end"]) == ("2026-09-07", "2026-09-13")
+    assert (paid[0]["hours"], paid[0]["gross"]) == ("40.00", "48000.00")
+    assert paid[0]["attachments"] == []
+    assert paid[0]["breakdown"][0] == {
+        "date": "2026-09-07",
         "hours": "8.00",
         "rate": "1200.00",
         "amount": "9600.00",
@@ -291,7 +295,7 @@ async def test_ytd_counts_only_approved_or_paid_runs_same_fy_and_section(
         pay_date=date(2026, 3, 15),  # the previous financial year
         gross="100000",
     )
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -310,163 +314,150 @@ async def test_ytd_counts_only_approved_or_paid_runs_same_fy_and_section(
     assert line["tds_amount"] == "4800.00"
 
 
-async def test_second_draft_does_not_take_held_weeks(
-    session, tenant, hr_user, legal_entity
-) -> None:
+async def test_entry_paid_once_across_runs(session, tenant, hr_user, legal_entity) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.consultant_payouts import ConsultantPayoutEntry
+
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    entry = await _hours(session, tenant, person)
+    # None of these is paid: not approved yet, or ending after the cut-off.
+    await _hours(
+        session, tenant, person, monday=date(2026, 8, 3), entry_status=HoursEntryStatus.DRAFT
+    )
+    await _hours(
+        session, tenant, person, monday=date(2026, 8, 10), entry_status=HoursEntryStatus.SUBMITTED
+    )
+    await _hours(
+        session, tenant, person, monday=date(2026, 8, 17), entry_status=HoursEntryStatus.REJECTED
+    )
+    await _hours(session, tenant, person, monday=date(2026, 9, 28))  # ends 4 Oct
 
     first = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
+    assert [e["entry_id"] for e in _line(first, person)["entries"]] == [str(entry.id)]
+    # A second draft does not take an entry the first holds.
     second = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
-    assert len(first["lines"]) == 1
     assert second["lines"] == []
 
-
-async def test_pre_release_and_adjusted_weeks_are_not_eligible(
-    session, tenant, hr_user, legal_entity
-) -> None:
-    await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1")
-    old = await _week(
-        session,
-        tenant,
-        person,
-        monday=date(2026, 8, 3),
-        decided_at=datetime(2026, 8, 10, tzinfo=UTC),
-    )
-    adjustment = PayrollAdjustment(
-        tenant_id=tenant.id,
-        employee_id=person.id,
-        kind=AdjustmentKind.EARNING,
-        category=AdjustmentCategory.OTHER_EARNING,
-        name="Hours, week of 14 Sep 2026",
-        amount=Decimal("48000"),
-        taxable=True,
-        counts_as_wages=True,
-        within_net_pay=False,
-        recurrence=AdjustmentRecurrence.ONE_TIME,
-        start_year=2026,
-        start_month=9,
-        status=AdjustmentStatus.PENDING,
-        reason="Approved timesheet, 40 hours.",
-        created_by_user_id=hr_user.id,
-    )
-    session.add(adjustment)
-    await session.flush()
-    adjusted = await _week(
-        session, tenant, person, monday=date(2026, 9, 14), payroll_adjustment_id=adjustment.id
-    )
-
-    run = await payouts.create_run(
-        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
-    )
-    assert run["lines"] == []
-
-    run = await payouts.include_week(session, hr_user, uuid.UUID(run["id"]), old.id)
-    line = _line(run, person)
-    assert [w["timesheet_id"] for w in line["weeks"]] == [str(old.id)]
-    assert line["gross"] == "48000.00"
-
-    with pytest.raises(HTTPException) as refused:
-        await payouts.include_week(session, hr_user, uuid.UUID(run["id"]), adjusted.id)
-    assert refused.value.status_code == 409
-
-
-def _timesheet_adjustment(
-    tenant: Tenant, person: Employee, hr_user: User, *, adjustment_status: AdjustmentStatus
-) -> PayrollAdjustment:
-    return PayrollAdjustment(
-        tenant_id=tenant.id,
-        employee_id=person.id,
-        kind=AdjustmentKind.EARNING,
-        category=AdjustmentCategory.OTHER_EARNING,
-        name="Hours, week of 03 Aug 2026",
-        amount=Decimal("48000"),
-        recurrence=AdjustmentRecurrence.ONE_TIME,
-        start_year=2026,
-        start_month=8,
-        reference=f"timesheet:{uuid.uuid4()}",
-        status=adjustment_status,
-        reason="Approved timesheet, 40 hours.",
-        created_by_user_id=hr_user.id,
-    )
-
-
-async def test_a_week_whose_payroll_adjustment_was_cancelled_can_be_paid_once(
-    session, tenant, hr_user, legal_entity
-) -> None:
-    from app.services.payroll import adjustments
-
-    await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1")
-    pending = _timesheet_adjustment(
-        tenant, person, hr_user, adjustment_status=AdjustmentStatus.PENDING
-    )
-    completed = _timesheet_adjustment(
-        tenant, person, hr_user, adjustment_status=AdjustmentStatus.COMPLETED
-    )
-    session.add_all([pending, completed])
-    await session.flush()
-    before_release = datetime(2026, 8, 10, tzinfo=UTC)
-    in_flight = await _week(
-        session,
-        tenant,
-        person,
-        monday=date(2026, 8, 3),
-        decided_at=before_release,
-        payroll_adjustment_id=pending.id,
-    )
-    paid = await _week(
-        session,
-        tenant,
-        person,
-        monday=date(2026, 8, 10),
-        decided_at=before_release,
-        payroll_adjustment_id=completed.id,
-    )
-    run = await payouts.create_run(
-        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
-    )
-    run_id = uuid.UUID(run["id"])
-    # Still pending in payroll: payroll may pay it, so a payout must not.
-    with pytest.raises(HTTPException) as refused:
-        await payouts.include_week(session, hr_user, run_id, in_flight.id)
-    assert refused.value.status_code == 409
-
+    # Paid: still never taken again.
     checker = await _second_hr(session, tenant)
-    await adjustments.cancel(session, checker, pending.id, note="Paid as a consultant payout")
-    run = await payouts.include_week(session, hr_user, run_id, in_flight.id)
-    assert [w["timesheet_id"] for w in _line(run, person)["weeks"]] == [str(in_flight.id)]
-    # Once only: no second run takes it, and a week payroll paid stays refused.
-    again = await payouts.create_run(
-        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    await payouts.delete_run(session, hr_user, uuid.UUID(second["id"]))
+    await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
+    await payouts.mark_paid(
+        session, hr_user, uuid.UUID(first["id"]), paid_on=PAY_DATE, reference="UTR1"
     )
-    with pytest.raises(HTTPException) as twice:
-        await payouts.include_week(session, hr_user, uuid.UUID(again["id"]), in_flight.id)
-    assert twice.value.status_code == 409
-    with pytest.raises(HTTPException) as refused:
-        await payouts.include_week(session, hr_user, run_id, paid.id)
-    assert refused.value.status_code == 409
+    later = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=date(2026, 10, 10)
+    )
+    assert later["lines"] == []
+
+    # The database refuses the same entry on a second run.
+    line_id = uuid.UUID(_line(first, person)["id"])
+    session.add(
+        ConsultantPayoutEntry(
+            tenant_id=tenant.id,
+            run_id=uuid.UUID(later["id"]),
+            line_id=line_id,
+            entry_id=entry.id,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
 
 
-async def test_an_approved_week_with_a_cancelled_adjustment_is_taken(
+async def test_total_only_entry_uses_period_end_rate(
     session, tenant, hr_user, legal_entity
 ) -> None:
     await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1")
-    cancelled = _timesheet_adjustment(
-        tenant, person, hr_user, adjustment_status=AdjustmentStatus.CANCELLED
+    person = await _consultant(session, tenant, legal_entity, "CON1", rate="1000")
+    # A raise before the period: the rate in force all September is 1200.
+    session.add(
+        HourlyRate(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            rate=Decimal("1200"),
+            effective_from=date(2026, 8, 1),
+        )
     )
-    session.add(cancelled)
-    await session.flush()
-    sheet = await _week(session, tenant, person, payroll_adjustment_id=cancelled.id)
-    taken = await payouts.eligible_weeks(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
-    assert [week.id for week in taken] == [sheet.id]
+    await session.commit()
+    entry = await _hours(
+        session, tenant, person, monday=date(2026, 9, 1), period_end=CUT_OFF, total="40"
+    )
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    line = _line(run, person)
+    assert line["excluded"] is False and line["problems"] == []
+    assert (line["hours"], line["gross"]) == ("40.00", "48000.00")
+    paid = line["entries"]
+    assert [e["entry_id"] for e in paid] == [str(entry.id)]
+    assert paid[0]["breakdown"] == [
+        {
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+            "hours": "40.00",
+            "rate": "1200.00",
+            "amount": "48000.00",
+        }
+    ]
+
+
+async def test_rate_change_inside_total_only_period_is_held(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    total = await _consultant(session, tenant, legal_entity, "CON1")
+    by_day = await _consultant(session, tenant, legal_entity, "CON2")
+    unrated = await _consultant(session, tenant, legal_entity, "CON3")
+    for person in (total, by_day):
+        session.add(
+            HourlyRate(
+                tenant_id=tenant.id,
+                employee_id=person.id,
+                rate=Decimal("1500"),
+                effective_from=date(2026, 9, 20),
+            )
+        )
+    rates = await session.scalars(select(HourlyRate).where(HourlyRate.employee_id == unrated.id))
+    for rate in rates.all():
+        await session.delete(rate)
+    await session.commit()
+    september = {"monday": date(2026, 9, 1), "period_end": CUT_OFF}
+    await _hours(session, tenant, total, **september, total="160")
+    await _hours(session, tenant, unrated, **september, total="160")
+    # The same raise, hours given day by day: each day at its own rate.
+    await _hours(session, tenant, by_day, monday=date(2026, 9, 18), days=5)
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+
+    held = _line(run, total)
+    assert held["excluded"] is True
+    assert held["problems"] == [
+        "The hourly rate changed during 01 Sep 2026 to 30 Sep 2026. Enter the hours day by day."
+    ]
+    assert held["gross"] == "0.00"
+    assert held["entries"][0]["breakdown"][0]["rate"] is None
+    assert _line(run, unrated)["problems"] == ["No hourly rate for 01 Sep 2026 to 30 Sep 2026"]
+    priced = _line(run, by_day)
+    assert priced["excluded"] is False
+    # 18 and 19 Sep at 1200, 20 to 22 Sep at 1500.
+    assert priced["gross"] == "55200.00"
+    assert [d["rate"] for d in priced["entries"][0]["breakdown"]] == [
+        "1200.00",
+        "1200.00",
+        "1500.00",
+        "1500.00",
+        "1500.00",
+    ]
 
 
 async def test_problems_hold_only_that_line(session, tenant, hr_user, legal_entity) -> None:
@@ -475,7 +466,7 @@ async def test_problems_hold_only_that_line(session, tenant, hr_user, legal_enti
     b = await _consultant(session, tenant, legal_entity, "CONB")
     c = await _consultant(session, tenant, legal_entity, "CONC", pan=None, rate="1500")
     for person in (a, b, c):
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -484,7 +475,7 @@ async def test_problems_hold_only_that_line(session, tenant, hr_user, legal_enti
     line_a, line_b, line_c = _line(run, a), _line(run, b), _line(run, c)
     assert line_a["excluded"] is True
     assert line_a["problems"] == ["No bank account"]
-    assert len(line_a["weeks"]) == 1  # held, not released
+    assert len(line_a["entries"]) == 1  # held, not released
     assert line_b["excluded"] is False and line_b["problems"] == []
     assert line_c["excluded"] is False and line_c["problems"] == []
     # 60000 crosses 50000; no PAN, so the higher rate.
@@ -516,7 +507,7 @@ async def test_missing_rate_and_gstin_are_problems(session, tenant, hr_user, leg
     rate = await session.scalar(select(HourlyRate).where(HourlyRate.employee_id == late.id))
     rate.effective_from = date(2026, 9, 9)
     await session.commit()
-    await _week(session, tenant, late)
+    await _hours(session, tenant, late)
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -530,19 +521,20 @@ async def test_missing_rate_and_gstin_are_problems(session, tenant, hr_user, leg
     ]
 
 
-async def test_exclude_and_delete_release_weeks(session, tenant, hr_user, legal_entity) -> None:
+async def test_exclude_and_delete_release_entries(session, tenant, hr_user, legal_entity) -> None:
     await _setup(session, tenant, hr_user)
     a = await _consultant(session, tenant, legal_entity, "CONA")
     b = await _consultant(session, tenant, legal_entity, "CONB")
-    week_a = await _week(session, tenant, a)
-    week_b = await _week(session, tenant, b)
+    entry_a = await _hours(session, tenant, a)
+    entry_b = await _hours(session, tenant, b)
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
     run_id = uuid.UUID(run["id"])
     assert (
-        await payouts.eligible_weeks(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF) == []
+        await payouts.eligible_entries(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
+        == []
     )
 
     run = await payouts.exclude_line(
@@ -551,17 +543,17 @@ async def test_exclude_and_delete_release_weeks(session, tenant, hr_user, legal_
     excluded = _line(run, a)
     assert excluded["excluded"] is True
     assert excluded["excluded_reason"] == "Disputed hours"
-    assert excluded["weeks"] == [] and excluded["net_payable"] == "0.00"
-    free = await payouts.eligible_weeks(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
-    assert [w.id for w in free] == [week_a.id]
+    assert excluded["entries"] == [] and excluded["net_payable"] == "0.00"
+    free = await payouts.eligible_entries(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
+    assert [e.id for e in free] == [entry_a.id]
 
     # Recalculating never brings back a line HR took out.
     run = await payouts.recalculate(session, hr_user, run_id)
-    assert _line(run, a)["excluded"] is True and _line(run, a)["weeks"] == []
+    assert _line(run, a)["excluded"] is True and _line(run, a)["entries"] == []
 
     await payouts.delete_run(session, hr_user, run_id)
-    free = await payouts.eligible_weeks(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
-    assert {w.id for w in free} == {week_a.id, week_b.id}
+    free = await payouts.eligible_entries(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
+    assert {e.id for e in free} == {entry_a.id, entry_b.id}
     with pytest.raises(HTTPException) as gone:
         await payouts.get_run(session, hr_user, run_id)
     assert gone.value.status_code == 404
@@ -576,29 +568,39 @@ async def test_legal_entity_and_cut_off_narrow_the_run(
     await session.commit()
     here = await _consultant(session, tenant, legal_entity, "CONH")
     there = await _consultant(session, tenant, other, "CONT")
-    await _week(session, tenant, here)
-    await _week(session, tenant, there)
-    await _week(session, tenant, here, monday=date(2026, 9, 28))  # ends 4 Oct
+    await _hours(session, tenant, here)
+    await _hours(session, tenant, there)
+    await _hours(session, tenant, here, monday=date(2026, 9, 28))  # ends 4 Oct
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=legal_entity.id, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
     assert [line["employee_id"] for line in run["lines"]] == [str(here.id)]
-    assert len(run["lines"][0]["weeks"]) == 1
+    assert len(run["lines"][0]["entries"]) == 1
 
 
-async def test_reopen_refused_once_in_a_run(session, tenant, hr_user, legal_entity) -> None:
+async def test_editing_entry_in_draft_run_refused(session, tenant, hr_user, legal_entity) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    sheet = await _week(session, tenant, person)
-    await payouts.create_run(
+    entry = await _hours(session, tenant, person)
+    run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
+    assert await hours.in_payout_run(session, hr_user, entry.id) is True
 
+    # A draft holds it: finance cannot reopen it to change the figures.
     with pytest.raises(HTTPException) as refused:
-        await timesheets.reopen_week(session, hr_user, sheet.id)
+        await hours.reopen_entry(session, hr_user, entry.id)
     assert refused.value.status_code == 409
     assert "already in a consultant payout" in refused.value.detail
+
+    # Left out of the draft, it is free to reopen and fix.
+    await payouts.exclude_line(
+        session, hr_user, uuid.UUID(run["id"]), uuid.UUID(_line(run, person)["id"]), reason="Fix"
+    )
+    assert await hours.in_payout_run(session, hr_user, entry.id) is False
+    reopened = await hours.reopen_entry(session, hr_user, entry.id)
+    assert reopened["status"] == "draft"
 
 
 async def test_only_drafts_change(session, tenant, hr_user, legal_entity) -> None:
@@ -606,7 +608,7 @@ async def test_only_drafts_change(session, tenant, hr_user, legal_entity) -> Non
 
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -635,7 +637,7 @@ async def test_payout_api(
 ) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
 
     created = await client.post(
         "/api/v1/consultant-payouts",
@@ -687,7 +689,7 @@ async def test_approved_run_is_locked_and_never_repriced(
 ) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -733,7 +735,7 @@ async def test_cannot_approve_with_problem_lines(session, tenant, hr_user, legal
     good = await _consultant(session, tenant, legal_entity, "CONB")
     held = await _consultant(session, tenant, legal_entity, "CONA", bank=False)
     for person in (good, held):
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -778,7 +780,7 @@ async def test_statement_and_my_payouts(
     mine = await _consultant(session, tenant, legal_entity, "CON1")
     other = await _consultant(session, tenant, legal_entity, "CON2")
     for person in (mine, other):
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
     logins = []
     for person in (mine, other):
         login = User(
@@ -968,7 +970,7 @@ async def test_whoever_last_changed_the_figures_cannot_approve(
 ) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -994,7 +996,7 @@ async def test_approval_needs_scope_over_everybody_on_the_run(
     inside = await _consultant(session, tenant, legal_entity, "CON1")
     outside = await _consultant(session, tenant, legal_entity, "CON2")
     for person in (inside, outside):
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -1051,7 +1053,7 @@ async def _gst_capped_consultant(session, tenant, legal_entity, code: str) -> Em
         gstin="29ABCDE1234F1Z5",
     )
     await _untaxed_opening(session, tenant, person, "59000")
-    await _week(session, tenant, person, hours_per_day="5", days=1)
+    await _hours(session, tenant, person, hours_per_day="5", days=1)
     return person
 
 
@@ -1060,7 +1062,7 @@ async def _capped_first_run(session, tenant, hr_user, legal_entity, *, gst_code:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1", rate="1000")
     await _untaxed_opening(session, tenant, person, "49000")
-    await _week(session, tenant, person, hours_per_day="5", days=1)
+    await _hours(session, tenant, person, hours_per_day="5", days=1)
     if gst_code:
         await _gst_capped_consultant(session, tenant, legal_entity, gst_code)
     run = await payouts.create_run(
@@ -1108,7 +1110,7 @@ async def test_carried_tds_is_taken_from_the_next_payout(
     person, first = await _capped_first_run(session, tenant, hr_user, legal_entity)
     checker = await _second_hr(session, tenant)
     await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
-    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+    await _hours(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
 
     second = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
@@ -1164,7 +1166,7 @@ async def test_net_is_never_negative(session, tenant, hr_user, legal_entity) -> 
     await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
 
     # The 400 carried is more than the whole next payout (250): it is capped again.
-    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="0.25", days=1)
+    await _hours(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="0.25", days=1)
     second = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
     )
@@ -1199,7 +1201,7 @@ async def test_backdated_run_cannot_take_a_carry_twice(
     checker = await _second_hr(session, tenant)
     await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
     # Run A, paid 25 Oct, takes the 400 carried and is approved.
-    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+    await _hours(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
     run_a = await payouts.create_run(
         session,
         hr_user,
@@ -1211,7 +1213,7 @@ async def test_backdated_run_cannot_take_a_carry_twice(
     await payouts.approve_run(session, checker, uuid.UUID(run_a["id"]), confirm=_confirmed)
 
     # Run B is dated 20 Oct, before A: it would find the first run's 400 again.
-    await _week(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
+    await _hours(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
     run_b = await payouts.create_run(
         session,
         hr_user,
@@ -1248,7 +1250,7 @@ async def test_carried_tds_does_not_cross_financial_years(
     )
     last_year.tds_carried_out = Decimal("400")
     await session.commit()
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
 
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -1274,11 +1276,11 @@ async def test_approve_refuses_when_another_run_took_the_carry(
     checker = await _second_hr(session, tenant)
     await payouts.approve_run(session, checker, uuid.UUID(first["id"]), confirm=_confirmed)
     # Two drafts open at once: both bring in the 400 the first run could not take.
-    await _week(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
+    await _hours(session, tenant, person, monday=SECOND_MONDAY, hours_per_day="10", days=1)
     draft_a = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=SECOND_CUT_OFF, pay_date=SECOND_PAY_DATE
     )
-    await _week(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
+    await _hours(session, tenant, person, monday=date(2026, 10, 12), hours_per_day="10", days=1)
     draft_b = await payouts.create_run(
         session,
         hr_user,
@@ -1312,7 +1314,7 @@ async def test_approve_refuses_after_opening_changed(
 
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -1339,74 +1341,26 @@ async def test_approve_refuses_after_opening_changed(
     assert _line(again, person)["tds_amount"] == "0.00"
 
 
-async def test_includable_weeks_lists_older_unpaid_weeks_for_hr(
+async def test_older_week_routes_are_gone(
     session,
     tenant,
     hr_user,
     legal_entity,
     client,  # noqa: F811
 ) -> None:
-    from app.models.user import UserRole
-    from tests.integration.platform_support import make_person
-
     await _setup(session, tenant, hr_user)
-    person = await _consultant(session, tenant, legal_entity, "CON1")
-    before_release = datetime(2026, 8, 20, tzinfo=UTC)
-    old = await _week(session, tenant, person, monday=date(2026, 8, 3), decided_at=before_release)
-    await _week(session, tenant, person)  # approved after the release: a run takes it
-    pending = _timesheet_adjustment(
-        tenant, person, hr_user, adjustment_status=AdjustmentStatus.PENDING
-    )
-    cancelled = _timesheet_adjustment(
-        tenant, person, hr_user, adjustment_status=AdjustmentStatus.CANCELLED
-    )
-    session.add_all([pending, cancelled])
-    await session.flush()
-    await _week(
-        session,
-        tenant,
-        person,
-        monday=date(2026, 8, 10),
-        decided_at=before_release,
-        payroll_adjustment_id=pending.id,
-    )
-    stopped = await _week(
-        session,
-        tenant,
-        person,
-        monday=date(2026, 8, 17),
-        decided_at=before_release,
-        payroll_adjustment_id=cancelled.id,
-        hours_per_day="4",
-    )
-
-    listed = await client.get(
-        "/api/v1/consultant-payouts/includable-weeks",
-        params={"cut_off": CUT_OFF.isoformat()},
-        headers=bearer(hr_user),
-    )
-    assert listed.status_code == 200
-    assert [(w["timesheet_id"], w["total_hours"]) for w in listed.json()] == [
-        (str(old.id), "40.00"),
-        (str(stopped.id), "20.00"),
-    ]
-    assert listed.json()[0]["employee_code"] == "CON1"
-    assert listed.json()[0]["week_start"] == "2026-08-03"
-    attention = await client.get("/api/v1/consultant-payouts/attention", headers=bearer(hr_user))
-    assert attention.json()["includable_weeks"] == 2
-
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
-    await payouts.include_week(session, hr_user, uuid.UUID(run["id"]), old.id)
-    after = await payouts.includable_weeks(session, hr_user, cut_off=CUT_OFF)
-    assert [w["timesheet_id"] for w in after] == [str(stopped.id)]
-
-    colleague = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Pat Lee")
-    refused = await client.get(
-        "/api/v1/consultant-payouts/includable-weeks", headers=bearer(colleague)
+    added = await client.post(
+        f"/api/v1/consultant-payouts/{run['id']}/weeks",
+        json={"timesheet_id": str(uuid.uuid4())},
+        headers=bearer(hr_user),
     )
-    assert refused.status_code == 403
+    assert added.status_code in (404, 405)
+    attention = await client.get("/api/v1/consultant-payouts/attention", headers=bearer(hr_user))
+    assert attention.status_code == 200
+    assert "includable_weeks" not in attention.json()
 
 
 async def test_attention_lists_tds_still_owed_after_year_end_or_a_section_change(

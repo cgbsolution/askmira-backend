@@ -27,9 +27,10 @@ from sqlalchemy.orm import load_only
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
+from app.models.consultant_hours import ConsultantHoursEntry, HoursEntryStatus
 from app.models.consultant_payouts import (
+    ConsultantPayoutEntry,
     ConsultantPayoutRun,
-    ConsultantPayoutWeek,
     PayoutRunStatus,
 )
 from app.models.employee import (
@@ -60,7 +61,6 @@ from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
 from app.services.consultants import (
     is_consultant,
-    not_paid_through_payroll,
     timesheet_pay_waiting_in_payroll,
 )
 from app.services.employee_profile import HIRING_KEYS
@@ -675,18 +675,17 @@ async def _has_timesheet_pay_waiting(
     )
 
 
-async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
-    """Whether a consultant has approved timesheet weeks that nobody has paid yet.
+async def _has_unpaid_hours(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether a consultant has approved hours entries that nobody has paid yet.
 
-    Paid means picked up by a payroll adjustment (before payouts existed) that
-    was not cancelled or rejected, or in a consultant payout run marked paid. A
-    week in a draft or approved run is not paid yet.
+    Paid means in a consultant payout run marked paid. An entry in a draft or
+    approved run is not paid yet.
     """
     paid_in_a_run = (
-        select(ConsultantPayoutWeek.id)
-        .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutWeek.run_id)
+        select(ConsultantPayoutEntry.id)
+        .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutEntry.run_id)
         .where(
-            ConsultantPayoutWeek.timesheet_id == Timesheet.id,
+            ConsultantPayoutEntry.entry_id == ConsultantHoursEntry.id,
             ConsultantPayoutRun.status == PayoutRunStatus.PAID,
         )
         .exists()
@@ -694,15 +693,14 @@ async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid
     return (
         await session.scalar(
             tenant_scoped(
-                select(Timesheet.id)
+                select(ConsultantHoursEntry.id)
                 .where(
-                    Timesheet.employee_id == employee_id,
-                    Timesheet.status == TimesheetStatus.APPROVED,
-                    not_paid_through_payroll(),
+                    ConsultantHoursEntry.employee_id == employee_id,
+                    ConsultantHoursEntry.status == HoursEntryStatus.APPROVED,
                     ~paid_in_a_run,
                 )
                 .limit(1),
-                Timesheet,
+                ConsultantHoursEntry,
                 user,
             )
         )
@@ -796,12 +794,12 @@ async def update_employee(
         new_kind is not None
         and new_kind is not EmploymentType.CONSULTANT
         and is_consultant(employee)
-        and await _has_unpaid_weeks(session, user, employee.id)
+        and await _has_unpaid_hours(session, user, employee.id)
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This consultant has approved weeks not yet paid. Pay them in a "
+                "This consultant has approved hours not yet paid. Pay them in a "
                 "Consultant payout before changing their employment type."
             ),
         )

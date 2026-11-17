@@ -62,9 +62,8 @@ class Tenant(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     purge_after: Mapped[date | None] = mapped_column(Date, nullable=True)
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    #: The day consultant payouts began for this workspace. A week approved
-    #: before it was paid some other way, so it is never swept into a payout run.
-    #: A new workspace starts on the day it is created.
+    #: The day consultant payouts began for this workspace. No longer read: payout
+    #: runs pay hours entries, which need no release date. Kept until a clean-up drops it.
     consultant_payouts_from: Mapped[date | None] = mapped_column(
         Date, default=date.today, nullable=True
     )

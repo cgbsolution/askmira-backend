@@ -26,9 +26,9 @@ from tests.integration.test_consultant_payout_run import (
     PAY_DATE,
     _confirmed,
     _consultant,
+    _hours,
     _second_hr,
     _setup,
-    _week,
 )
 
 pytestmark = requires_db
@@ -50,7 +50,7 @@ async def _approved_run(session, tenant, hr_user, entity, *, cut_off=CUT_OFF, pa
         )
     )
     await session.commit()
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=cut_off, pay_date=pay_date
     )
@@ -123,7 +123,7 @@ async def test_26q_skips_drafts_excluded_lines_and_no_tds(
 ) -> None:
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person)
+    await _hours(session, tenant, person)
     # Below the 50,000 threshold: no TDS, so nothing to report.
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -281,7 +281,7 @@ async def test_scoped_admin_sees_whole_deductor_for_26q_and_challans(
             )
         )
         await session.commit()
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
     )
@@ -362,7 +362,7 @@ async def test_pnl_cost_in_work_month(session, tenant, hr_user, legal_entity) ->
     # two in October; paid on 15 October.
     await _setup(session, tenant, hr_user)
     person = await _consultant(session, tenant, legal_entity, "CON1")
-    await _week(session, tenant, person, monday=date(2026, 9, 28))
+    await _hours(session, tenant, person, monday=date(2026, 9, 28))
     run = await payouts.create_run(
         session,
         hr_user,

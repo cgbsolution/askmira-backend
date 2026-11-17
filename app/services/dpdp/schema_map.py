@@ -598,7 +598,7 @@ TABLES: dict[str, TableClassification] = {
         "per-person amounts are in consultant_payout_lines."
     ),
     "consultant_payout_lines": _p(EMP, "compensation"),
-    "consultant_payout_weeks": _p(EMP, "compensation"),
+    "consultant_payout_entries": _p(EMP, "compensation"),
     "consultant_tds_openings": _p(EMP, "tax"),
     "consultant_hours_entries": _p(EMP, "compensation"),
     "consultant_hours_attachments": _p(EMP, "compensation"),

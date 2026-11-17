@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.consultant_payouts import ConsultantPayoutWeek
 from app.models.employee import ApproverRoute, Employee, EmploymentStatus
 from app.models.org import LegalEntity
 from app.models.payroll_inputs import (
@@ -1206,22 +1205,6 @@ async def decide(
     return {**read, "pay": pay_note}
 
 
-async def _in_payout_run(session: AsyncSession, user: User, sheet: Timesheet) -> bool:
-    """Whether the week is in a consultant payout run (draft, approved or paid)."""
-    return (
-        await session.scalar(
-            tenant_scoped(
-                select(ConsultantPayoutWeek.id).where(
-                    ConsultantPayoutWeek.timesheet_id == sheet.id
-                ),
-                ConsultantPayoutWeek,
-                user,
-            )
-        )
-        is not None
-    )
-
-
 async def reopen_week(
     session: AsyncSession,
     user: User,
@@ -1244,11 +1227,6 @@ async def reopen_week(
     if sheet.status not in (TimesheetStatus.APPROVED, TimesheetStatus.REJECTED):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Only a decided week can be reopened."
-        )
-    if await _in_payout_run(session, user, sheet):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This week is already in a consultant payout.",
         )
     before = sheet.status.value
     sheet.status = TimesheetStatus.DRAFT

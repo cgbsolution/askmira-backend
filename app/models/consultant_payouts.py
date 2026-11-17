@@ -1,14 +1,14 @@
-"""Consultant payout runs: approved consultant weeks paid outside payroll.
+"""Consultant payout runs: approved consultant hours entries paid outside payroll.
 
-A run takes every approved consultant week up to its cut-off and makes one
+A run takes every approved hours entry ending by its cut-off and makes one
 line per consultant: the hours priced at the rate in force on each day worked,
 GST on top where the consultant charges it, and TDS under 194J or 194C taken
 off. The run's pay date is the TDS date: it picks the financial year, the rule
 set and the year-to-date total for every line.
 
-A week belongs to at most one run — `consultant_payout_weeks.timesheet_id` is
+An entry belongs to at most one run — `consultant_payout_entries.entry_id` is
 unique — so nothing is paid twice. Excluding a line or deleting a draft
-deletes its week rows, which releases the weeks for a later run.
+deletes its entry rows, which releases the entries for a later run.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class ConsultantPayoutRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ),
         nullable=True,
     )
-    #: Weeks ending on or before this day are taken.
+    #: Hours entries ending on or before this day are taken.
     cut_off: Mapped[date] = mapped_column(Date, nullable=False)
     #: The day the consultants are paid, and the TDS date.
     pay_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
@@ -70,8 +70,8 @@ class ConsultantPayoutRun(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("users.id", ondelete="SET NULL", name="fk_consultant_payout_runs_created_by"),
         nullable=True,
     )
-    #: Whoever last changed the figures (drafted, recalculated, added a week, left a line
-    #: out). They cannot approve the run.
+    #: Whoever last changed the figures (drafted, recalculated, left a line out).
+    #: They cannot approve the run.
     computed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL", name="fk_consultant_payout_runs_computed_by"),
@@ -91,8 +91,8 @@ class ConsultantPayoutLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One consultant's pay in a run.
 
     `excluded` with `problems` and no `excluded_reason`: held back until the
-    data is fixed and the run recalculated; the line keeps its weeks.
-    `excluded_reason` set: HR took the line out by hand; its weeks are released
+    data is fixed and the run recalculated; the line keeps its entries.
+    `excluded_reason` set: HR took the line out by hand; its entries are released
     and recalculating never brings it back.
     """
 
@@ -161,15 +161,17 @@ class ConsultantPayoutLine(Base, UUIDMixin, TenantMixin, TimestampMixin):
     )
 
 
-class ConsultantPayoutWeek(Base, UUIDMixin, TenantMixin, TimestampMixin):
-    """One approved week paid by a line. A week is in at most one run."""
+class ConsultantPayoutEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """One approved hours entry paid by a line. An entry is in at most one run."""
 
-    __tablename__ = "consultant_payout_weeks"
+    __tablename__ = "consultant_payout_entries"
 
     run_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(
-            "consultant_payout_runs.id", ondelete="CASCADE", name="fk_consultant_payout_weeks_run"
+            "consultant_payout_runs.id",
+            ondelete="CASCADE",
+            name="fk_consultant_payout_entries_run",
         ),
         nullable=False,
         index=True,
@@ -179,23 +181,25 @@ class ConsultantPayoutWeek(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey(
             "consultant_payout_lines.id",
             ondelete="CASCADE",
-            name="fk_consultant_payout_weeks_line",
+            name="fk_consultant_payout_entries_line",
         ),
         nullable=False,
         index=True,
     )
-    timesheet_id: Mapped[uuid.UUID] = mapped_column(
+    entry_id: Mapped[uuid.UUID] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(
-            "timesheets.id", ondelete="RESTRICT", name="fk_consultant_payout_weeks_timesheet"
+            "consultant_hours_entries.id",
+            ondelete="RESTRICT",
+            name="fk_consultant_payout_entries_entry",
         ),
         nullable=False,
         unique=True,
     )
     hours: Mapped[Decimal] = mapped_column(Numeric(8, 2), default=0, nullable=False)
     gross: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
-    #: The week priced by day and project:
-    #: [{work_date, project_id, hours, rate, amount}].
+    #: The entry priced: day by day [{date, hours, rate, amount}], or for a total-only
+    #: entry one item [{period_start, period_end, hours, rate, amount}].
     breakdown: Mapped[list] = mapped_column(
         JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
     )

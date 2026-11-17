@@ -147,9 +147,9 @@ from app.models.consultant_hours import (
     HoursEntryStatus,
 )
 from app.models.consultant_payouts import (
+    ConsultantPayoutEntry,
     ConsultantPayoutLine,
     ConsultantPayoutRun,
-    ConsultantPayoutWeek,
     ConsultantTdsOpening,
     PayoutRunStatus,
 )
@@ -825,9 +825,9 @@ __all__ = [
     "ConsentRecord",
     "ConsultantHoursAttachment",
     "ConsultantHoursEntry",
+    "ConsultantPayoutEntry",
     "ConsultantPayoutLine",
     "ConsultantPayoutRun",
-    "ConsultantPayoutWeek",
     "ConsultantTdsOpening",
     "Contractor",
     "ContractorInvoice",

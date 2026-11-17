@@ -1,4 +1,4 @@
-"""Consultant payout runs: approved consultant weeks paid outside payroll, with GST and TDS."""
+"""Consultant payout runs: approved consultant hours paid outside payroll, with GST and TDS."""
 
 from __future__ import annotations
 
@@ -41,12 +41,6 @@ class ExcludeIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-class WeekIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    timesheet_id: uuid.UUID
-
-
 @router.get("")
 async def list_runs(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
     return await payouts.list_runs(session, user)
@@ -56,7 +50,7 @@ async def list_runs(user: CurrentUser, session: DbSession) -> list[dict[str, Any
 async def create_run(
     payload: RunIn, user: CurrentUser, session: DbSession, request: Request
 ) -> dict[str, Any]:
-    """Draft a run of every approved consultant week ending by the cut-off."""
+    """Draft a run of every approved consultant hours entry ending by the cut-off."""
     return await payouts.create_run(
         session,
         user,
@@ -104,26 +98,11 @@ class OpeningIn(BaseModel):
 
 @router.get("/attention")
 async def attention_list(user: CurrentUser, session: DbSession) -> dict[str, Any]:
-    """Consultants to sort out before payouts start, payroll adjustments still pending,
-    and how many older weeks are waiting to be added to a run."""
+    """Consultants to sort out before payouts start, and payroll adjustments still pending."""
     return {
         "consultants": await attention.attention_list(session, user),
         "pending_adjustments": await attention.pending_adjustments(session, user),
-        "includable_weeks": len(await payouts.includable_weeks(session, user)),
     }
-
-
-@router.get("/includable-weeks")
-async def includable_weeks(
-    user: CurrentUser,
-    session: DbSession,
-    legal_entity_id: uuid.UUID | None = None,
-    cut_off: date | None = None,
-) -> list[dict[str, Any]]:
-    """Approved, unpaid weeks from before payouts were released, to add to a draft run."""
-    return await payouts.includable_weeks(
-        session, user, legal_entity_id=legal_entity_id, cut_off=cut_off
-    )
 
 
 @router.post("/attention/end-salaries")
@@ -169,7 +148,7 @@ async def get_run(run_id: uuid.UUID, user: CurrentUser, session: DbSession) -> d
 async def delete_run(
     run_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
 ) -> Response:
-    """Delete a draft; its weeks are free for a later run."""
+    """Delete a draft; its hours entries are free for a later run."""
     await payouts.delete_run(session, user, run_id, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -190,18 +169,10 @@ async def exclude_line(
     session: DbSession,
     request: Request,
 ) -> dict[str, Any]:
-    """Leave a consultant out of this run; their weeks are free for a later one."""
+    """Leave a consultant out of this run; their hours entries are free for a later one."""
     return await payouts.exclude_line(
         session, user, run_id, line_id, reason=payload.reason, request=request
     )
-
-
-@router.post("/{run_id}/weeks")
-async def include_week(
-    run_id: uuid.UUID, payload: WeekIn, user: CurrentUser, session: DbSession, request: Request
-) -> dict[str, Any]:
-    """Add an older approved, unpaid week the run did not take on its own."""
-    return await payouts.include_week(session, user, run_id, payload.timesheet_id, request=request)
 
 
 @router.post("/{run_id}/approve")

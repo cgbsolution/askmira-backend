@@ -28,9 +28,9 @@ from tests.integration.test_consultant_payout_run import (
     PAY_DATE,
     _confirmed,
     _consultant,
+    _hours,
     _second_hr,
     _setup,
-    _week,
 )
 from tests.integration.test_disbursement_flow import _profile
 
@@ -54,7 +54,7 @@ async def _approved_run(session, tenant, hr_user, legal_entity, *, codes=("CON1"
             )
         )
         await session.commit()
-        await _week(session, tenant, person)
+        await _hours(session, tenant, person)
         people.append(person)
     run = await payouts.create_run(
         session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
@@ -412,8 +412,8 @@ async def test_a_run_with_an_unsent_file_cannot_be_marked_paid(
         await payouts.mark_paid(session, hr_user, run_id, paid_on=PAY_DATE, reference="UTR1")
     assert waiting.value.status_code == 409
     assert waiting.value.detail == (
-        "This run has a bank file that hasn't been sent. Release it or cancel it before "
-        "marking the run paid."
+        "This run has a bank file that hasn't been sent. Release it to the bank first, "
+        "or regenerate it."
     )
     await disbursement_service.approve_batch(
         session, checker, batch_id=batch.id, file_hash=batch.file_hash

@@ -1,14 +1,14 @@
-"""Consultant payout runs: approved consultant weeks become one payout line per consultant.
+"""Consultant payout runs: approved hours entries become one payout line per consultant.
 
 HR picks a company (or every company), a cut-off and a pay date. The run takes
-every approved consultant week ending on or before the cut-off that is not in
-another run, was approved on or after the workspace's payout release date and
-was never paid through payroll. Older weeks are added one by one
-(`include_week`).
+every approved hours entry ending on or before the cut-off that is not in
+another run. HR moves the cut-off to take more.
 
 Each line:
-- gross = each day's hours x the rate in force that day (the consultant's rate
-  for that project, else their general rate);
+- gross = the hours of each of the consultant's entries at the rate in force:
+  an entry given day by day at each day's rate (the consultant's rate for the
+  entry's project, else their general rate); an entry given as a total at the
+  rate on its last day, held back if the rate changed during the period;
 - GST = gross x their GST rate, where they charge GST (not part of the TDS base);
 - TDS on the gross under their section (194J by default), from the
   `tds_non_salary` rule set in force on the run's pay date, with the
@@ -21,23 +21,23 @@ Each line:
   deducted; `tds_carried_out` = what is still owed);
 - net payable = gross + GST - TDS deducted.
 
-A line with a problem HR must fix (no rate for a day worked, no bank account,
-GST without a GSTIN, a pay date before one of theirs already approved this
-year) is held back — excluded, keeping its weeks — until the data
-is fixed and the run recalculated. A line HR excludes by hand releases its
-weeks for a later run. Only a draft changes.
+A line with a problem HR must fix (no rate for a day worked, a rate change
+inside a total-only period, no bank account, GST without a GSTIN, a pay date
+before one of theirs already approved this year) is held back — excluded,
+keeping its entries — until the data is fixed and the run recalculated. A line
+HR excludes by hand releases its entries for a later run. Only a draft changes.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,10 +45,15 @@ from app.core import hr_scope, permissions
 from app.core.deps import tenant_scoped
 from app.core.step_up import Confirm
 from app.models.audit import AuditAction
+from app.models.consultant_hours import (
+    ConsultantHoursAttachment,
+    ConsultantHoursEntry,
+    HoursEntryStatus,
+)
 from app.models.consultant_payouts import (
+    ConsultantPayoutEntry,
     ConsultantPayoutLine,
     ConsultantPayoutRun,
-    ConsultantPayoutWeek,
     ConsultantTdsOpening,
     PayoutRunStatus,
 )
@@ -56,16 +61,9 @@ from app.models.contractors import ContractorKind, TdsSection
 from app.models.employee import Employee, EmploymentType
 from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
-from app.models.payroll_inputs import PayrollAdjustment
-from app.models.tenant import Tenant
-from app.models.timesheets import Timesheet, TimesheetEntry, TimesheetStatus
 from app.models.user import User
 from app.services import audit, tds_non_salary, timesheets
-from app.services.consultants import (
-    adjustment_never_paid,
-    is_consultant,
-    not_paid_through_payroll,
-)
+from app.services.consultants.hours import period_label
 from app.services.payroll.run import _require_scope_covers
 
 __all__ = [
@@ -73,10 +71,9 @@ __all__ = [
     "consultant_cost_by_month",
     "create_run",
     "delete_run",
-    "eligible_weeks",
+    "eligible_entries",
     "exclude_line",
     "get_run",
-    "include_week",
     "list_runs",
     "mark_paid",
     "my_payouts",
@@ -112,154 +109,125 @@ def _not_found(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
-_TAKEN_RACE = "Another payout run took some of these weeks. Try again."
+_TAKEN_RACE = "Another payout run took some of these hours. Try again."
 
 
-# ── Which weeks ─────────────────────────────────────────────────────────────
-
-
-async def _release_instant(session: AsyncSession, user: User) -> datetime | None:
-    """The start of the payout release day, where the workspace is."""
-    from app.services.attendance.service import tenant_timezone
-
-    tenant = await session.get(Tenant, user.tenant_id)
-    if tenant is None or tenant.consultant_payouts_from is None:
-        return None
-    zone = await tenant_timezone(session, user)
-    return datetime.combine(tenant.consultant_payouts_from, time.min, tzinfo=zone)
+# ── Which entries ───────────────────────────────────────────────────────────
 
 
 def _held_in_a_run():
     return (
-        select(ConsultantPayoutWeek.id)
-        .where(ConsultantPayoutWeek.timesheet_id == Timesheet.id)
+        select(ConsultantPayoutEntry.id)
+        .where(ConsultantPayoutEntry.entry_id == ConsultantHoursEntry.id)
         .exists()
     )
 
 
-async def eligible_weeks(
+async def eligible_entries(
     session: AsyncSession,
     user: User,
     *,
     legal_entity_id: uuid.UUID | None,
     cut_off: date,
-) -> list[Timesheet]:
-    """Approved consultant weeks a new run takes: ending by the cut-off, in no run,
-    approved since payouts were released, never paid through payroll."""
+) -> list[ConsultantHoursEntry]:
+    """Approved consultant hours a new run takes: ending by the cut-off and in no run."""
     permissions.require_hr(user, detail=_HR_ONLY)
     stmt = (
-        select(Timesheet)
-        .join(Employee, Employee.id == Timesheet.employee_id)
+        select(ConsultantHoursEntry)
+        .join(Employee, Employee.id == ConsultantHoursEntry.employee_id)
         .where(
             Employee.employment_type == EmploymentType.CONSULTANT,
-            Timesheet.status == TimesheetStatus.APPROVED,
-            Timesheet.week_start <= cut_off - timedelta(days=6),
-            not_paid_through_payroll(),
+            ConsultantHoursEntry.status == HoursEntryStatus.APPROVED,
+            ConsultantHoursEntry.period_end <= cut_off,
             ~_held_in_a_run(),
         )
-        .order_by(Timesheet.employee_id, Timesheet.week_start)
+        .order_by(ConsultantHoursEntry.employee_id, ConsultantHoursEntry.period_start)
     )
-    release = await _release_instant(session, user)
-    if release is not None:
-        stmt = stmt.where(Timesheet.decided_at >= release)
     if legal_entity_id is not None:
         stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
-    return list((await session.scalars(tenant_scoped(stmt, Timesheet, user))).all())
-
-
-async def includable_weeks(
-    session: AsyncSession,
-    user: User,
-    *,
-    legal_entity_id: uuid.UUID | None = None,
-    cut_off: date | None = None,
-) -> list[dict[str, Any]]:
-    """Approved, unpaid consultant weeks no run takes on its own: those approved
-    before payouts were released. HR adds them to a draft one by one
-    (`include_week`). Same rules as `eligible_weeks` otherwise: in no run, never
-    paid through payroll, ending by the cut-off when one is given."""
-    permissions.require_hr(user, detail=_HR_ONLY)
-    release = await _release_instant(session, user)
-    if release is None:
-        # Without a release date every approved week is taken by a run already.
-        return []
-    stmt = (
-        select(Timesheet, Employee)
-        .join(Employee, Employee.id == Timesheet.employee_id)
-        .where(
-            Employee.employment_type == EmploymentType.CONSULTANT,
-            Timesheet.status == TimesheetStatus.APPROVED,
-            not_paid_through_payroll(),
-            ~_held_in_a_run(),
-            or_(Timesheet.decided_at.is_(None), Timesheet.decided_at < release),
-        )
-        .order_by(Employee.employee_code, Timesheet.week_start)
-    )
-    if cut_off is not None:
-        stmt = stmt.where(Timesheet.week_start <= cut_off - timedelta(days=6))
-    if legal_entity_id is not None:
-        stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
-    rows = (await session.execute(tenant_scoped(stmt, Timesheet, user))).all()
-    hours: dict[uuid.UUID, Decimal] = {}
-    if rows:
-        totals = await session.execute(
-            tenant_scoped(
-                select(TimesheetEntry.timesheet_id, func.sum(TimesheetEntry.hours))
-                .where(TimesheetEntry.timesheet_id.in_([sheet.id for sheet, _ in rows]))
-                .group_by(TimesheetEntry.timesheet_id),
-                TimesheetEntry,
-                user,
-            )
-        )
-        hours = {sheet_id: Decimal(str(total or 0)) for sheet_id, total in totals.all()}
-    return [
-        {
-            "timesheet_id": str(sheet.id),
-            "employee_id": str(person.id),
-            "employee_code": person.employee_code,
-            "name": person.full_name,
-            "week_start": sheet.week_start.isoformat(),
-            "total_hours": _text(hours.get(sheet.id, Decimal(0))),
-        }
-        for sheet, person in rows
-    ]
+    return list((await session.scalars(tenant_scoped(stmt, ConsultantHoursEntry, user))).all())
 
 
 # ── Pricing ─────────────────────────────────────────────────────────────────
 
 
+def rate_changed(period: str) -> str:
+    """Why a total-only entry is held: the rate moved inside its period."""
+    return f"The hourly rate changed during {period}. Enter the hours day by day."
+
+
 @dataclass
-class _PricedWeek:
+class _PricedEntry:
     hours: Decimal = Decimal(0)
     gross: Decimal = Decimal(0)
     breakdown: list[dict[str, Any]] = field(default_factory=list)
+    #: Days with hours but no rate (an entry given day by day).
     missing: set[date] = field(default_factory=set)
+    #: What holds the whole entry back (an entry given as a total).
+    problems: list[str] = field(default_factory=list)
 
 
-async def _price_week(session: AsyncSession, user: User, sheet: Timesheet) -> _PricedWeek:
-    """The week by day and project, each at the rate in force that day."""
-    grouped: dict[tuple[date, uuid.UUID | None], Decimal] = {}
-    for entry in await timesheets._entries(session, user, sheet):
-        key = (entry.work_date, entry.project_id)
-        grouped[key] = grouped.get(key, Decimal(0)) + Decimal(str(entry.hours))
-    priced = _PricedWeek()
-    for (day, project_id), hours in grouped.items():
-        rate = await timesheets._rate_on(session, user, sheet.employee_id, day, project_id)
-        amount = _money(hours * rate) if rate is not None else Decimal("0.00")
-        if rate is None:
-            priced.missing.add(day)
-        priced.hours += hours
-        priced.gross += amount
-        priced.breakdown.append(
-            {
-                "work_date": day.isoformat(),
-                "project_id": str(project_id) if project_id else None,
-                "hours": _text(hours),
-                "rate": _text(rate) if rate is not None else None,
-                "amount": _text(amount),
-            }
-        )
-    priced.gross = _money(priced.gross)
+async def _price_entry(
+    session: AsyncSession, user: User, entry: ConsultantHoursEntry
+) -> _PricedEntry:
+    """The entry at the rate in force: day by day when the days were given, else
+    the total at the rate on the last day, provided that rate held all period."""
+    priced = _PricedEntry()
+    if entry.days:
+        for day in entry.days:
+            hours = Decimal(str(day["hours"]))
+            if hours <= 0:
+                continue
+            worked = date.fromisoformat(day["date"])
+            rate = await timesheets._rate_on(
+                session, user, entry.employee_id, worked, entry.project_id
+            )
+            amount = _money(hours * rate) if rate is not None else Decimal("0.00")
+            if rate is None:
+                priced.missing.add(worked)
+            priced.hours += hours
+            priced.gross += amount
+            priced.breakdown.append(
+                {
+                    "date": worked.isoformat(),
+                    "hours": _text(hours),
+                    "rate": _text(rate) if rate is not None else None,
+                    "amount": _text(amount),
+                }
+            )
+        priced.gross = _money(priced.gross)
+        return priced
+
+    hours = Decimal(str(entry.total_billable_hours))
+    period = period_label(entry.period_start, entry.period_end)
+    rate = await timesheets._rate_on(
+        session, user, entry.employee_id, entry.period_end, entry.project_id
+    )
+    if rate is None:
+        priced.problems.append(f"No hourly rate for {period}")
+    else:
+        for offset in range((entry.period_end - entry.period_start).days):
+            day = entry.period_start + timedelta(days=offset)
+            on_day = await timesheets._rate_on(
+                session, user, entry.employee_id, day, entry.project_id
+            )
+            if on_day != rate:
+                priced.problems.append(rate_changed(period))
+                break
+    # A total is never priced at a rate that did not hold for the whole period.
+    priced_rate = rate if not priced.problems else None
+    amount = _money(hours * priced_rate) if priced_rate is not None else Decimal("0.00")
+    priced.hours = hours
+    priced.gross = amount
+    priced.breakdown.append(
+        {
+            "period_start": entry.period_start.isoformat(),
+            "period_end": entry.period_end.isoformat(),
+            "hours": _text(hours),
+            "rate": _text(priced_rate) if priced_rate is not None else None,
+            "amount": _text(amount),
+        }
+    )
     return priced
 
 
@@ -434,15 +402,30 @@ async def _has_bank_account(session: AsyncSession, user: User, employee_id: uuid
     return account is not None and bool(number)
 
 
-async def _line_weeks(
+async def _hours_entries(
+    session: AsyncSession, user: User, entry_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, ConsultantHoursEntry]:
+    if not entry_ids:
+        return {}
+    found = await session.scalars(
+        tenant_scoped(
+            select(ConsultantHoursEntry).where(ConsultantHoursEntry.id.in_(entry_ids)),
+            ConsultantHoursEntry,
+            user,
+        )
+    )
+    return {entry.id: entry for entry in found.all()}
+
+
+async def _line_entries(
     session: AsyncSession, user: User, line_id: uuid.UUID
-) -> list[ConsultantPayoutWeek]:
+) -> list[ConsultantPayoutEntry]:
     return list(
         (
             await session.scalars(
                 tenant_scoped(
-                    select(ConsultantPayoutWeek).where(ConsultantPayoutWeek.line_id == line_id),
-                    ConsultantPayoutWeek,
+                    select(ConsultantPayoutEntry).where(ConsultantPayoutEntry.line_id == line_id),
+                    ConsultantPayoutEntry,
                     user,
                 )
             )
@@ -454,7 +437,7 @@ async def _line_weeks(
 class _LineFigures:
     """A line priced from scratch, not yet written to it."""
 
-    weeks: list[tuple[ConsultantPayoutWeek, _PricedWeek]]
+    entries: list[tuple[ConsultantPayoutEntry, _PricedEntry]]
     hours: Decimal
     gross: Decimal
     gst_rate: Decimal
@@ -500,30 +483,30 @@ async def _price_line(
     line: ConsultantPayoutLine,
     rule_set: PayrollRuleSet,
 ) -> _LineFigures:
-    """Price a line from scratch from its weeks and the consultant's record as it is now.
+    """Price a line from scratch from its entries and the consultant's record as it is now.
 
-    Reads only: nothing on the line or its weeks changes.
+    Reads only: nothing on the line or its entries changes.
     """
     employee = await _employee(session, user, line.employee_id)
     if employee is None:
         raise _not_found("Consultant not found")
     hours = gross = Decimal(0)
     missing: set[date] = set()
-    weeks: list[tuple[ConsultantPayoutWeek, _PricedWeek]] = []
-    for week in await _line_weeks(session, user, line.id):
-        sheet = await session.scalar(
-            tenant_scoped(
-                select(Timesheet).where(Timesheet.id == week.timesheet_id), Timesheet, user
-            )
-        )
-        priced = await _price_week(session, user, sheet)
-        weeks.append((week, priced))
+    held: list[str] = []
+    entries: list[tuple[ConsultantPayoutEntry, _PricedEntry]] = []
+    rows = await _line_entries(session, user, line.id)
+    sources = await _hours_entries(session, user, [row.entry_id for row in rows])
+    for row in sorted(rows, key=lambda r: sources[r.entry_id].period_start):
+        priced = await _price_entry(session, user, sources[row.entry_id])
+        entries.append((row, priced))
         hours += priced.hours
         gross += priced.gross
         missing |= priced.missing
+        held.extend(priced.problems)
     gross = _money(gross)
 
     problems = [f"No hourly rate on {day.isoformat()}" for day in sorted(missing)]
+    problems.extend(held)
     if not await _has_bank_account(session, user, employee.id):
         problems.append(NO_BANK_ACCOUNT)
     if employee.gst_applicable and not (employee.gstin or "").strip():
@@ -560,7 +543,7 @@ async def _price_line(
     carried_out = tds_due - tds
 
     return _LineFigures(
-        weeks=weeks,
+        entries=entries,
         hours=_money(hours),
         gross=gross,
         gst_rate=gst_rate,
@@ -585,10 +568,10 @@ async def _reprice(
     line: ConsultantPayoutLine,
     rule_set: PayrollRuleSet,
 ) -> None:
-    """Price a line from scratch and write the figures to it and its weeks."""
+    """Price a line from scratch and write the figures to it and its entries."""
     figures = await _price_line(session, user, run, line, rule_set)
-    for week, priced in figures.weeks:
-        week.hours, week.gross, week.breakdown = priced.hours, priced.gross, priced.breakdown
+    for row, priced in figures.entries:
+        row.hours, row.gross, row.breakdown = priced.hours, priced.gross, priced.breakdown
     line.hours = figures.hours
     line.gross = figures.gross
     line.gst_rate = figures.gst_rate
@@ -649,7 +632,8 @@ def _run_read(run: ConsultantPayoutRun, lines: list[ConsultantPayoutLine]) -> di
 def _line_read(
     line: ConsultantPayoutLine,
     employee: Employee | None,
-    weeks: list[tuple[ConsultantPayoutWeek, Timesheet]],
+    entries: list[tuple[ConsultantPayoutEntry, ConsultantHoursEntry]],
+    files: dict[uuid.UUID, list[ConsultantHoursAttachment]],
 ) -> dict[str, Any]:
     return {
         "id": str(line.id),
@@ -673,16 +657,22 @@ def _line_read(
         "excluded": line.excluded,
         "excluded_reason": line.excluded_reason,
         "challan_id": str(line.challan_id) if line.challan_id else None,
-        "weeks": [
+        "entries": [
             {
-                "id": str(week.id),
-                "timesheet_id": str(week.timesheet_id),
-                "week_start": sheet.week_start.isoformat(),
-                "hours": _text(week.hours),
-                "gross": _text(week.gross),
-                "breakdown": list(week.breakdown or []),
+                "id": str(row.id),
+                "entry_id": str(row.entry_id),
+                "period_start": source.period_start.isoformat(),
+                "period_end": source.period_end.isoformat(),
+                "project_id": str(source.project_id) if source.project_id else None,
+                "hours": _text(row.hours),
+                "gross": _text(row.gross),
+                "breakdown": list(row.breakdown or []),
+                "attachments": [
+                    {"id": str(file.id), "file_name": file.file_name}
+                    for file in files.get(row.entry_id, [])
+                ],
             }
-            for week, sheet in sorted(weeks, key=lambda pair: pair[1].week_start)
+            for row, source in sorted(entries, key=lambda pair: pair[1].period_start)
         ],
     }
 
@@ -731,7 +721,7 @@ async def _lines(
 
 
 async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> dict[str, Any]:
-    """A run with its lines, each with its weeks priced by day and project."""
+    """A run with its lines, each with its hours entries priced and their files."""
     permissions.require_hr(user, detail=_HR_ONLY)
     run = await _run(session, user, run_id)
     lines = await _lines(session, user, [run.id])
@@ -745,20 +735,36 @@ async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> dict[
             )
         )
         employees = {person.id: person for person in people.all()}
-    weeks: dict[uuid.UUID, list[tuple[ConsultantPayoutWeek, Timesheet]]] = {}
+    entries: dict[uuid.UUID, list[tuple[ConsultantPayoutEntry, ConsultantHoursEntry]]] = {}
     rows = (
         await session.execute(
             tenant_scoped(
-                select(ConsultantPayoutWeek, Timesheet)
-                .join(Timesheet, Timesheet.id == ConsultantPayoutWeek.timesheet_id)
-                .where(ConsultantPayoutWeek.run_id == run.id),
-                ConsultantPayoutWeek,
+                select(ConsultantPayoutEntry, ConsultantHoursEntry)
+                .join(
+                    ConsultantHoursEntry,
+                    ConsultantHoursEntry.id == ConsultantPayoutEntry.entry_id,
+                )
+                .where(ConsultantPayoutEntry.run_id == run.id),
+                ConsultantPayoutEntry,
                 user,
             )
         )
     ).all()
-    for week, sheet in rows:
-        weeks.setdefault(week.line_id, []).append((week, sheet))
+    for row, source in rows:
+        entries.setdefault(row.line_id, []).append((row, source))
+    files: dict[uuid.UUID, list[ConsultantHoursAttachment]] = {}
+    if rows:
+        attached = await session.scalars(
+            tenant_scoped(
+                select(ConsultantHoursAttachment)
+                .where(ConsultantHoursAttachment.entry_id.in_([row.entry_id for row, _ in rows]))
+                .order_by(ConsultantHoursAttachment.uploaded_at),
+                ConsultantHoursAttachment,
+                user,
+            )
+        )
+        for file in attached.all():
+            files.setdefault(file.entry_id, []).append(file)
     lines.sort(
         key=lambda line: (
             employees[line.employee_id].employee_code if line.employee_id in employees else ""
@@ -767,7 +773,7 @@ async def get_run(session: AsyncSession, user: User, run_id: uuid.UUID) -> dict[
     return {
         **_run_read(run, lines),
         "lines": [
-            _line_read(line, employees.get(line.employee_id), weeks.get(line.id, []))
+            _line_read(line, employees.get(line.employee_id), entries.get(line.id, []), files)
             for line in lines
         ],
     }
@@ -819,12 +825,12 @@ def _hold(
     user: User,
     run: ConsultantPayoutRun,
     line: ConsultantPayoutLine,
-    sheet: Timesheet,
+    entry: ConsultantHoursEntry,
 ) -> None:
-    """Put the week on the line. The unique timesheet_id refuses a week held elsewhere."""
+    """Put the entry on the line. The unique entry_id refuses an entry held elsewhere."""
     session.add(
-        ConsultantPayoutWeek(
-            tenant_id=user.tenant_id, run_id=run.id, line_id=line.id, timesheet_id=sheet.id
+        ConsultantPayoutEntry(
+            tenant_id=user.tenant_id, run_id=run.id, line_id=line.id, entry_id=entry.id
         )
     )
 
@@ -838,7 +844,7 @@ async def create_run(
     pay_date: date,
     request: Request | None = None,
 ) -> dict[str, Any]:
-    """A draft run of every eligible week, one line per consultant."""
+    """A draft run of every eligible hours entry, one line per consultant."""
     permissions.require_hr(user, detail=_HR_ONLY)
     if legal_entity_id is not None:
         entity = await session.scalar(
@@ -849,10 +855,10 @@ async def create_run(
         if entity is None:
             raise _not_found("Company not found")
     rule_set = await tds_non_salary.rules_on(session, user, pay_date)
-    weeks = await eligible_weeks(session, user, legal_entity_id=legal_entity_id, cut_off=cut_off)
-    by_person: dict[uuid.UUID, list[Timesheet]] = {}
-    for sheet in weeks:
-        by_person.setdefault(sheet.employee_id, []).append(sheet)
+    taken = await eligible_entries(session, user, legal_entity_id=legal_entity_id, cut_off=cut_off)
+    by_person: dict[uuid.UUID, list[ConsultantHoursEntry]] = {}
+    for entry in taken:
+        by_person.setdefault(entry.employee_id, []).append(entry)
     run = ConsultantPayoutRun(
         tenant_id=user.tenant_id,
         legal_entity_id=legal_entity_id,
@@ -865,10 +871,10 @@ async def create_run(
     session.add(run)
     try:
         await session.flush()
-        for employee_id, sheets in by_person.items():
+        for employee_id, held in by_person.items():
             line = await _new_line(session, user, run, employee_id)
-            for sheet in sheets:
-                _hold(session, user, run, line, sheet)
+            for entry in held:
+                _hold(session, user, run, line, entry)
             await session.flush()
             await _reprice(session, user, run, line, rule_set)
         await audit.record(
@@ -883,7 +889,7 @@ async def create_run(
                 "cut_off": cut_off.isoformat(),
                 "pay_date": pay_date.isoformat(),
                 "consultants": len(by_person),
-                "weeks": len(weeks),
+                "hours_entries": len(taken),
             },
             summary=(
                 f"Drafted a consultant payout run to {cut_off:%d %b %Y}, paying "
@@ -898,91 +904,10 @@ async def create_run(
     return await get_run(session, user, run.id)
 
 
-async def include_week(
-    session: AsyncSession,
-    user: User,
-    run_id: uuid.UUID,
-    timesheet_id: uuid.UUID,
-    *,
-    request: Request | None = None,
-) -> dict[str, Any]:
-    """Add one approved, unpaid week a run did not take on its own (one approved
-    before payouts were released)."""
-    run = await _draft(session, user, run_id)
-    run.computed_by_user_id = user.id
-    sheet = await timesheets._locked_sheet(session, user, timesheet_id)
-    if sheet is None:
-        raise _not_found("Timesheet not found")
-    employee = await _employee(session, user, sheet.employee_id)
-    if employee is None or not is_consultant(employee):
-        raise _conflict("Only a consultant's week is paid in a consultant payout.")
-    if sheet.status is not TimesheetStatus.APPROVED:
-        raise _conflict("Only an approved week can be paid.")
-    if sheet.payroll_adjustment_id is not None:
-        adjustment = await session.scalar(
-            tenant_scoped(
-                select(PayrollAdjustment).where(
-                    PayrollAdjustment.id == sheet.payroll_adjustment_id
-                ),
-                PayrollAdjustment,
-                user,
-            )
-        )
-        if adjustment is None or not adjustment_never_paid(adjustment):
-            raise _conflict(
-                "This week was paid through payroll, or is still waiting there. Cancel it "
-                "under Payroll → Adjustments first if it should go into a consultant payout."
-            )
-    if await timesheets._in_payout_run(session, user, sheet):
-        raise _conflict("This week is already in a consultant payout.")
-    if run.legal_entity_id is not None and employee.legal_entity_id != run.legal_entity_id:
-        raise _conflict("This consultant is paid by another company than this run's.")
-    if sheet.week_start + timedelta(days=6) > run.cut_off:
-        raise _conflict("This week ends after the run's cut-off.")
-    line = await session.scalar(
-        tenant_scoped(
-            select(ConsultantPayoutLine).where(
-                ConsultantPayoutLine.run_id == run.id,
-                ConsultantPayoutLine.employee_id == employee.id,
-            ),
-            ConsultantPayoutLine,
-            user,
-        )
-    )
-    if line is not None and line.excluded_reason:
-        raise _conflict("This consultant was taken out of this run. Pay the week in another run.")
-    rule_set = await tds_non_salary.rules_on(session, user, run.pay_date)
-    try:
-        if line is None:
-            line = await _new_line(session, user, run, employee.id)
-        _hold(session, user, run, line, sheet)
-        await session.flush()
-        await _reprice(session, user, run, line, rule_set)
-        await audit.record(
-            session,
-            tenant_id=user.tenant_id,
-            action=AuditAction.UPDATE,
-            entity_type="consultant_payout_run",
-            entity_id=run.id,
-            actor=user,
-            changes={"included_timesheet_id": str(sheet.id), "employee_id": str(employee.id)},
-            summary=(
-                f"Added {employee.full_name}'s week of {sheet.week_start:%d %b %Y} to a "
-                "consultant payout run"
-            ),
-            request=request,
-        )
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise _conflict(_TAKEN_RACE) from exc
-    return await get_run(session, user, run.id)
-
-
 async def recalculate(
     session: AsyncSession, user: User, run_id: uuid.UUID, *, request: Request | None = None
 ) -> dict[str, Any]:
-    """Price every line again from its weeks and the records as they are now.
+    """Price every line again from its entries and the records as they are now.
 
     A line whose problems are fixed comes back; a line HR took out stays out.
     """
@@ -1016,7 +941,7 @@ async def exclude_line(
     reason: str,
     request: Request | None = None,
 ) -> dict[str, Any]:
-    """Take a consultant out of this run; their weeks are free for a later one."""
+    """Take a consultant out of this run; their hours entries are free for a later one."""
     clean = (reason or "").strip()
     if not clean:
         raise HTTPException(
@@ -1038,11 +963,11 @@ async def exclude_line(
         raise _not_found("Payout line not found")
     if line.excluded_reason:
         raise _conflict("This consultant is already left out of the run.")
-    released = len(await _line_weeks(session, user, line.id))
+    released = len(await _line_entries(session, user, line.id))
     await session.execute(
-        delete(ConsultantPayoutWeek).where(
-            ConsultantPayoutWeek.line_id == line.id,
-            ConsultantPayoutWeek.tenant_id == user.tenant_id,
+        delete(ConsultantPayoutEntry).where(
+            ConsultantPayoutEntry.line_id == line.id,
+            ConsultantPayoutEntry.tenant_id == user.tenant_id,
         )
     )
     line.excluded = True
@@ -1062,7 +987,7 @@ async def exclude_line(
             "excluded_line_id": str(line.id),
             "employee_id": str(line.employee_id),
             "reason": clean,
-            "weeks_released": released,
+            "hours_entries_released": released,
         },
         summary=f"Left a consultant out of a payout run: {clean}",
         request=request,
@@ -1074,7 +999,7 @@ async def exclude_line(
 async def delete_run(
     session: AsyncSession, user: User, run_id: uuid.UUID, *, request: Request | None = None
 ) -> None:
-    """Delete a draft; every week in it is free for a later run."""
+    """Delete a draft; every hours entry in it is free for a later run."""
     run = await _draft(session, user, run_id)
     await audit.record(
         session,
@@ -1087,7 +1012,7 @@ async def delete_run(
         summary=f"Deleted the draft consultant payout run paying {run.pay_date:%d %b %Y}",
         request=request,
     )
-    # Its lines and week rows go with it (ON DELETE CASCADE).
+    # Its lines and entry rows go with it (ON DELETE CASCADE).
     await session.execute(
         delete(ConsultantPayoutRun).where(
             ConsultantPayoutRun.id == run.id, ConsultantPayoutRun.tenant_id == user.tenant_id
@@ -1228,8 +1153,8 @@ async def mark_paid(
     )
     if unsent is not None:
         raise _conflict(
-            "This run has a bank file that hasn't been sent. Release it or cancel it before "
-            "marking the run paid."
+            "This run has a bank file that hasn't been sent. Release it to the bank first, "
+            "or regenerate it."
         )
     run.status = PayoutRunStatus.PAID
     run.paid_on = paid_on
@@ -1296,31 +1221,31 @@ async def consultant_cost_by_month(
 ) -> dict[tuple[uuid.UUID, int, int], Decimal]:
     """What each consultant cost, by the month the work was done: (employee, year, month).
 
-    Taken from the priced days of weeks in approved or paid payout runs, left-out
-    lines excluded: the fee before GST, which a company claims back. A week
-    worked on 28 Sep to 4 Oct and paid on 15 Oct costs September for the days
-    in September and October for the rest; nothing lands in the month paid.
+    Taken from the priced hours entries in approved or paid payout runs, left-out
+    lines excluded: the fee before GST, which a company claims back. Day-by-day
+    hours cost the month of each day; nothing lands in the month paid.
     """
     rows = await session.execute(
         tenant_scoped(
-            select(ConsultantPayoutLine.employee_id, ConsultantPayoutWeek.breakdown)
-            .join(ConsultantPayoutLine, ConsultantPayoutLine.id == ConsultantPayoutWeek.line_id)
-            .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutWeek.run_id)
-            .join(Timesheet, Timesheet.id == ConsultantPayoutWeek.timesheet_id)
+            select(ConsultantPayoutLine.employee_id, ConsultantPayoutEntry.breakdown)
+            .join(ConsultantPayoutLine, ConsultantPayoutLine.id == ConsultantPayoutEntry.line_id)
+            .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutEntry.run_id)
+            .join(ConsultantHoursEntry, ConsultantHoursEntry.id == ConsultantPayoutEntry.entry_id)
             .where(
                 ConsultantPayoutLine.excluded.is_(False),
                 ConsultantPayoutRun.status.in_([PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]),
-                Timesheet.week_start >= start - timedelta(days=6),
-                Timesheet.week_start <= end,
+                ConsultantHoursEntry.period_end >= start,
+                ConsultantHoursEntry.period_start <= end,
             ),
-            ConsultantPayoutWeek,
+            ConsultantPayoutEntry,
             user,
         )
     )
     costs: dict[tuple[uuid.UUID, int, int], Decimal] = {}
     for employee_id, breakdown in rows:
         for day in breakdown or []:
-            worked = date.fromisoformat(day["work_date"])
+            # A total-only entry counts in the month of its last day for now.
+            worked = date.fromisoformat(day.get("date") or day["period_end"])
             if not start <= worked <= end:
                 continue
             key = (employee_id, worked.year, worked.month)

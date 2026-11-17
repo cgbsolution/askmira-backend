@@ -30,6 +30,7 @@ from app.models.consultant_hours import (
     ConsultantHoursEntry,
     HoursEntryStatus,
 )
+from app.models.consultant_payouts import ConsultantPayoutEntry
 from app.models.employee import Employee
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.payroll_inputs import PayrollAdjustment
@@ -134,8 +135,18 @@ def _error(code: int, detail: str) -> HTTPException:
 
 
 async def in_payout_run(session: AsyncSession, user: User, entry_id: uuid.UUID) -> bool:
-    """Whether the entry is in any consultant payout run, draft included. Task H3 fills this in."""
-    return False
+    """Whether the entry is in any consultant payout run, draft included.
+
+    Reads past the caller's HR scope: an entry held by a run is held for everybody.
+    """
+    found = await session.scalar(
+        tenant_scoped(
+            select(ConsultantPayoutEntry.id).where(ConsultantPayoutEntry.entry_id == entry_id),
+            ConsultantPayoutEntry,
+            user,
+        ).execution_options(hr_scope_bypass=True)
+    )
+    return found is not None
 
 
 # ── Reading and who may ─────────────────────────────────────────────────────
