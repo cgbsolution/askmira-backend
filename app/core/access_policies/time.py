@@ -43,6 +43,43 @@ ENDPOINTS: dict[str, str] = {
         "consultant week HR or their internal approver (can_manage_consultant); never the "
         "caller's own week."
     ),
+    # ── Consultant hours (finance enters, a second person approves) ──────────
+    # Every route resolves the consultant and checks consultants.can_manage_consultant
+    # (hours._load / hours._require_access): HR, or that consultant's finance approver,
+    # never the consultant. Approving is further limited to the eligible approvers,
+    # never whoever entered or last edited.
+    "GET /consultant-hours": (
+        "permissions: HR reads every entry; a finance approver only their consultants'; "
+        "anybody else gets nothing."
+    ),
+    "POST /consultant-hours": (
+        "scoped:_require_access: HR or the consultant's finance approver; anybody else is a 403."
+    ),
+    "GET /consultant-hours/{entry_id}": (
+        "scoped:_load: HR or the consultant's finance approver; anybody else is a 403."
+    ),
+    "PUT /consultant-hours/{entry_id}": (
+        "scoped:_load: HR or the consultant's finance approver, on a draft or rejected entry only."
+    ),
+    "POST /consultant-hours/{entry_id}/attachments": (
+        "scoped:_load: HR or the consultant's finance approver, on a draft or rejected entry only."
+    ),
+    "DELETE /consultant-hours/{entry_id}/attachments/{attachment_id}": (
+        "scoped:_load: HR or the consultant's finance approver, on a draft or rejected entry only."
+    ),
+    "GET /consultant-hours/{entry_id}/attachments/{attachment_id}": (
+        "scoped:_load: HR or the consultant's finance approver; the file must belong to the entry."
+    ),
+    "POST /consultant-hours/{entry_id}/submit": (
+        "scoped:_load: HR or the consultant's finance approver; needs a file attached."
+    ),
+    "POST /consultant-hours/{entry_id}/decide": (
+        "scoped:_eligible_approvers: the consultant's finance approver, or HR when none is set; "
+        "never whoever entered or last edited the entry."
+    ),
+    "POST /consultant-hours/{entry_id}/reopen": (
+        "permissions: HR only, and not once the entry is in a payout run."
+    ),
     "GET /attendance/regularisations/pending": (
         "permissions: corrections whose approval chain's current step names the caller or "
         "someone they stand in for, older ones from their reporting line, everything for HR; "
