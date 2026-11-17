@@ -37,7 +37,7 @@ from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,7 +58,7 @@ from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
 from app.models.payroll_inputs import PayrollAdjustment
 from app.models.tenant import Tenant
-from app.models.timesheets import Timesheet, TimesheetStatus
+from app.models.timesheets import Timesheet, TimesheetEntry, TimesheetStatus
 from app.models.user import User
 from app.services import audit, tds_non_salary, timesheets
 from app.services.consultants import (
@@ -165,6 +165,64 @@ async def eligible_weeks(
     if legal_entity_id is not None:
         stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
     return list((await session.scalars(tenant_scoped(stmt, Timesheet, user))).all())
+
+
+async def includable_weeks(
+    session: AsyncSession,
+    user: User,
+    *,
+    legal_entity_id: uuid.UUID | None = None,
+    cut_off: date | None = None,
+) -> list[dict[str, Any]]:
+    """Approved, unpaid consultant weeks no run takes on its own: those approved
+    before payouts were released. HR adds them to a draft one by one
+    (`include_week`). Same rules as `eligible_weeks` otherwise: in no run, never
+    paid through payroll, ending by the cut-off when one is given."""
+    permissions.require_hr(user, detail=_HR_ONLY)
+    release = await _release_instant(session, user)
+    if release is None:
+        # Without a release date every approved week is taken by a run already.
+        return []
+    stmt = (
+        select(Timesheet, Employee)
+        .join(Employee, Employee.id == Timesheet.employee_id)
+        .where(
+            Employee.employment_type == EmploymentType.CONSULTANT,
+            Timesheet.status == TimesheetStatus.APPROVED,
+            not_paid_through_payroll(),
+            ~_held_in_a_run(),
+            or_(Timesheet.decided_at.is_(None), Timesheet.decided_at < release),
+        )
+        .order_by(Employee.employee_code, Timesheet.week_start)
+    )
+    if cut_off is not None:
+        stmt = stmt.where(Timesheet.week_start <= cut_off - timedelta(days=6))
+    if legal_entity_id is not None:
+        stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
+    rows = (await session.execute(tenant_scoped(stmt, Timesheet, user))).all()
+    hours: dict[uuid.UUID, Decimal] = {}
+    if rows:
+        totals = await session.execute(
+            tenant_scoped(
+                select(TimesheetEntry.timesheet_id, func.sum(TimesheetEntry.hours))
+                .where(TimesheetEntry.timesheet_id.in_([sheet.id for sheet, _ in rows]))
+                .group_by(TimesheetEntry.timesheet_id),
+                TimesheetEntry,
+                user,
+            )
+        )
+        hours = {sheet_id: Decimal(str(total or 0)) for sheet_id, total in totals.all()}
+    return [
+        {
+            "timesheet_id": str(sheet.id),
+            "employee_id": str(person.id),
+            "employee_code": person.employee_code,
+            "name": person.full_name,
+            "week_start": sheet.week_start.isoformat(),
+            "total_hours": _text(hours.get(sheet.id, Decimal(0))),
+        }
+        for sheet, person in rows
+    ]
 
 
 # ── Pricing ─────────────────────────────────────────────────────────────────

@@ -104,11 +104,26 @@ class OpeningIn(BaseModel):
 
 @router.get("/attention")
 async def attention_list(user: CurrentUser, session: DbSession) -> dict[str, Any]:
-    """Consultants to sort out before payouts start, and payroll adjustments still pending."""
+    """Consultants to sort out before payouts start, payroll adjustments still pending,
+    and how many older weeks are waiting to be added to a run."""
     return {
         "consultants": await attention.attention_list(session, user),
         "pending_adjustments": await attention.pending_adjustments(session, user),
+        "includable_weeks": len(await payouts.includable_weeks(session, user)),
     }
+
+
+@router.get("/includable-weeks")
+async def includable_weeks(
+    user: CurrentUser,
+    session: DbSession,
+    legal_entity_id: uuid.UUID | None = None,
+    cut_off: date | None = None,
+) -> list[dict[str, Any]]:
+    """Approved, unpaid weeks from before payouts were released, to add to a draft run."""
+    return await payouts.includable_weeks(
+        session, user, legal_entity_id=legal_entity_id, cut_off=cut_off
+    )
 
 
 @router.post("/attention/end-salaries")

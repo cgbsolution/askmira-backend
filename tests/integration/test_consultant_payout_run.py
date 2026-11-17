@@ -1337,3 +1337,73 @@ async def test_approve_refuses_after_opening_changed(
     again = await payouts.get_run(session, hr_user, run_id)
     assert again["status"] == "draft"
     assert _line(again, person)["tds_amount"] == "0.00"
+
+
+async def test_includable_weeks_lists_older_unpaid_weeks_for_hr(
+    session,
+    tenant,
+    hr_user,
+    legal_entity,
+    client,  # noqa: F811
+) -> None:
+    from app.models.user import UserRole
+    from tests.integration.platform_support import make_person
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    before_release = datetime(2026, 8, 20, tzinfo=UTC)
+    old = await _week(session, tenant, person, monday=date(2026, 8, 3), decided_at=before_release)
+    await _week(session, tenant, person)  # approved after the release: a run takes it
+    pending = _timesheet_adjustment(
+        tenant, person, hr_user, adjustment_status=AdjustmentStatus.PENDING
+    )
+    cancelled = _timesheet_adjustment(
+        tenant, person, hr_user, adjustment_status=AdjustmentStatus.CANCELLED
+    )
+    session.add_all([pending, cancelled])
+    await session.flush()
+    await _week(
+        session,
+        tenant,
+        person,
+        monday=date(2026, 8, 10),
+        decided_at=before_release,
+        payroll_adjustment_id=pending.id,
+    )
+    stopped = await _week(
+        session,
+        tenant,
+        person,
+        monday=date(2026, 8, 17),
+        decided_at=before_release,
+        payroll_adjustment_id=cancelled.id,
+        hours_per_day="4",
+    )
+
+    listed = await client.get(
+        "/api/v1/consultant-payouts/includable-weeks",
+        params={"cut_off": CUT_OFF.isoformat()},
+        headers=bearer(hr_user),
+    )
+    assert listed.status_code == 200
+    assert [(w["timesheet_id"], w["total_hours"]) for w in listed.json()] == [
+        (str(old.id), "40.00"),
+        (str(stopped.id), "20.00"),
+    ]
+    assert listed.json()[0]["employee_code"] == "CON1"
+    assert listed.json()[0]["week_start"] == "2026-08-03"
+    attention = await client.get("/api/v1/consultant-payouts/attention", headers=bearer(hr_user))
+    assert attention.json()["includable_weeks"] == 2
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    await payouts.include_week(session, hr_user, uuid.UUID(run["id"]), old.id)
+    after = await payouts.includable_weeks(session, hr_user, cut_off=CUT_OFF)
+    assert [w["timesheet_id"] for w in after] == [str(stopped.id)]
+
+    colleague = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Pat Lee")
+    refused = await client.get(
+        "/api/v1/consultant-payouts/includable-weeks", headers=bearer(colleague)
+    )
+    assert refused.status_code == 403
