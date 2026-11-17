@@ -52,6 +52,10 @@ ENDPOINTS: dict[str, str] = {
         "permissions: HR reads every entry; a finance approver only their consultants'; "
         "anybody else gets nothing."
     ),
+    "GET /consultant-hours/consultants": (
+        "permissions: HR lists every consultant; a finance approver only their consultants; "
+        "anybody else gets nothing; never the caller themself."
+    ),
     "POST /consultant-hours": (
         "scoped:_require_access: HR or the consultant's finance approver; anybody else is a 403."
     ),

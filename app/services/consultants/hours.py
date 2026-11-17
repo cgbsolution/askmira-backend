@@ -31,7 +31,7 @@ from app.models.consultant_hours import (
     HoursEntryStatus,
 )
 from app.models.consultant_payouts import ConsultantPayoutEntry
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentType
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import Project
@@ -52,6 +52,7 @@ __all__ = [
     "decide_entry",
     "get_entry",
     "in_payout_run",
+    "list_consultants",
     "list_entries",
     "period_label",
     "remove_attachment",
@@ -89,6 +90,8 @@ _EDITABLE = (HoursEntryStatus.DRAFT, HoursEntryStatus.REJECTED)
 _AREA = "payroll"
 _DECIDE_PATH = "/api/v1/consultant-hours/entry/decide"
 _OVERLAP_CONSTRAINT = "ex_consultant_hours_no_overlap"
+#: The screen where hours are entered and approved, for notifications to point at.
+_SCREEN = "/payroll/consultant-hours"
 _SHEET_ACCEPT = "Upload an Excel sheet (xlsx or xls), CSV, PDF, PNG or JPG."
 
 
@@ -816,6 +819,7 @@ async def submit_entry(
                 "hours": hours,
                 "submitted_by": user.full_name or user.email,
                 "entry_id": str(entry.id),
+                "link": _SCREEN,
             },
             commit=False,
         )
@@ -1001,6 +1005,31 @@ async def list_entries(
             continue
         out.append(item)
     return out
+
+
+async def list_consultants(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """Consultants the caller may enter or approve hours for: HR every one, a finance
+    approver those they approve for; never the caller themself."""
+    stmt = tenant_scoped(
+        select(Employee, Project.name)
+        .outerjoin(Project, Project.id == Employee.project_id)
+        .where(Employee.employment_type == EmploymentType.CONSULTANT),
+        Employee,
+        user,
+    )
+    if not permissions.is_hr(user):
+        stmt = stmt.where(Employee.internal_approver_user_id == user.id)
+    rows = (await session.execute(stmt.order_by(Employee.employee_code))).all()
+    return [
+        {
+            "employee_id": str(person.id),
+            "code": person.employee_code,
+            "name": person.full_name,
+            "project": project_name,
+        }
+        for person, project_name in rows
+        if is_consultant(person) and person.id != user.employee_id
+    ]
 
 
 async def get_entry(session: AsyncSession, user: User, entry_id: uuid.UUID) -> dict[str, Any]:

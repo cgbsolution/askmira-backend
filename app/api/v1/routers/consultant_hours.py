@@ -49,6 +49,11 @@ async def create_entry(
     return await hours.create_entry(session, user, payload, request=request)
 
 
+@router.get("/consultants")
+async def list_consultants(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
+    return await hours.list_consultants(session, user)
+
+
 @router.get("/{entry_id}")
 async def get_entry(entry_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     return await hours.get_entry(session, user, entry_id)

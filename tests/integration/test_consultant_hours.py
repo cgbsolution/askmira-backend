@@ -580,6 +580,70 @@ async def test_people_without_a_right_to_the_hours_see_nothing(session, tenant, 
         assert no_decide.value.status_code == 404
 
 
+async def test_consultants_the_caller_may_act_on(
+    client,  # noqa: F811
+    session,
+    tenant,
+    hr_user,
+    employee,
+    legal_entity,
+):
+    from tests.integration.platform_support import bearer
+
+    person = await _consultant(session, employee)
+    staff = Employee(
+        tenant_id=tenant.id,
+        employee_code="ACM002",
+        first_name="Ravi",
+        work_email="ravi@acme.test",
+        legal_entity_id=legal_entity.id,
+    )
+    other = Employee(
+        tenant_id=tenant.id,
+        employee_code="CON9",
+        first_name="Zoya",
+        work_email="zoya@acme.test",
+        legal_entity_id=legal_entity.id,
+        employment_type=EmploymentType.CONSULTANT,
+    )
+    session.add_all([staff, other])
+    finance = await _user(session, tenant, "finance@acme.test", UserRole.EMPLOYEE)
+    stranger = await _user(session, tenant, "someone@acme.test", UserRole.EMPLOYEE)
+    person.internal_approver_user_id = finance.id
+    await session.commit()
+    a = await as_caller(session, hr_user)
+
+    everyone = await hours.list_consultants(session, a)
+    assert [row["code"] for row in everyone] == ["ACM001", "CON9"]
+    assert everyone[0] == {
+        "employee_id": str(person.id),
+        "code": "ACM001",
+        "name": "Anita Sharma",
+        "project": None,
+    }
+    assert [row["code"] for row in await hours.list_consultants(session, finance)] == ["ACM001"]
+    assert await hours.list_consultants(session, stranger) == []
+
+    over_http = await client.get("/api/v1/consultant-hours/consultants", headers=bearer(finance))
+    assert over_http.status_code == 200
+    assert [row["code"] for row in over_http.json()] == ["ACM001"]
+
+
+async def test_submit_notification_links_to_the_hours_screen(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    await _submitted(session, a, person)
+    payloads = (
+        await session.scalars(
+            select(Notification.payload).where(
+                Notification.event_key == "consultant_hours.submitted"
+            )
+        )
+    ).all()
+    assert payloads and all(p["link"] == "/payroll/consultant-hours" for p in payloads)
+
+
 # ── Status grid, the missing-month check, the customer route retired ────────
 
 
