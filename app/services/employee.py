@@ -710,6 +710,33 @@ async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid
     )
 
 
+async def _close_customer_links(session: AsyncSession, user: User, employee_id: uuid.UUID) -> None:
+    """Somebody who stops being a consultant has no customer approving their time:
+    close the links still open on their weeks waiting for a decision.
+
+    Each sheet is locked before its links, as everywhere else.
+    """
+    from app.services.consultants.timesheet_approval import revoke_links
+
+    waiting = (
+        await session.scalars(
+            tenant_scoped(
+                select(Timesheet)
+                .where(
+                    Timesheet.employee_id == employee_id,
+                    Timesheet.status == TimesheetStatus.SUBMITTED,
+                )
+                .order_by(Timesheet.id)
+                .with_for_update(),
+                Timesheet,
+                user,
+            )
+        )
+    ).all()
+    for sheet in waiting:
+        await revoke_links(session, user.tenant_id, sheet.id)
+
+
 async def update_employee(
     session: AsyncSession,
     user: User,
@@ -871,6 +898,12 @@ async def update_employee(
     ):
         await companies.check_no_later_change(session, user, employee.id, on)
     lifecycle.record_direct_edit(session, user, employee, changes, on=on)
+    if (
+        new_kind is not None
+        and new_kind is not EmploymentType.CONSULTANT
+        and is_consultant(employee)
+    ):
+        await _close_customer_links(session, user, employee.id)
     for key, value in changes.items():
         setattr(employee, key, value)
 

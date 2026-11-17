@@ -1204,10 +1204,10 @@ async def _payroll_costs(
     """Each person's cost per month, and the months not final yet.
 
     Payroll's cost to company on each payslip, plus consultants' fees from their
-    payout runs, counted in the month the work was done. A consultant has no
-    payslips, so the two do not overlap; should a person and month have both, the
-    payslip cost stands and the payout fee is left out rather than counted twice.
-    Payout runs only count once approved, so they never make a month pending.
+    payout runs, counted in the month the work was done. A person and month with
+    both (the month somebody moved to payouts, say) count both: a payslip and a
+    payout fee are different money, never the same payment twice. Payout runs only
+    count once approved, so they never make a month pending.
     """
     period = or_(
         *[and_(PayrollRun.period_year == y, PayrollRun.period_month == m) for y, m in months]
@@ -1245,8 +1245,8 @@ async def _payroll_costs(
     for (employee_id, year, month), amount in (
         await consultant_cost_by_month(session, user, start=first, end=last)
     ).items():
-        if (year, month) in wanted and (employee_id, year, month) not in costs:
-            costs[(employee_id, year, month)] = amount
+        if (year, month) in wanted:
+            costs[(employee_id, year, month)] += amount
     return costs, pending
 
 

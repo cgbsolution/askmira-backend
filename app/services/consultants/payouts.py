@@ -532,7 +532,7 @@ async def _price_line(
     if later is not None and later > run.pay_date:
         problems.append(
             f"Paid on {later.isoformat()} in an approved run; this run's pay date is earlier. "
-            "Change the pay date."
+            "Delete this draft and start one with a later pay date."
         )
 
     gst_rate = (

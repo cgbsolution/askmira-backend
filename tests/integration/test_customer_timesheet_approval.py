@@ -677,3 +677,27 @@ async def test_reminders_never_touch_another_workspace(
     assert len(mail.sent) == sent_before
     links = (await session.scalars(select(TimesheetApprovalLink))).all()
     assert len(links) == 1 and links[0].revoked_at is None
+
+
+async def test_a_reminder_goes_to_whoever_the_week_was_sent_to(
+    session, tenant, hr_user, legal_entity, mail
+) -> None:
+    consultant, _, sheet_id, _ = await _submitted(session, tenant, hr_user, legal_entity, mail)
+    consultant_id = consultant.id
+    sent = datetime(2026, 9, 14, 9, 0, tzinfo=UTC)
+    await _link_sent_at(session, sheet_id, sent)
+    # The contact changes after the week went out: it applies to weeks sent later.
+    person = await session.get(Employee, consultant_id)
+    person.customer_contact_name = "Someone Else"
+    person.customer_contact_email = "someone.else@client.example.com"
+    await session.commit()
+    await session.refresh(hr_user)
+
+    assert await timesheet_approval.send_reminders(
+        session, hr_user, now=sent + timedelta(days=3)
+    ) == {"reminded": 1}
+    assert mail.sent[-1].recipient_email == CONTACT
+    newest = await session.scalar(
+        select(TimesheetApprovalLink).order_by(TimesheetApprovalLink.created_at.desc()).limit(1)
+    )
+    assert newest is not None and newest.sent_to_email == CONTACT

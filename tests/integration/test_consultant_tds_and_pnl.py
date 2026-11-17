@@ -423,7 +423,7 @@ async def test_pnl_cost_in_work_month(session, tenant, hr_user, legal_entity) ->
     assert september.summary.people_cost == Decimal("28800.00")
 
 
-async def test_pnl_leaves_out_excluded_lines_and_never_doubles_a_payslip(
+async def test_pnl_leaves_out_excluded_lines_and_adds_payslip_and_fee(
     session, tenant, hr_user, legal_entity
 ) -> None:
     person, run_id = await _approved_run(session, tenant, hr_user, legal_entity)
@@ -432,7 +432,8 @@ async def test_pnl_leaves_out_excluded_lines_and_never_doubles_a_payslip(
     )
     assert sep == {(person.id, 2026, 9): Decimal("48000.00")}
 
-    # The same person and month already costed from a payslip: the payslip stands.
+    # The same person and month also costed from a payslip (say, the month they
+    # moved to payouts): different money, so both count.
     payroll = PayrollRun(
         tenant_id=tenant.id,
         legal_entity_id=legal_entity.id,
@@ -457,7 +458,7 @@ async def test_pnl_leaves_out_excluded_lines_and_never_doubles_a_payslip(
     )
     await session.commit()
     costs, _ = await accounts._payroll_costs(session, hr_user, [(2026, 9)])
-    assert costs[(person.id, 2026, 9)] == Decimal(1000)
+    assert costs[(person.id, 2026, 9)] == Decimal("49000.00")
 
     line = await _line(session, person)
     line.excluded = True

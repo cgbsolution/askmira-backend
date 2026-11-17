@@ -1223,7 +1223,7 @@ async def test_backdated_run_cannot_take_a_carry_twice(
     assert line["excluded"] is True
     assert line["problems"] == [
         "Paid on 2026-10-25 in an approved run; this run's pay date is earlier. "
-        "Change the pay date."
+        "Delete this draft and start one with a later pay date."
     ]
     with pytest.raises(HTTPException) as refused:
         await payouts.approve_run(session, checker, uuid.UUID(run_b["id"]), confirm=_confirmed)

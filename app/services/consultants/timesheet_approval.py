@@ -136,13 +136,25 @@ async def revoke_links(
 
 
 async def issue_link(
-    session: AsyncSession, sheet: Timesheet, employee: Employee
+    session: AsyncSession,
+    sheet: Timesheet,
+    employee: Employee,
+    *,
+    sent_to: TimesheetApprovalLink | None = None,
 ) -> tuple[TimesheetApprovalLink, str]:
     """Close the week's earlier links and mint a new one; flushed, not committed.
 
+    The link goes to the consultant's customer contact, or, for a reminder, to
+    whoever `sent_to` (the link being reminded) went to: a contact changed since
+    applies to weeks sent after the change only.
+
     Returns the row and the token. The token exists only here: only its hash is kept.
     """
-    email = (employee.customer_contact_email or "").strip()
+    if sent_to is not None:
+        name, email = sent_to.sent_to_name, sent_to.sent_to_email.strip()
+    else:
+        name = (employee.customer_contact_name or "").strip() or None
+        email = (employee.customer_contact_email or "").strip()
     if not email:
         raise _error(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -156,7 +168,7 @@ async def issue_link(
         timesheet_id=sheet.id,
         token_hash=_token_hash(token),
         contents_hash=contents_hash(await _entries(session, sheet)),
-        sent_to_name=(employee.customer_contact_name or "").strip() or None,
+        sent_to_name=name,
         sent_to_email=email,
         expires_at=datetime.now(UTC) + LINK_LIFETIME,
     )
@@ -393,7 +405,7 @@ async def _remind_one(
         await session.rollback()
         return False
     carried = newest.reminders_sent + 1
-    link, token = await issue_link(session, sheet, employee)
+    link, token = await issue_link(session, sheet, employee, sent_to=newest)
     link.reminders_sent = carried
     await audit.record(
         session,
