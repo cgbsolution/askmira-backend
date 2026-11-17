@@ -675,6 +675,27 @@ async def _has_timesheet_pay_waiting(
     )
 
 
+async def _has_open_hours(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
+    """Whether a consultant has hours entries still a draft or waiting for approval."""
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(ConsultantHoursEntry.id)
+                .where(
+                    ConsultantHoursEntry.employee_id == employee_id,
+                    ConsultantHoursEntry.status.in_(
+                        [HoursEntryStatus.DRAFT, HoursEntryStatus.SUBMITTED]
+                    ),
+                )
+                .limit(1),
+                ConsultantHoursEntry,
+                user,
+            )
+        )
+        is not None
+    )
+
+
 async def _has_unpaid_hours(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
     """Whether a consultant has approved hours entries that nobody has paid yet.
 
@@ -767,15 +788,20 @@ async def update_employee(
         new_kind is not None
         and new_kind is not EmploymentType.CONSULTANT
         and is_consultant(employee)
-        and await _has_unpaid_hours(session, user, employee.id)
     ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "This consultant has approved hours not yet paid. Pay them in a "
-                "Consultant payout before changing their employment type."
-            ),
-        )
+        if await _has_open_hours(session, user, employee.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Finish or reject their open hours entries first.",
+            )
+        if await _has_unpaid_hours(session, user, employee.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This consultant has approved hours not yet paid. Pay them in a "
+                    "Consultant payout before changing their employment type."
+                ),
+            )
 
     if "custom_fields" in changes:
         if changes["custom_fields"] is None:

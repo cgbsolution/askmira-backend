@@ -270,3 +270,35 @@ async def test_cannot_become_consultant_with_timesheet_pay_waiting_in_payroll(
         )
     assert refused.value.status_code == 409
     assert "Payroll" in refused.value.detail
+
+
+async def test_open_hours_entries_block_leaving_consultant(session, tenant, hr_user) -> None:
+    caller = await as_caller(session, hr_user)
+    person = await employee_service.create_employee(
+        session, caller, _person("T9", EmploymentType.CONSULTANT)
+    )
+    entry = _approved_hours(tenant, person)
+    entry.status = HoursEntryStatus.DRAFT
+    session.add(entry)
+    await session.commit()
+
+    for open_status in (HoursEntryStatus.DRAFT, HoursEntryStatus.SUBMITTED):
+        entry.status = open_status
+        await session.commit()
+        with pytest.raises(HTTPException) as refused:
+            await employee_service.update_employee(
+                session,
+                caller,
+                person.id,
+                EmployeeUpdate(employment_type=EmploymentType.FULL_TIME),
+            )
+        assert refused.value.status_code == 409
+        assert refused.value.detail == "Finish or reject their open hours entries first."
+
+    # A rejected entry is not open: the change goes through.
+    entry.status = HoursEntryStatus.REJECTED
+    await session.commit()
+    updated = await employee_service.update_employee(
+        session, caller, person.id, EmployeeUpdate(employment_type=EmploymentType.FULL_TIME)
+    )
+    assert updated.employment_type is EmploymentType.FULL_TIME

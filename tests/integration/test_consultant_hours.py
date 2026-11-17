@@ -665,6 +665,45 @@ async def test_a_status_grid_with_a_typed_total_is_a_total_only_entry(session, h
     assert len(made["days"]) == 31
 
 
+async def test_a_status_grid_total_over_24_hours_a_day_is_refused(session, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    days = [
+        {"date": date(2026, 10, 1) + timedelta(days=i), "hours": "0", "status": "present"}
+        for i in range(31)
+    ]
+    with pytest.raises(HTTPException) as refused:
+        await hours.create_entry(
+            session, a, _body(person, days=days, total_billable_hours=Decimal("745"))
+        )
+    assert refused.value.status_code == 422
+    assert "more than 24 hours a day" in refused.value.detail
+
+
+async def test_editing_without_a_project_keeps_the_entry_project(
+    session, tenant, hr_user, employee
+):
+    from app.models.timesheets import Project
+
+    first = Project(tenant_id=tenant.id, code="ALPHA", name="Alpha")
+    later = Project(tenant_id=tenant.id, code="BETA", name="Beta")
+    session.add_all([first, later])
+    await session.flush()
+    person = await _consultant(session, employee)
+    person.project_id = first.id
+    await session.commit()
+    a = await as_caller(session, hr_user)
+    made = await hours.create_entry(session, a, _body(person))
+    assert made["project_id"] == str(first.id)
+
+    person.project_id = later.id
+    await session.commit()
+    edited = await hours.update_entry(
+        session, a, uuid.UUID(made["id"]), _body(person, total_billable_hours=Decimal("160"))
+    )
+    assert edited["project_id"] == str(first.id)
+
+
 async def test_attention_flags_missing_last_month(session, tenant, hr_user, legal_entity):
     from app.models.employee import ApproverRoute, EmploymentStatus
     from app.services.attendance.service import local_today

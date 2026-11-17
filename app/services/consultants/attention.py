@@ -41,7 +41,7 @@ __all__ = ["attention_list", "end_salaries", "pending_adjustments", "set_opening
 
 HAS_SALARY = "Has a current salary"
 NO_RATE = "No hourly rate"
-NO_APPROVER = "No timesheet approver"
+NO_APPROVER = "No finance approver (HR approves)"
 NO_GST_RATE = "No GST rate"
 
 _HR_ONLY = "Consultant payouts are run by HR."

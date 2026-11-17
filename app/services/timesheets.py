@@ -616,16 +616,8 @@ async def _read(
             for e in entries
         ],
     }
-    # What a week pays is for HR and the consultant's own approver only: nobody
-    # else, the consultant included, gets the key at all.
-    if (
-        consultant
-        and employee is not None
-        and employee.id != user.employee_id
-        and (permissions.is_hr(user) or employee.internal_approver_user_id == user.id)
-    ):
-        amount = await _price(session, user, employee_id, entries)
-        out["amount"] = str(amount) if amount is not None else None
+    # A consultant's week is for project tracking only and never pays, so it carries
+    # no amount; consultants are paid from hours entries (consultants.hours).
     return out
 
 

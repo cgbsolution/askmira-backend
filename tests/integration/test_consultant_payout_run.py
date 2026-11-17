@@ -1016,7 +1016,7 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
     assert listed["CON1"]["reasons"] == [
         "Has a current salary",
-        "No timesheet approver",
+        "No finance approver (HR approves)",
         no_hours,
     ]
     # The old figure is a hint only while GST applies and no rate is set.
@@ -1040,7 +1040,7 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     assert salary.effective_to == date(2026, 9, 30)
     # Ended in the past: the salary reason is gone.
     after = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
-    assert after["CON1"]["reasons"] == ["No timesheet approver", no_hours]
+    assert after["CON1"]["reasons"] == ["No finance approver (HR approves)", no_hours]
 
 
 async def test_end_salaries_refuses_non_consultants(
@@ -1471,15 +1471,12 @@ async def test_older_week_routes_are_gone(
         headers=bearer(hr_user),
     )
     assert added.status_code in (404, 405)
-    from app.main import app
-
-    paths = {getattr(route, "path", "") for route in app.routes}
-    assert "/api/v1/consultant-payouts/includable-weeks" not in paths
-    # The path now reads as a run id, which is not one: never a listing.
+    # The old listing is a plain 404, never read as a run id.
     listed = await client.get(
         "/api/v1/consultant-payouts/includable-weeks", headers=bearer(hr_user)
     )
-    assert listed.status_code in (404, 405, 422)
+    assert listed.status_code == 404
+    assert listed.json()["detail"] == "This page no longer exists."
     attention = await client.get("/api/v1/consultant-payouts/attention", headers=bearer(hr_user))
     assert attention.status_code == 200
     assert "includable_weeks" not in attention.json()

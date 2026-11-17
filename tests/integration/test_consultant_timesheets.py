@@ -164,16 +164,15 @@ async def test_approved_consultant_week_creates_no_payroll_adjustment(
 
     done = await timesheets.decide(session, admin, sheet_id, approve=True, note=None)
     assert done["status"] == "approved"
-    assert done["amount"] == "38400.00"
+    # Consultant weeks are for project tracking only: they never pay, so no amount.
+    assert "amount" not in done
     assert done["pay"] is None
     assert await session.scalar(select(func.count()).select_from(PayrollAdjustment)) == 0
     sheet = await session.scalar(select(Timesheet).where(Timesheet.id == sheet_id))
     assert sheet is not None and sheet.payroll_adjustment_id is None
 
 
-async def test_amount_is_only_for_hr_and_the_internal_approver(
-    session, tenant, hr_user, legal_entity
-) -> None:
+async def test_a_consultant_week_carries_no_amount(session, tenant, hr_user, legal_entity) -> None:
     _, admin = await _person(session, tenant, legal_entity, "ADMN")
     _, stranger = await _person(session, tenant, legal_entity, "STRN")
     consultant, consultant_login = await _consultant(
@@ -187,8 +186,7 @@ async def test_amount_is_only_for_hr_and_the_internal_approver(
     as_hr = await timesheets.person_week(session, hr_user, consultant.id, MONDAY)
     as_approver = await timesheets.person_week(session, admin, consultant.id, MONDAY)
     own = await timesheets.my_week(session, consultant_login, MONDAY)
-    assert as_hr["amount"] == as_approver["amount"] == "2000.00"
-    assert "amount" not in own
+    assert all("amount" not in week for week in (as_hr, as_approver, own))
     assert own["consultant"] is True and own["approval_route"] is None
     with pytest.raises(HTTPException):
         await timesheets.person_week(session, stranger, consultant.id, MONDAY)

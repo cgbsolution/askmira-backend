@@ -449,16 +449,16 @@ def _figures(data: HoursIn) -> tuple[Decimal, list[dict[str, Any]] | None]:
             for d in sorted(data.days, key=lambda d: d.date)
         ]
         summed = sum((d.hours for d in data.days), Decimal(0))
-        if summed == 0 and total is not None:
-            # Only the days' statuses (Week-offs marked) with the total typed:
-            # a total-only entry; the statuses split its cost by working days.
-            return total, days
-        if total is not None and total != summed:
-            raise _error(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"The days add up to {summed} hours but the total says {total}.",
-            )
-        total = summed
+        # Only the days' statuses (Week-offs marked) with the total typed is a
+        # total-only entry: the statuses split its cost by working days.
+        statuses_only = summed == 0 and total is not None
+        if not statuses_only:
+            if total is not None and total != summed:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"The days add up to {summed} hours but the total says {total}.",
+                )
+            total = summed
     if total is None or total <= 0:
         raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enter more than zero billable hours.")
     span = (data.period_end - data.period_start).days + 1
@@ -576,7 +576,8 @@ async def update_entry(
     }
     entry.period_start = data.period_start
     entry.period_end = data.period_end
-    entry.project_id = data.project_id or person.project_id
+    # Without a project the entry keeps the one it was given, not the consultant's current one.
+    entry.project_id = data.project_id or entry.project_id
     entry.total_billable_hours = total
     entry.non_billable_hours = data.non_billable_hours
     entry.days = days

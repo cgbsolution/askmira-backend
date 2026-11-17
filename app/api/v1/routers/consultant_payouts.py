@@ -139,6 +139,12 @@ async def line_pdf(line_id: uuid.UUID, user: CurrentUser, session: DbSession) ->
     )
 
 
+@router.get("/includable-weeks", include_in_schema=False)
+async def includable_weeks_gone() -> None:
+    """The old "add an older week" listing: every approved entry is picked up by cut-off now."""
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This page no longer exists.")
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: uuid.UUID, user: CurrentUser, session: DbSession) -> dict[str, Any]:
     return await payouts.get_run(session, user, run_id)
