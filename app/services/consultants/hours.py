@@ -32,6 +32,7 @@ from app.models.consultant_hours import (
 )
 from app.models.consultant_payouts import ConsultantPayoutEntry
 from app.models.employee import Employee, EmploymentType
+from app.models.notifications import Channel, DigestMode
 from app.models.payroll import PayrollRun, PayrollRunStatus, Payslip
 from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import Project
@@ -75,11 +76,13 @@ register_event(
     "{submitted_by} entered {hours} billable hours for {employee_name} for {period}. "
     "Check them against the customer's timesheet and approve or reject them under "
     "Payroll, Consultant hours.",
+    preferences={Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE},
 )
 register_event(
     "consultant_hours.decided",
     "{employee_name}'s hours for {period} were {outcome}",
     "{decided_by} {outcome} the {hours} hours for {employee_name} for {period}.{note_line}",
+    preferences={Channel.IN_APP: DigestMode.IMMEDIATE, Channel.EMAIL: DigestMode.IMMEDIATE},
 )
 
 DayStatus = Literal["present", "holiday", "week_off", "leave", "half_day"]
