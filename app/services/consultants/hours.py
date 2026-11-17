@@ -44,6 +44,7 @@ from app.services.storage.sniff import FileRejectedError, sniff
 
 __all__ = [
     "WAITING_NOTE",
+    "WAITING_NOTE_WITH_APPROVER",
     "HoursIn",
     "add_attachment",
     "attachment_file",
@@ -61,6 +62,11 @@ __all__ = [
 
 #: Shown when nobody but the person who entered or last edited an entry can approve it.
 WAITING_NOTE = "Needs another person to approve — set a finance approver for this consultant."
+#: The same, when the consultant's finance approver worked on the entry and HR cannot cover.
+WAITING_NOTE_WITH_APPROVER = (
+    "Needs another person to approve — ask HR, or set a different finance approver for "
+    "this consultant."
+)
 
 register_event(
     "consultant_hours.submitted",
@@ -245,7 +251,11 @@ async def _eligible_approvers(
     hr_pool: list[tuple[uuid.UUID, uuid.UUID | None]] | None = None,
 ) -> list[uuid.UUID]:
     """Who may approve this entry: the finance approver if set, active and not the consultant,
-    else HR users; never anyone who entered, edited, attached a file to or submitted it."""
+    else HR users; never anyone who entered, edited, attached a file to or submitted it.
+
+    A finance approver who worked on the entry cannot approve it, so HR covers instead.
+    """
+    barred = {str(uid) for uid in entry.maker_user_ids or []}
     pool: list[uuid.UUID] = []
     if person.internal_approver_user_id:
         approver = await session.scalar(
@@ -257,12 +267,15 @@ async def _eligible_approvers(
                 user,
             )
         )
-        if approver is not None and approver.employee_id != person.id:
+        if (
+            approver is not None
+            and approver.employee_id != person.id
+            and str(approver.id) not in barred
+        ):
             pool = [approver.id]
     if not pool:
         found = hr_pool if hr_pool is not None else await _hr_pool(session, user)
         pool = [uid for uid, employee_id in found if employee_id != person.id]
-    barred = {str(uid) for uid in entry.maker_user_ids or []}
     return [uid for uid in pool if str(uid) not in barred]
 
 
@@ -274,6 +287,10 @@ def _add_maker(entry: ConsultantHoursEntry, user: User) -> None:
 
 
 # ── Serialising ─────────────────────────────────────────────────────────────
+
+
+def _waiting_note(person: Employee) -> str:
+    return WAITING_NOTE_WITH_APPROVER if person.internal_approver_user_id else WAITING_NOTE
 
 
 async def _attachments(
@@ -349,7 +366,7 @@ async def _read(
             for a in await _attachments(session, user, entry.id)
         ],
         "can_approve": entry.status is HoursEntryStatus.SUBMITTED and user.id in eligible,
-        "approval_note": WAITING_NOTE if live and not eligible else None,
+        "approval_note": _waiting_note(person) if live and not eligible else None,
     }
 
 
@@ -908,7 +925,8 @@ async def reopen_entry(
     entry.decided_by_user_id = None
     entry.decided_at = None
     entry.decision_note = None
-    entry.maker_user_ids = [str(user.id)]  # a fresh cycle: only the reopener is a maker
+    # Whoever entered or edited the figures before stays barred from approving them.
+    _add_maker(entry, user)
     name, start, end = person.full_name, entry.period_start, entry.period_end
     await audit.record(
         session,

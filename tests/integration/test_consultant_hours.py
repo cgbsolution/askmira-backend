@@ -456,20 +456,53 @@ async def test_approver_who_submitted_cannot_approve(session, tenant, hr_user, e
     assert listed[0]["approval_note"] == WAITING
 
 
-async def test_reopen_starts_a_fresh_cycle(session, tenant, hr_user, employee):
+async def test_reopen_keeps_earlier_makers_barred(session, tenant, hr_user, employee):
     person = await _consultant(session, employee)
     a = await as_caller(session, hr_user)
     b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    c = await _user(session, tenant, "hr3@acme.test", UserRole.SUB_ADMIN)
     submitted = await _submitted(session, a, person)
     entry_id = uuid.UUID(submitted["id"])
     await hours.decide_entry(session, b, entry_id, approve=True, note=None)
     await hours.reopen_entry(session, b, entry_id)
     await hours.submit_entry(session, b, entry_id)
-    # A is no longer a maker; B reopened and submitted, so B cannot approve but A can.
-    with pytest.raises(HTTPException):
-        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    # A entered the figures and B reopened and resubmitted them: neither may approve.
+    for maker in (a, b):
+        with pytest.raises(HTTPException) as refused:
+            await hours.decide_entry(session, maker, entry_id, approve=True, note=None)
+        assert refused.value.status_code == 403
+    done = await hours.decide_entry(session, c, entry_id, approve=True, note=None)
+    assert done["status"] == "approved"
+
+
+async def test_finance_approver_entry_falls_back_to_hr(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    finance = await _user(session, tenant, "finance@acme.test", UserRole.EMPLOYEE)
+    person.internal_approver_user_id = finance.id
+    await session.commit()
+    a = await as_caller(session, hr_user)
+
+    # The finance approver entered the hours themself: HR approves instead.
+    submitted = await _submitted(session, finance, person)
+    entry_id = uuid.UUID(submitted["id"])
+    assert submitted["can_approve"] is False and submitted["approval_note"] is None
+    assert await _told(session, "consultant_hours.submitted") == [a.id]
     done = await hours.decide_entry(session, a, entry_id, approve=True, note=None)
     assert done["status"] == "approved"
+
+    # When HR worked on it too, nobody is left; the note says who to ask.
+    second = await hours.create_entry(
+        session,
+        finance,
+        _body(person, period_start=date(2026, 11, 1), period_end=date(2026, 11, 30)),
+    )
+    second_id = uuid.UUID(second["id"])
+    await hours.add_attachment(session, a, second_id, name="sheet.pdf", data=PDF)
+    waiting = await hours.submit_entry(session, finance, second_id)
+    assert waiting["approval_note"] == (
+        "Needs another person to approve — ask HR, or set a different finance approver "
+        "for this consultant."
+    )
 
 
 async def test_payroll_run_approved_after_entry_blocks_approval(
