@@ -34,6 +34,7 @@ from app.services.documents.indian_numbers import amount_in_words, group_indian
 from app.services.documents.pdf import render_html_document
 
 __all__ = [
+    "RUPEE_FONT",
     "EarningRow",
     "PayslipDocument",
     "PayslipMismatchError",
@@ -41,6 +42,7 @@ __all__ = [
     "mask_identifier",
     "payslip_facts",
     "payslip_html",
+    "register_rupee_font",
     "register_value",
     "render_payslip_pdf",
 ]
@@ -467,6 +469,8 @@ def _logo_html(logo: bytes | None) -> str:
 
 
 _RUPEE_FONT = "AskMiraRupee"
+#: For other PDFs that set the ₹ sign (a consultant's payout statement).
+RUPEE_FONT = _RUPEE_FONT
 
 
 def _register_rupee_font() -> None:
@@ -493,6 +497,9 @@ def _register_rupee_font() -> None:
         boldItalic=_RUPEE_FONT,
     )
     default.DEFAULT_FONT[_RUPEE_FONT.lower()] = _RUPEE_FONT
+
+
+register_rupee_font = _register_rupee_font
 
 
 _CSS = """

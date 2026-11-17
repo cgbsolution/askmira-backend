@@ -27,6 +27,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import audit
 from app.services.consultants import payouts
+from app.services.payroll import payslip_pdf
 
 __all__ = ["my_payout_statement_pdf", "payout_statement_pdf", "section_name"]
 
@@ -47,19 +48,27 @@ def _amount(value: object) -> str:
     return f"{Decimal(str(value)):,.2f}"
 
 
-def _rate_text(breakdown: list[dict]) -> str:
-    """What an entry was priced at: its hourly rates, or for a fixed monthly fee each
-    month part as "Fixed monthly ₹X x N/M days" (with a multiplication sign)."""
+#: The ₹ sign set in the bundled rupee font: the PDF's base fonts lack the glyph.
+RUPEE = f'<span style="font-family: {payslip_pdf.RUPEE_FONT}">₹</span>'
+
+
+def _rate_html(breakdown: list[dict]) -> str:
+    """What an entry was priced at, as HTML: its hourly rates, or for a fixed monthly
+    fee each month part as "Fixed monthly ₹X x N/M days" (with a multiplication sign).
+    A month part held for want of a fee reads "No monthly fee for N days"."""
+    months = [item for item in breakdown if "month" in item]
+    missing = sum(int(item.get("missing_days") or 0) for item in months)
+    if missing:
+        return f"No monthly fee for {missing} day{'s' if missing != 1 else ''}"
     parts = [
-        f"Fixed monthly ₹{_amount(at['fee'])} × {at['days']}/{item['days_in_month']} days"  # noqa: RUF001
-        for item in breakdown
-        if "month" in item
+        f"Fixed monthly {RUPEE}{_amount(at['fee'])} × {at['days']}/{item['days_in_month']} days"  # noqa: RUF001
+        for item in months
         for at in item.get("fees") or []
     ]
     if parts:
         return "; ".join(parts)
     rates = sorted({Decimal(b["rate"]) for b in breakdown if b.get("rate")})
-    return ", ".join(_amount(rate) for rate in rates)
+    return escape(", ".join(_amount(rate) for rate in rates))
 
 
 async def _line_for(
@@ -134,7 +143,7 @@ async def payout_statement_pdf(
             "<tr>"
             f"<td>{entry.period_start.isoformat()} to {entry.period_end.isoformat()}</td>"
             f"<td>{_amount(paid.hours)}</td>"
-            f"<td>{escape(_rate_text(paid.breakdown or []))}</td>"
+            f"<td>{_rate_html(paid.breakdown or [])}</td>"
             f"<td>{_amount(paid.gross)}</td>"
             "</tr>"
         )
@@ -170,6 +179,7 @@ async def payout_statement_pdf(
 </table>
 {note}
 """
+    payslip_pdf.register_rupee_font()
     data = render_pdf(
         merged_html=html,
         reference_number=f"PAYOUT-{run.pay_date:%Y%m%d}-{employee.employee_code}",

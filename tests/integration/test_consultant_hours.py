@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.access import UserAreaRights
 from app.models.consultant_hours import ConsultantHoursEntry, HoursEntryStatus
 from app.models.employee import Employee, EmploymentType
-from app.models.notifications import Notification
+from app.models.notifications import Channel, Notification
 from app.models.payroll import PayrollRun, PayrollRunStatus, PayrollRunType, Payslip
 from app.models.user import User, UserRole
 from app.services.consultants import hours
@@ -158,13 +158,22 @@ async def _submitted(session, enterer, employee) -> dict:
 
 
 async def _told(session, event_key) -> list[uuid.UUID]:
-    return list(
-        (
-            await session.scalars(
-                select(Notification.recipient_user_id).where(Notification.event_key == event_key)
-            )
-        ).all()
-    )
+    """Who was told in the app; each of them is emailed the same notice as well."""
+
+    async def on(channel: Channel) -> list[uuid.UUID]:
+        return list(
+            (
+                await session.scalars(
+                    select(Notification.recipient_user_id).where(
+                        Notification.event_key == event_key, Notification.channel == channel
+                    )
+                )
+            ).all()
+        )
+
+    in_app = await on(Channel.IN_APP)
+    assert sorted(await on(Channel.EMAIL)) == sorted(in_app)
+    return in_app
 
 
 async def test_finance_enters_submits_and_another_person_approves(

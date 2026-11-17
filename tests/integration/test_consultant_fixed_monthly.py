@@ -78,9 +78,35 @@ async def test_full_month_pays_the_fee_exactly(session, tenant, hr_user, legal_e
             "days_in_month": 31,
             "fee": "100000.00",
             "fees": [{"fee": "100000.00", "days": 31}],
+            "missing_days": 0,
             "amount": "100000.00",
         }
     ]
+
+
+async def test_a_month_entered_week_by_week_pays_the_fee_exactly(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _fixed(session, tenant, legal_entity, "FIX1", (date(2026, 1, 1), "100000"))
+    for first, last in ((1, 7), (8, 14), (15, 21), (22, 28), (29, 31)):
+        await _hours(
+            session,
+            tenant,
+            person,
+            monday=date(2026, 10, first),
+            period_end=date(2026, 10, last),
+            total="40",
+        )
+
+    line = _line(await _run(session, hr_user), person)
+
+    # Rounded per entry this would be 4 x 22,580.65 + 9,677.42 = 1,00,000.02.
+    assert line["gross"] == "100000.00"
+    amounts = [entry["gross"] for entry in line["entries"]]
+    # Each week its own share rounded; the last entry of the month takes the remainder.
+    assert amounts == ["22580.65", "22580.65", "22580.65", "22580.65", "9677.40"]
+    assert [entry["breakdown"][0]["amount"] for entry in line["entries"]] == amounts
 
 
 async def test_part_month_prorates_by_calendar_days(session, tenant, hr_user, legal_entity) -> None:
@@ -153,6 +179,11 @@ async def test_no_fee_holds_the_line(session, tenant, hr_user, legal_entity) -> 
     assert line["excluded"] is True
     assert line["problems"] == [f"No monthly fee for {period_label(OCT_1, OCT_31)}"]
     assert line["gross"] == "0.00"
+    (part,) = line["entries"][0]["breakdown"]
+    # Shown as the days without a fee, never as a fee beside a nil amount.
+    assert part["fees"] == [] and part["fee"] is None
+    assert part["missing_days"] == 14
+    assert part["amount"] == "0.00"
 
 
 async def test_fixed_monthly_tds_and_net(session, tenant, hr_user, legal_entity) -> None:

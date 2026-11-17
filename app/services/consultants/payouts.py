@@ -183,6 +183,8 @@ class _PricedEntry:
     missing: set[date] = field(default_factory=set)
     #: What holds the whole entry back (an entry given as a total).
     problems: list[str] = field(default_factory=list)
+    #: A fixed-monthly entry's month parts, unrounded, in breakdown order.
+    exact: list[Decimal] = field(default_factory=list)
 
 
 def no_monthly_fee(period: str) -> str:
@@ -201,45 +203,84 @@ def _price_fixed_entry(
     entry: ConsultantHoursEntry, history: list[tuple[date, Decimal]]
 ) -> _PricedEntry:
     """A fixed-monthly consultant's entry: each calendar day of its period is worth the
-    fee in force that day divided by the days in its month. Each month's days are
-    summed exactly and rounded to the paisa once, so a full month is the fee exactly.
+    fee in force that day divided by the days in its month. Each month part is kept
+    exact (one division) in `exact`; `_round_fixed_months` rounds each month once
+    across the whole line, so a full month is the fee exactly however it was entered.
 
     The hours are kept for the record and never priced. A day with no fee holds
-    the whole entry back.
+    the whole entry back: every month part is then 0 and lists no fees, only the
+    days without one (`missing_days`).
     """
     priced = _PricedEntry(hours=_entry_hours(entry))
     period = period_label(entry.period_start, entry.period_end)
-    # (year, month) -> fee -> days at that fee, in the order the fees came.
-    months: dict[tuple[int, int], dict[Decimal, int]] = {}
-    missing_fee = False
+    # (year, month) -> fee -> days at that fee, in the order the fees came; None = no fee.
+    months: dict[tuple[int, int], dict[Decimal | None, int]] = {}
     for offset in range((entry.period_end - entry.period_start).days + 1):
         day = entry.period_start + timedelta(days=offset)
         fee = fees.in_force(history, day)
-        if fee is None:
-            missing_fee = True
-            fee = Decimal(0)
         at_fee = months.setdefault((day.year, day.month), {})
         at_fee[fee] = at_fee.get(fee, 0) + 1
+    missing_fee = any(None in at_fee for at_fee in months.values())
     if missing_fee:
         priced.problems.append(no_monthly_fee(period))
     for (year, month), at_fee in months.items():
         in_month = calendar.monthrange(year, month)[1]
-        exact = sum((fee * days / in_month for fee, days in at_fee.items()), Decimal(0))
-        amount = Decimal("0.00") if missing_fee else _money(exact)
-        priced.gross += amount
-        shown = [{"fee": _text(fee), "days": days} for fee, days in at_fee.items() if fee > 0]
+        priced_days = {fee: days for fee, days in at_fee.items() if fee is not None}
+        exact = (
+            Decimal(0)
+            if missing_fee
+            else sum((fee * days for fee, days in priced_days.items()), Decimal(0)) / in_month
+        )
+        shown = (
+            []
+            if missing_fee
+            else [{"fee": _text(fee), "days": days} for fee, days in priced_days.items()]
+        )
+        priced.exact.append(exact)
         priced.breakdown.append(
             {
                 "month": f"{year:04d}-{month:02d}",
                 "days": sum(at_fee.values()),
                 "days_in_month": in_month,
-                "fee": shown[0]["fee"] if len(shown) == 1 and not missing_fee else None,
+                "fee": shown[0]["fee"] if len(shown) == 1 else None,
                 "fees": shown,
-                "amount": _text(amount),
+                "missing_days": at_fee.get(None, 0),
+                "amount": _text(_money(exact)),
             }
         )
-    priced.gross = _money(priced.gross)
+    priced.gross = _money(sum((_money(x) for x in priced.exact), Decimal(0)))
     return priced
+
+
+def _round_fixed_months(priced_entries: list[_PricedEntry]) -> None:
+    """Round each month once across a line's fixed-monthly entries.
+
+    The month is worth its exact share summed over all the line's entries, rounded to
+    the paisa once, so a month entered as several entries still totals the fee
+    exactly. For display each entry's month part is its own share rounded, and the
+    last entry (by period) holding that month takes the remainder paisa, so the
+    parts add up to the month. Entries arrive in period order.
+    """
+    months: dict[str, list[tuple[_PricedEntry, int]]] = {}
+    for priced in priced_entries:
+        for index, item in enumerate(priced.breakdown):
+            if "month" in item:
+                months.setdefault(item["month"], []).append((priced, index))
+    for parts in months.values():
+        total = _money(sum((p.exact[i] for p, i in parts), Decimal(0)))
+        given = Decimal(0)
+        for position, (priced, index) in enumerate(parts):
+            share = total - given if position == len(parts) - 1 else _money(priced.exact[index])
+            given += share
+            priced.breakdown[index]["amount"] = _text(share)
+    for priced in priced_entries:
+        if priced.exact:
+            priced.gross = _money(
+                sum(
+                    (Decimal(item["amount"]) for item in priced.breakdown if "month" in item),
+                    Decimal(0),
+                )
+            )
 
 
 async def _price_entry(
@@ -593,6 +634,9 @@ async def _price_line(
     for row in sorted(rows, key=lambda r: sources[r.entry_id].period_start):
         priced = await _price_entry(session, user, sources[row.entry_id], fee_history)
         entries.append((row, priced))
+    if fee_history is not None:
+        _round_fixed_months([priced for _, priced in entries])
+    for _, priced in entries:
         hours += priced.hours
         gross += priced.gross
         missing |= priced.missing
