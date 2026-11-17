@@ -203,3 +203,44 @@ async def test_a_salary_ended_in_the_past_does_not_block_becoming_consultant(
         ),
     )
     assert updated.employment_type is EmploymentType.CONSULTANT
+
+
+@pytest.mark.parametrize("adjustment_status", ["pending", "approved"])
+async def test_cannot_become_consultant_with_timesheet_pay_waiting_in_payroll(
+    session, tenant, hr_user, adjustment_status
+) -> None:
+    from app.models.payroll_inputs import (
+        AdjustmentCategory,
+        AdjustmentKind,
+        AdjustmentRecurrence,
+        AdjustmentStatus,
+        PayrollAdjustment,
+    )
+
+    caller = await as_caller(session, hr_user)
+    person = await employee_service.create_employee(session, caller, _person("T7"))
+    session.add(
+        PayrollAdjustment(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            kind=AdjustmentKind.EARNING,
+            category=AdjustmentCategory.OTHER_EARNING,
+            name="Hours, week of 02 Nov 2026",
+            amount=Decimal("9600"),
+            recurrence=AdjustmentRecurrence.ONE_TIME,
+            start_year=2026,
+            start_month=11,
+            reference=f"timesheet:{uuid.uuid4()}",
+            status=AdjustmentStatus(adjustment_status),
+            reason="Approved timesheet, 8 hours.",
+            created_by_user_id=hr_user.id,
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(HTTPException) as refused:
+        await employee_service.update_employee(
+            session, caller, person.id, EmployeeUpdate(employment_type=EmploymentType.CONSULTANT)
+        )
+    assert refused.value.status_code == 409
+    assert "Payroll" in refused.value.detail

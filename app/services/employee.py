@@ -40,6 +40,7 @@ from app.models.employee import (
 )
 from app.models.org import Department, LegalEntity, Location
 from app.models.payroll import EmployeeSalary
+from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import Project, Timesheet, TimesheetStatus
 from app.models.user import User
 from app.schemas.employee import (
@@ -57,7 +58,11 @@ from app.schemas.employee import (
 )
 from app.schemas.employee_profile import CelebrationRead, CelebrationsRead
 from app.services import audit, custom_fields
-from app.services.consultants import is_consultant
+from app.services.consultants import (
+    is_consultant,
+    not_paid_through_payroll,
+    timesheet_pay_waiting_in_payroll,
+)
 from app.services.employee_profile import HIRING_KEYS
 from app.services.payroll import grades
 
@@ -648,12 +653,34 @@ async def _has_current_salary(session: AsyncSession, user: User, employee_id: uu
     )
 
 
+async def _has_timesheet_pay_waiting(
+    session: AsyncSession, user: User, employee_id: uuid.UUID
+) -> bool:
+    """Whether payroll may still pay this person for timesheet hours (an adjustment
+    from a timesheet, pending or approved and not yet applied)."""
+    return (
+        await session.scalar(
+            tenant_scoped(
+                select(PayrollAdjustment.id)
+                .where(
+                    PayrollAdjustment.employee_id == employee_id,
+                    timesheet_pay_waiting_in_payroll(),
+                )
+                .limit(1),
+                PayrollAdjustment,
+                user,
+            )
+        )
+        is not None
+    )
+
+
 async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid.UUID) -> bool:
     """Whether a consultant has approved timesheet weeks that nobody has paid yet.
 
-    Paid means picked up by a payroll adjustment (before payouts existed), or in
-    a consultant payout run marked paid. A week in a draft or approved run is
-    not paid yet.
+    Paid means picked up by a payroll adjustment (before payouts existed) that
+    was not cancelled or rejected, or in a consultant payout run marked paid. A
+    week in a draft or approved run is not paid yet.
     """
     paid_in_a_run = (
         select(ConsultantPayoutWeek.id)
@@ -671,7 +698,7 @@ async def _has_unpaid_weeks(session: AsyncSession, user: User, employee_id: uuid
                 .where(
                     Timesheet.employee_id == employee_id,
                     Timesheet.status == TimesheetStatus.APPROVED,
-                    Timesheet.payroll_adjustment_id.is_(None),
+                    not_paid_through_payroll(),
                     ~paid_in_a_run,
                 )
                 .limit(1),
@@ -727,6 +754,15 @@ async def update_employee(
                 detail=(
                     "This person has a current salary, and consultants are paid through "
                     "Consultant payouts, not a salary. End their salary first."
+                ),
+            )
+        if await _has_timesheet_pay_waiting(session, user, employee.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This person has timesheet hours waiting to be paid through payroll. "
+                    "Let payroll pay them, or cancel them under Payroll → Adjustments, "
+                    "before making them a consultant."
                 ),
             )
     elif (

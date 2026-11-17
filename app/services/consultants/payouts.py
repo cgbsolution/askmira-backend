@@ -56,11 +56,16 @@ from app.models.contractors import ContractorKind, TdsSection
 from app.models.employee import Employee, EmploymentType
 from app.models.org import LegalEntity
 from app.models.payroll import PayrollRuleSet
+from app.models.payroll_inputs import PayrollAdjustment
 from app.models.tenant import Tenant
 from app.models.timesheets import Timesheet, TimesheetStatus
 from app.models.user import User
 from app.services import audit, tds_non_salary, timesheets
-from app.services.consultants import is_consultant
+from app.services.consultants import (
+    adjustment_never_paid,
+    is_consultant,
+    not_paid_through_payroll,
+)
 from app.services.payroll.run import _require_scope_covers
 
 __all__ = [
@@ -149,7 +154,7 @@ async def eligible_weeks(
             Employee.employment_type == EmploymentType.CONSULTANT,
             Timesheet.status == TimesheetStatus.APPROVED,
             Timesheet.week_start <= cut_off - timedelta(days=6),
-            Timesheet.payroll_adjustment_id.is_(None),
+            not_paid_through_payroll(),
             ~_held_in_a_run(),
         )
         .order_by(Timesheet.employee_id, Timesheet.week_start)
@@ -856,7 +861,20 @@ async def include_week(
     if sheet.status is not TimesheetStatus.APPROVED:
         raise _conflict("Only an approved week can be paid.")
     if sheet.payroll_adjustment_id is not None:
-        raise _conflict("This week was already paid through payroll.")
+        adjustment = await session.scalar(
+            tenant_scoped(
+                select(PayrollAdjustment).where(
+                    PayrollAdjustment.id == sheet.payroll_adjustment_id
+                ),
+                PayrollAdjustment,
+                user,
+            )
+        )
+        if adjustment is None or not adjustment_never_paid(adjustment):
+            raise _conflict(
+                "This week was paid through payroll, or is still waiting there. Cancel it "
+                "under Payroll → Adjustments first if it should go into a consultant payout."
+            )
     if await timesheets._in_payout_run(session, user, sheet):
         raise _conflict("This week is already in a consultant payout.")
     if run.legal_entity_id is not None and employee.legal_entity_id != run.legal_entity_id:

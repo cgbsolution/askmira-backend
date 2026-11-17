@@ -377,6 +377,98 @@ async def test_pre_release_and_adjusted_weeks_are_not_eligible(
     assert refused.value.status_code == 409
 
 
+def _timesheet_adjustment(
+    tenant: Tenant, person: Employee, hr_user: User, *, adjustment_status: AdjustmentStatus
+) -> PayrollAdjustment:
+    return PayrollAdjustment(
+        tenant_id=tenant.id,
+        employee_id=person.id,
+        kind=AdjustmentKind.EARNING,
+        category=AdjustmentCategory.OTHER_EARNING,
+        name="Hours, week of 03 Aug 2026",
+        amount=Decimal("48000"),
+        recurrence=AdjustmentRecurrence.ONE_TIME,
+        start_year=2026,
+        start_month=8,
+        reference=f"timesheet:{uuid.uuid4()}",
+        status=adjustment_status,
+        reason="Approved timesheet, 40 hours.",
+        created_by_user_id=hr_user.id,
+    )
+
+
+async def test_a_week_whose_payroll_adjustment_was_cancelled_can_be_paid_once(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.services.payroll import adjustments
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    pending = _timesheet_adjustment(
+        tenant, person, hr_user, adjustment_status=AdjustmentStatus.PENDING
+    )
+    completed = _timesheet_adjustment(
+        tenant, person, hr_user, adjustment_status=AdjustmentStatus.COMPLETED
+    )
+    session.add_all([pending, completed])
+    await session.flush()
+    before_release = datetime(2026, 8, 10, tzinfo=UTC)
+    in_flight = await _week(
+        session,
+        tenant,
+        person,
+        monday=date(2026, 8, 3),
+        decided_at=before_release,
+        payroll_adjustment_id=pending.id,
+    )
+    paid = await _week(
+        session,
+        tenant,
+        person,
+        monday=date(2026, 8, 10),
+        decided_at=before_release,
+        payroll_adjustment_id=completed.id,
+    )
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    run_id = uuid.UUID(run["id"])
+    # Still pending in payroll: payroll may pay it, so a payout must not.
+    with pytest.raises(HTTPException) as refused:
+        await payouts.include_week(session, hr_user, run_id, in_flight.id)
+    assert refused.value.status_code == 409
+
+    checker = await _second_hr(session, tenant)
+    await adjustments.cancel(session, checker, pending.id, note="Paid as a consultant payout")
+    run = await payouts.include_week(session, hr_user, run_id, in_flight.id)
+    assert [w["timesheet_id"] for w in _line(run, person)["weeks"]] == [str(in_flight.id)]
+    # Once only: no second run takes it, and a week payroll paid stays refused.
+    again = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    with pytest.raises(HTTPException) as twice:
+        await payouts.include_week(session, hr_user, uuid.UUID(again["id"]), in_flight.id)
+    assert twice.value.status_code == 409
+    with pytest.raises(HTTPException) as refused:
+        await payouts.include_week(session, hr_user, run_id, paid.id)
+    assert refused.value.status_code == 409
+
+
+async def test_an_approved_week_with_a_cancelled_adjustment_is_taken(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    cancelled = _timesheet_adjustment(
+        tenant, person, hr_user, adjustment_status=AdjustmentStatus.CANCELLED
+    )
+    session.add(cancelled)
+    await session.flush()
+    sheet = await _week(session, tenant, person, payroll_adjustment_id=cancelled.id)
+    taken = await payouts.eligible_weeks(session, hr_user, legal_entity_id=None, cut_off=CUT_OFF)
+    assert [week.id for week in taken] == [sheet.id]
+
+
 async def test_problems_hold_only_that_line(session, tenant, hr_user, legal_entity) -> None:
     await _setup(session, tenant, hr_user)
     a = await _consultant(session, tenant, legal_entity, "CONA", bank=False)
@@ -791,6 +883,24 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
             created_by_user_id=hr_user.id,
         )
     )
+    # Approved but not yet paid by a run: payroll would still pay it.
+    session.add(
+        PayrollAdjustment(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            kind=AdjustmentKind.EARNING,
+            category=AdjustmentCategory.OTHER_EARNING,
+            name="Hours, week of 14 Sep 2026",
+            amount=Decimal("4800"),
+            recurrence=AdjustmentRecurrence.ONE_TIME,
+            start_year=2026,
+            start_month=9,
+            reference=f"timesheet:{uuid.uuid4()}",
+            reason="Approved timesheet, 4 hours.",
+            status=AdjustmentStatus.APPROVED,
+            created_by_user_id=hr_user.id,
+        )
+    )
     await session.commit()
 
     listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
@@ -802,7 +912,10 @@ async def test_attention_list_and_end_salaries(session, tenant, hr_user, legal_e
     assert "No hourly rate" in listed["CON3"]["reasons"]
     assert "CON2" not in listed
     pending = await attention.pending_adjustments(session, hr_user)
-    assert [(p["employee_code"], p["amount"]) for p in pending] == [("CON1", "9600.00")]
+    assert sorted((p["employee_code"], p["amount"]) for p in pending) == [
+        ("CON1", "4800.00"),
+        ("CON1", "9600.00"),
+    ]
 
     ended = await attention.end_salaries(
         session, hr_user, [person.id], effective_to=date(2026, 9, 30)

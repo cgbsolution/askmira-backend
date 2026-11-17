@@ -24,11 +24,11 @@ from app.models.consultant_payouts import ConsultantTdsOpening
 from app.models.contractors import TdsSection
 from app.models.employee import ApproverRoute, Employee, EmploymentStatus, EmploymentType
 from app.models.payroll import EmployeeSalary
-from app.models.payroll_inputs import AdjustmentStatus, PayrollAdjustment
+from app.models.payroll_inputs import PayrollAdjustment
 from app.models.timesheets import HourlyRate
 from app.models.user import User
 from app.services import audit
-from app.services.consultants import is_consultant
+from app.services.consultants import is_consultant, timesheet_pay_waiting_in_payroll
 
 __all__ = ["attention_list", "end_salaries", "pending_adjustments", "set_opening"]
 
@@ -126,7 +126,8 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
 
 
 async def pending_adjustments(session: AsyncSession, user: User) -> list[dict[str, Any]]:
-    """Consultant timesheet adjustments still pending in payroll, to cancel or let through."""
+    """Consultant timesheet adjustments payroll may still pay (pending, or approved and
+    not yet applied by a run), to cancel or let through."""
     permissions.require_hr(user, detail=_HR_ONLY)
     rows = (
         await session.execute(
@@ -135,8 +136,7 @@ async def pending_adjustments(session: AsyncSession, user: User) -> list[dict[st
                 .join(Employee, Employee.id == PayrollAdjustment.employee_id)
                 .where(
                     Employee.employment_type == EmploymentType.CONSULTANT,
-                    PayrollAdjustment.status == AdjustmentStatus.PENDING,
-                    PayrollAdjustment.reference.like("timesheet:%"),
+                    timesheet_pay_waiting_in_payroll(),
                 )
                 .order_by(Employee.employee_code, PayrollAdjustment.created_at),
                 PayrollAdjustment,
