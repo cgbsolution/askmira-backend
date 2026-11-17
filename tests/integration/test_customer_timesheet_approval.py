@@ -650,10 +650,10 @@ async def test_one_failing_week_does_not_stop_other_reminders(
 
     real = timesheet_approval.issue_link
 
-    async def flaky(sess, sheet, employee):
+    async def flaky(sess, sheet, employee, **kwargs):
         if sheet.id == first_id:
             raise RuntimeError("boom")
-        return await real(sess, sheet, employee)
+        return await real(sess, sheet, employee, **kwargs)
 
     monkeypatch.setattr(timesheet_approval, "issue_link", flaky)
     before = len(mail.sent)
