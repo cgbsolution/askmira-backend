@@ -100,6 +100,11 @@ class ConsultantHoursEntry(Base, UUIDMixin, TenantMixin, TimestampMixin):
     entered_by_user_id: Mapped[uuid.UUID | None] = _user_fk("fk_consultant_hours_entered_by")
     #: Whoever last changed the figures. Like the enterer, they cannot approve.
     last_edited_by_user_id: Mapped[uuid.UUID | None] = _user_fk("fk_consultant_hours_edited_by")
+    #: Every user who entered, edited, attached a file to, submitted or reopened this entry
+    #: in its current cycle (user ids as text). None of them can approve it.
+    maker_user_ids: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb"), nullable=False
+    )
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_by_user_id: Mapped[uuid.UUID | None] = _user_fk("fk_consultant_hours_decided_by")
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

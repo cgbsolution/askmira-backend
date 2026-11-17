@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Request, Response, UploadFile, status
+from fastapi import APIRouter, File, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.deps import CurrentUser, DbSession
@@ -28,7 +28,7 @@ async def list_entries(
     user: CurrentUser,
     session: DbSession,
     month: str | None = None,
-    status: str | None = None,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
     employee_id: uuid.UUID | None = None,
     waiting_for_me: bool = False,
 ) -> list[dict[str, Any]]:
@@ -36,7 +36,7 @@ async def list_entries(
         session,
         user,
         month=month,
-        status=status,
+        status_filter=status_filter,
         employee_id=employee_id,
         waiting_for_me=waiting_for_me,
     )

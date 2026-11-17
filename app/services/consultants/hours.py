@@ -21,7 +21,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import permissions
+from app.core import areas, permissions
+from app.core.access_control import rights_for
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.consultant_hours import (
@@ -77,6 +78,9 @@ DayStatus = Literal["present", "holiday", "week_off", "leave", "half_day"]
 _MAX_HOURS_PER_DAY = Decimal(24)
 _TWO_PLACES = Decimal("0.01")
 _EDITABLE = (HoursEntryStatus.DRAFT, HoursEntryStatus.REJECTED)
+#: Consultant hours sit in the payroll area; a sub-admin narrowed from approving there is out.
+_AREA = "payroll"
+_DECIDE_PATH = "/api/v1/consultant-hours/entry/decide"
 _OVERLAP_CONSTRAINT = "ex_consultant_hours_no_overlap"
 _SHEET_ACCEPT = "Upload an Excel sheet (xlsx or xls), CSV, PDF, PNG or JPG."
 
@@ -146,9 +150,20 @@ async def _employee(session: AsyncSession, user: User, employee_id: uuid.UUID) -
     return person
 
 
+def _may_act(user: User, person: Employee) -> bool:
+    """HR, or the person's finance approver; never the person themself."""
+    if person.id == user.employee_id:
+        return False
+    return permissions.is_hr(user) or person.internal_approver_user_id == user.id
+
+
 async def _require_access(session: AsyncSession, user: User, person: Employee) -> None:
-    """HR or the consultant's finance approver; never the consultant, never a non-consultant."""
-    if not is_consultant(person):
+    """HR or the consultant's finance approver; never the consultant themself.
+
+    Who the caller is comes first: somebody with no right to the person is told nothing
+    about them, not even whether they are a consultant.
+    """
+    if _may_act(user, person) and not is_consultant(person):
         raise _error(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"{person.full_name} is not a consultant."
         )
@@ -162,7 +177,10 @@ async def _require_access(session: AsyncSession, user: User, person: Employee) -
 async def _load(
     session: AsyncSession, user: User, entry_id: uuid.UUID, *, lock: bool = False
 ) -> tuple[ConsultantHoursEntry, Employee]:
-    """The entry and its consultant, the caller's right to them checked. `lock` holds the row."""
+    """The entry and its consultant, the caller's right to them checked. `lock` holds the row.
+
+    An entry the caller has no right to is a 404, as if it did not exist.
+    """
     stmt = tenant_scoped(
         select(ConsultantHoursEntry).where(ConsultantHoursEntry.id == entry_id),
         ConsultantHoursEntry,
@@ -171,31 +189,40 @@ async def _load(
     if lock:
         stmt = stmt.with_for_update()
     entry = await session.scalar(stmt)
-    if entry is None:
+    person = await _employee(session, user, entry.employee_id) if entry is not None else None
+    if entry is None or person is None or not _may_act(user, person):
         raise _error(status.HTTP_404_NOT_FOUND, "Hours entry not found.")
-    person = await _employee(session, user, entry.employee_id)
     await _require_access(session, user, person)
     return entry, person
 
 
-async def _hr_user_ids(
-    session: AsyncSession, user: User, *, not_employee_id: uuid.UUID
-) -> list[uuid.UUID]:
-    return list(
-        (
-            await session.scalars(
-                tenant_scoped(
-                    select(User.id).where(
-                        User.role.in_([UserRole.ADMIN, UserRole.SUB_ADMIN]),
-                        User.is_active.is_(True),
-                        or_(User.employee_id.is_(None), User.employee_id != not_employee_id),
-                    ),
-                    User,
-                    user,
-                )
+async def _hr_pool(session: AsyncSession, user: User) -> list[tuple[uuid.UUID, uuid.UUID | None]]:
+    """(user id, their employee id) of every active HR user who may approve hours.
+
+    A sub-admin narrowed away from approving in the payroll area is left out, the same
+    test their own request would meet.
+    """
+    candidates = (
+        await session.scalars(
+            tenant_scoped(
+                select(User).where(
+                    User.role.in_([UserRole.ADMIN, UserRole.SUB_ADMIN]),
+                    User.is_active.is_(True),
+                ),
+                User,
+                user,
             )
-        ).all()
-    )
+        )
+    ).all()
+    needed = areas.required_right("POST", _DECIDE_PATH)
+    pool: list[tuple[uuid.UUID, uuid.UUID | None]] = []
+    for candidate in candidates:
+        if candidate.role is UserRole.SUB_ADMIN:
+            rights = await rights_for(session, candidate, _AREA)
+            if rights is not None and not rights.allows(needed):
+                continue
+        pool.append((candidate.id, candidate.employee_id))
+    return pool
 
 
 async def _eligible_approvers(
@@ -204,31 +231,35 @@ async def _eligible_approvers(
     person: Employee,
     entry: ConsultantHoursEntry,
     *,
-    hr_ids: list[uuid.UUID] | None = None,
+    hr_pool: list[tuple[uuid.UUID, uuid.UUID | None]] | None = None,
 ) -> list[uuid.UUID]:
-    """Who may approve this entry: the finance approver if set and active, else HR users,
-    never whoever entered or last edited it."""
+    """Who may approve this entry: the finance approver if set, active and not the consultant,
+    else HR users; never anyone who entered, edited, attached a file to or submitted it."""
     pool: list[uuid.UUID] = []
     if person.internal_approver_user_id:
-        active = await session.scalar(
+        approver = await session.scalar(
             tenant_scoped(
-                select(User.id).where(
+                select(User).where(
                     User.id == person.internal_approver_user_id, User.is_active.is_(True)
                 ),
                 User,
                 user,
             )
         )
-        if active is not None:
-            pool = [active]
+        if approver is not None and approver.employee_id != person.id:
+            pool = [approver.id]
     if not pool:
-        pool = (
-            hr_ids
-            if hr_ids is not None
-            else await _hr_user_ids(session, user, not_employee_id=person.id)
-        )
-    barred = {entry.entered_by_user_id, entry.last_edited_by_user_id}
-    return [uid for uid in pool if uid not in barred]
+        found = hr_pool if hr_pool is not None else await _hr_pool(session, user)
+        pool = [uid for uid, employee_id in found if employee_id != person.id]
+    barred = {str(uid) for uid in entry.maker_user_ids or []}
+    return [uid for uid in pool if str(uid) not in barred]
+
+
+def _add_maker(entry: ConsultantHoursEntry, user: User) -> None:
+    """Record that this person worked on the entry, so they can never approve it."""
+    makers = list(entry.maker_user_ids or [])
+    if str(user.id) not in makers:
+        entry.maker_user_ids = [*makers, str(user.id)]
 
 
 # ── Serialising ─────────────────────────────────────────────────────────────
@@ -263,9 +294,9 @@ async def _read(
     entry: ConsultantHoursEntry,
     person: Employee,
     *,
-    hr_ids: list[uuid.UUID] | None = None,
+    hr_pool: list[tuple[uuid.UUID, uuid.UUID | None]] | None = None,
 ) -> dict[str, Any]:
-    eligible = await _eligible_approvers(session, user, person, entry, hr_ids=hr_ids)
+    eligible = await _eligible_approvers(session, user, person, entry, hr_pool=hr_pool)
     live = entry.status in (HoursEntryStatus.DRAFT, HoursEntryStatus.SUBMITTED)
     project_name = None
     if entry.project_id:
@@ -393,8 +424,7 @@ def _figures(data: HoursIn) -> tuple[Decimal, list[dict[str, Any]] | None]:
                 f"The days add up to {summed} hours but the total says {total}.",
             )
         total = summed
-    assert total is not None  # HoursIn guarantees a total or days
-    if total <= 0:
+    if total is None or total <= 0:
         raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enter more than zero billable hours.")
     span = (data.period_end - data.period_start).days + 1
     if total > _MAX_HOURS_PER_DAY * span:
@@ -455,9 +485,10 @@ async def create_entry(
         status=HoursEntryStatus.DRAFT,
         entered_by_user_id=user.id,
         last_edited_by_user_id=user.id,
+        maker_user_ids=[str(user.id)],
     )
     session.add(entry)
-    name, start, end, user_id = person.full_name, data.period_start, data.period_end, user.id
+    name, start, end = person.full_name, data.period_start, data.period_end
     await _commit_or_overlap(session, name, start, end, flush_only=True)
     await audit.record(
         session,
@@ -477,7 +508,6 @@ async def create_entry(
     entry_id = entry.id
     await _commit_or_overlap(session, name, start, end)
     entry, person = await _load(session, user, entry_id)
-    assert entry.entered_by_user_id == user_id
     return await _read(session, user, entry, person)
 
 
@@ -517,6 +547,7 @@ async def update_entry(
     entry.days = days
     entry.customer_reference = (data.customer_reference or "").strip() or None
     entry.last_edited_by_user_id = user.id
+    _add_maker(entry, user)
     # A rejected entry being fixed is a draft again; the reason stays until it is sent back.
     entry.status = HoursEntryStatus.DRAFT
     name, start, end = person.full_name, data.period_start, data.period_end
@@ -635,6 +666,7 @@ async def add_attachment(
         uploaded_by_user_id=user.id,
     )
     session.add(attachment)
+    _add_maker(entry, user)
     await session.flush()
     await audit.record(
         session,
@@ -667,6 +699,7 @@ async def remove_attachment(
         )
     attachment = await _attachment(session, user, entry.id, attachment_id)
     await session.delete(attachment)
+    _add_maker(entry, user)
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -727,6 +760,10 @@ async def submit_entry(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Attach the customer's timesheet before submitting.",
         )
+    await _refuse_if_paid_through_payroll(
+        session, user, person, entry.period_start, entry.period_end
+    )
+    _add_maker(entry, user)
     entry.status = HoursEntryStatus.SUBMITTED
     entry.submitted_at = datetime.now(UTC)
     entry.decided_by_user_id = None
@@ -779,10 +816,10 @@ async def decide_entry(
     entry, person = await _load(session, user, entry_id, lock=True)
     if entry.status is not HoursEntryStatus.SUBMITTED:
         raise _error(status.HTTP_409_CONFLICT, "These hours are not waiting for a decision.")
-    if user.id in (entry.entered_by_user_id, entry.last_edited_by_user_id):
+    if str(user.id) in (entry.maker_user_ids or []):
         raise _error(
             status.HTTP_403_FORBIDDEN,
-            "You entered or edited these hours, so someone else has to approve them.",
+            "You worked on these hours, so someone else has to approve them.",
         )
     if user.id not in await _eligible_approvers(session, user, person, entry):
         raise _error(
@@ -793,13 +830,17 @@ async def decide_entry(
     clean = (note or "").strip() or None
     if not approve and clean is None:
         raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Say what needs changing.")
+    if approve:
+        await _refuse_if_paid_through_payroll(
+            session, user, person, entry.period_start, entry.period_end
+        )
     entry.status = HoursEntryStatus.APPROVED if approve else HoursEntryStatus.REJECTED
     entry.decided_by_user_id = user.id
     entry.decided_at = datetime.now(UTC)
     entry.decision_note = clean
     outcome = "approved" if approve else "rejected"
     name, start, end = person.full_name, entry.period_start, entry.period_end
-    makers = {entry.entered_by_user_id, entry.last_edited_by_user_id} - {None, user.id}
+    makers = {uuid.UUID(m) for m in entry.maker_user_ids or []} - {user.id}
     if makers:
         await notify(
             session,
@@ -852,6 +893,7 @@ async def reopen_entry(
     entry.decided_by_user_id = None
     entry.decided_at = None
     entry.decision_note = None
+    entry.maker_user_ids = [str(user.id)]  # a fresh cycle: only the reopener is a maker
     name, start, end = person.full_name, entry.period_start, entry.period_end
     await audit.record(
         session,
@@ -887,7 +929,7 @@ async def list_entries(
     user: User,
     *,
     month: str | None = None,
-    status: str | None = None,
+    status_filter: str | None = None,
     employee_id: uuid.UUID | None = None,
     waiting_for_me: bool = False,
 ) -> list[dict[str, Any]]:
@@ -903,11 +945,11 @@ async def list_entries(
         stmt = stmt.where(
             ConsultantHoursEntry.period_start <= last, ConsultantHoursEntry.period_end >= first
         )
-    if status:
+    if status_filter:
         try:
-            wanted = HoursEntryStatus(status)
+            wanted = HoursEntryStatus(status_filter)
         except ValueError as exc:
-            raise _error(422, "Unknown status.") from exc
+            raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown status.") from exc
         stmt = stmt.where(ConsultantHoursEntry.status == wanted)
     if employee_id:
         stmt = stmt.where(ConsultantHoursEntry.employee_id == employee_id)
@@ -916,11 +958,12 @@ async def list_entries(
             stmt.order_by(ConsultantHoursEntry.period_start.desc(), Employee.employee_code)
         )
     ).all()
+    hr_pool = await _hr_pool(session, user)
     out: list[dict[str, Any]] = []
     for entry, person in rows:
         if not is_consultant(person) or person.id == user.employee_id:
             continue
-        item = await _read(session, user, entry, person)
+        item = await _read(session, user, entry, person, hr_pool=hr_pool)
         if waiting_for_me and not item["can_approve"]:
             continue
         out.append(item)

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.access import UserAreaRights
 from app.models.consultant_hours import ConsultantHoursEntry, HoursEntryStatus
 from app.models.employee import Employee, EmploymentType
 from app.models.notifications import Notification
@@ -195,7 +196,9 @@ async def test_single_hr_user_entry_waits(session, tenant, hr_user, employee):
     a = await as_caller(session, hr_user)
     submitted = await _submitted(session, a, person)
 
-    listed = await hours.list_entries(session, a, month="2026-10", status=None, employee_id=None)
+    listed = await hours.list_entries(
+        session, a, month="2026-10", status_filter=None, employee_id=None
+    )
     assert [item["can_approve"] for item in listed] == [False]
     assert listed[0]["approval_note"] == WAITING
     with pytest.raises(HTTPException) as refused:
@@ -211,7 +214,7 @@ async def test_a_second_hr_user_can_approve(session, tenant, hr_user, employee):
     submitted = await _submitted(session, a, person)
     assert await _told(session, "consultant_hours.submitted") == [b.id]
     waiting = await hours.list_entries(
-        session, b, month=None, status=None, employee_id=None, waiting_for_me=True
+        session, b, month=None, status_filter=None, employee_id=None, waiting_for_me=True
     )
     assert [item["can_approve"] for item in waiting] == [True]
     assert waiting[0]["approval_note"] is None
@@ -358,3 +361,186 @@ async def test_attachments_sheet_types_and_download(session, hr_user, employee):
     assert got == ("hours.csv", "text/csv", b"date,hours\n2026-10-01,8\n")
     left = await hours.remove_attachment(session, a, entry_id, attachment_id)
     assert left["attachments"] == []
+
+
+async def _approved_payroll_run(session, tenant, legal_entity, person, month=10):
+    run = PayrollRun(
+        tenant_id=tenant.id,
+        legal_entity_id=legal_entity.id,
+        period_year=2026,
+        period_month=month,
+        effective_date=date(2026, month, 1),
+        run_type=PayrollRunType.REGULAR,
+        status=PayrollRunStatus.APPROVED,
+    )
+    session.add(run)
+    await session.flush()
+    session.add(
+        Payslip(
+            tenant_id=tenant.id,
+            run_id=run.id,
+            employee_id=person.id,
+            working_days=Decimal(31),
+            paid_days=Decimal(31),
+            gross_earnings=Decimal(1),
+            total_deductions=Decimal(0),
+            net_pay=Decimal(1),
+            employer_cost=Decimal(1),
+        )
+    )
+    await session.commit()
+
+
+async def test_approver_who_swapped_the_file_cannot_approve(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    c = await _user(session, tenant, "hr3@acme.test", UserRole.SUB_ADMIN)
+    entry = await hours.create_entry(session, a, _body(person))
+    entry_id = uuid.UUID(entry["id"])
+    first = await hours.add_attachment(session, a, entry_id, name="a.pdf", data=PDF)
+    # B replaces the customer's file with their own and sends it for approval.
+    await hours.remove_attachment(session, b, entry_id, uuid.UUID(first["attachments"][0]["id"]))
+    await hours.add_attachment(session, b, entry_id, name="mine.pdf", data=PDF)
+    submitted = await hours.submit_entry(session, a, entry_id)
+    assert submitted["can_approve"] is False
+    with pytest.raises(HTTPException) as refused:
+        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    assert refused.value.status_code == 403
+    done = await hours.decide_entry(session, c, entry_id, approve=True, note=None)
+    assert done["status"] == "approved"
+
+
+async def test_earlier_editor_cannot_approve_after_someone_else_resaves(
+    session, tenant, hr_user, employee
+):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    c = await _user(session, tenant, "hr3@acme.test", UserRole.SUB_ADMIN)
+    entry = await hours.create_entry(session, a, _body(person))
+    entry_id = uuid.UUID(entry["id"])
+    await hours.add_attachment(session, a, entry_id, name="a.pdf", data=PDF)
+    await hours.update_entry(
+        session, b, entry_id, _body(person, total_billable_hours=Decimal("150"))
+    )
+    # A re-saves only the customer reference: last_edited is A again.
+    await hours.update_entry(
+        session,
+        a,
+        entry_id,
+        _body(person, total_billable_hours=Decimal("150"), customer_reference="TS-9"),
+    )
+    await hours.submit_entry(session, a, entry_id)
+    with pytest.raises(HTTPException) as refused:
+        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    assert refused.value.status_code == 403
+    done = await hours.decide_entry(session, c, entry_id, approve=True, note=None)
+    assert done["status"] == "approved"
+
+
+async def test_approver_who_submitted_cannot_approve(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    entry = await hours.create_entry(session, a, _body(person))
+    entry_id = uuid.UUID(entry["id"])
+    await hours.add_attachment(session, a, entry_id, name="a.pdf", data=PDF)
+    await hours.submit_entry(session, b, entry_id)
+    with pytest.raises(HTTPException) as refused:
+        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    assert refused.value.status_code == 403
+    # A is a maker too, so nobody is left to approve: it waits.
+    listed = await hours.list_entries(session, a, month=None, status_filter=None, employee_id=None)
+    assert listed[0]["approval_note"] == WAITING
+
+
+async def test_reopen_starts_a_fresh_cycle(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    submitted = await _submitted(session, a, person)
+    entry_id = uuid.UUID(submitted["id"])
+    await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    await hours.reopen_entry(session, b, entry_id)
+    await hours.submit_entry(session, b, entry_id)
+    # A is no longer a maker; B reopened and submitted, so B cannot approve but A can.
+    with pytest.raises(HTTPException):
+        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    done = await hours.decide_entry(session, a, entry_id, approve=True, note=None)
+    assert done["status"] == "approved"
+
+
+async def test_payroll_run_approved_after_entry_blocks_approval(
+    session, tenant, hr_user, employee, legal_entity
+):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    submitted = await _submitted(session, a, person)
+    entry_id = uuid.UUID(submitted["id"])
+    await _approved_payroll_run(session, tenant, legal_entity, person)
+    with pytest.raises(HTTPException) as refused:
+        await hours.decide_entry(session, b, entry_id, approve=True, note=None)
+    assert refused.value.status_code == 409
+    assert refused.value.detail == "That period was already paid through payroll."
+    # Rejecting is still possible, and resubmitting is refused the same way.
+    rejected = await hours.decide_entry(session, b, entry_id, approve=False, note="Paid already")
+    assert rejected["status"] == "rejected"
+    with pytest.raises(HTTPException) as again:
+        await hours.submit_entry(session, a, entry_id)
+    assert again.value.status_code == 409
+
+
+async def test_a_narrowed_sub_admin_is_not_an_approver(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    session.add(
+        UserAreaRights(tenant_id=tenant.id, user_id=b.id, area="payroll", can_approve=False)
+    )
+    await session.commit()
+    await _submitted(session, a, person)
+    listed = await hours.list_entries(session, a, month=None, status_filter=None, employee_id=None)
+    assert listed[0]["approval_note"] == WAITING
+    assert await _told(session, "consultant_hours.submitted") == []
+
+
+async def test_a_finance_approver_who_is_the_consultant_falls_back_to_hr(
+    session, tenant, hr_user, employee
+):
+    person = await _consultant(session, employee)
+    own_login = await _user(session, tenant, "anita@acme.test", UserRole.EMPLOYEE)
+    own_login.employee_id = person.id
+    person.internal_approver_user_id = own_login.id
+    await session.commit()
+    a = await as_caller(session, hr_user)
+    b = await _user(session, tenant, "hr2@acme.test", UserRole.SUB_ADMIN)
+    await _submitted(session, a, person)
+    assert await _told(session, "consultant_hours.submitted") == [b.id]
+
+
+async def test_people_without_a_right_to_the_hours_see_nothing(session, tenant, hr_user, employee):
+    person = await _consultant(session, employee)
+    a = await as_caller(session, hr_user)
+    submitted = await _submitted(session, a, person)
+    entry_id = uuid.UUID(submitted["id"])
+    stranger = await _user(session, tenant, "someone@acme.test", UserRole.EMPLOYEE)
+    own_login = await _user(session, tenant, "anita@acme.test", UserRole.EMPLOYEE)
+    own_login.employee_id = person.id
+    await session.commit()
+    for who in (stranger, own_login):
+        assert (
+            await hours.list_entries(session, who, month=None, status_filter=None, employee_id=None)
+            == []
+        )
+        with pytest.raises(HTTPException) as hidden:
+            await hours.get_entry(session, who, entry_id)
+        assert hidden.value.status_code == 404
+        with pytest.raises(HTTPException) as nope:
+            await hours.create_entry(session, who, _body(person))
+        assert nope.value.status_code == 403
+        assert person.full_name not in str(nope.value.detail)
+        with pytest.raises(HTTPException) as no_decide:
+            await hours.decide_entry(session, who, entry_id, approve=True, note=None)
+        assert no_decide.value.status_code == 404
