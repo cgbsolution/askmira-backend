@@ -105,6 +105,27 @@ async def test_type_change_guard_uses_unpaid_entries(session, tenant, hr_user) -
     assert "approved hours not yet paid" in refused.value.detail
 
 
+async def test_a_lone_approved_week_does_not_block_a_type_change(session, tenant, hr_user) -> None:
+    caller = await as_caller(session, hr_user)
+    person = await employee_service.create_employee(
+        session, caller, _person("T6", EmploymentType.CONSULTANT)
+    )
+    session.add(
+        Timesheet(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            week_start=date(2026, 11, 2),
+            status=TimesheetStatus.APPROVED,
+        )
+    )
+    await session.commit()
+
+    updated = await employee_service.update_employee(
+        session, caller, person.id, EmployeeUpdate(employment_type=EmploymentType.FULL_TIME)
+    )
+    assert updated.employment_type is EmploymentType.FULL_TIME
+
+
 async def test_can_stop_being_consultant_once_hours_are_paid(session, tenant, hr_user) -> None:
     caller = await as_caller(session, hr_user)
     person = await employee_service.create_employee(

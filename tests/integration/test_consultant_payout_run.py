@@ -420,6 +420,102 @@ async def test_total_only_entry_uses_period_end_rate(
     ]
 
 
+async def _raised_on(session, tenant, person: Employee, day: date, *, project_id=None) -> None:
+    session.add(
+        HourlyRate(
+            tenant_id=tenant.id,
+            employee_id=person.id,
+            project_id=project_id,
+            rate=Decimal("1500"),
+            effective_from=day,
+        )
+    )
+    await session.commit()
+
+
+async def test_total_only_rate_change_at_the_period_edges(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.models.timesheets import Project
+
+    await _setup(session, tenant, hr_user)
+    on_first = await _consultant(session, tenant, legal_entity, "CON1")
+    on_last = await _consultant(session, tenant, legal_entity, "CON2")
+    on_project = await _consultant(session, tenant, legal_entity, "CON3")
+    late_start = await _consultant(session, tenant, legal_entity, "CON4")
+    project = Project(tenant_id=tenant.id, code="ALPHA", name="Alpha")
+    session.add(project)
+    await session.commit()
+    # A raise on the first day holds all period; one on the last day does not.
+    await _raised_on(session, tenant, on_first, date(2026, 9, 1))
+    await _raised_on(session, tenant, on_last, date(2026, 9, 30))
+    # A project rate starting mid-period: the rate in force changes on the 15th.
+    await _raised_on(session, tenant, on_project, date(2026, 9, 15), project_id=project.id)
+    # No rate at all until mid-period: not priced at the later rate.
+    rates = await session.scalars(select(HourlyRate).where(HourlyRate.employee_id == late_start.id))
+    for rate in rates.all():
+        rate.effective_from = date(2026, 9, 10)
+    await session.commit()
+    september = {"monday": date(2026, 9, 1), "period_end": CUT_OFF, "total": "100"}
+    for person in (on_first, on_last, on_project, late_start):
+        entry = await _hours(session, tenant, person, **september)
+        if person is on_project:
+            entry.project_id = project.id
+            await session.commit()
+
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    changed = (
+        "The hourly rate changed during 01 Sep 2026 to 30 Sep 2026. Enter the hours day by day."
+    )
+    assert _line(run, on_first)["problems"] == []
+    assert _line(run, on_first)["gross"] == "150000.00"
+    assert _line(run, on_last)["problems"] == [changed]
+    assert _line(run, on_project)["problems"] == [changed]
+    assert _line(run, late_start)["problems"] == ["No hourly rate for 01 Sep 2026 to 30 Sep 2026"]
+
+
+async def test_reopened_entry_in_a_draft_run_is_held(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from sqlalchemy import update
+
+    await _setup(session, tenant, hr_user)
+    person = await _consultant(session, tenant, legal_entity, "CON1")
+    entry = await _hours(session, tenant, person)
+    run = await payouts.create_run(
+        session, hr_user, legal_entity_id=None, cut_off=CUT_OFF, pay_date=PAY_DATE
+    )
+    run_id = uuid.UUID(run["id"])
+    assert _line(run, person)["problems"] == []
+    # The race: the entry went back to draft after the run took it.
+    await session.execute(
+        update(ConsultantHoursEntry)
+        .where(ConsultantHoursEntry.id == entry.id)
+        .values(status=HoursEntryStatus.DRAFT)
+    )
+    await session.commit()
+    no_longer = (
+        "These hours are no longer approved. Leave this line out or recalculate after "
+        "they're approved again."
+    )
+    checker = await _second_hr(session, tenant)
+
+    # Priced as it was, the figures no longer hold: approval is refused.
+    with pytest.raises(HTTPException) as stale:
+        await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert stale.value.status_code == 409
+    # Recalculated, the line is held with the reason, and still cannot be approved.
+    line = _line(await payouts.recalculate(session, hr_user, run_id), person)
+    assert line["excluded"] is True
+    assert line["problems"] == [no_longer]
+    with pytest.raises(HTTPException) as held:
+        await payouts.approve_run(session, checker, run_id, confirm=_confirmed)
+    assert held.value.status_code == 409
+    assert (await _run_row(session, run_id)).status.value == "draft"
+
+
 async def test_rate_change_inside_total_only_period_is_held(
     session, tenant, hr_user, legal_entity
 ) -> None:
@@ -1375,6 +1471,15 @@ async def test_older_week_routes_are_gone(
         headers=bearer(hr_user),
     )
     assert added.status_code in (404, 405)
+    from app.main import app
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert "/api/v1/consultant-payouts/includable-weeks" not in paths
+    # The path now reads as a run id, which is not one: never a listing.
+    listed = await client.get(
+        "/api/v1/consultant-payouts/includable-weeks", headers=bearer(hr_user)
+    )
+    assert listed.status_code in (404, 405, 422)
     attention = await client.get("/api/v1/consultant-payouts/attention", headers=bearer(hr_user))
     assert attention.status_code == 200
     assert "includable_weeks" not in attention.json()

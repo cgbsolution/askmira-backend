@@ -87,6 +87,10 @@ DEFAULT_PAYEE_KIND = ContractorKind.INDIVIDUAL
 
 NO_BANK_ACCOUNT = "No bank account"
 NO_GSTIN = "GST applies but no GSTIN"
+NO_LONGER_APPROVED = (
+    "These hours are no longer approved. Leave this line out or recalculate after they're "
+    "approved again."
+)
 
 _CENT = Decimal("0.01")
 _HUNDRED = Decimal(100)
@@ -145,6 +149,9 @@ async def eligible_entries(
     )
     if legal_entity_id is not None:
         stmt = stmt.where(Employee.legal_entity_id == legal_entity_id)
+    # Lock the entries the run takes, as reopening does: an entry reopened meanwhile is
+    # re-read once that commits, and is no longer APPROVED, so it is not taken.
+    stmt = stmt.with_for_update(of=ConsultantHoursEntry)
     return list((await session.scalars(tenant_scoped(stmt, ConsultantHoursEntry, user))).all())
 
 
@@ -217,6 +224,9 @@ async def _price_entry(
             on_day = await timesheets._rate_on(
                 session, user, entry.employee_id, day, entry.project_id
             )
+            if on_day is None:
+                priced.problems.append(f"No hourly rate for {period}")
+                break
             if on_day != rate:
                 priced.problems.append(rate_changed(period))
                 break
@@ -418,7 +428,7 @@ async def _hours_entries(
             select(ConsultantHoursEntry).where(ConsultantHoursEntry.id.in_(entry_ids)),
             ConsultantHoursEntry,
             user,
-        )
+        ).execution_options(populate_existing=True)
     )
     return {entry.id: entry for entry in found.all()}
 
@@ -513,6 +523,8 @@ async def _price_line(
 
     problems = [f"No hourly rate on {day.isoformat()}" for day in sorted(missing)]
     problems.extend(held)
+    if any(source.status is not HoursEntryStatus.APPROVED for source in sources.values()):
+        problems.append(NO_LONGER_APPROVED)
     if not await _has_bank_account(session, user, employee.id):
         problems.append(NO_BANK_ACCOUNT)
     if employee.gst_applicable and not (employee.gstin or "").strip():
