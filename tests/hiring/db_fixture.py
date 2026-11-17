@@ -24,8 +24,12 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.models import Base
-from tests.integration.conftest import TEST_DATABASE_URL, _guard, prepare_schema
+from tests.integration.conftest import (
+    TEST_DATABASE_URL,
+    _guard,
+    create_all_tables,
+    prepare_schema,
+)
 
 _BATCH = 20
 _ATTEMPTS = 6
@@ -79,7 +83,7 @@ async def engine():
         await _retrying(engine, reset)
 
         async def create(conn):
-            await conn.run_sync(Base.metadata.create_all)
+            await create_all_tables(conn)
 
         await _retrying(engine, create)
 

@@ -75,3 +75,29 @@ async def test_other_consultant_same_period_ok(session, tenant, employee):
     session.add(_entry(tenant, employee, date(2026, 10, 1), date(2026, 10, 31)))
     session.add(_entry(tenant, other, date(2026, 10, 1), date(2026, 10, 31)))
     await session.commit()
+
+
+async def _refused(session, entry):
+    session.add(entry)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+async def test_period_and_total_checks(session, tenant, employee):
+    tenant_id, employee_id = tenant.id, employee.id
+
+    # 30 days apart (31 days counted inclusively) is the longest allowed period.
+    session.add(_entry_for(tenant_id, employee_id, date(2026, 10, 1), date(2026, 10, 31)))
+    await session.commit()
+
+    # 31 days apart is refused.
+    await _refused(
+        session, _entry_for(tenant_id, employee_id, date(2026, 11, 1), date(2026, 12, 2))
+    )
+    # End before start is refused.
+    await _refused(session, _entry_for(tenant_id, employee_id, date(2027, 2, 10), date(2027, 2, 9)))
+    # No billable hours is refused.
+    zero = _entry_for(tenant_id, employee_id, date(2027, 3, 1), date(2027, 3, 31))
+    zero.total_billable_hours = Decimal("0")
+    await _refused(session, zero)

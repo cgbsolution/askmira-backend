@@ -151,6 +151,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # btree_gist is deliberately left installed: other tables may come to rely on it.
     op.drop_table("consultant_hours_attachments")
     op.drop_table("consultant_hours_entries")
     _STATUS.drop(op.get_bind(), checkfirst=True)

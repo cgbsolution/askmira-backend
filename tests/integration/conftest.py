@@ -90,6 +90,17 @@ END $$;
 """
 
 
+async def create_all_tables(conn) -> None:
+    """Create every table from the models on an empty schema.
+
+    The consultant hours overlap guard is a gist exclusion constraint on uuid
+    columns, which needs the btree_gist extension. Dropping the schema removes it,
+    so every builder of the test schema must go through here.
+    """
+    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
+    await conn.run_sync(Base.metadata.create_all)
+
+
 async def prepare_schema(engine, url: str, rebuild) -> None:
     """Build the schema once per database per process; empty it for every later test."""
     if url in _BUILT and not os.environ.get("TEST_DB_REBUILD_EACH"):
@@ -141,9 +152,7 @@ async def engine():
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
-            # The overlap guard on consultant hours is a gist exclusion constraint.
-            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
-            await conn.run_sync(Base.metadata.create_all)
+            await create_all_tables(conn)
 
     await prepare_schema(engine, TEST_DATABASE_URL, rebuild)
     try:
