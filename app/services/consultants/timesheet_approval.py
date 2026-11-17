@@ -467,12 +467,25 @@ def _state(link: TimesheetApprovalLink, sheet: Timesheet, entries: list[Timeshee
 async def describe(
     session: AsyncSession, token: str, request: Request | None = None
 ) -> dict[str, Any]:
-    """What the link is about: hours only. Changes nothing."""
+    """What the link is about: hours only. Changes nothing.
+
+    A link no longer waiting for a decision (decided, changed, expired) says only
+    that, the company and the week: whoever holds an old email learns nothing more.
+    """
     if request is not None:
         throttle(request, READ_LIMIT)
     link, sheet, employee, entries = await _resolve(session, token)
-    scope = SimpleNamespace(tenant_id=link.tenant_id)
     tenant = await session.scalar(select(Tenant).where(Tenant.id == link.tenant_id))
+    state = _state(link, sheet, entries)
+    week_start: date = sheet.week_start
+    closed = {
+        "state": state,
+        "company": tenant.name if tenant else "",
+        "week_start": week_start.isoformat(),
+    }
+    if state != "waiting":
+        return closed
+    scope = SimpleNamespace(tenant_id=link.tenant_id)
     project_ids = {e.project_id for e in entries if e.project_id}
     task_ids = {e.task_id for e in entries if e.task_id}
     projects = {
@@ -494,12 +507,9 @@ async def describe(
         ).all()
     }
     total = sum((Decimal(str(e.hours)) for e in entries), Decimal(0))
-    week_start: date = sheet.week_start
     return {
-        "state": _state(link, sheet, entries),
-        "company": tenant.name if tenant else "",
+        **closed,
         "consultant_name": employee.full_name,
-        "week_start": week_start.isoformat(),
         "days": [
             {
                 "date": e.work_date.isoformat(),

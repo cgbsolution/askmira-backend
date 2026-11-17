@@ -211,7 +211,10 @@ async def test_customer_approves(session, tenant, hr_user, legal_entity, mail) -
     link = await session.scalar(select(TimesheetApprovalLink))
     assert link is not None and link.used_at is not None and link.decided_ip == "203.0.113.9"
 
-    assert (await timesheet_approval.describe(session, token))["state"] == "decided"
+    # A spent link says only that, the company and the week: no name, no hours.
+    stale = await timesheet_approval.describe(session, token)
+    assert stale["state"] == "decided"
+    assert set(stale) == {"state", "company", "week_start"}
     with pytest.raises(HTTPException) as again:
         await timesheet_approval.decide(session, token, approve=False, reason="no", ip=None)
     assert again.value.status_code == 409
@@ -311,7 +314,9 @@ async def test_expired_link(session, tenant, hr_user, legal_entity, mail) -> Non
     link.expires_at = datetime.now(UTC) - timedelta(minutes=1)
     await session.commit()
 
-    assert (await timesheet_approval.describe(session, token))["state"] == "expired"
+    expired = await timesheet_approval.describe(session, token)
+    assert expired["state"] == "expired"
+    assert set(expired) == {"state", "company", "week_start"}
     with pytest.raises(HTTPException) as gone:
         await timesheet_approval.decide(session, token, approve=True, reason=None, ip=None)
     assert gone.value.status_code == 410
@@ -653,9 +658,7 @@ async def test_one_failing_week_does_not_stop_other_reminders(
     monkeypatch.setattr(timesheet_approval, "issue_link", flaky)
     before = len(mail.sent)
     await session.refresh(hr_user)
-    result = await timesheet_approval.send_reminders(
-        session, hr_user, now=datetime.now(UTC)
-    )
+    result = await timesheet_approval.send_reminders(session, hr_user, now=datetime.now(UTC))
     assert result == {"reminded": 1}
     assert len(mail.sent) == before + 1
 
@@ -668,9 +671,7 @@ async def test_reminders_never_touch_another_workspace(
     await session.refresh(other_hr_user)
     sent_before = len(mail.sent)
 
-    result = await timesheet_approval.send_reminders(
-        session, other_hr_user, now=datetime.now(UTC)
-    )
+    result = await timesheet_approval.send_reminders(session, other_hr_user, now=datetime.now(UTC))
 
     assert result == {"reminded": 0}
     assert len(mail.sent) == sent_before
