@@ -141,6 +141,8 @@ async def engine():
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
+            # The overlap guard on consultant hours is a gist exclusion constraint.
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist"))
             await conn.run_sync(Base.metadata.create_all)
 
     await prepare_schema(engine, TEST_DATABASE_URL, rebuild)

@@ -141,6 +141,11 @@ from app.models.competency import (
     RatingScaleLevel,
     ScaleType,
 )
+from app.models.consultant_hours import (
+    ConsultantHoursAttachment,
+    ConsultantHoursEntry,
+    HoursEntryStatus,
+)
 from app.models.consultant_payouts import (
     ConsultantPayoutLine,
     ConsultantPayoutRun,
@@ -818,6 +823,8 @@ __all__ = [
     "ConsentCapturedVia",
     "ConsentPurpose",
     "ConsentRecord",
+    "ConsultantHoursAttachment",
+    "ConsultantHoursEntry",
     "ConsultantPayoutLine",
     "ConsultantPayoutRun",
     "ConsultantPayoutWeek",

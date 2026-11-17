@@ -600,6 +600,8 @@ TABLES: dict[str, TableClassification] = {
     "consultant_payout_lines": _p(EMP, "compensation"),
     "consultant_payout_weeks": _p(EMP, "compensation"),
     "consultant_tds_openings": _p(EMP, "tax"),
+    "consultant_hours_entries": _p(EMP, "compensation"),
+    "consultant_hours_attachments": _p(EMP, "compensation"),
     "client_accounts": _none(
         "A client engagement the company bills: its code, name and who looks after it."
     ),
