@@ -1407,3 +1407,62 @@ async def test_includable_weeks_lists_older_unpaid_weeks_for_hr(
         "/api/v1/consultant-payouts/includable-weeks", headers=bearer(colleague)
     )
     assert refused.status_code == 403
+
+
+async def test_attention_lists_tds_still_owed_after_year_end_or_a_section_change(
+    session, tenant, hr_user, legal_entity
+) -> None:
+    from app.models.consultant_payouts import PayoutRunStatus
+    from app.services import tds_non_salary
+    from app.services.consultants import attention
+
+    await _setup(session, tenant, hr_user)
+    approver = {"internal_approver_user_id": hr_user.id}
+    # Owed from a closed financial year: no later payout can take it.
+    last_year = await _consultant(session, tenant, legal_entity, "CON1", **approver)
+    line = await _earlier_line(
+        session,
+        tenant,
+        last_year,
+        run_status=PayoutRunStatus.PAID,
+        pay_date=date(2025, 3, 20),
+        gross="10000",
+    )
+    line.tds_carried_out = Decimal("1500")
+    # Owed under 194C, but now taxed under 194J: the next payout takes nothing.
+    moved = await _consultant(session, tenant, legal_entity, "CON2", **approver)
+    line = await _earlier_line(
+        session,
+        tenant,
+        moved,
+        run_status=PayoutRunStatus.APPROVED,
+        pay_date=date.today(),
+        gross="10000",
+        section=TdsSection.S194C,
+    )
+    line.tds_carried_out = Decimal("250")
+    # Owed this year, same section: the next payout takes it, nothing to do.
+    current = await _consultant(session, tenant, legal_entity, "CON3", **approver)
+    line = await _earlier_line(
+        session,
+        tenant,
+        current,
+        run_status=PayoutRunStatus.APPROVED,
+        pay_date=date.today(),
+        gross="10000",
+    )
+    line.tds_carried_out = Decimal("300")
+    await session.commit()
+
+    this_year = tds_non_salary.fy_bounds(date.today())[0].year
+    fy = f"{this_year}-{(this_year + 1) % 100:02d}"
+    listed = {row["code"]: row for row in await attention.attention_list(session, hr_user)}
+    assert listed["CON1"]["reasons"] == [
+        "TDS still owed from an earlier payout: ₹1,500.00 (194J (professional fees), "
+        "FY 2024-25). Settle it by hand."
+    ]
+    assert listed["CON2"]["reasons"] == [
+        f"TDS still owed from an earlier payout: ₹250.00 (194C (contractors), FY {fy}). "
+        "Settle it by hand."
+    ]
+    assert "CON3" not in listed

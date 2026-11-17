@@ -28,7 +28,7 @@ from app.models.user import User
 from app.services import audit
 from app.services.consultants import payouts
 
-__all__ = ["my_payout_statement_pdf", "payout_statement_pdf"]
+__all__ = ["my_payout_statement_pdf", "payout_statement_pdf", "section_name"]
 
 _SECTION_NAME = {
     TdsSection.S194C: "194C (contractors)",
@@ -36,6 +36,11 @@ _SECTION_NAME = {
     TdsSection.S194J_TECHNICAL: "194J (technical services)",
 }
 _NOT_FOUND = "Payout statement not found"
+
+
+def section_name(section: TdsSection) -> str:
+    """The TDS section as people read it, e.g. "194J (professional fees)"."""
+    return _SECTION_NAME.get(section, section.value)
 
 
 def _amount(value: object) -> str:

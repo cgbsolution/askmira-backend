@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import permissions
 from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
-from app.models.consultant_payouts import ConsultantTdsOpening
+from app.models.consultant_payouts import (
+    ConsultantPayoutLine,
+    ConsultantPayoutRun,
+    ConsultantTdsOpening,
+    PayoutRunStatus,
+)
 from app.models.contractors import TdsSection
 from app.models.employee import ApproverRoute, Employee, EmploymentStatus, EmploymentType
 from app.models.payroll import EmployeeSalary
@@ -91,6 +96,7 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
             )
         ).all()
     )
+    owed = await _tds_left_owing(session, user, people)
     out: list[dict[str, Any]] = []
     for person in people:
         reasons: list[str] = []
@@ -108,6 +114,8 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
         no_gst_rate = person.gst_applicable and person.gst_rate is None
         if no_gst_rate:
             reasons.append(NO_GST_RATE)
+        if person.id in owed:
+            reasons.append(owed[person.id])
         if reasons:
             out.append(
                 {
@@ -123,6 +131,66 @@ async def attention_list(session: AsyncSession, user: User) -> list[dict[str, An
                 }
             )
     return out
+
+
+async def _tds_left_owing(
+    session: AsyncSession, user: User, people: list[Employee]
+) -> dict[uuid.UUID, str]:
+    """TDS a payout carried forward that no later payout will take, by consultant.
+
+    A carry is taken only by a payout in the same financial year and section,
+    so one left on a consultant's latest line from a closed year, or under a
+    section they are no longer taxed under, has to be settled by hand.
+    """
+    from app.services import tds_non_salary
+    from app.services.attendance.service import local_today
+    from app.services.consultants.statement import section_name
+
+    if not people:
+        return {}
+    rows = (
+        await session.execute(
+            tenant_scoped(
+                select(ConsultantPayoutLine, ConsultantPayoutRun.pay_date)
+                .join(ConsultantPayoutRun, ConsultantPayoutRun.id == ConsultantPayoutLine.run_id)
+                .where(
+                    ConsultantPayoutLine.employee_id.in_([person.id for person in people]),
+                    ConsultantPayoutLine.excluded.is_(False),
+                    ConsultantPayoutRun.status.in_(
+                        [PayoutRunStatus.APPROVED, PayoutRunStatus.PAID]
+                    ),
+                )
+                # Latest first, ordered as the carry itself is (tds_carried_in).
+                .order_by(
+                    ConsultantPayoutLine.employee_id,
+                    ConsultantPayoutRun.pay_date.desc(),
+                    ConsultantPayoutRun.approved_at.desc().nulls_last(),
+                    ConsultantPayoutLine.id.desc(),
+                ),
+                ConsultantPayoutLine,
+                user,
+            )
+        )
+    ).all()
+    latest: dict[uuid.UUID, tuple[ConsultantPayoutLine, date]] = {}
+    for line, pay_date in rows:
+        latest.setdefault(line.employee_id, (line, pay_date))
+    this_year, _ = tds_non_salary.fy_bounds(await local_today(session, user))
+    sections = {person.id: person.tds_section or TdsSection.S194J_PROFESSIONAL for person in people}
+    owed: dict[uuid.UUID, str] = {}
+    for employee_id, (line, pay_date) in latest.items():
+        carried = Decimal(str(line.tds_carried_out or 0))
+        if carried <= 0:
+            continue
+        year, _ = tds_non_salary.fy_bounds(pay_date)
+        if year >= this_year and line.section == sections[employee_id]:
+            continue
+        owed[employee_id] = (
+            f"TDS still owed from an earlier payout: ₹{carried:,.2f} "
+            f"({section_name(line.section)}, FY {year.year}-{(year.year + 1) % 100:02d}). "
+            "Settle it by hand."
+        )
+    return owed
 
 
 async def pending_adjustments(session: AsyncSession, user: User) -> list[dict[str, Any]]:
