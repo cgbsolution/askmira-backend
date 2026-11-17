@@ -14,6 +14,16 @@ def test_paths_map_to_their_area() -> None:
     assert area_for_path("/api/v1/reports/analytics/attrition") == "analytics"
 
 
+def test_consultant_routes_are_in_the_payroll_area() -> None:
+    assert area_for_path("/api/v1/consultant-hours") == "payroll"
+    assert area_for_path("/api/v1/consultant-hours/1/decide") == "payroll"
+    assert area_for_path("/api/v1/consultant-payouts/1") == "payroll"
+    assert area_for_path("/api/v1/contractors/invoices") == "payroll"
+    assert required_right("POST", "/api/v1/consultant-hours/1/decide") == "can_approve"
+    assert required_right("POST", "/api/v1/consultant-payouts/1/approve") == "can_approve"
+    assert required_right("POST", "/api/v1/consultant-payouts/1/release") == "can_approve"
+
+
 def test_account_settings_and_public_pages_are_in_no_area() -> None:
     for path in ("/api/v1/auth/me", "/api/v1/admin/users", "/api/v1/opsec/step-up",
                  "/api/v1/public/careers/acme", "/api/v1/dpdp/requests"):
