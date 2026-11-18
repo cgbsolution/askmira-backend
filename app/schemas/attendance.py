@@ -366,7 +366,16 @@ class AttendanceExportRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["in_out", "punches", "daily", "summary"] = "in_out"
+    kind: Literal[
+        "in_out",
+        "punches",
+        "daily",
+        "summary",
+        # The old HRMS's own layouts (Excel only), for cross-checking.
+        "in_out_activities",
+        "monthly_summary",
+        "ytd",
+    ] = "in_out"
     start: date
     end: date
     file_type: Literal["xlsx", "csv"] = "xlsx"

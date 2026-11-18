@@ -91,6 +91,7 @@ from app.services.attendance import (
     shift_swaps,
 )
 from app.services.attendance import export as attendance_export
+from app.services.attendance import reports as attendance_reports
 from app.services.attendance import service as attendance_service
 from app.services.attendance.maps import MapConfigRead
 
@@ -361,22 +362,36 @@ async def export_attendance(
     their reporting line. A POST because ticked people do not fit in a URL; it
     writes nothing but the audit row and the addresses it looked up.
     """
-    exported = await attendance_export.export_attendance(
-        session,
-        user,
-        start=payload.start,
-        end=payload.end,
-        kind=payload.kind,
-        filters=review.OrgFilters(
-            legal_entity_id=payload.legal_entity_id,
-            project_id=payload.project_id,
-            department_id=payload.department_id,
-            location_id=payload.location_id,
-        ),
-        employee_ids=payload.employee_ids,
-        file_type=payload.file_type,
-        request=request,
+    filters = review.OrgFilters(
+        legal_entity_id=payload.legal_entity_id,
+        project_id=payload.project_id,
+        department_id=payload.department_id,
+        location_id=payload.location_id,
     )
+    if payload.kind in ("in_out_activities", "monthly_summary", "ytd"):
+        # The old HRMS's report layouts: always Excel, whatever file type was sent.
+        exported = await attendance_reports.export_report(
+            session,
+            user,
+            start=payload.start,
+            end=payload.end,
+            kind=payload.kind,
+            filters=filters,
+            employee_ids=payload.employee_ids,
+            request=request,
+        )
+    else:
+        exported = await attendance_export.export_attendance(
+            session,
+            user,
+            start=payload.start,
+            end=payload.end,
+            kind=payload.kind,
+            filters=filters,
+            employee_ids=payload.employee_ids,
+            file_type=payload.file_type,
+            request=request,
+        )
     await session.commit()
     return Response(
         content=exported.content,
