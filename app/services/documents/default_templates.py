@@ -124,7 +124,7 @@ employer, kindly share a copy of the same and communicate your confirmed date of
 
 <p><strong><u>Leaves:</u></strong></p>
 <p style="text-align:justify">After successful completion of the probation period, you will be
-entitled to earned leave at the rate of 1.25 days for each completed month of service. Leave may be
+entitled to leave at the rate of 1.25 days for each completed month of service. Leave may be
 accumulated during the calendar year; however, all accumulated leave must be utilized within the
 same calendar year, and no carry forward will be permitted.</p>
 
@@ -176,7 +176,7 @@ Joining.</p>
 
 <p><strong><u>Leaves:</u></strong></p>
 <p style="text-align:justify">After successful completion of the probation period, you will be
-entitled to earned leave at the rate of 1.25 days for each completed month of service. Leave may be
+entitled to leave at the rate of 1.25 days for each completed month of service. Leave may be
 accumulated during the calendar year; however, all accumulated leave must be utilized within the
 same calendar year, and no carry forward will be permitted.</p>
 <p style="text-align:justify">The company&rsquo;s working days are Monday to Friday.

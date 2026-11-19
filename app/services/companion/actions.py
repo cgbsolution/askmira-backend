@@ -412,6 +412,10 @@ async def propose_leave(
     usable = [b for b in balances if not b.is_statutory]
     wanted = str(inputs.get("leave_type") or "").strip()
     matches = _match_type(usable, wanted) if wanted else []
+    if len(usable) == 1 and len(matches) != 1:
+        # A workspace with one leave type ("Leave"): "casual leave", "a day off"
+        # or no type at all can only mean that one.
+        matches = usable
     used = {"from": start.isoformat(), "to": end.isoformat(), "leave_type": wanted}
     if len(matches) != 1:
         if not usable:

@@ -74,7 +74,7 @@ _SAMPLES: dict[str, str] = {
     "manager_name": "Vikram Shah",
     "approver_name": "Vikram Shah",
     "candidate_name": "Ayesha Fernandes",
-    "leave_type": "Earned Leave",
+    "leave_type": "Leave",
     "start_date": "5 Nov 2026",
     "end_date": "6 Nov 2026",
     "attendance_date": "16 Oct 2026",

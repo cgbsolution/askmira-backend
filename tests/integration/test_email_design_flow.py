@@ -193,7 +193,7 @@ async def test_the_design_is_saved_audited_and_previewed(session, org) -> None:
         subject="Leave approval needed",
         body="{employee_name} asked for {leave_type} from {start_date}.",
     )
-    assert "Meera Nair asked for Earned Leave from 5 Nov 2026." in shown["html"]
+    assert "Meera Nair asked for Leave from 5 Nov 2026." in shown["html"]
     assert "#7A3E9D" in shown["html"]
     assert "Warm regards,<br>People team" in shown["html"]
     assert "Powered by AskMiraa" in shown["text"]

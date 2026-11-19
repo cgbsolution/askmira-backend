@@ -129,6 +129,48 @@ async def test_a_project_names_its_company_and_counts_its_people(
     assert cleared.json()["client"] == "DXC Technology"
 
 
+async def test_project_filters_offer_only_projects_with_working_people(
+    session: AsyncSession,
+    client: httpx.AsyncClient,  # noqa: F811
+    tenant: Tenant,
+    other_tenant: Tenant,
+) -> None:
+    """A project is "staffed" only while someone active, on notice or on leave is on it."""
+    hr = await make_person(session, tenant, role=UserRole.ADMIN, name="Hari HR")
+    staff = await make_person(session, tenant, role=UserRole.EMPLOYEE, name="Sunil Staff")
+    working = await _project(session, tenant, "P-WORK", "Working")
+    on_leave = await _project(session, tenant, "P-LEAVE", "On leave")
+    only_leavers = await _project(session, tenant, "P-GONE", "Only leavers")
+    only_joiners = await _project(session, tenant, "P-SOON", "Only joiners")
+    await _project(session, tenant, "P-EMPTY", "Nobody")
+    closed = await _project(session, tenant, "P-CLOSED", "Closed", active=False)
+    await _employee(session, tenant, "W001", project=working)
+    await _employee(session, tenant, "L001", project=on_leave, status=EmploymentStatus.ON_LEAVE)
+    await _employee(session, tenant, "X001", project=only_leavers, status=EmploymentStatus.EXITED)
+    await _employee(
+        session, tenant, "J001", project=only_joiners, status=EmploymentStatus.PRE_JOINING
+    )
+    await _employee(session, tenant, "C001", project=closed)
+    # Another workspace's person on a same-named project does not count here.
+    theirs = await _project(session, other_tenant, "P-EMPTY", "Nobody")
+    await _employee(session, other_tenant, "O001", project=theirs)
+
+    listed = (
+        await client.get(f"{API}/timesheets/projects?include_inactive=true", headers=bearer(hr))
+    ).json()
+    assert {p["code"]: p["staffed"] for p in listed} == {
+        "P-CLOSED": True,
+        "P-EMPTY": False,
+        "P-GONE": False,
+        "P-LEAVE": True,
+        "P-SOON": False,
+        "P-WORK": True,
+    }
+    # Everyone gets the flag (managers filter Team today by project too).
+    seen = (await client.get(f"{API}/timesheets/projects", headers=bearer(staff))).json()
+    assert {p["code"]: p["staffed"] for p in seen}["P-WORK"] is True
+
+
 # ── Moving people onto projects ─────────────────────────────────────────────
 
 

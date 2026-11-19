@@ -135,8 +135,23 @@ async def _requests(session: AsyncSession, employee_id: uuid.UUID) -> list[Leave
 
 
 async def test_leave_is_offered_and_sent_only_when_the_person_says_yes(
-    session: AsyncSession, me: User, manager: Employee, casual: LeaveType
+    session: AsyncSession, tenant: Tenant, me: User, manager: Employee, casual: LeaveType
 ) -> None:
+    # Two types, so a request that names none has to be asked about.
+    sick = LeaveType(tenant_id=tenant.id, name="Sick Leave", code="SL")
+    session.add(sick)
+    await session.flush()
+    session.add(
+        LeavePolicy(
+            tenant_id=tenant.id,
+            leave_type_id=sick.id,
+            name="Sick leave - everyone",
+            annual_quota_days=Decimal(6),
+            accrual_frequency="annual",
+            effective_from=date(2020, 1, 1),
+        )
+    )
+    await session.commit()
     day = _weekday_ahead(9)
     span = {"from": day.isoformat(), "to": day.isoformat()}
     model = FakeModel(
@@ -187,6 +202,37 @@ async def test_leave_is_offered_and_sent_only_when_the_person_says_yes(
     assert {c["status"] for c in cards} == {"done"}
     # The steps it took are on the reply.
     assert [s["tool"] for s in second["messages"][1]["steps"]] == ["apply_leave"]
+
+
+async def test_a_workspace_with_one_leave_type_never_asks_which(
+    session: AsyncSession, tenant: Tenant, me: User, manager: Employee
+) -> None:
+    only = LeaveType(tenant_id=tenant.id, name="Leave", code="LV")
+    session.add(only)
+    await session.flush()
+    session.add(
+        LeavePolicy(
+            tenant_id=tenant.id,
+            leave_type_id=only.id,
+            name="Leave",
+            annual_quota_days=Decimal(15),
+            accrual_frequency="annual",
+            effective_from=date(2020, 1, 1),
+        )
+    )
+    await session.commit()
+    day = _weekday_ahead(9)
+    span = {"from": day.isoformat(), "to": day.isoformat()}
+    for named in ({}, {"leave_type": "casual leave"}):
+        model = FakeModel(
+            [tool_call("apply_leave", **named, **span)], "Shall I send it for approval?"
+        )
+        with use_backend(model):
+            result = await _say(session, me, f"I need leave on {day:%d %B}")
+        offer = result["messages"][1]["cards"][0]
+        assert offer["type"] == "proposal" and offer["status"] == "proposed", named
+        figures = {f["label"]: f["value"] for f in offer["figures"]}
+        assert figures["Leave"] == "Leave" and figures["Available now"] == "15"
 
 
 async def test_the_model_cannot_confirm_in_the_turn_it_offered(
