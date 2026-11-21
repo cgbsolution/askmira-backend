@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -190,9 +191,13 @@ async def decide(
     request: Request,
     response: Response,
     x_showcase_key: Key = None,
+    answer: Annotated[str | None, Body(alias="choice", embed=True, max_length=64)] = None,
 ) -> dict[str, Any]:
-    """Confirm or Cancel on an offer Ask Miraa made in this visitor's chat."""
+    """Confirm or Cancel on an offer Ask Miraa made in this visitor's chat.
+
+    The body's `choice` answers a question the card asks (an option's id, or "new").
+    """
     response.headers.update(_PRIVATE)
     return await showcase_links.decide(
-        session, code, run_id, x_showcase_key, action_id, choice == "confirm", request
+        session, code, run_id, x_showcase_key, action_id, choice == "confirm", request, answer
     )

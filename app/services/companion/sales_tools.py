@@ -1177,6 +1177,12 @@ async def carry_out(session: AsyncSession, user: User, action: CompanionAction) 
         try:
             answer = await products.act(session, user, SALEINX, "lead.save", payload)
         except products.ProductUnavailableError as exc:
+            if exc.choice:
+                # Saleinx found a company or contact like this one and asks which
+                # to use; the card shows its question and sends the answer back.
+                from app.services.companion import actions
+
+                raise actions.NeedsChoiceError(exc.choice) from exc
             raise _unavailable(exc) from exc
         deal = answer.get("deal") or {}
         done = "; ".join(str(d) for d in answer.get("done") or [])

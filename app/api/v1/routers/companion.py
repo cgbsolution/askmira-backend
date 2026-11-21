@@ -5,7 +5,17 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.core.deps import CurrentUser, DbSession, require_roles
 from app.models.user import UserRole
@@ -100,10 +110,17 @@ async def put_settings(
 
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
-    action_id: uuid.UUID, user: CurrentUser, session: DbSession, request: Request
+    action_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    choice: Annotated[str | None, Body(embed=True, max_length=64)] = None,
 ) -> dict[str, Any]:
-    """The caller pressed Confirm on an offer Ask Miraa made them: carry it out, as them."""
-    return await companion.confirm_offer(session, user, action_id, request=request)
+    """The caller pressed Confirm on an offer Ask Miraa made them: carry it out, as them.
+
+    `choice` answers a question the card asks (an option's id, or "new").
+    """
+    return await companion.confirm_offer(session, user, action_id, request=request, choice=choice)
 
 
 @router.post("/actions/{action_id}/cancel")
