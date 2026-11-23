@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.employee import EmploymentStatus, EmploymentType, Gender
+from app.models.exit_workflow import ExitType
 
 
 class EmployeeBase(BaseModel):
@@ -90,6 +91,9 @@ class EmployeeUpdate(BaseModel):
     status: EmploymentStatus | None = None
     date_of_joining: date | None = None
     date_of_exit: date | None = None
+    #: With status exited: how they left ("absconding"). Cleared when the status
+    #: is anything else.
+    exit_type: ExitType | None = None
     probation_end_date: date | None = None
     notice_period_days: int | None = Field(default=None, ge=0, le=365)
 
@@ -128,6 +132,7 @@ class EmployeeRead(EmployeeBase):
     employee_code: str
     status: EmploymentStatus
     date_of_exit: date | None
+    exit_type: str | None = None
     photo_url: str | None
     custom_fields: dict[str, Any]
     is_active: bool
@@ -160,6 +165,7 @@ class EmployeeSummary(BaseModel):
     dotted_line_manager_id: uuid.UUID | None = None
     photo_url: str | None
     status: EmploymentStatus
+    exit_type: str | None = None
 
 
 class ColleagueRead(BaseModel):

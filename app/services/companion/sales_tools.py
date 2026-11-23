@@ -763,6 +763,114 @@ def _deal_name(name: str, company: str, contact: str | None, sells: list[str]) -
     return name or ", ".join(sells) or "New opportunity"
 
 
+async def _propose_prospect(
+    session: AsyncSession,
+    user: User,
+    inputs: dict[str, Any],
+    ctx: Any,
+    *,
+    company: str,
+    contact: dict[str, str | None],
+    follow_day: date | None,
+    amount: Decimal | None,
+    used: dict[str, Any],
+) -> Result:
+    """A new company for Saleinx's Prospect Board (stage Dump), checked, then offered.
+
+    A prospect has no deal yet, so what a lead would carry as deal fields (what
+    they want, the budget, the decision date, who referred them) goes into its
+    notes. The board's product fit is optional: one of the workspace's offerings
+    when the person named it.
+    """
+    from app.services.companion import actions
+
+    params: dict[str, Any] = {"company": company}
+    figures: list[dict[str, str]] = [{"label": "Company", "value": company}]
+    if any(contact.values()):
+        params["contact"] = {k: v for k, v in contact.items() if v}
+        if contact["name"]:
+            figures.append({"label": "Contact", "value": contact["name"]})
+        for key, label in (("title", "Title"), ("email", "Email"), ("phone", "Phone")):
+            if contact[key]:
+                figures.append({"label": label, "value": str(contact[key])})
+    figures.append({"label": "Board", "value": "Prospect Board · Dump"})
+
+    wanted = [str(w).strip().lower() for w in inputs.get("offerings") or [] if str(w).strip()]
+    if wanted:
+        options = await products.ask(session, user, SALEINX, "options", {})
+        catalog = [o for o in options.get("offerings") or [] if isinstance(o, dict)]
+        picked = [o["name"] for o in catalog if str(o.get("name", "")).lower() in wanted]
+        if picked:
+            params["offerings"] = picked[:1]
+            figures.append({"label": "Product fit", "value": picked[0]})
+
+    referred = _text(inputs.get("referred_by"), 200)
+    source = _text(inputs.get("source"), 60) or ("Referral" if referred else "Ask Miraa")
+    params["source"] = source
+    figures.append({"label": "Source", "value": source + (f" ({referred})" if referred else "")})
+
+    decision = _day(inputs.get("decision_by"))
+    wants = _text(inputs.get("deal_name"), 200)
+    if wants and any(name and name.lower() in wants.lower() for name in (company, contact["name"])):
+        wants = ""  # the company's or the contact's name is not what they want
+    next_step = _text(inputs.get("next_step"), 500)
+    lines = [
+        f"Wants: {wants}" if wants else "",
+        _text(inputs.get("description"), 2000),
+        f"Budget: {inr(amount)}" if amount is not None else "",
+        f"Decision expected by {decision:%d %b %Y}" if decision else "",
+        f"Next step: {next_step}" if next_step else "",
+        f"Referred by {referred}." if referred else "",
+        _text(inputs.get("note"), 4000),
+    ]
+    notes_text = "\n".join(line for line in lines if line)
+    notes: list[str] = []
+    if notes_text:
+        params["notes"] = notes_text
+        notes.append(f"Notes on the prospect: {notes_text[:300]}")
+
+    follow = _text(inputs.get("follow_up"), 280)
+    who = contact["name"] or company
+    if follow and who:
+        names = [part for part in (who.split()[0], company) if part]
+        if not any(part.lower() in follow.lower() for part in names):
+            follow = f"{follow} ({who})"
+    if follow_day or follow:
+        params["follow_up"] = {
+            "title": follow or f"Follow up with {who}",
+            "due_date": follow_day.isoformat() if follow_day else None,
+            "type": "call" if re.search(r"\bcall|phone|ring\b", follow.lower()) else "followup",
+        }
+        figures.append(
+            {
+                "label": "Follow-up",
+                "value": params["follow_up"]["title"]
+                + (f" on {_when(follow_day.isoformat())}" if follow_day else ""),
+            }
+        )
+        notes.append("The follow-up goes on your Saleinx Tasks.")
+    notes.append(
+        "It goes on the Prospect Board at Dump, not in as a lead: it becomes a lead when "
+        "someone promotes it there."
+    )
+
+    action = await actions._offer(
+        session,
+        user,
+        ctx,
+        kind="saleinx_prospect",
+        payload=params,
+        summary={
+            "title": f"New prospect in Saleinx: {company}",
+            "figures": figures,
+            "notes": notes,
+            "confirm_label": "Add the prospect",
+            "question": "Add this prospect?",
+        },
+    )
+    return [actions.card_for(action)], used
+
+
 async def propose_lead(
     session: AsyncSession, user: User, inputs: dict[str, Any], ctx: Any
 ) -> Result:
@@ -808,9 +916,14 @@ async def propose_lead(
             return _which(found, existing), used
         deal = found
     elif not company:
-        return [_notice("Which company is the lead for?")], used
-    elif not (contact["name"] or contact["email"]):
-        return [_notice("Who is the contact at the company?")], used
+        return [_notice("Which company is it for?")], used
+    else:
+        # A new company goes on Saleinx's Prospect Board, not straight in as a lead:
+        # it becomes a lead when someone promotes it there.
+        return await _propose_prospect(
+            session, user, inputs, ctx, company=company, contact=contact,
+            follow_day=follow_day, amount=amount, used=used,
+        )  # fmt: skip
 
     options = await products.ask(session, user, SALEINX, "options", {})
     offerings_on = bool(options.get("offerings_required"))
@@ -1191,6 +1304,23 @@ async def carry_out(session: AsyncSession, user: User, action: CompanionAction) 
             f" {done[:1].upper()}{done[1:]}." if done else ""
         )
         return {"text": text, "open": "/launch/saleinx", "reference": deal.get("id")}
+
+    if action.kind == "saleinx_prospect":
+        try:
+            answer = await products.act(session, user, SALEINX, "prospect.save", payload)
+        except products.ProductUnavailableError as exc:
+            raise _unavailable(exc) from exc
+        prospect = answer.get("prospect") or {}
+        name = prospect.get("company") or payload["company"]
+        text = (
+            f"Added to the Prospect Board in Saleinx: {name} "
+            f"({prospect.get('stage_label') or 'Dump'})."
+        )
+        if answer.get("task_id"):
+            text += " The follow-up is on your Saleinx Tasks."
+        elif answer.get("task_error"):
+            text += f" The follow-up task could not be added: {answer['task_error']}"
+        return {"text": text, "open": "/launch/saleinx", "reference": prospect.get("id")}
 
     if action.kind == "saleinx_stage":
         try:

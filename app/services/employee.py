@@ -180,6 +180,7 @@ _DIRECTORY_COLUMNS = (
     Employee.dotted_line_manager_id,
     Employee.photo_url,
     Employee.status,
+    Employee.exit_type,
     Employee.deleted_at,
 )
 
@@ -604,11 +605,33 @@ async def update_employee(
     for key in _NOT_NULL:
         if key in changes and changes[key] is None:
             raise _unprocessable(f"'{key}' cannot be cleared.")
-    if (
-        changes.get("status") is EmploymentStatus.EXITED
-        and employee.status is not EmploymentStatus.EXITED
-    ):
-        raise _unprocessable(_EXIT_THROUGH_EXITS)
+    # Marking somebody Exited (or Absconding) here is HR recording that they have
+    # gone, at once. Clearance and the settlement, where needed, stay under
+    # People > Exits; the login goes now, as it does when an exit revokes access.
+    final_status = changes.get("status", employee.status)
+    leaving = (
+        final_status is EmploymentStatus.EXITED and employee.status is not EmploymentStatus.EXITED
+    )
+    returning = (
+        employee.status is EmploymentStatus.EXITED and final_status is not EmploymentStatus.EXITED
+    )
+    if changes.get("exit_type") is not None:
+        if final_status is not EmploymentStatus.EXITED:
+            raise _unprocessable("How somebody left is recorded only with the status Exited.")
+        changes["exit_type"] = changes["exit_type"].value
+    if final_status is not EmploymentStatus.EXITED and employee.exit_type is not None:
+        changes["exit_type"] = None
+    if leaving:
+        from app.services.attendance.service import local_today
+
+        last_day = changes.get("date_of_exit", employee.date_of_exit)
+        if last_day is None:
+            raise _unprocessable("Give the last working day (Date of exit) to mark them as left.")
+        if last_day > await local_today(session, user):
+            raise _unprocessable(
+                "The last working day is still ahead. Set the status to On notice now, and to "
+                "Exited on or after that day."
+            )
 
     if "custom_fields" in changes:
         if changes["custom_fields"] is None:
@@ -661,6 +684,27 @@ async def update_employee(
     for key, value in changes.items():
         setattr(employee, key, value)
 
+    summary = f"Updated employee {employee.employee_code}"
+    if leaving:
+        # Their login stops with them. Not every employee has one.
+        accounts = (
+            await session.scalars(
+                tenant_scoped(select(User).where(User.employee_id == employee.id), User, user)
+            )
+        ).all()
+        for account in accounts:
+            account.is_active = False
+        employee.is_active = False
+        diff["logins_deactivated"] = {"from": "0", "to": str(len(accounts))}
+        summary = (
+            f"Marked {employee.employee_code} as "
+            f"{'absconding' if employee.exit_type == 'absconding' else 'exited'} "
+            f"(last working day {employee.date_of_exit})"
+        )
+    elif returning:
+        # Back on the books; a login, if they need one, is switched on under Users.
+        employee.is_active = True
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -669,7 +713,7 @@ async def update_employee(
         entity_id=employee.id,
         actor=user,
         changes=diff,
-        summary=f"Updated employee {employee.employee_code}",
+        summary=summary,
         request=request,
     )
     await session.commit()

@@ -83,6 +83,7 @@ KINDS = (
     "expense_decision",
     # In a linked product, through its own rules, as the person (sales_tools.py).
     "saleinx_lead",
+    "saleinx_prospect",
     "saleinx_stage",
     "saleinx_decision",
     "saleinx_activity",
@@ -96,6 +97,7 @@ KINDS = (
 _PRODUCT_KINDS = frozenset(
     {
         "saleinx_lead",
+        "saleinx_prospect",
         "saleinx_stage",
         "saleinx_decision",
         "saleinx_activity",
@@ -114,6 +116,7 @@ _PRODUCT_OF = {
     "expense_claim": "ExpenseGenie",
     "expense_decision": "ExpenseGenie",
     "saleinx_lead": "Saleinx",
+    "saleinx_prospect": "Saleinx",
     "saleinx_stage": "Saleinx",
     "saleinx_decision": "Saleinx",
     "saleinx_activity": "Saleinx",

@@ -53,6 +53,7 @@ pytestmark = requires_db
 SPERIDIAN = "11111111-1111-4111-8111-111111111111"
 YASH = "22222222-2222-4222-8222-222222222222"
 JIKESH = "33333333-3333-4333-8333-333333333333"
+LEAD = "55555555-5555-4555-8555-555555555555"
 
 
 def _saleinx_asks(fake: FakeProducts, *, contact_question: bool = False) -> None:
@@ -70,7 +71,7 @@ def _saleinx_asks(fake: FakeProducts, *, contact_question: bool = False) -> None
         company = params.get("company_choice")
         if company is None:
             message = (
-                f'Companies like "{params["company"]}" are already in Saleinx: '
+                'Companies like "L&T Technology" are already in Saleinx: '
                 "Speridian Technology, Yash Technologies. Use one of them, or create a new company?"
             )
             choice = {
@@ -99,7 +100,7 @@ def _saleinx_asks(fake: FakeProducts, *, contact_question: bool = False) -> None
                 "answer_with": "contact_choice",
             }
             return httpx.Response(409, json={"error": message, "needs_choice": choice})
-        made = _deal(str(uuid.uuid4()), params["company"], params["deal"]["name"], "lead")
+        made = _deal(LEAD, "L&T Technology", "Recruitment services", "lead")
         return httpx.Response(
             200, json={"kind": "lead.save", "deal": made, "done": ["lead added at Lead"]}
         )
@@ -112,19 +113,22 @@ async def _lead_offer(
 ) -> dict[str, Any]:
     await _link(session, tenant, "saleinx", {me.email: "member"})
     fake.role = "member"
+    # A new company now goes on the Prospect Board (prospect.save); lead.save, and
+    # so its questions, is for a lead already in Saleinx.
+    fake.deals = [_deal(LEAD, "L&T Technology", "Recruitment services", "lead")]
     _saleinx_asks(fake, **asks)
     lead = plan(
         "save_lead",
-        "Here is the lead; confirm to add it.",
-        company="L&T Technology",
+        "Here is the update; confirm to save it.",
+        deal="L&T Technology",
         contact_name="Jikesh Krishna",
         contact_email="jikesh@example.com",
-        deal_name="Recruitment services",
-        offerings=["OutSystems"],
         follow_up="Follow up on company profile shared",
         follow_up_date="2026-11-23",
     )
-    return _offer(await _say(session, me, "New lead: L&T Technology, Jikesh", FakeModel(lead)))
+    offer = _offer(await _say(session, me, "Jikesh at L&T Technology, follow up", FakeModel(lead)))
+    assert offer["kind"] == "saleinx_lead"
+    return offer
 
 
 async def _confirm(

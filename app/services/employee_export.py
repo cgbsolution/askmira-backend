@@ -385,7 +385,13 @@ _STANDARD: tuple[_Section, ...] = (
                 "Employment type",
                 lambda c, p: _label(_EMPLOYMENT_TYPE, p.employee.employment_type),
             ),
-            _Column("status", "Status", lambda c, p: _label(_STATUS, p.employee.status)),
+            _Column(
+                "status",
+                "Status",
+                lambda c, p: "Absconding"
+                if p.employee.exit_type == "absconding"
+                else _label(_STATUS, p.employee.status),
+            ),
             _Column("date_of_joining", "Date of joining", lambda c, p: p.employee.date_of_joining),
             _Column(
                 "probation_end_date", "Probation ends", lambda c, p: p.employee.probation_end_date
