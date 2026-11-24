@@ -378,6 +378,16 @@ def _rule(rule_set: PayrollRuleSet, key: str) -> Decimal:
     return Decimal(str(rule_set.rules[key]))
 
 
+#: What an ESI rule set's `wage_base` may say ESI wages are.
+ESI_WAGE_BASES = frozenset({"esi_wage_types", "pf_wages"})
+
+
+def esi_wage_basis(rules: dict) -> str:
+    """ "pf_wages" (the PF wage base, as the Code on Social Security defines
+    wages) or "esi_wage_types" (the wage types flagged for ESI, the default)."""
+    return "pf_wages" if rules.get("wage_base") == "pf_wages" else "esi_wage_types"
+
+
 @contextmanager
 def _statutory_errors() -> Iterator[None]:
     """Surface a statutory configuration problem as a payroll rule error.
@@ -538,6 +548,13 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         (prorated[c.component_code] for c in salary.components if c.counts_toward_esi),
         start=Decimal(0),
     )
+    # Under the Code on Social Security, PF and ESI are charged on the same
+    # "wages". An ESI rule set with `wage_base: "pf_wages"` says so: coverage and
+    # contributions are then decided on the PF wage base (Basic + DA), not on the
+    # wage types flagged for ESI.
+    esi_rules_for_base = payroll_input.rule_sets.get("esi")
+    if esi_rules_for_base is not None and esi_wage_basis(esi_rules_for_base.rules) == "pf_wages":
+        esi_wage_base = pf_wage_base
 
     if pf_wage_base == 0 and any(c.counts_toward_pf for c in salary.components):
         # Flagged components exist but all resolved to zero — worth surfacing

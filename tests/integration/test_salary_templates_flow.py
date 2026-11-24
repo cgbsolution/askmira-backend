@@ -237,7 +237,7 @@ async def test_a_new_structure_starts_from_the_usual_split(
     rules = {line["component_code"]: line["rule"] for line in draft["lines"]}
     assert rules["BASIC"]["value"] == "50" and rules["BASIC"]["of"] == "CTC"
     assert rules["SPECIAL"]["method"] == "balance"
-    assert draft["employer_pf"]["ceiling"] == "15000"
+    assert draft["employer_pf"]["ceiling"] == "25000"  # S.O. 5109(E), from 17 Sep 2026
     # Nothing is saved by opening the editor.
     assert len((await session.scalars(select(SalaryStructure))).all()) == 1
 

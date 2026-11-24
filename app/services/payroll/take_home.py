@@ -183,11 +183,16 @@ async def take_home(
 
     # The engine reports the base it charged ESI on (nothing when ESI doesn't
     # apply); a full month's ESI wages are the earnings that count toward it.
+    from app.services.payroll.engine import esi_wage_basis
+
+    esi_rule_set = rules.get("esi")
+    on_pf_wages = esi_rule_set is not None and esi_wage_basis(esi_rule_set.rules) == "pf_wages"
     esi_wages = sum(
         (
             Decimal(str(c.monthly_amount))
             for c in salary.components
-            if c.counts_toward_esi and ComponentType(c.component_type) is ComponentType.EARNING
+            if (c.counts_toward_pf if on_pf_wages else c.counts_toward_esi)
+            and ComponentType(c.component_type) is ComponentType.EARNING
         ),
         Decimal(0),
     )

@@ -34,6 +34,7 @@ from app.models.payroll import PayrollRuleSet
 from app.models.user import User
 from app.schemas.payroll_run import RuleSetCreate, RuleSetRead
 from app.services import audit
+from app.services.payroll.engine import ESI_WAGE_BASES
 
 #: Levied by a state; the jurisdiction is the state code.
 STATE_RULE_TYPES = frozenset({"professional_tax", "labour_welfare_fund"})
@@ -241,6 +242,11 @@ def rule_problems(rule_type: str, rules: dict[str, Any]) -> list[str]:
         key, choices = _ROUNDING_CHOICES[rule_type]
         if key in rules and rules[key] not in choices:
             problems.append(f"{key} must be one of {', '.join(sorted(choices))}.")
+    if rule_type == "esi" and "wage_base" in rules and rules["wage_base"] not in ESI_WAGE_BASES:
+        problems.append(
+            "wage_base must be one of "
+            f"{', '.join(sorted(ESI_WAGE_BASES))} (pf_wages: ESI on the PF wage base)."
+        )
     if rule_type == "professional_tax":
         problems += _slab_problems(rules.get("slabs"), "slabs")
         by_gender = rules.get("slabs_by_gender")

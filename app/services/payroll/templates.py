@@ -85,13 +85,13 @@ def _not_found() -> HTTPException:
 # ── Defaults ────────────────────────────────────────────────────────────────
 
 #: Employer PF kept inside the CTC: 12% PF + 0.5% admin + 0.5% EDLI on PF wages
-#: up to the ₹15,000 ceiling — ₹1,950 a month at the ceiling, which is what the
-#: CTC letters HR already issues set aside.
+#: up to the ₹25,000 ceiling (S.O. 5109(E), from 17 Sep 2026) — ₹3,250 a month
+#: at the ceiling, as the CGB CTC calculator sets aside.
 DEFAULT_EMPLOYER_PF: dict[str, Any] = {
     "method": "percent",
     "value": "13",
     "of": ct.PF_WAGES,
-    "ceiling": "15000",
+    "ceiling": "25000",
 }
 #: Employer ESI kept inside the CTC: 3.25% of ESI wages, only while they are up
 #: to ₹21,000 a month, rounded up to the rupee as ESIC collects it.
