@@ -105,6 +105,9 @@ STANDARD: tuple[_Spec, ...] = (
           old_names=("Bonus",)),
     _Spec("LEAVE_ENCASH", "LEAVE ENCASHMENT", E, G.VARIABLE_EARNING, pro_rate=False, order=120,
           old_names=("Leave encashment",)),
+    # In the CTC, paid when earned through Adjustments (PAID_WHEN_EARNED_CODES).
+    _Spec("SALES_INCENTIVE", "SALES INCENTIVE", E, G.VARIABLE_EARNING, pro_rate=False,
+          order=130),
     # 3 Reimbursement
     _Spec("FUEL", "FUEL REIMBURSEMENT", R, G.REIMBURSEMENT, taxable=False, part_of_ctc=False,
           pro_rate=False, order=210, old_names=("Fuel reimbursement",)),

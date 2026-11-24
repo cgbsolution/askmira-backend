@@ -36,7 +36,7 @@ from app.models.attendance import AttendanceDay
 from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.ewa import EwaRequest, EwaStatus
-from app.models.payroll import ComponentType, EmployeeSalary
+from app.models.payroll import PAID_WHEN_EARNED_CODES, ComponentType, EmployeeSalary
 from app.models.payroll_inputs import (
     AdjustmentCategory,
     AdjustmentKind,
@@ -138,6 +138,7 @@ async def available_for(
                 Decimal(str(c.monthly_amount))
                 for c in (loaded.components if loaded else [])
                 if c.component_type is ComponentType.EARNING
+                and c.component_code not in PAID_WHEN_EARNED_CODES
             ),
             start=Decimal(0),
         )

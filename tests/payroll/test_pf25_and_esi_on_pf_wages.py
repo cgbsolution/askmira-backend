@@ -1,9 +1,9 @@
 """The ₹25,000 PF ceiling (S.O. 5109(E), from 17 Sep 2026) and ESI on PF wages.
 
-Figures are CGB's October 2026 salary register: Roja (Basic 16,335; HRA 6,534;
-Special 4,999; Bonus 1,361) paid PF 1,960 and ESI 123 although her gross is
-29,229, because ESI is charged on the same wages as PF (Basic); Shobha (Basic
-45,256) paid PF 3,000 at the new ceiling.
+Figures follow a real October 2026 register: Basic 16,335, HRA 6,534, Special
+4,999 and Bonus 1,361 paid PF 1,960 and ESI 123 although gross is 29,229,
+because ESI is charged on the same wages as PF (Basic); Basic 45,256 paid PF
+3,000 at the new ceiling.
 """
 
 from __future__ import annotations
@@ -62,13 +62,15 @@ def cgb_salary(basic: str, hra: str, special: str, bonus: str):
     return employee_salary_from(resolve_ctc(shape, monthly * 12), monthly * 12)
 
 
-def month(salary, esi_rules: dict):
+def month(salary, esi_rules: dict, *, not_employed: int = 0, lop: int = 0):
     return compute_payroll(
         PayrollInput(
             employee_salary=salary,
             period_start=date(2026, 11, 1),
             period_end=date(2026, 11, 30),
             working_days=Decimal(30),
+            not_employed_days=Decimal(not_employed),
+            lop_days=Decimal(lop),
             rule_sets={"pf": rule_set("pf", PF25), "esi": rule_set("esi", esi_rules)},
         )
     )
@@ -119,3 +121,32 @@ def test_the_wage_base_choices_are_accepted(value: str) -> None:
 def test_a_misspelt_wage_base_is_refused() -> None:
     problems = rule_problems("esi", {**ESI, "wage_base": "basic"})
     assert problems and "wage_base" in problems[0]
+
+
+def test_a_late_joiner_above_the_ceiling_is_not_covered_by_a_part_month() -> None:
+    # Joined on the 24th at Basic 50,000: 7 days' Basic (11,667) is under 21,000,
+    # but ESI coverage follows the rate of wages for a full month.
+    result = month(
+        cgb_salary("50000", "20000", "24346", "0"),
+        {**ESI, "wage_base": "pf_wages"},
+        not_employed=23,
+    )
+    assert result.esi_employee == Decimal("0")
+    assert result.esi_employer == Decimal("0")
+    assert result.esi_eligibility_base == Decimal("50000.00")
+
+
+def test_a_late_joiner_below_the_ceiling_pays_on_what_is_paid() -> None:
+    # Basic 16,335 is covered; 15 of 30 days paid, so ESI is on 8,167.50.
+    result = month(
+        cgb_salary("16335", "6534", "4999", "1361"),
+        {**ESI, "wage_base": "pf_wages"},
+        not_employed=15,
+    )
+    assert result.esi_employee == Decimal("62.00")  # 0.75% of 8,167.50, rounded up
+    assert result.esi_wage_base == Decimal("8167.50")
+
+
+def test_loss_of_pay_does_not_bring_a_high_earner_under_esi() -> None:
+    result = month(cgb_salary("26624", "0", "10649", "1749"), ESI, lop=20)
+    assert result.esi_employee == Decimal("0")

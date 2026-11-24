@@ -275,12 +275,16 @@ class TemplateCalculateInput(BaseModel):
 
     ctc_amount: Decimal = Field(gt=0, le=_MAX_RULE_AMOUNT)
     ctc_basis: Literal["annual", "monthly", "weekly", "daily", "hourly"] = "monthly"
+    #: The Salary master's typed SALES INCENTIVE: part of the CTC, so the
+    #: structure splits only what is left of it (the fixed salary).
+    variable_amount: Decimal | None = Field(default=None, ge=0, le=_MAX_RULE_AMOUNT)
+    variable_basis: Literal["annual", "monthly", "weekly", "daily", "hourly"] = "annual"
 
-    @field_validator("ctc_amount")
+    @field_validator("ctc_amount", "variable_amount")
     @classmethod
-    def _paise(cls, value: Decimal) -> Decimal:
-        if value != value.quantize(Decimal("0.01")):
-            raise ValueError(f"CTC {value} has more than two decimals")
+    def _paise(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and value != value.quantize(Decimal("0.01")):
+            raise ValueError(f"{value} has more than two decimals")
         return value
 
 
@@ -635,6 +639,10 @@ class SalaryRevisionRead(BaseModel):
     structure_name: str | None
     ctc_annual: Money
     ctc_monthly: Money
+    #: The sales incentive inside the CTC, a year (paid when earned, not monthly),
+    #: and the fixed CTC a month without it. Null when there is no incentive.
+    variable_annual: Money | None = None
+    fixed_ctc_monthly: Money | None = None
     #: The CTC as the editor shows it back: monthly when the yearly figure is
     #: exactly twelve months of it, else yearly.
     ctc_basis: PayBasis = "annual"

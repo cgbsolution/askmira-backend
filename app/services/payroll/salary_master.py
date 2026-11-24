@@ -27,6 +27,7 @@ from app.models.arrears import SalaryRevision
 from app.models.audit import AuditAction, AuditLog
 from app.models.employee import Employee
 from app.models.payroll import (
+    PAID_WHEN_EARNED_CODES,
     ComponentType,
     EmployeeSalary,
     EmployeeSalaryComponent,
@@ -214,7 +215,12 @@ def revision_read(
     salary: EmployeeSalary, lock_reason: str | None, groups: dict[str, WageGroup]
 ) -> SalaryRevisionRead:
     components = sorted(salary.components, key=lambda c: (c.display_order, c.component_code))
-    earnings = [c for c in components if _component_type(c.component_type) is ComponentType.EARNING]
+    earnings = [
+        c
+        for c in components
+        if _component_type(c.component_type) is ComponentType.EARNING
+        and c.component_code not in PAID_WHEN_EARNED_CODES
+    ]
     basic = next(
         (
             c
@@ -223,6 +229,16 @@ def revision_read(
         ),
         None,
     )
+    variable = _money(
+        sum(
+            (
+                Decimal(str(c.annual_amount))
+                for c in components
+                if c.component_code in PAID_WHEN_EARNED_CODES
+            ),
+            Decimal(0),
+        )
+    )
     return SalaryRevisionRead(
         id=salary.id,
         employee_id=salary.employee_id,
@@ -230,6 +246,10 @@ def revision_read(
         structure_name=salary.structure.name if salary.structure else None,
         ctc_annual=_money(salary.ctc_annual),
         ctc_monthly=_money(Decimal(str(salary.ctc_annual)) / 12),
+        variable_annual=variable or None,
+        fixed_ctc_monthly=(
+            _money((Decimal(str(salary.ctc_annual)) - variable) / 12) if variable else None
+        ),
         **_ctc_entry(salary),
         manual_entry=is_manual_entry(salary),
         gross_monthly=(

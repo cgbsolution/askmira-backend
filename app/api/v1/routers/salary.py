@@ -306,7 +306,14 @@ async def calculate_salary_template(
 ) -> TemplateCalcRead:
     """The Salary master's Calculate: a CTC split by a structure. Writes nothing."""
     return await template_service.calculate_saved(
-        session, user, structure_id, payload.ctc_amount, payload.ctc_basis
+        session,
+        user,
+        structure_id,
+        payload.ctc_amount,
+        payload.ctc_basis,
+        variable=(payload.variable_amount, payload.variable_basis)
+        if payload.variable_amount
+        else None,
     )
 
 
