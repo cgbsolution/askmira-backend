@@ -268,6 +268,108 @@ thank you for your hard work and dedication to <strong>{{company.name}}.</strong
 """ + _ACKNOWLEDGEMENT.format(what="promotion letter")
 
 
+#: CGBiz Solutions' increment letter (their "Increment Letter - <name>.pdf",
+#: 2026-11-25): fixed CTC and variable pay stated apart, the "1. Fixed CTC"
+#: annexure, and a "2. Variable Plan" table. It is CGB's own wording, so it is
+#: not one of the defaults every workspace gets; scripts/cgb_increment_letter.py
+#: saves it as the next version of a workspace's increment letter
+#: (INCREMENT_STD), which is also what releasing an increment cycle issues.
+#:
+#: The variable-pay lines print only for somebody whose salary has a SALES
+#: INCENTIVE, the revenue sentence and the Variable Plan only when HR types a
+#: revenue target, and the notice-period line only when there is one; so the
+#: same letter serves everybody, and a cycle release never stops for a field
+#: only some people have.
+INCREMENT_CGB = """
+<h2 style="text-align:center">Increment Letter</h2>
+<p>Dear <strong>{{employee.full_name}}</strong>,</p>
+<p style="text-align:justify">We are pleased to inform you that, in recognition of your contribution
+and performance, your compensation has been revised with effect from
+<strong>{{salary.effective_from}}</strong>. The revised structure is set out below.</p>
+<p><strong>Fixed CTC :</strong> INR {{salary.fixed_ctc_annual}}{{#if salary.variable_annual}}<br/>
+<strong>Variable Pay :</strong> INR {{salary.variable_annual}}{{/if}}</p>
+{{#if manual.revenue_target}}
+<p style="text-align:justify">Your Fixed CTC is INR {{salary.fixed_ctc_lpa}}, along with a target
+Variable Pay of INR {{salary.variable_lakhs}}, payable on generating revenue of
+<strong>INR {{manual.revenue_target}}</strong> from {{manual.performance_period}}.</p>
+{{/if}}
+<p style="text-align:justify">The details of the compensation and benefits as applicable to you are
+enclosed in the annexure to this letter. The above changes are subject to company policy.</p>
+{{#if manual.notice_period}}
+<p>Your notice period has been revised to {{manual.notice_period}}.</p>
+{{/if}}
+<p style="text-align:justify">All other terms and conditions of your service remain unchanged.
+Please note that your compensation structure is personal to you, and you are requested not to
+share details of the same with others.</p>
+<p style="text-align:justify">We wish you the very best in your career with us. We are confident
+that your continued efforts and commitment will take CGB to newer heights and enrich your abilities
+as a professional.<br/>Thank you for all your hard work this year.</p>
+<table class="keep" cellspacing="0" cellpadding="0"><tr><td>
+<p><strong>Yours Sincerely,</strong></p>
+{{computed.signature}}
+<p><strong>{{company.signatory_title}}<br/>{{company.name}}</strong></p>
+</td></tr></table>
+<div class="page-break"></div>
+<h2 style="text-align:center">Annexure</h2>
+<p><strong>1. Fixed CTC</strong></p>
+{{computed.fixed_ctc_annexure}}
+{{#if manual.revenue_target}}
+<div class="page-break"></div>
+<p><strong>2. Variable Plan:</strong></p>
+<table class="grid" cellspacing="0" style="width:85%">
+<thead><tr><th width="40%" style="text-align:left">Particulars</th>
+<th style="text-align:left">Details</th></tr></thead>
+<tbody>
+<tr><td><strong>Target Variable Pay</strong></td>
+<td>INR {{salary.variable_annual}} ({{salary.variable_lakhs}})</td></tr>
+<tr><td><strong>Revenue Target</strong></td><td>INR {{manual.revenue_target}}</td></tr>
+<tr><td><strong>Performance Period</strong></td><td>{{manual.performance_period}}</td></tr>
+<tr><td><strong>Payout</strong></td>
+<td>At the end of the year, on achieving the revenue target</td></tr>
+</tbody></table>
+{{/if}}
+""" + _ACKNOWLEDGEMENT.format(what="Increment letter").replace(
+    "<strong>Increment letter</strong>", "Increment letter"
+)
+
+INCREMENT_CGB_SPEC: dict[str, Any] = {
+    "code": "INCREMENT_STD",
+    "name": "Increment Letter",
+    "category": LetterCategory.PROMOTION,
+    "body_html": INCREMENT_CGB,
+    "fields": [
+        _f("employee.full_name", "Full name", E),
+        _f("salary.effective_from", "Effective from (salary revision)", S),
+        _f("salary.fixed_ctc_annual", "Fixed CTC per year", S),
+        _f("salary.variable_annual", "Variable pay per year", S, required=False),
+        _f("salary.fixed_ctc_lpa", "Fixed CTC in LPA", S, required=False),
+        _f("salary.variable_lakhs", "Variable pay in lakhs", S, required=False),
+        _f(
+            "manual.revenue_target",
+            "Revenue target, variable pay only (e.g. 1.5 Cr)",
+            M,
+            required=False,
+        ),
+        _f(
+            "manual.performance_period",
+            "Performance period, variable pay only (e.g. January 2027 to December 2027)",
+            M,
+            required=False,
+        ),
+        _f(
+            "manual.notice_period",
+            "Notice period",
+            M,
+            required=False,
+            default="employee.notice_period",
+        ),
+        _f("company.name", "Company name", T),
+        _f("computed.fixed_ctc_annexure", "Salary annexure (fixed CTC)", C),
+        _f("computed.signature", "Signature", C, required=False),
+    ],
+}
+
+
 def _line(label: str, value: str, note: str = "", label_width: int = 24) -> str:
     """One ruled line of a fill-in form, pre-filled where the record knows it.
 

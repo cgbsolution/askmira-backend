@@ -14,6 +14,12 @@ Two rules here are not stylistic:
 
 Values resolve **as of a date**, not as of now. A relieving letter issued today
 for an exit last month must show the salary that was in force at exit.
+
+A passage can be printed only for some people: `{{#if salary.variable_annual}}
+... {{/if}}` keeps what is between the markers when the field has a value (not
+blank, not zero) and drops it otherwise. Inside a kept passage every field is
+required: a passage about variable pay that is printed must not have a blank in
+it. Passages do not nest.
 """
 
 from __future__ import annotations
@@ -81,6 +87,13 @@ AVAILABLE_FIELDS: dict[str, tuple[str, ...]] = {
         "gross_annual",
         "net_monthly",
         "net_annual",
+        # The CTC without the variable pay (the SALES INCENTIVE line, paid when
+        # earned), and the variable pay itself: blank when there is none.
+        "fixed_ctc_annual",
+        "fixed_ctc_monthly",
+        "fixed_ctc_lpa",
+        "variable_annual",
+        "variable_lakhs",
     ),
     "tenant": ("name", "slug"),
     # The letterhead's company details (Documents -> Letterhead).
@@ -142,6 +155,15 @@ AVAILABLE_FIELDS: dict[str, tuple[str, ...]] = {
 # {{ employee.first_name }} — whitespace tolerated, token chars restricted.
 TOKEN_PATTERN = re.compile(r"\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}")
 
+# {{#if salary.variable_annual}} ... {{/if}}: a passage printed only when the
+# field has a value. A marker alone in a paragraph (the editor wraps every line
+# in one) takes its paragraph with it, so a dropped passage leaves no gap.
+_IF_OPEN = r"\{\{\s*#if\s+([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}"
+_IF_CLOSE = r"\{\{\s*/if\s*\}\}"
+IF_PATTERN = re.compile(_IF_OPEN + r"(.*?)" + _IF_CLOSE, re.DOTALL)
+_ANY_MARKER = re.compile(r"\{\{\s*(?:#if\b[^}]*|/if\s*)\}\}")
+_BARE_MARKER = re.compile(r"<p[^>]*>\s*(" + _ANY_MARKER.pattern + r")\s*</p>")
+
 
 class LetterMergeError(ValueError):
     """A token could not be resolved, or a required value is missing.
@@ -194,12 +216,68 @@ class MergeContext:
 
 
 def extract_tokens(*html_fragments: str | None) -> set[str]:
-    """Every token referenced across a template's header, body and footer."""
+    """Every token referenced across a template's header, body and footer,
+    including the fields its `{{#if ...}}` passages test."""
     found: set[str] = set()
     for fragment in html_fragments:
         if fragment:
             found.update(match.group(1) for match in TOKEN_PATTERN.finditer(fragment))
+            found.update(match.group(1) for match in IF_PATTERN.finditer(fragment))
     return found
+
+
+def _untyped(token: str, context: MergeContext) -> bool:
+    """A `manual.*` field the issuer left empty: absent, as blanks are not sent."""
+    namespace, _, key = token.partition(".")
+    return namespace == "manual" and key not in context.manual
+
+
+def _has_value(token: str, context: MergeContext) -> bool:
+    """Whether an `{{#if}}` field has something to print: not blank, not zero."""
+    if _untyped(token, context):
+        return False
+    value = _TAGS.sub("", _resolve(token, context)).strip()
+    return bool(value) and value not in {"-", "0", "0.00", "No"}
+
+
+def apply_conditions(fragment: str | None, context: MergeContext) -> tuple[str | None, set[str]]:
+    """Keep or drop each `{{#if field}} ... {{/if}}` passage.
+
+    Returns the fragment with the markers gone, and the tokens inside the
+    passages that were kept: those are required, whatever the template says.
+    """
+    if not fragment:
+        return fragment, set()
+    fragment = _BARE_MARKER.sub(lambda m: m.group(1), fragment)
+    kept: set[str] = set()
+
+    def decide(match: re.Match[str]) -> str:
+        if not _has_value(match.group(1), context):
+            return ""
+        inner = match.group(2)
+        kept.update(m.group(1) for m in TOKEN_PATTERN.finditer(inner))
+        return inner
+
+    return IF_PATTERN.sub(decide, fragment), kept
+
+
+def _with_conditions(
+    context: MergeContext, *fragments: str | None
+) -> tuple[list[str | None], set[str], list[str]]:
+    """Every fragment with its passages decided, the kept passages' tokens, and
+    the `{{#if}}` fields that could not be resolved."""
+    out: list[str | None] = []
+    kept: set[str] = set()
+    problems: list[str] = []
+    for fragment in fragments:
+        try:
+            done, inside = apply_conditions(fragment, context)
+        except LetterMergeError as exc:
+            problems.append(str(exc))
+            done, inside = (IF_PATTERN.sub("", fragment) if fragment else fragment), set()
+        out.append(done)
+        kept |= inside
+    return out, kept, problems
 
 
 # ── Computed handlers ───────────────────────────────────────────────────────
@@ -328,12 +406,15 @@ def _annexure_row(label: str, monthly: Any, annual: Any, css: str = "") -> str:
     )
 
 
-def _salary_annexure(context: MergeContext) -> str:
+def _salary_annexure(context: MergeContext, *, fixed: bool = False) -> str:
     """The salary annexure: earnings, gross, the employee's deductions, take-home,
     the employer's contributions and the CTC, a month's and a year's.
 
     Worked out by the service from the salary in force on the letter's as-of
     date, with PF, ESI and PT from the same payroll rules a run would use.
+
+    `fixed` is the increment letter's "1. Fixed CTC" table: no date row, and
+    the CTC line without the variable pay, which the letter states apart.
     """
     data = context.annexure
     if not data:
@@ -351,11 +432,19 @@ def _salary_annexure(context: MergeContext) -> str:
     def section(label: str) -> str:
         return f'<tr class="section"><td colspan="3">{html.escape(label)}</td></tr>'
 
+    dated = (
+        []
+        if fixed
+        else [
+            head(str(data.get("effective_label") or "Effective from"), data.get("effective_from"))
+        ]
+    )
+    ctc = data.get("fixed_ctc", data["ctc"]) if fixed else data["ctc"]
     rows = [
         head("Name", data.get("name")),
         head("Location", data.get("location")),
         head("Designation", data.get("designation")),
-        head(str(data.get("effective_label") or "Effective from"), data.get("effective_from")),
+        *dated,
         '<tr class="head"><td>Particulars</td><td class="num">Monthly (INR)</td>'
         '<td class="num">Annual (INR)</td></tr>',
         section("Fixed Components"),
@@ -368,12 +457,16 @@ def _salary_annexure(context: MergeContext) -> str:
         section("Employer's Contributions"),
         *(_annexure_row(*line) for line in data["employer"]),
         _annexure_row("Total", *data["employer_total"], css="total"),
-        _annexure_row("Cost to Company (CTC)", *data["ctc"], css="ctc"),
+        _annexure_row("Cost to Company (CTC)", *ctc, css="ctc"),
     ]
     return (
         '<table class="annexure" cellspacing="0" cellpadding="0">'
         '<col width="56%" /><col width="22%" /><col width="22%" />' + "".join(rows) + "</table>"
     )
+
+
+def _fixed_ctc_annexure(context: MergeContext) -> str:
+    return _salary_annexure(context, fixed=True)
 
 
 def _signature(context: MergeContext) -> str:
@@ -483,6 +576,7 @@ COMPUTED_HANDLERS = {
     "gratuity_nominees_table": _nominee_table("gratuity", "gratuity"),
     "family_table": _family_table,
     "salary_annexure": _salary_annexure,
+    "fixed_ctc_annexure": _fixed_ctc_annexure,
     "signature": _signature,
     "previous_employment_table": _previous_employment_table,
 }
@@ -516,6 +610,11 @@ FIELD_LABELS: dict[str, str] = {
     "salary.net_monthly": "Take-home per month",
     "salary.net_annual": "Take-home per year",
     "salary.effective_from": "Salary effective from",
+    "salary.fixed_ctc_annual": "Fixed CTC per year (without variable pay)",
+    "salary.fixed_ctc_monthly": "Fixed CTC per month",
+    "salary.fixed_ctc_lpa": "Fixed CTC in LPA (10 LPA)",
+    "salary.variable_annual": "Variable pay per year",
+    "salary.variable_lakhs": "Variable pay in lakhs (2 Lakhs)",
     "salary.currency": "Currency",
     "company.name": "Company name",
     "company.address": "Company address",
@@ -526,6 +625,7 @@ FIELD_LABELS: dict[str, str] = {
     "company.signatory_title": "Signatory title",
     "computed.letter_date": "Letter date",
     "computed.salary_annexure": "Salary annexure table",
+    "computed.fixed_ctc_annexure": "Salary annexure, fixed CTC (no date row)",
     "computed.ctc_table": "CTC table (simple)",
     "computed.ctc_in_words": "CTC in words",
     "computed.tenure": "Length of service",
@@ -636,14 +736,21 @@ def render_template(
     unresolved: list[str] = []
     empty_required: list[str] = []
 
+    (header_html, body_html, footer_html), shown, condition_errors = _with_conditions(
+        context, header_html, body_html, footer_html
+    )
+    unresolved.extend(condition_errors)
     for token in extract_tokens(header_html, body_html, footer_html):
         try:
-            value = _resolve(token, context)
+            # Left empty in a printed passage: named as a blank, in words.
+            value = "" if token in shown and _untyped(token, context) else _resolve(token, context)
         except LetterMergeError as exc:
             unresolved.append(f"{token} ({exc})")
             continue
 
-        if not value.strip() and (required_tokens is None or token in required_tokens):
+        if not value.strip() and (
+            required_tokens is None or token in required_tokens or token in shown
+        ):
             empty_required.append(token)
         resolved[token] = value
 
@@ -695,16 +802,20 @@ def preview_render(
     Nothing produced here is ever issued.
     """
     resolved: dict[str, str] = {}
-    problems: list[str] = []
 
+    (header_html, body_html, footer_html), shown, problems = _with_conditions(
+        context, header_html, body_html, footer_html
+    )
     for token in sorted(extract_tokens(header_html, body_html, footer_html)):
         try:
-            value = _resolve(token, context)
+            value = "" if token in shown and _untyped(token, context) else _resolve(token, context)
         except LetterMergeError as exc:
             problems.append(f"{token}: {exc}")
             resolved[token] = _marker(token)
             continue
-        if not value.strip() and (required_tokens is None or token in required_tokens):
+        if not value.strip() and (
+            required_tokens is None or token in required_tokens or token in shown
+        ):
             problems.append(f"{token}: resolves to nothing for this employee")
             resolved[token] = _marker(token)
             continue
@@ -731,6 +842,21 @@ def template_token_problems(*html_fragments: str | None) -> list[str]:
     `manual.*` is open-ended by design — it is whatever the issuer types.
     """
     problems: list[str] = []
+    for fragment in html_fragments:
+        if not fragment:
+            continue
+        for match in IF_PATTERN.finditer(fragment):
+            if _ANY_MARKER.search(match.group(2)):
+                problems.append(
+                    f"'{{{{#if {match.group(1)}}}}}' has another passage inside it: "
+                    "passages cannot be put inside one another"
+                )
+        leftover = _ANY_MARKER.findall(IF_PATTERN.sub("", fragment))
+        if leftover:
+            problems.append(
+                f"'{leftover[0]}' has no partner: every {{{{#if field}}}} needs its own "
+                "{{/if}} after it"
+            )
     for token in sorted(extract_tokens(*html_fragments)):
         namespace, _, path = token.partition(".")
         if namespace == "manual":
