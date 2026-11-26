@@ -12,6 +12,8 @@ Four files, for any day, week, month or range of dates up to 93 days:
   in, last out, hours, late, early, overtime, payable fraction, corrections.
 - **Summary** — one row per person for the whole period: present, half
   days, absent, leave, holidays, week offs, late, hours, payable days, LOP.
+- **Field visits** — one row per visit: who or where, visit in and out with
+  their times, addresses and Google Maps links, how long, and the accuracy.
 
 Who is in the file: HR, everyone (themselves included); a manager, their
 reporting line and themselves. Narrowed by company, project, department and
@@ -19,7 +21,7 @@ location as on the screen, or to the people ticked there. People who had not
 joined or had left before the period are left out.
 
 Statuses come from the computed days (the nightly job computes every past
-day). A day not computed yet — today, say — reads "In progress".
+day). Today, not computed yet, reads "In progress"; a later date "Upcoming".
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from app.models.attendance import (
     AttendanceDay,
     AttendancePunch,
     AttendanceStatus,
+    FieldVisit,
     PunchDirection,
     PunchSource,
     Shift,
@@ -53,10 +56,11 @@ from app.services import audit, sheets
 from app.services.attendance import addresses
 from app.services.attendance import service as attendance_service
 from app.services.attendance.review import OrgFilters, apply_org_filters, check_range
+from app.services.attendance.visits import visits_between
 
 __all__ = ["KINDS", "AttendanceFile", "ExportKind", "export_attendance"]
 
-ExportKind = Literal["in_out", "punches", "daily", "summary"]
+ExportKind = Literal["in_out", "punches", "daily", "summary", "visits"]
 FileType = Literal["xlsx", "csv"]
 
 KINDS: dict[str, str] = {
@@ -64,6 +68,7 @@ KINDS: dict[str, str] = {
     "punches": "Every punch",
     "daily": "Day-wise attendance",
     "summary": "Summary",
+    "visits": "Field visits",
 }
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -174,7 +179,9 @@ def _map(punch: AttendancePunch) -> sheets.Link | None:
 def _status(ctx: _Context, day: AttendanceDay | None, on: date) -> str:
     if day is not None:
         return _STATUS.get(day.status, day.status.value)
-    return "In progress" if on >= ctx.today else "Not computed"
+    if on > ctx.today:
+        return "Upcoming"
+    return "In progress" if on == ctx.today else "Not computed"
 
 
 def _minutes(value: int | None) -> int | None:
@@ -429,6 +436,67 @@ def _summary(
     return columns, rows
 
 
+def _visits(
+    ctx: _Context, people: list[Employee], visits: list[FieldVisit]
+) -> tuple[list[sheets.Column], list[list[Any]]]:
+    columns = [
+        *_PERSON,
+        sheets.Column("Date", "date"),
+        sheets.Column("Day", "text", 6),
+        sheets.Column("Client / place", "text", 28),
+        sheets.Column("Visit in", "time", 9),
+        sheets.Column("In address", "text", 48),
+        sheets.Column("In map (Google Maps)", "link", 14),
+        sheets.Column("In accuracy (m)", "number", 10),
+        sheets.Column("Visit out", "time", 9),
+        sheets.Column("Out address", "text", 48),
+        sheets.Column("Out map (Google Maps)", "link", 14),
+        sheets.Column("Out accuracy (m)", "number", 10),
+        sheets.Column("Time there (h:mm)", "minutes", 10),
+        sheets.Column("Selfie", "text", 8),
+        sheets.Column("From", "text", 8),
+    ]
+    by_person: dict[uuid.UUID, list[FieldVisit]] = {}
+    for visit in visits:
+        by_person.setdefault(visit.employee_id, []).append(visit)
+
+    def address(lat: object, lng: object) -> str | None:
+        place = addresses.place_of(lat, lng)
+        return ctx.places.get(place) if place else None
+
+    def link(lat: object, lng: object) -> sheets.Link | None:
+        if lat is None or lng is None:
+            return None
+        return sheets.Link(addresses.maps_link(lat, lng))  # type: ignore[arg-type]
+
+    rows: list[list[Any]] = []
+    for employee in people:
+        zone = ctx.zones.get(employee.id, UTC)
+        for v in by_person.get(employee.id, []):
+            arrived = v.started_at.astimezone(zone)
+            left = v.ended_at.astimezone(zone) if v.ended_at else None
+            rows.append(
+                [
+                    *_person(ctx, employee),
+                    arrived.date(),
+                    _WEEKDAY[arrived.weekday()],
+                    v.client_name,
+                    arrived.time().replace(second=0, microsecond=0),
+                    address(v.start_latitude, v.start_longitude),
+                    link(v.start_latitude, v.start_longitude),
+                    v.start_accuracy_metres,
+                    left.time().replace(second=0, microsecond=0) if left else None,
+                    address(v.end_latitude, v.end_longitude),
+                    link(v.end_latitude, v.end_longitude),
+                    v.end_accuracy_metres,
+                    int((v.ended_at - v.started_at).total_seconds() // 60) if v.ended_at else None,
+                    "Yes" if v.has_photo else "No",
+                    "App" if v.start_source == "mobile" else "Web",
+                ]
+            )
+    return columns, rows
+
+
 def _tenure(employee: Employee, dates: list[date]) -> list[date]:
     """The dates of the period this person worked here: from joining, up to leaving."""
     joined = employee.date_of_joining
@@ -499,7 +567,7 @@ async def export_attendance(
     zones = await attendance_service.employee_timezones(session, user, ids) if ids else {}
 
     punches: dict[tuple[uuid.UUID, date], list[AttendancePunch]] = {}
-    if ids and kind != "summary":
+    if ids and kind not in ("summary", "visits"):
         rows = (
             await session.scalars(
                 tenant_scoped(
@@ -523,7 +591,7 @@ async def export_attendance(
                 punches.setdefault((punch.employee_id, on), []).append(punch)
 
     days: dict[tuple[uuid.UUID, date], AttendanceDay] = {}
-    if ids and kind != "punches":
+    if ids and kind not in ("punches", "visits"):
         for day in (
             await session.scalars(
                 tenant_scoped(
@@ -539,7 +607,20 @@ async def export_attendance(
         ).all():
             days[(day.employee_id, day.attendance_date)] = day
 
+    visits: list[FieldVisit] = []
+    if ids and kind == "visits":
+        visits = await visits_between(session, user, start=start, end=end, employee_ids=ids)
+
     places: dict[addresses.Place, str | None] = {}
+    if visits:
+        places = await addresses.addresses_for(
+            session,
+            user,
+            [(v.start_latitude, v.start_longitude) for v in visits]
+            + [(v.end_latitude, v.end_longitude) for v in visits if v.end_latitude is not None],
+            budget_seconds=_LOOKUP_SECONDS,
+            max_lookups=_LOOKUPS,
+        )
     if kind in ("in_out", "punches") and punches:
         wanted = [
             (p.latitude, p.longitude)
@@ -574,6 +655,8 @@ async def export_attendance(
         columns, rows = _every_punch(ctx, people, punches)
     elif kind == "daily":
         columns, rows = _daily(ctx, people, dates, punches, days)
+    elif kind == "visits":
+        columns, rows = _visits(ctx, people, visits)
     else:
         columns, rows = _summary(ctx, people, dates, days)
 
@@ -584,7 +667,13 @@ async def export_attendance(
         else sheets.csv_bytes(columns, rows)
     )
     span = start.isoformat() if start == end else f"{start.isoformat()}-to-{end.isoformat()}"
-    slug = {"in_out": "punch-in-out", "punches": "punches", "daily": "daily", "summary": "summary"}
+    slug = {
+        "in_out": "punch-in-out",
+        "punches": "punches",
+        "daily": "daily",
+        "summary": "summary",
+        "visits": "field-visits",
+    }
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -603,7 +692,7 @@ async def export_attendance(
             "rows": len(rows),
             "format": file_type,
             "ticked_people": len(employee_ids) if employee_ids is not None else None,
-            "addresses_included": kind in ("in_out", "punches"),
+            "addresses_included": kind in ("in_out", "punches", "visits"),
             **filters.audit(),
         },
         request=request,

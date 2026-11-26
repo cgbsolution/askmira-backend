@@ -46,6 +46,12 @@ class PunchCreate(BaseModel):
     device_id: str | None = Field(default=None, max_length=128)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    #: How accurate the browser or phone says the location is, in metres.
+    #: Checked against the workspace's `location_accuracy_metres`.
+    accuracy_metres: float | None = Field(default=None, ge=0, le=1_000_000)
+    #: The phone flagged the location as coming from a mock-location (fake GPS)
+    #: app. Such a punch is refused.
+    is_mocked: bool = False
     #: A JPEG or PNG taken now, base64 (a data URL is fine). Where the workspace asks.
     photo: str | None = Field(default=None, max_length=900_000)
 
@@ -95,6 +101,10 @@ class AttendanceSettings(BaseModel):
     location_mode: LocationMode = "required"
     #: off: no photo; optional: asked for; required: a self-service punch needs one.
     photo_mode: LocationMode = "off"
+    #: How close the location must be (metres, as the browser or phone reports
+    #: its accuracy) before a punch or a visit is accepted. The punch and visit
+    #: buttons stay off until a fix this good arrives.
+    location_accuracy_metres: int = Field(default=100, ge=10, le=5000)
     #: Every Nth late mark in a calendar month is a half day: the Nth, the 2Nth
     #: and so on, never the first. None: late marks cost nothing.
     late_marks_per_half_day: int | None = Field(default=None, ge=2, le=31)
@@ -119,6 +129,76 @@ class WorkLocationPin(BaseModel):
 class AttendanceSettingsRead(AttendanceSettings):
     #: Active work locations, so the punch screen can draw them on its map.
     work_locations: list[WorkLocationPin] = Field(default_factory=list)
+
+
+# ── Field visits ────────────────────────────────────────────────────────────
+
+VisitSource = Literal["web", "mobile"]
+
+
+class _VisitPoint(BaseModel):
+    """Where the person is: always required for a visit, with its accuracy."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_metres: float = Field(ge=0, le=1_000_000)
+    source: VisitSource = "web"
+    #: The phone flagged the location as coming from a mock-location (fake GPS) app.
+    is_mocked: bool = False
+
+
+class VisitStart(_VisitPoint):
+    """Visit in: who or where, and a selfie taken there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_name: str = Field(min_length=1, max_length=160)
+    #: A JPEG or PNG taken now, base64 (a data URL is fine).
+    photo: str = Field(min_length=1, max_length=900_000)
+
+    @field_validator("client_name")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Say who or where you are visiting.")
+        return cleaned
+
+
+class VisitEnd(_VisitPoint):
+    """Visit out: where the person is as they leave."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FieldVisitRead(BaseModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
+    client_name: str
+    started_at: datetime
+    start_latitude: float
+    start_longitude: float
+    start_accuracy_metres: int | None
+    start_source: str
+    start_address: str | None = None
+    has_photo: bool
+    ended_at: datetime | None
+    end_latitude: float | None
+    end_longitude: float | None
+    end_accuracy_metres: int | None
+    end_source: str | None
+    end_address: str | None = None
+    #: Minutes from visit in to visit out; None while the visit is open.
+    duration_minutes: int | None
+
+
+class FieldVisitList(BaseModel):
+    visits: list[FieldVisitRead]
+    #: Visits in the list, and how many people made them.
+    total: int
+    people: int
 
 
 class PunchImportRow(BaseModel):
@@ -375,6 +455,8 @@ class AttendanceExportRequest(BaseModel):
         "in_out_activities",
         "monthly_summary",
         "ytd",
+        # One row per field visit.
+        "visits",
     ] = "in_out"
     start: date
     end: date

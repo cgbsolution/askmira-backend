@@ -1739,26 +1739,63 @@ def punch_source_for(
 
 
 async def require_location_if_configured(
-    session: AsyncSession, user: User, *, source: PunchSource, has_coordinates: bool
+    session: AsyncSession,
+    user: User,
+    *,
+    source: PunchSource,
+    has_coordinates: bool,
+    accuracy_metres: float | None = None,
 ) -> None:
-    """Refuse a self-service punch without a location when the workspace requires one.
+    """Refuse a self-service punch without a good enough location when the workspace requires one.
 
     Only punches people make for themselves from the web or the app: devices,
-    imports and HR's manual corrections carry no browser to ask.
+    imports and HR's manual corrections carry no browser to ask. A location
+    reported as less accurate than `location_accuracy_metres` is refused too
+    (the punch screens keep the button off until a good fix arrives). A
+    client that sends no accuracy (an app build from before 2026-11-26) is
+    taken at its word.
     """
-    if has_coordinates or source not in (PunchSource.WEB, PunchSource.MOBILE_GEO):
+    if source not in (PunchSource.WEB, PunchSource.MOBILE_GEO):
         return
     tenant = await session.get(Tenant, user.tenant_id)
-    # The same default as `AttendanceSettings.location_mode`.
-    mode = (((tenant.settings or {}).get("attendance") or {}) if tenant else {}).get(
-        "location_mode", "required"
-    )
-    if mode == "required":
+    raw = ((tenant.settings or {}).get("attendance") or {}) if tenant else {}
+    # The same defaults as `AttendanceSettings`.
+    mode = raw.get("location_mode", "required")
+    if mode != "required":
+        return
+    if not has_coordinates:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 "Your company records a location with every punch. Allow location access "
                 "for this site in your browser, then punch again."
+            ),
+        )
+    needed = int(raw.get("location_accuracy_metres") or 100)
+    check_accuracy(accuracy_metres, needed)
+
+
+def refuse_fake_location(is_mocked: bool) -> None:
+    """Refuse a location the phone itself flagged as coming from a fake-GPS app."""
+    if is_mocked:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Your phone says this location comes from a fake location app. Turn it off "
+                "(Settings, Developer options, Select mock location app, No app) and try again."
+            ),
+        )
+
+
+def check_accuracy(accuracy_metres: float | None, needed: int) -> None:
+    """Refuse a location less accurate than the workspace asks for."""
+    if accuracy_metres is not None and accuracy_metres > needed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Your location is only accurate to about {round(accuracy_metres)} m; your "
+                f"company needs it within {needed} m. Turn on precise location, step near a "
+                "window or outside, wait a moment and try again."
             ),
         )
 
