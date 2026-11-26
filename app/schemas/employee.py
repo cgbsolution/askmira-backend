@@ -132,6 +132,10 @@ class EmployeeRead(EmployeeBase):
     employee_code: str
     status: EmploymentStatus
     date_of_exit: date | None
+    #: The day employment ends: the open exit's approved last working day, else
+    #: the one asked for, else the recorded date of exit. Set on a single-record
+    #: read; lists leave it None.
+    last_working_day: date | None = None
     exit_type: str | None = None
     photo_url: str | None
     custom_fields: dict[str, Any]

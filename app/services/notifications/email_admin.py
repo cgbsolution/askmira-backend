@@ -78,6 +78,11 @@ _SAMPLES: dict[str, str] = {
     "start_date": "5 Nov 2026",
     "end_date": "6 Nov 2026",
     "attendance_date": "16 Oct 2026",
+    "report_date": "15-Nov-2026",
+    "absent_days": (
+        "- 04-Nov-2026 (Missed punch)\n- 05-Nov-2026 (Full day absent)\n"
+        "- 13-Nov-2026 (Missed punch)"
+    ),
     "date": "21 Oct 2026",
     "due_date": "30 Nov 2026",
     "decision": "approved",

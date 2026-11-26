@@ -844,7 +844,8 @@ async def update_attendance_settings(
         summary=(
             f"Punch location is now {after.location_mode}, punch photo {after.photo_mode}; "
             f"{rule_words(after.late_marks_per_half_day)}; corrections per month: "
-            f"{after.monthly_correction_limit or 'no limit'}"
+            f"{after.monthly_correction_limit or 'no limit'}; absent report emails "
+            f"{'on' if after.absent_report_emails else 'off'}"
         ),
         request=request,
     )

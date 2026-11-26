@@ -115,6 +115,9 @@ class AttendanceSettings(BaseModel):
     #: may ask for per calendar month. None: no limit. HR's own corrections and
     #: on-duty / work-from-home requests do not count.
     monthly_correction_limit: int | None = Field(default=None, ge=1, le=31)
+    #: Email each person the absent and missed-punch days they still have to
+    #: regularise (the "absent report"): when a new day joins the list, else weekly.
+    absent_report_emails: bool = True
 
 
 class WorkLocationPin(BaseModel):

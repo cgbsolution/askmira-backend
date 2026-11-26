@@ -16,7 +16,7 @@ Two further rules live here:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -477,6 +477,7 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
       person's date of birth, phone, personal email, gender or custom fields.
     """
     record = EmployeeRead.model_validate(employee)
+    record.last_working_day = await _last_working_day(session, user, employee)
     if user.employee_id is not None and employee.id == user.employee_id:
         return record.model_copy(
             update={
@@ -507,8 +508,41 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
             "probation_end_date": None,
             "notice_period_days": None,
             "date_of_exit": None,
+            "last_working_day": None,
         }
     return record.model_copy(update=hidden)
+
+
+async def _last_working_day(session: AsyncSession, user: User, employee: Employee) -> date | None:
+    """The day this person's employment ends, if one is known.
+
+    The latest open exit's approved last working day, else the one they asked
+    for, else the recorded date of exit (people imported as already gone have
+    only that). The same rule as the attendance year-to-date report.
+    """
+    from app.models.exit_workflow import ExitRecord, ExitStatus
+
+    row = (
+        await session.execute(
+            tenant_scoped(
+                select(
+                    ExitRecord.approved_last_working_day,
+                    ExitRecord.requested_last_working_day,
+                )
+                .where(
+                    ExitRecord.employee_id == employee.id,
+                    ExitRecord.status != ExitStatus.CANCELLED,
+                )
+                .order_by(ExitRecord.resignation_date.desc(), ExitRecord.created_at.desc())
+                .limit(1),
+                ExitRecord,
+                user,
+            )
+        )
+    ).first()
+    if row is not None and (row[0] or row[1]):
+        return row[0] or row[1]
+    return employee.date_of_exit
 
 
 async def create_employee(
