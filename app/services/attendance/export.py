@@ -453,7 +453,6 @@ def _visits(
         sheets.Column("Out map (Google Maps)", "link", 14),
         sheets.Column("Out accuracy (m)", "number", 10),
         sheets.Column("Time there (h:mm)", "minutes", 10),
-        sheets.Column("Selfie", "text", 8),
         sheets.Column("From", "text", 8),
     ]
     by_person: dict[uuid.UUID, list[FieldVisit]] = {}
@@ -490,7 +489,6 @@ def _visits(
                     link(v.end_latitude, v.end_longitude),
                     v.end_accuracy_metres,
                     int((v.ended_at - v.started_at).total_seconds() // 60) if v.ended_at else None,
-                    "Yes" if v.has_photo else "No",
                     "App" if v.start_source == "mobile" else "Web",
                 ]
             )

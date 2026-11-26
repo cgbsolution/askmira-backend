@@ -2,8 +2,9 @@
 
 Asked 2026-11-26: Punch in / Punch out must stay off until a correct location
 is found (web and app), and sales and marketing people need Visit in / Visit
-out for each client call — location always on, a selfie at arrival, the
-client's name — so HR sees how many visits were made and where.
+out for each client call — location always on and the client's name — so HR
+sees how many visits were made and where. The selfie at visit in was dropped
+the same day ("not required"); an older app that still sends one is taken.
 
 What this holds, over HTTP:
 
@@ -11,11 +12,11 @@ What this holds, over HTTP:
   `location_accuracy_metres` is refused when location is required; a better
   one is taken; an older app that sends no accuracy is still taken; with
   location optional the accuracy does not matter.
-- A visit needs a client name, a selfie and a location within the accuracy,
+- A visit needs a client name and a location (within the accuracy if one is set),
   whatever the punch rule says. One open visit at a time. Only the person on
   the visit closes it, once.
 - The person lists their own visits; HR everyone's; a manager their report's;
-  a colleague with no reports nobody else's. The selfie likewise.
+  a colleague with no reports nobody else's. A photo, where sent, likewise.
 - The Field visits export has one row per visit with addresses, Google Maps
   links and the time spent there; a date after today reads "Upcoming".
 """
@@ -106,7 +107,6 @@ def _visit_in(name="Tata Motors, Pimpri", where=CLIENT_SITE, accuracy=25.0, **ex
         "latitude": where[0],
         "longitude": where[1],
         "accuracy_metres": accuracy,
-        "photo": _selfie(),
         "source": "mobile",
         **extra,
     }
@@ -123,7 +123,9 @@ async def test_punch_refuses_a_location_less_accurate_than_the_workspace_asks(
     client, session, tenant
 ):
     hr, _, seller, _ = await _team(session, tenant)
-    settings_now = await _settings(client, hr, location_mode="required")
+    settings_now = await _settings(
+        client, hr, location_mode="required", location_accuracy_metres=100
+    )
     assert settings_now["location_accuracy_metres"] == 100
 
     rough = await client.post(
@@ -179,6 +181,59 @@ async def test_punch_refuses_a_location_less_accurate_than_the_workspace_asks(
     assert loose.status_code == 201
 
 
+async def test_accuracy_is_off_by_default_and_can_be_switched_off_again(client, session, tenant):
+    """Office desktops have no GPS: by default any location is taken, however rough."""
+    hr, _, seller, _ = await _team(session, tenant)
+    read = await client.get(f"{API}/settings", headers=bearer(hr))
+    assert read.json()["location_accuracy_metres"] is None
+    await _settings(client, hr, location_mode="required")
+    rough = await client.post(
+        f"{API}/punch",
+        json={
+            "direction": "in",
+            "latitude": OFFICE[0],
+            "longitude": OFFICE[1],
+            "accuracy_metres": 2600,
+        },
+        headers=bearer(seller),
+    )
+    assert rough.status_code == 201, rough.text
+    # Location itself is still required.
+    nothing = await client.post(f"{API}/punch", json={"direction": "out"}, headers=bearer(seller))
+    assert nothing.status_code == 422
+    visit = await client.post(
+        f"{API}/visits", json=_visit_in(accuracy=1800), headers=bearer(seller)
+    )
+    assert visit.status_code == 201, visit.text
+
+    # On, then Off again (null).
+    await _settings(client, hr, location_accuracy_metres=100)
+    refused = await client.post(
+        f"{API}/punch",
+        json={
+            "direction": "out",
+            "latitude": OFFICE[0],
+            "longitude": OFFICE[1],
+            "accuracy_metres": 2600,
+        },
+        headers=bearer(seller),
+    )
+    assert refused.status_code == 422
+    off = await _settings(client, hr, location_accuracy_metres=None)
+    assert off["location_accuracy_metres"] is None
+    taken = await client.post(
+        f"{API}/punch",
+        json={
+            "direction": "out",
+            "latitude": OFFICE[0],
+            "longitude": OFFICE[1],
+            "accuracy_metres": 2600,
+        },
+        headers=bearer(seller),
+    )
+    assert taken.status_code == 201
+
+
 async def test_accuracy_does_not_matter_when_location_is_optional(client, session, tenant):
     hr, _, seller, _ = await _team(session, tenant)
     await _settings(client, hr, location_mode="optional")
@@ -212,17 +267,16 @@ async def test_accuracy_setting_has_bounds_and_survives_other_saves(client, sess
 # ── Visit in and visit out ────────────────────────────────────────────────────
 
 
-async def test_visit_in_needs_a_name_a_selfie_and_an_accurate_location(client, session, tenant):
+async def test_visit_in_needs_a_name_and_an_accurate_location_but_no_selfie(
+    client, session, tenant
+):
     hr, _, seller, _ = await _team(session, tenant)
     # Location "off" for punches does not switch it off for visits.
-    await _settings(client, hr, location_mode="off")
+    await _settings(client, hr, location_mode="off", location_accuracy_metres=100)
     auth = bearer(seller)
 
     blank = await client.post(f"{API}/visits", json=_visit_in(name="   "), headers=auth)
     assert blank.status_code == 422
-    no_photo = _visit_in()
-    no_photo.pop("photo")
-    assert (await client.post(f"{API}/visits", json=no_photo, headers=auth)).status_code == 422
     no_place = _visit_in()
     no_place.pop("latitude")
     assert (await client.post(f"{API}/visits", json=no_place, headers=auth)).status_code == 422
@@ -245,7 +299,8 @@ async def test_visit_in_needs_a_name_a_selfie_and_an_accurate_location(client, s
     assert ok.status_code == 201, ok.text
     visit = ok.json()
     assert visit["client_name"] == "Tata Motors"
-    assert visit["has_photo"] is True
+    # No selfie is asked for any more.
+    assert visit["has_photo"] is False
     assert visit["ended_at"] is None and visit["duration_minutes"] is None
     assert visit["start_accuracy_metres"] == 25
     assert visit["start_source"] == "mobile"
@@ -260,6 +315,7 @@ async def test_visit_in_needs_a_name_a_selfie_and_an_accurate_location(client, s
 
 async def test_one_open_visit_and_only_its_owner_closes_it_once(client, session, tenant):
     hr, _, seller, colleague = await _team(session, tenant)
+    await _settings(client, hr, location_accuracy_metres=100)
     auth = bearer(seller)
     first = (await client.post(f"{API}/visits", json=_visit_in(), headers=auth)).json()
 
@@ -314,7 +370,11 @@ async def test_a_login_without_an_employee_record_cannot_visit(client, session, 
 
 async def test_who_sees_which_visits_and_selfies(client, session, tenant, geocoder):
     hr, manager, seller, colleague = await _team(session, tenant)
-    visit = (await client.post(f"{API}/visits", json=_visit_in(), headers=bearer(seller))).json()
+    # An older app build still sends a selfie: it is kept and shown as before.
+    visit = (
+        await client.post(f"{API}/visits", json=_visit_in(photo=_selfie()), headers=bearer(seller))
+    ).json()
+    assert visit["has_photo"] is True
     await client.post(f"{API}/visits/{visit['id']}/end", json=_visit_out(), headers=bearer(seller))
     await client.post(
         f"{API}/visits", json=_visit_in(name="Office supplies shop"), headers=bearer(colleague)
@@ -363,7 +423,9 @@ async def test_who_sees_which_visits_and_selfies(client, session, tenant, geocod
 
 async def test_visits_stay_inside_their_workspace(client, session, tenant, other_tenant):
     _, _, seller, _ = await _team(session, tenant)
-    visit = (await client.post(f"{API}/visits", json=_visit_in(), headers=bearer(seller))).json()
+    visit = (
+        await client.post(f"{API}/visits", json=_visit_in(photo=_selfie()), headers=bearer(seller))
+    ).json()
     # Same modules on, so a refusal can only come from the workspace boundary.
     other_tenant.enabled_modules = dict(tenant.enabled_modules)
     outsider = await make_person(session, other_tenant, role=UserRole.ADMIN, name="Out Sider")
@@ -421,7 +483,7 @@ async def test_field_visits_export_and_future_days(client, session, tenant, geoc
         "https://www.google.com/maps/search/?api=1&query=18.520400,73.856700"
     )
     assert row["Time there (h:mm)"].value == timedelta(minutes=75)
-    assert row["Selfie"].value == "Yes"
+    assert "Selfie" not in headers
     assert row["From"].value == "App"
 
     future = await client.post(

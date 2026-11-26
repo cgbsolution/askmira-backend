@@ -102,9 +102,11 @@ class AttendanceSettings(BaseModel):
     #: off: no photo; optional: asked for; required: a self-service punch needs one.
     photo_mode: LocationMode = "off"
     #: How close the location must be (metres, as the browser or phone reports
-    #: its accuracy) before a punch or a visit is accepted. The punch and visit
-    #: buttons stay off until a fix this good arrives.
-    location_accuracy_metres: int = Field(default=100, ge=10, le=5000)
+    #: its accuracy) before a punch or a visit is accepted; the punch and visit
+    #: buttons stay off until a fix this good arrives. None (the default): off,
+    #: any location is accepted however rough (office desktops have no GPS and
+    #: often report 100 m to a few km).
+    location_accuracy_metres: int | None = Field(default=None, ge=10, le=5000)
     #: Every Nth late mark in a calendar month is a half day: the Nth, the 2Nth
     #: and so on, never the first. None: late marks cost nothing.
     late_marks_per_half_day: int | None = Field(default=None, ge=2, le=31)
@@ -151,13 +153,14 @@ class _VisitPoint(BaseModel):
 
 
 class VisitStart(_VisitPoint):
-    """Visit in: who or where, and a selfie taken there."""
+    """Visit in: who or where. No selfie is asked for (2026-11-26)."""
 
     model_config = ConfigDict(extra="forbid")
 
     client_name: str = Field(min_length=1, max_length=160)
-    #: A JPEG or PNG taken now, base64 (a data URL is fine).
-    photo: str = Field(min_length=1, max_length=900_000)
+    #: Optional: a JPEG or PNG taken now, base64 (a data URL is fine). The
+    #: screens no longer ask for one; an older app build may still send it.
+    photo: str | None = Field(default=None, min_length=1, max_length=900_000)
 
     @field_validator("client_name")
     @classmethod

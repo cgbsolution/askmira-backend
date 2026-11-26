@@ -1,17 +1,16 @@
 """Field visits: visit in and visit out, for anyone who goes out to see clients.
 
 A sales or marketing person presses Visit in when they reach a client and
-Visit out when they leave. Each visit keeps who or where it was, the time and
-location at both ends, and a selfie taken at arrival, so HR and managers can
-see how many visits were made and where.
+Visit out when they leave. Each visit keeps who or where it was, and the time
+and location at both ends, so HR and managers can see how many visits were
+made and where.
 
 Rules:
 
 - A location is always required, whatever the workspace's punch rule, and it
-  must be as accurate as `location_accuracy_metres` (100 m unless an admin
-  changes it). The screens keep the buttons off until such a fix arrives;
-  the server refuses anything worse.
-- A selfie at visit in is required.
+  must be as accurate as `location_accuracy_metres` when an admin sets one
+  (off by default: any location). The screens keep the buttons off until such
+  a fix arrives; the server refuses anything worse.
 - One open visit per person (a partial unique index backs this up against a
   double tap).
 - The server stamps both times. A visit does not touch attendance: it never
@@ -19,7 +18,7 @@ Rules:
 - Visit out may be pressed only by the person on the visit.
 
 Who sees what: the person their own visits; a manager their reporting line;
-HR everyone. Visit-in selfies the same.
+HR everyone. A visit-in photo, where an older app build sent one, the same.
 """
 
 from __future__ import annotations
@@ -111,7 +110,11 @@ async def start_visit(
     current = await open_visit(session, user)
     if current is not None:
         raise _already_open(current)
-    photo_key = await punch_photos.store_photo(user, data.photo, folder="visit-photos")
+    photo_key = (
+        await punch_photos.store_photo(user, data.photo, folder="visit-photos")
+        if data.photo
+        else None
+    )
 
     visit = FieldVisit(
         tenant_id=user.tenant_id,
@@ -130,7 +133,8 @@ async def start_visit(
     except IntegrityError as exc:
         # A second tap that raced the first: the partial unique index caught it.
         await session.rollback()
-        await get_storage().delete(photo_key)
+        if photo_key:
+            await get_storage().delete(photo_key)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="You already have a visit open. Press Visit out before starting another.",

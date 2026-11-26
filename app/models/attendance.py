@@ -554,7 +554,7 @@ class FieldVisit(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """One visit away from the office: a sales call, a client meeting, a site.
 
     Visit in records where and when the person arrived, who or what the place
-    is, and a selfie taken there; visit out records where and when they left.
+    is; visit out records where and when they left.
     A location is always required, whatever the workspace's punch rule, and
     it must be as accurate as the workspace asks (`location_accuracy_metres`).
 
@@ -586,7 +586,8 @@ class FieldVisit(Base, UUIDMixin, TenantMixin, TimestampMixin):
     start_accuracy_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: "web" or "mobile": where visit in was pressed.
     start_source: Mapped[str] = mapped_column(String(16), nullable=False)
-    #: The selfie taken at visit in. Private storage.
+    #: A photo at visit in, only where an older app build sent one (no longer
+    #: asked for since 2026-11-26). Private storage.
     start_photo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

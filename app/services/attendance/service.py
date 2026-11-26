@@ -1750,7 +1750,7 @@ async def require_location_if_configured(
 
     Only punches people make for themselves from the web or the app: devices,
     imports and HR's manual corrections carry no browser to ask. A location
-    reported as less accurate than `location_accuracy_metres` is refused too
+    reported as less accurate than `location_accuracy_metres` (when set) is refused too
     (the punch screens keep the button off until a good fix arrives). A
     client that sends no accuracy (an app build from before 2026-11-26) is
     taken at its word.
@@ -1771,8 +1771,7 @@ async def require_location_if_configured(
                 "for this site in your browser, then punch again."
             ),
         )
-    needed = int(raw.get("location_accuracy_metres") or 100)
-    check_accuracy(accuracy_metres, needed)
+    check_accuracy(accuracy_metres, raw.get("location_accuracy_metres"))
 
 
 def refuse_fake_location(is_mocked: bool) -> None:
@@ -1787,8 +1786,11 @@ def refuse_fake_location(is_mocked: bool) -> None:
         )
 
 
-def check_accuracy(accuracy_metres: float | None, needed: int) -> None:
-    """Refuse a location less accurate than the workspace asks for."""
+def check_accuracy(accuracy_metres: float | None, needed: int | None) -> None:
+    """Refuse a location less accurate than the workspace asks for (None: no limit)."""
+    if needed is None:
+        return
+    needed = int(needed)
     if accuracy_metres is not None and accuracy_metres > needed:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
