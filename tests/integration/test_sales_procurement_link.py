@@ -187,6 +187,11 @@ class FakeProducts:
                 return httpx.Response(
                     200, json={"kind": kind, "deal": made, "done": ["lead added at Lead"]}
                 )
+            if kind == "prospect.save":
+                return httpx.Response(200, json={"kind": kind, "prospect": {
+                    "id": str(uuid.uuid4()), "company": params["company"], "stage": "dump",
+                    "stage_label": "Dump"}, "done": ["added to the Prospect Board at Dump"],
+                    "task_id": "t1" if params.get("follow_up") else None})  # fmt: skip
             if kind == "deal.note":
                 return httpx.Response(200, json={"kind": kind, "deal": deal, "note_id": "n1"})
         if product == "interview" and path == "act":
@@ -338,17 +343,18 @@ async def test_people_sync_keeps_each_persons_role_there(
 # ── A: a lead from free text ────────────────────────────────────────────────
 
 
-async def test_a_pasted_lead_becomes_one_offer_and_only_the_confirmed_one_reaches_saleinx(
+async def test_a_pasted_lead_becomes_one_prospect_offer_and_only_the_confirmed_one_reaches_saleinx(
     session: AsyncSession,
     tenant: Tenant,
     me: User,
     fake: FakeProducts,
 ) -> None:
+    """A new company goes on Saleinx's Prospect Board (Dump), not in as a lead (2026-11-23)."""
     await _link(session, tenant, "saleinx", {me.email: "member"})
     fake.role = "member"
     lead = plan(
         "save_lead",
-        "Here is the lead; confirm to add it.",
+        "Here is the prospect; confirm to add it.",
         company="TEST Meridian Steelworks Pvt Ltd",
         contact_name="Rakesh Menon",
         contact_title="VP IT",
@@ -361,35 +367,79 @@ async def test_a_pasted_lead_becomes_one_offer_and_only_the_confirmed_one_reache
         referred_by="Anita from Bhagat Motors",
         follow_up="Call back Rakesh Menon",
         follow_up_date="2026-11-05",
+        offerings=["OutSystems", "Power Platform"],
     )
     result = await _say(
         session, me, "Lead from the Pune manufacturing expo today...", FakeModel(lead)
     )
     offer = _offer(result)
-    assert offer["kind"] == "saleinx_lead" and offer["status"] == "proposed"
+    assert offer["kind"] == "saleinx_prospect" and offer["status"] == "proposed"
+    assert offer["title"] == "New prospect in Saleinx: TEST Meridian Steelworks Pvt Ltd"
     figures = {f["label"]: f["value"] for f in offer["figures"]}
-    assert figures["Value"] == "₹1,20,00,000"
-    assert figures["Next step"] == "Decision expected by 30 Nov 2026"
-    assert figures["Sells"] == "OutSystems, Power Platform"
+    assert figures["Board"] == "Prospect Board · Dump"
+    assert figures["Product fit"] == "OutSystems"  # one product fit on a prospect
+    assert figures["Source"] == "Referral (Anita from Bhagat Motors)"
     assert "Thu 05 Nov 2026" in figures["Follow-up"]
-    assert any("no close date" in n for n in offer["notes"])
+    assert any("promotes it" in n for n in offer["notes"])
     assert fake.acts("saleinx") == []  # nothing changed yet
 
-    await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
-    [sent] = fake.acts("saleinx", "lead.save")
+    done = await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    assert fake.acts("saleinx", "lead.save") == []
+    [sent] = fake.acts("saleinx", "prospect.save")
     params = sent["params"]
     assert params["company"] == "TEST Meridian Steelworks Pvt Ltd"
-    assert params["contact"]["title"] == "VP IT" and params["contact"]["first_name"] == "Rakesh"
-    assert params["deal"]["amount"] == "12000000.00"
-    assert params["deal"]["next_step"] == "Decision expected by 30 Nov 2026"
-    assert "expected_close_date" not in json.dumps(params)
+    assert params["contact"] == {
+        "name": "Rakesh Menon",
+        "title": "VP IT",
+        "email": "rakesh.menon@meridian-steel.example",
+        "phone": "+91 90000 00001",
+    }
+    assert params["offerings"] == ["OutSystems"]
+    assert params["source"] == "Referral"
+    notes = params["notes"]
+    assert "Wants: Dealer portal rebuild" in notes and "Budget: ₹1,20,00,000" in notes
+    assert "Decision expected by 30 Nov 2026" in notes
+    assert "Referred by Anita from Bhagat Motors." in notes
     assert params["follow_up"] == {
         "title": "Call back Rakesh Menon",
         "due_date": "2026-11-05",
         "type": "call",
     }
-    assert "Referred by Anita from Bhagat Motors." in params["note"]
     assert sent["actor"]["email"] == me.email and sent["actor"]["role"] == "member"
+    assert done["action"]["status"] == "done"
+    assert "Prospect Board" in done["message"]["text"] and "Tasks" in done["message"]["text"]
+
+
+async def test_a_prospect_needs_only_the_company_and_reports_one_already_on_the_board(
+    session: AsyncSession,
+    tenant: Tenant,
+    me: User,
+    fake: FakeProducts,
+) -> None:
+    await _link(session, tenant, "saleinx", {me.email: "member"})
+    bare = plan("save_lead", "Confirm?", company="Kestrel Auto")
+    offer = _offer(await _say(session, me, "Add Kestrel Auto as a prospect", FakeModel(bare)))
+    assert offer["kind"] == "saleinx_prospect"
+    figures = {f["label"]: f["value"] for f in offer["figures"]}
+    assert figures["Source"] == "Ask Miraa" and "Contact" not in figures
+
+    plain = fake.handler
+
+    def already(request: httpx.Request) -> httpx.Response:
+        answer = plain(request)
+        if json.loads(request.content).get("kind") == "prospect.save":
+            return httpx.Response(
+                409,
+                json={
+                    "error": "Kestrel Auto is already on the Prospect Board (Researching), so it wasn't added twice."
+                },
+            )
+        return answer
+
+    fake.handler = already  # type: ignore[method-assign]
+    done = await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
+    assert done["action"]["status"] == "failed"
+    assert "already on the Prospect Board (Researching)" in done["message"]["text"]
 
 
 async def test_new_details_for_a_known_lead_change_only_what_changed(

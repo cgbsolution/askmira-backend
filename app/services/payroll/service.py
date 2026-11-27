@@ -22,6 +22,7 @@ from app.models.audit import AuditAction
 from app.models.employee import Employee
 from app.models.payroll import (
     DEFAULT_WAGE_GROUP,
+    PAID_WHEN_EARNED_CODES,
     STATUTORY_OVERRIDE_CODES,
     ComponentType,
     EmployeeSalary,
@@ -342,6 +343,7 @@ class ResolvedSalary:
                     c.monthly_amount
                     for c in self.breakdown.components
                     if c.component_type is ComponentType.EARNING
+                    and c.code not in PAID_WHEN_EARNED_CODES
                 ),
                 Decimal(0),
             )
@@ -355,6 +357,7 @@ class ResolvedSalary:
                     c.annual_amount
                     for c in self.breakdown.components
                     if c.component_type is ComponentType.EARNING
+                    and c.code not in PAID_WHEN_EARNED_CODES
                 ),
                 Decimal(0),
             )

@@ -103,6 +103,12 @@ STATUTORY_OVERRIDE_CODES: dict[str, str] = {
     "ESIC_ER_MANUAL": "esi_employer",
 }
 
+#: Earnings that are part of a person's CTC but never paid by the monthly
+#: payroll: a sales incentive is a yearly figure the offer promises, paid when
+#: it is earned through Payroll -> Adjustments. They count in CTC TOTAL, never
+#: in monthly gross, take home, a payslip or the TDS projection.
+PAID_WHEN_EARNED_CODES: frozenset[str] = frozenset({"SALES_INCENTIVE"})
+
 #: A component with no group set sits in its kind's usual group.
 DEFAULT_WAGE_GROUP: dict[ComponentType, WageGroup] = {
     ComponentType.EARNING: WageGroup.REGULAR_EARNING,

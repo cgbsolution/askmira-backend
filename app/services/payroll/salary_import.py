@@ -57,6 +57,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.payroll import (
+    PAID_WHEN_EARNED_CODES,
     ComponentType,
     EmployeeSalary,
     SalaryComponent,
@@ -486,7 +487,12 @@ async def export_present(
         row: dict[str, Any] = {CODE: person.employee_code}
         salary = _present(series.get(person.id, []), today)
         if salary is not None:
-            earnings = [c for c in salary.components if c.component_type is ComponentType.EARNING]
+            earnings = [
+                c
+                for c in salary.components
+                if c.component_type is ComponentType.EARNING
+                and c.component_code not in PAID_WHEN_EARNED_CODES
+            ]
             if salary.gross_amount is not None:
                 gross = to_period_amounts(
                     Decimal(str(salary.gross_amount)), salary.gross_basis or "monthly"
@@ -950,7 +956,9 @@ async def _check(session: AsyncSession, user: User, data: bytes, filename: str) 
             continue
 
         earnings = [
-            c for c in resolved.breakdown.components if c.component_type is ComponentType.EARNING
+            c
+            for c in resolved.breakdown.components
+            if c.component_type is ComponentType.EARNING and c.code not in PAID_WHEN_EARNED_CODES
         ]
         gross_monthly = sum((c.monthly_amount for c in earnings), Decimal(0))
         gross_given = None

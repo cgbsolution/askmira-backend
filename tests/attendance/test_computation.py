@@ -18,6 +18,7 @@ from app.services.attendance.computation import (
     PunchRecord,
     attendance_window,
     compute_day,
+    scheduled_minutes,
 )
 
 DAY = date(2026, 4, 6)  # a Monday
@@ -248,7 +249,7 @@ def test_threshold_boundaries_on_both_sides(
     assert result.payable_fraction == Decimal(expected_payable)
 
 
-def test_break_minutes_are_deducted_from_worked_time() -> None:
+def test_break_time_counts_as_worked_time() -> None:
     result = compute_day(
         inputs(
             shift=shift(break_minutes=60),
@@ -258,7 +259,30 @@ def test_break_minutes_are_deducted_from_worked_time() -> None:
             ],
         )
     )
-    assert result.worked_minutes == 480  # 9 hours less a 1-hour break
+    assert result.worked_minutes == 540  # all 9 hours: the break is not taken off
+
+
+def test_a_full_general_shift_is_8h_15m_not_7h_15m() -> None:
+    """The GEN shift, 10:15-18:30 with a 60-minute break.
+
+    Worked time read 7h 15m because the break was taken off. The break is
+    working time: in at 10:15 and out at 18:30 is 8h 15m, and that is also the
+    shift's scheduled time, so there is no overtime.
+    """
+    general = shift(start="10:15", end="18:30", break_minutes=60, half_day=240, full_day=420)
+    assert scheduled_minutes(general) == 495
+    result = compute_day(
+        inputs(
+            shift=general,
+            punches=[
+                punch(DAY, "10:15", PunchDirection.IN),
+                punch(DAY, "18:30", PunchDirection.OUT),
+            ],
+        )
+    )
+    assert result.worked_minutes == 495
+    assert result.status is AttendanceStatus.PRESENT
+    assert result.overtime_minutes == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -363,8 +387,8 @@ def test_a_second_in_tapped_by_mistake_keeps_the_first_in() -> None:
         )
     )
     assert result.status is not AttendanceStatus.NEEDS_REGULARISATION
-    # 11:04 to 18:34 is 450 minutes, more than half the shift, so the break comes off.
-    assert result.worked_minutes == 390
+    # 11:04 to 18:34 is 450 minutes, under the 480-minute full day.
+    assert result.worked_minutes == 450
     assert result.first_in.time() == time(11, 4)
     assert result.last_out.time() == time(18, 34)
     assert result.status is AttendanceStatus.HALF_DAY

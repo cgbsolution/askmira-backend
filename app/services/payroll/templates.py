@@ -85,13 +85,13 @@ def _not_found() -> HTTPException:
 # ── Defaults ────────────────────────────────────────────────────────────────
 
 #: Employer PF kept inside the CTC: 12% PF + 0.5% admin + 0.5% EDLI on PF wages
-#: up to the ₹15,000 ceiling — ₹1,950 a month at the ceiling, which is what the
-#: CTC letters HR already issues set aside.
+#: up to the ₹25,000 ceiling (S.O. 5109(E), from 17 Sep 2026) — ₹3,250 a month
+#: at the ceiling, as the CGB CTC calculator sets aside.
 DEFAULT_EMPLOYER_PF: dict[str, Any] = {
     "method": "percent",
     "value": "13",
     "of": ct.PF_WAGES,
-    "ceiling": "15000",
+    "ceiling": "25000",
 }
 #: Employer ESI kept inside the CTC: 3.25% of ESI wages, only while they are up
 #: to ₹21,000 a month, rounded up to the rupee as ESIC collects it.
@@ -856,10 +856,40 @@ def _usable(
     return template, notes
 
 
+def fixed_part(amount: Decimal, basis: str, variable: tuple[Decimal, str]) -> tuple[Decimal, str]:
+    """The CTC less a sales incentive, in the CTC's own Pay Basis when both share
+    it (exact), else a year's figure."""
+    from app.services.payroll.service import to_period_amounts
+
+    variable_amount, variable_basis = variable
+    ctc_annual, _ = to_period_amounts(amount, basis)
+    variable_annual, _ = to_period_amounts(variable_amount, variable_basis)
+    if variable_annual >= ctc_annual:
+        raise _unprocessable(
+            "SALES INCENTIVE is the whole CTC TOTAL or more. CTC TOTAL is the fixed salary "
+            "plus the sales incentive: raise CTC TOTAL or lower the incentive."
+        )
+    if variable_basis == basis:
+        return amount - variable_amount, basis
+    return ctc_annual - variable_annual, "annual"
+
+
 async def calculate_saved(
-    session: AsyncSession, user: User, structure_id: uuid.UUID, amount: Decimal, basis: str
+    session: AsyncSession,
+    user: User,
+    structure_id: uuid.UUID,
+    amount: Decimal,
+    basis: str,
+    *,
+    variable: tuple[Decimal, str] | None = None,
 ) -> TemplateCalcRead:
-    """The Salary master's Calculate: a CTC split by a saved structure. Writes nothing."""
+    """The Salary master's Calculate: a CTC split by a saved structure. Writes nothing.
+
+    With a sales incentive, the structure splits the fixed part (the CTC less
+    the incentive): the incentive is in the CTC but no share of it is salary.
+    """
+    if variable is not None:
+        amount, basis = fixed_part(amount, basis, variable)
     structure = await _structure(session, user, structure_id)
     components = await _components(session, user)
     template, _ = _usable(structure, components)

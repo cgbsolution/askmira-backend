@@ -86,8 +86,10 @@ async def _post(
         raise ProductError(f"Could not reach the product: {exc.__class__.__name__}.") from exc
     if response.status_code >= 400:
         detail: Any = None
+        refusal: dict[str, Any] | None = None
         try:
             data = response.json()
+            refusal = data if isinstance(data, dict) else None
             detail = data.get("detail") or data.get("error") if isinstance(data, dict) else None
         except ValueError:
             pass
@@ -98,6 +100,7 @@ async def _post(
             f"The product answered {response.status_code}: {message}",
             status=response.status_code,
             detail=detail if isinstance(detail, str) else None,
+            payload=refusal,
         )
     try:
         data = response.json()

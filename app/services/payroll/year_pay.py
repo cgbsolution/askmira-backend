@@ -42,6 +42,7 @@ from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.exit_workflow import ExitRecord, ExitStatus
 from app.models.payroll import (
+    PAID_WHEN_EARNED_CODES,
     STATUTORY_OVERRIDE_CODES,
     ComponentType,
     EmployeeSalary,
@@ -364,6 +365,8 @@ async def months_from_structure(
             if STATUTORY_OVERRIDE_CODES.get(component.component_code) == "pt":
                 fixed_pt = _d(component.monthly_amount)
                 continue
+            if component.component_code in PAID_WHEN_EARNED_CODES:
+                continue  # paid when earned, through Adjustments
             amount = _d(component.monthly_amount) * share
             if component.component_type is ComponentType.EARNING:
                 month_gross += amount

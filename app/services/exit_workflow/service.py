@@ -691,6 +691,7 @@ async def revoke_access(
         account.is_active = False
 
     employee.status = EmploymentStatus.EXITED
+    employee.exit_type = record.exit_type.value
     if record.approved_last_working_day is not None:
         employee.date_of_exit = record.approved_last_working_day
     else:

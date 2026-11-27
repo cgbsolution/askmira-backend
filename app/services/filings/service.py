@@ -65,7 +65,7 @@ from app.services.filings.records import (
     TdsDeducteeLine,
     TdsSalaryDetail,
 )
-from app.services.filings.wages import WageError, compute_ecr_wages
+from app.services.filings.wages import EcrWages, WageError, compute_ecr_wages
 from app.services.payroll import companies, statutory_service
 
 __all__ = [
@@ -372,48 +372,13 @@ async def generate_ecr(
     entity = await _entity(session, user, legal_entity_id)
     run = await _approved_run(session, user, legal_entity_id, year, month)
     rows = await _payslips(session, user, run)
-
-    pf_rules = await _rule_set(session, user, "pf", "IN", run.effective_date)
-    if pf_rules is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "No PF rule set is in force for this period, so EPF, EPS and EDLI "
-                "ceilings are unknown. None of them is assumed."
-            ),
-        )
+    pf_rules = await pf_rules_for(session, user, run)
 
     period = f"{year}-{month:02d}"
     to_validate: list[dict[str, Any]] = []
-    computed: list[tuple[Employee, Any]] = []
+    computed: list[tuple[Employee, EcrWages]] = []
 
-    for payslip, employee in rows:
-        if not Decimal(str(payslip.pf_employee)) and not Decimal(str(payslip.pf_employer)):
-            # No PF this month — a contractor, or someone excluded. They do not
-            # belong on the ECR at all.
-            continue
-
-        election = await statutory_service.active_pf_election(
-            session, user, employee.id, run.effective_date
-        )
-        try:
-            wages = compute_ecr_wages(
-                rules=pf_rules.rules,
-                gross_earnings=Decimal(str(payslip.gross_earnings)),
-                pf_wage_base=Decimal(str(payslip.pf_wage_base)),
-                pf_employee=Decimal(str(payslip.pf_employee)),
-                pf_employer=Decimal(str(payslip.pf_employer)),
-                lop_days=Decimal(str(payslip.lop_days)),
-                eps_member=_eps_member(employee),
-                pf_on_actual_wage=bool(election and election.on_actual_wage),
-                vpf=payslip.vpf,
-            )
-        except WageError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"{employee.employee_code}: {exc}",
-            ) from exc
-
+    for employee, payslip, wages in await ecr_wage_rows(session, user, run, rows, pf_rules):
         computed.append((employee, wages))
         to_validate.append(
             {
@@ -486,6 +451,75 @@ async def generate_ecr(
         request=request,
     )
     return GeneratedFile(content, record, result)
+
+
+async def month_pay(
+    session: AsyncSession, user: User, run: PayrollRun
+) -> list[tuple[_MonthPay, Employee]]:
+    """The month's pay per employee for the run's entity: regular run plus approved top-ups."""
+    return await _payslips(session, user, run)
+
+
+async def pf_rules_for(session: AsyncSession, user: User, run: PayrollRun) -> PayrollRuleSet:
+    pf_rules = await _rule_set(session, user, "pf", "IN", run.effective_date)
+    if pf_rules is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No PF rule set is in force for this period, so EPF, EPS and EDLI "
+                "ceilings are unknown. None of them is assumed."
+            ),
+        )
+    return pf_rules
+
+
+async def ecr_wage_rows(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    rows: list[tuple[_MonthPay, Employee]],
+    pf_rules: PayrollRuleSet,
+    errors: list[tuple[Employee, str]] | None = None,
+) -> list[tuple[Employee, _MonthPay, EcrWages]]:
+    """Each PF member's ECR figures for the month, in the order of `rows`.
+
+    The ECR filing and the run page's challan download both read this, so the
+    two files can never disagree. A person whose figures cannot be derived
+    fails the call, unless `errors` is given: then they are added to it and
+    left off.
+    """
+    computed: list[tuple[Employee, _MonthPay, EcrWages]] = []
+    for payslip, employee in rows:
+        if not Decimal(str(payslip.pf_employee)) and not Decimal(str(payslip.pf_employer)):
+            # No PF this month — a contractor, or someone excluded. They do not
+            # belong on the ECR at all.
+            continue
+
+        election = await statutory_service.active_pf_election(
+            session, user, employee.id, run.effective_date
+        )
+        try:
+            wages = compute_ecr_wages(
+                rules=pf_rules.rules,
+                gross_earnings=Decimal(str(payslip.gross_earnings)),
+                pf_wage_base=Decimal(str(payslip.pf_wage_base)),
+                pf_employee=Decimal(str(payslip.pf_employee)),
+                pf_employer=Decimal(str(payslip.pf_employer)),
+                lop_days=Decimal(str(payslip.lop_days)),
+                eps_member=_eps_member(employee),
+                pf_on_actual_wage=bool(election and election.on_actual_wage),
+                vpf=payslip.vpf,
+            )
+        except WageError as exc:
+            if errors is not None:
+                errors.append((employee, str(exc)))
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{employee.employee_code}: {exc}",
+            ) from exc
+        computed.append((employee, payslip, wages))
+    return computed
 
 
 def _eps_member(employee: Employee) -> bool:
@@ -746,63 +780,7 @@ async def generate_esic(
     esi_rules = await _rule_set(session, user, "esi", "IN", run.effective_date)
 
     period = f"{year}-{month:02d}"
-    to_validate: list[dict[str, Any]] = []
-    lines: list[EsicLine] = []
-    line_of: dict[uuid.UUID, int] = {}
-
-    for payslip, employee in rows:
-        employee_share = Decimal(str(payslip.esi_employee))
-        employer_share = Decimal(str(payslip.esi_employer))
-        if not employee_share and not employer_share:
-            # Above the ceiling from the start of the period, or not covered.
-            continue
-
-        # Someone above the ceiling who is still contributing is on this return
-        # because the contribution period has not ended (slice 09). Recording
-        # why turns "an auditor asks about a high earner" into a one-line answer.
-        continuing = None
-        if esi_rules is not None:
-            threshold = Decimal(str(esi_rules.rules.get("wage_threshold", 0)))
-            wage_base = Decimal(str(payslip.esi_wage_base))
-            if threshold and wage_base > threshold:
-                _, coverage = await statutory_service.esi_coverage_for(
-                    session,
-                    user,
-                    employee_id=employee.id,
-                    on_date=date(year, month, 1),
-                    esi_rules=esi_rules,
-                )
-                continuing = (
-                    f"Wages of {wage_base} are above the ceiling of {threshold}; "
-                    f"contributions continue to the end of the "
-                    f"{coverage.period_label if coverage else 'current'} period."
-                )
-
-        line = EsicLine(
-            ip_number=employee.esi_number or "",
-            ip_name=employee.full_name,
-            days_worked=Decimal(str(payslip.paid_days)),
-            wages_paid=Decimal(str(payslip.esi_wage_base)),
-            employee_contribution=employee_share,
-            employer_contribution=employer_share,
-            continuing_reason=continuing,
-        )
-        line_of[employee.id] = len(lines)
-        lines.append(line)
-        to_validate.append(
-            {
-                "subject": employee.employee_code,
-                "ip_number": line.ip_number,
-                "days_worked": line.days_worked,
-                "wages_paid": line.wages_paid,
-                "employee_contribution": line.employee_contribution,
-                "employer_contribution": line.employer_contribution,
-            }
-        )
-
-    noted = await _esi_arrears_into(
-        session, user, legal_entity_id, year, month, lines, line_of, to_validate
-    )
+    lines, _, to_validate, noted = await esic_month_lines(session, user, run, rows, esi_rules)
     checked = validation.validate_esic_lines(to_validate)
     result = validation.ValidationResult([*checked.exceptions, *noted])
     if result.is_blocked:
@@ -844,6 +822,94 @@ async def generate_esic(
         request=request,
     )
     return GeneratedFile(content, record, result)
+
+
+async def esi_rules_for(
+    session: AsyncSession, user: User, run: PayrollRun
+) -> PayrollRuleSet | None:
+    return await _rule_set(session, user, "esi", "IN", run.effective_date)
+
+
+async def esic_month_lines(
+    session: AsyncSession,
+    user: User,
+    run: PayrollRun,
+    rows: list[tuple[_MonthPay, Employee]],
+    esi_rules: PayrollRuleSet | None,
+) -> tuple[
+    list[EsicLine],
+    list[tuple[Employee, _MonthPay]],
+    list[dict[str, Any]],
+    list[validation.FilingException],
+]:
+    """Each contributing IP's ESIC line for the month, arrears paid with it included.
+
+    Returns the lines, who each line is (same order), the rows to validate and
+    the arrear notes. The ESIC filing and the run page's MC template both read
+    this, so the two can never disagree.
+    """
+    legal_entity_id = run.legal_entity_id
+    year, month = run.period_year, run.period_month
+    to_validate: list[dict[str, Any]] = []
+    lines: list[EsicLine] = []
+    who: list[tuple[Employee, _MonthPay]] = []
+    line_of: dict[uuid.UUID, int] = {}
+
+    for payslip, employee in rows:
+        employee_share = Decimal(str(payslip.esi_employee))
+        employer_share = Decimal(str(payslip.esi_employer))
+        if not employee_share and not employer_share:
+            # Above the ceiling from the start of the period, or not covered.
+            continue
+
+        # Someone above the ceiling who is still contributing is on this return
+        # because the contribution period has not ended (slice 09). Recording
+        # why turns "an auditor asks about a high earner" into a one-line answer.
+        continuing = None
+        if esi_rules is not None:
+            threshold = Decimal(str(esi_rules.rules.get("wage_threshold", 0)))
+            wage_base = Decimal(str(payslip.esi_wage_base))
+            if threshold and wage_base > threshold:
+                _, coverage = await statutory_service.esi_coverage_for(
+                    session,
+                    user,
+                    employee_id=employee.id,
+                    on_date=date(year, month, 1),
+                    esi_rules=esi_rules,
+                )
+                continuing = (
+                    f"Wages of {wage_base} are above the ceiling of {threshold}; "
+                    f"contributions continue to the end of the "
+                    f"{coverage.period_label if coverage else 'current'} period."
+                )
+
+        line = EsicLine(
+            ip_number=employee.esi_number or "",
+            ip_name=employee.full_name,
+            days_worked=Decimal(str(payslip.paid_days)),
+            wages_paid=Decimal(str(payslip.esi_wage_base)),
+            employee_contribution=employee_share,
+            employer_contribution=employer_share,
+            continuing_reason=continuing,
+        )
+        line_of[employee.id] = len(lines)
+        lines.append(line)
+        who.append((employee, payslip))
+        to_validate.append(
+            {
+                "subject": employee.employee_code,
+                "ip_number": line.ip_number,
+                "days_worked": line.days_worked,
+                "wages_paid": line.wages_paid,
+                "employee_contribution": line.employee_contribution,
+                "employer_contribution": line.employer_contribution,
+            }
+        )
+
+    noted = await _esi_arrears_into(
+        session, user, legal_entity_id, year, month, lines, line_of, to_validate
+    )
+    return lines, who, to_validate, noted
 
 
 async def _arrears_paid_in(

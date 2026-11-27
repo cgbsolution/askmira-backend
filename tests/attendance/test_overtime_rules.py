@@ -58,9 +58,9 @@ def test_work_on_a_weekly_off_is_recorded_as_overtime() -> None:
     )
     assert result.status is AttendanceStatus.WEEK_OFF
     assert result.payable_fraction == Decimal(1)
-    # Five hours less the shift's one-hour break.
-    assert result.worked_minutes == 240
-    assert result.overtime_minutes == 240
+    # All five hours: the shift's break is working time.
+    assert result.worked_minutes == 300
+    assert result.overtime_minutes == 300
 
 
 def test_work_on_a_holiday_is_recorded_as_overtime() -> None:
@@ -75,7 +75,7 @@ def test_work_on_a_holiday_is_recorded_as_overtime() -> None:
         )
     )
     assert result.status is AttendanceStatus.HOLIDAY
-    # Three hours, no more than half the shift: no lunch break was taken.
+    # Three hours on the clock, all of it counted.
     assert result.overtime_minutes == 180
     assert result.note.startswith("Diwali")
 

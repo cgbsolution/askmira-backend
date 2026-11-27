@@ -541,6 +541,17 @@ TABLES: dict[str, TableClassification] = {
         "attendance",
         {"latitude": "attendance", "longitude": "attendance"},
     ),
+    # Where a person was on each client visit, and the selfie taken there.
+    "field_visits": _p(
+        EMP,
+        "attendance",
+        {
+            "start_latitude": "attendance",
+            "start_longitude": "attendance",
+            "end_latitude": "attendance",
+            "end_longitude": "attendance",
+        },
+    ),
     "attendance_regularisations": _p(EMP, "attendance"),
     "shift_assignments": _p(EMP, "attendance"),
     "roster_assignments": _p(EMP, "attendance"),

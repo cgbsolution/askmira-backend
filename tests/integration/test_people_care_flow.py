@@ -6,23 +6,32 @@ What these hold:
   summary is withheld until there are enough to keep it anonymous;
 - "not eligible for rehire" needs a reason, and HR sees it when the person applies again;
 - a work anniversary is marked once, publicly only for somebody who shares theirs;
-- an approver is reminded of corrections waiting on them, HR of an unlocked month.
+- an approver is reminded of corrections waiting on them, HR of an unlocked month;
+- each person is emailed their own unexplained absent / missed-punch days.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.models.attendance import AttendanceRegularisation, AttendanceStatus
+from app.models.attendance import (
+    AttendanceDay,
+    AttendancePeriodLock,
+    AttendanceRegularisation,
+    AttendanceStatus,
+)
 from app.models.culture import MilestoneRule, Shoutout, ShoutoutVisibility
 from app.models.culture_depth import EventPrivacyPreference
 from app.models.employee import Employee, EmploymentStatus
 from app.models.exit_workflow import ExitRecord, ExitStatus, ExitType
-from app.models.notifications import Notification
+from app.models.leave import LeaveRequest, LeaveRequestStatus, LeaveType
+from app.models.notifications import Channel, Notification
+from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services.attendance import reminders
 from app.services.culture import milestones
@@ -228,3 +237,148 @@ async def test_approvers_and_hr_are_nudged(
         for n in (await session.scalars(select(Notification))).all()
     }
     assert ("attendance.regularisation.reminder", boss_login.id) in events
+
+
+def _day(tenant, employee, day, status):
+    return AttendanceDay(
+        tenant_id=tenant.id,
+        employee_id=employee.id,
+        attendance_date=day,
+        status=status,
+        payable_fraction=Decimal("0"),
+        computed_at=datetime(2026, 11, 20, tzinfo=UTC),
+    )
+
+
+async def _absent_reports(session, tenant, hr_user):
+    return [
+        n
+        for n in (
+            await session.scalars(
+                select(Notification)
+                .where(
+                    Notification.event_key == "attendance.absent_report",
+                    Notification.channel == Channel.EMAIL,
+                )
+                .order_by(Notification.created_at)
+            )
+        ).all()
+    ]
+
+
+async def test_each_person_is_emailed_their_unexplained_absent_days(
+    session, tenant, hr_user, legal_entity, location
+) -> None:
+    worker, worker_login = await _person(
+        session, tenant, legal_entity, location, "ABS", login_role=UserRole.EMPLOYEE
+    )
+    tidy, _ = await _person(
+        session, tenant, legal_entity, location, "TIDY", login_role=UserRole.EMPLOYEE
+    )
+    gone, _ = await _person(
+        session,
+        tenant,
+        legal_entity,
+        location,
+        "GONE",
+        status=EmploymentStatus.EXITED,
+        login_role=UserRole.EMPLOYEE,
+    )
+    kind = LeaveType(tenant_id=tenant.id, name="Leave", code="LV")
+    session.add(kind)
+    await session.flush()
+    session.add_all(
+        [
+            _day(tenant, worker, date(2026, 11, 4), AttendanceStatus.NEEDS_REGULARISATION),
+            _day(tenant, worker, date(2026, 11, 5), AttendanceStatus.ABSENT),
+            # Explained: a correction waiting, leave applied, already regularised.
+            _day(tenant, worker, date(2026, 11, 6), AttendanceStatus.ABSENT),
+            _day(tenant, worker, date(2026, 11, 9), AttendanceStatus.ABSENT),
+            _day(tenant, worker, date(2026, 11, 10), AttendanceStatus.PRESENT),
+            _day(tenant, tidy, date(2026, 11, 4), AttendanceStatus.PRESENT),
+            _day(tenant, gone, date(2026, 11, 4), AttendanceStatus.ABSENT),
+            # Today is not over: never reported.
+            _day(tenant, worker, date(2026, 11, 15), AttendanceStatus.ABSENT),
+            AttendanceRegularisation(
+                tenant_id=tenant.id,
+                employee_id=worker.id,
+                attendance_date=date(2026, 11, 6),
+                requested_status=AttendanceStatus.PRESENT,
+                reason="Client visit",
+            ),
+            LeaveRequest(
+                tenant_id=tenant.id,
+                employee_id=worker.id,
+                leave_type_id=kind.id,
+                start_date=date(2026, 11, 9),
+                end_date=date(2026, 11, 9),
+                total_days=Decimal(1),
+                status=LeaveRequestStatus.PENDING,
+            ),
+        ]
+    )
+    await session.commit()
+
+    today = date(2026, 11, 15)
+    now = datetime.now(UTC)
+    outcome = await reminders.send_absent_reports(session, hr_user, today=today, now=now)
+    assert outcome == {"people_reminded": 1, "people_with_open_days": 1}
+    [email] = await _absent_reports(session, tenant, hr_user)
+    assert email.recipient_user_id == worker_login.id
+    assert email.rendered_subject == "Reminder: absent report Abs Test (15-Nov-2026)"
+    assert "04-Nov-2026 (Missed punch)" in email.rendered_body
+    assert "05-Nov-2026 (Full day absent)" in email.rendered_body
+    for explained in ("06-Nov-2026", "09-Nov-2026", "10-Nov-2026", "15-Nov-2026"):
+        assert explained not in email.rendered_body
+    assert "/time/attendance" in email.rendered_body
+
+    # Run again with nothing new: no second email.
+    again = await reminders.send_absent_reports(
+        session, hr_user, today=today, now=now + timedelta(hours=20)
+    )
+    assert again["people_reminded"] == 0
+
+    # A new absent day: emailed again, with every open day.
+    session.add(_day(tenant, worker, date(2026, 11, 16), AttendanceStatus.ABSENT))
+    await session.commit()
+    outcome = await reminders.send_absent_reports(
+        session, hr_user, today=date(2026, 11, 17), now=now + timedelta(days=2)
+    )
+    assert outcome["people_reminded"] == 1
+    latest = (await _absent_reports(session, tenant, hr_user))[-1]
+    for day in ("04-Nov-2026", "05-Nov-2026", "15-Nov-2026", "16-Nov-2026"):
+        assert day in latest.rendered_body
+
+    # Still open a week later: reminded once more.
+    outcome = await reminders.send_absent_reports(
+        session, hr_user, today=date(2026, 11, 25), now=now + timedelta(days=10)
+    )
+    assert outcome["people_reminded"] == 1
+
+    # A locked period drops out, and the workspace can switch the email off.
+    session.add(
+        AttendancePeriodLock(
+            tenant_id=tenant.id,
+            period_start=date(2026, 11, 1),
+            period_end=date(2026, 11, 16),
+            locked_at=now,
+        )
+    )
+    await session.commit()
+    assert (
+        await reminders.open_absent_days(
+            session, hr_user, start=date(2026, 11, 1), end=date(2026, 11, 24)
+        )
+        == {}
+    )
+    tenant_row = await session.get(Tenant, tenant.id)
+    tenant_row.settings = {
+        **(tenant_row.settings or {}),
+        "attendance": {"absent_report_emails": False},
+    }
+    session.add(_day(tenant, worker, date(2026, 11, 20), AttendanceStatus.ABSENT))
+    await session.commit()
+    off = await reminders.send_absent_reports(
+        session, hr_user, today=date(2026, 11, 26), now=now + timedelta(days=11)
+    )
+    assert off == {"people_reminded": 0, "people_with_open_days": 0}

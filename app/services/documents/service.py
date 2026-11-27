@@ -41,7 +41,7 @@ from app.models.hiring import Candidate
 from app.models.integrations import TenantConnection
 from app.models.letter_acknowledgement import LetterAcknowledgement
 from app.models.notifications import Channel, DigestMode
-from app.models.payroll import EmployeeSalary
+from app.models.payroll import PAID_WHEN_EARNED_CODES, EmployeeSalary
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.letters import (
@@ -287,10 +287,42 @@ def _employee_values(employee: Employee) -> dict[str, Any]:
     return values
 
 
+def _lakhs(amount: Decimal) -> str:
+    """10,00,000 -> "10", 2,50,000 -> "2.5": a figure as a letter says it in lakhs."""
+    value = (amount / Decimal(100000)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{value:f}".rstrip("0").rstrip(".")
+
+
+def _fixed_and_variable(salary: EmployeeSalary) -> dict[str, Any]:
+    """The CTC split into its fixed part and the variable pay (the SALES
+    INCENTIVE line, in the CTC but paid only when earned). The variable fields
+    are blank when there is none, so `{{#if salary.variable_annual}}` drops the
+    passage about it."""
+    ctc = Decimal(str(salary.ctc_annual)).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    variable = sum(
+        (
+            Decimal(str(c.annual_amount))
+            for c in salary.components
+            if c.component_code in PAID_WHEN_EARNED_CODES
+        ),
+        Decimal(0),
+    ).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    fixed = ctc - variable
+    lakhs = _lakhs(variable)
+    return {
+        "fixed_ctc_annual": fixed,
+        "fixed_ctc_monthly": (fixed / 12).quantize(Decimal(1), rounding=ROUND_HALF_UP),
+        "fixed_ctc_lpa": f"{_lakhs(fixed)} LPA",
+        "variable_annual": variable or None,
+        "variable_lakhs": (f"{lakhs} Lakh" + ("" if lakhs == "1" else "s")) if variable else None,
+    }
+
+
 #: Tokens that need the salary annexure worked out (a payroll computation).
 _ANNEXURE_TOKENS = frozenset(
     {
         "computed.salary_annexure",
+        "computed.fixed_ctc_annexure",
         "salary.gross_monthly",
         "salary.gross_annual",
         "salary.net_monthly",
@@ -368,6 +400,7 @@ async def _build_context(
             ),
             "currency": salary.currency,
             "effective_from": salary.effective_from,
+            **_fixed_and_variable(salary),
         }
         components = [
             {

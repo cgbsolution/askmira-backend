@@ -240,19 +240,24 @@ async def test_a_linkedin_screenshot_is_read_asked_about_and_offered_as_a_lead(
     assert figures["Source"] == "LinkedIn"
     assert fake.acts("saleinx") == []
 
+    # A new company goes on Saleinx's Prospect Board, not in as a lead (2026-11-23).
+    assert offer["kind"] == "saleinx_prospect"
+    assert figures["Board"] == "Prospect Board · Dump"
     await companion.confirm_offer(session, me, uuid.UUID(offer["action_id"]), request=None)
-    [saved] = fake.acts("saleinx", "lead.save")
+    assert fake.acts("saleinx", "lead.save") == []
+    [saved] = fake.acts("saleinx", "prospect.save")
     params = saved["params"]
     assert params["company"] == "Kestrel Foods"
     assert params["contact"] == {
-        "first_name": "Priya",
-        "last_name": "Nair",
+        "name": "Priya Nair",
         "title": "Head of Procurement",
         "email": "priya.nair@kestrel.example",
     }
-    assert params["deal"]["source"] == "LinkedIn"
-    assert "linkedin.com/in/priya-nair-kestrel" in params["note"]
-    assert params["deal"]["name"] == "OutSystems"  # Saleinx shows "Kestrel Foods - OutSystems"
+    assert params["source"] == "LinkedIn"
+    assert "linkedin.com/in/priya-nair-kestrel" in params["notes"]
+    # "Kestrel Foods - Priya Nair" names them, not what they want: left out.
+    assert "Wants:" not in params["notes"]
+    assert "A vendor portal for their suppliers." in params["notes"]
     assert params["follow_up"]["title"] == "Call her (Priya Nair)"
 
 

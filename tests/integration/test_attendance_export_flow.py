@@ -216,7 +216,7 @@ async def test_every_punch_day_wise_and_summary_layouts(client, session, tenant,
     worked = next(r for r in ravi_days if r["Date"] == days[0].strftime("%d-%m-%Y"))
     assert worked["Status"] == "Present"
     assert worked["First in"] == "09:30"
-    assert worked["Worked (h:mm)"] == "8:00"
+    assert worked["Worked (h:mm)"] == "9:00"  # 09:30-18:30; the break is working time
 
     summary = await client.post(
         f"{API}/export", json={**span, "kind": "summary"}, headers=bearer(hr)
@@ -225,7 +225,7 @@ async def test_every_punch_day_wise_and_summary_layouts(client, session, tenant,
     ravi = next(r for r in rows if r["Name"].value == "Ravi Kumar")
     assert ravi["Present"].value == 2
     assert ravi["Days in period"].value == (last - first).days + 1
-    assert ravi["Worked (h:mm)"].value == timedelta(hours=16)
+    assert ravi["Worked (h:mm)"].value == timedelta(hours=18)  # two 9-hour days
 
 
 async def test_filters_scope_and_ticked_people(client, session, tenant, other_tenant, geocoder):

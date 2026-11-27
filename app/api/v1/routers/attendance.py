@@ -49,6 +49,8 @@ from app.schemas.attendance import (
     AttendanceSettingsRead,
     AttendanceSummaryResponse,
     CorrectionAllowance,
+    FieldVisitList,
+    FieldVisitRead,
     KioskPinSet,
     LockRead,
     LockRequest,
@@ -77,6 +79,8 @@ from app.schemas.attendance import (
     ShiftUpdate,
     TeamToday,
     UnlockRequest,
+    VisitEnd,
+    VisitStart,
     WorkLocationCreate,
     WorkLocationRead,
 )
@@ -89,8 +93,10 @@ from app.services.attendance import (
     review,
     setup,
     shift_swaps,
+    visits,
 )
 from app.services.attendance import export as attendance_export
+from app.services.attendance import reports as attendance_reports
 from app.services.attendance import service as attendance_service
 from app.services.attendance.maps import MapConfigRead
 
@@ -124,8 +130,13 @@ async def punch(
         device_id=payload.device_id,
         has_coordinates=payload.latitude is not None,
     )
+    attendance_service.refuse_fake_location(payload.is_mocked)
     await attendance_service.require_location_if_configured(
-        session, user, source=source, has_coordinates=payload.latitude is not None
+        session,
+        user,
+        source=source,
+        has_coordinates=payload.latitude is not None,
+        accuracy_metres=payload.accuracy_metres,
     )
     await punch_photos.require_photo_if_configured(
         session, user, source=source, has_photo=bool(payload.photo)
@@ -147,12 +158,92 @@ async def punch(
             "recorded_by_user_id": str(user.id),
             "time_supplied_by_client": payload.punched_at is not None,
             "had_coordinates": payload.latitude is not None,
+            "accuracy_metres": (
+                round(payload.accuracy_metres) if payload.accuracy_metres is not None else None
+            ),
             "had_photo": photo_key is not None,
         },
         photo_key=photo_key,
         request=request,
     )
     return PunchRead.model_validate(record)
+
+
+# ── Field visits ────────────────────────────────────────────────────────────
+
+
+@router.post("/visits", response_model=FieldVisitRead, status_code=status.HTTP_201_CREATED)
+async def start_visit(
+    payload: VisitStart, user: CurrentUser, session: DbSession, request: Request
+) -> FieldVisitRead:
+    """Visit in: who or where, a selfie, and an accurate location. One open visit at a time."""
+    return await visits.start_visit(session, user, payload, request=request)
+
+
+@router.post("/visits/{visit_id}/end", response_model=FieldVisitRead)
+async def end_visit(
+    visit_id: uuid.UUID,
+    payload: VisitEnd,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> FieldVisitRead:
+    """Visit out, with an accurate location. Only by the person on the visit."""
+    return await visits.end_visit(session, user, visit_id, payload, request=request)
+
+
+@router.get("/visits/mine", response_model=FieldVisitList)
+async def my_visits(
+    user: CurrentUser,
+    session: DbSession,
+    from_: date = Query(alias="from"),
+    to: date = Query(),
+) -> FieldVisitList:
+    """The caller's own visits between two dates (workspace time)."""
+    return await visits.my_visits(session, user, start=from_, end=to)
+
+
+@router.get(
+    "/visits",
+    response_model=FieldVisitList,
+    dependencies=[Depends(require_roles(*HR_ROLES, line_managers=True))],
+)
+async def list_visits(
+    user: CurrentUser,
+    session: DbSession,
+    from_: date = Query(alias="from"),
+    to: date = Query(),
+    employee_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    department_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+) -> FieldVisitList:
+    """Everyone's visits for HR, a manager's reporting line; narrowed like Team today."""
+    return await visits.list_visits(
+        session,
+        user,
+        start=from_,
+        end=to,
+        employee_id=employee_id,
+        filters=review.OrgFilters(
+            legal_entity_id=legal_entity_id,
+            project_id=project_id,
+            department_id=department_id,
+            location_id=location_id,
+        ),
+    )
+
+
+@router.get("/visits/{visit_id}/photo", response_model=None)
+async def visit_photo(visit_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
+    """The visit-in selfie: for the person, their manager and HR."""
+    data, media = await visits.visit_photo(session, user, visit_id)
+    return Response(
+        content=data,
+        media_type=media,
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.get("/punches/{punch_id}/photo", response_model=None)
@@ -361,22 +452,36 @@ async def export_attendance(
     their reporting line. A POST because ticked people do not fit in a URL; it
     writes nothing but the audit row and the addresses it looked up.
     """
-    exported = await attendance_export.export_attendance(
-        session,
-        user,
-        start=payload.start,
-        end=payload.end,
-        kind=payload.kind,
-        filters=review.OrgFilters(
-            legal_entity_id=payload.legal_entity_id,
-            project_id=payload.project_id,
-            department_id=payload.department_id,
-            location_id=payload.location_id,
-        ),
-        employee_ids=payload.employee_ids,
-        file_type=payload.file_type,
-        request=request,
+    filters = review.OrgFilters(
+        legal_entity_id=payload.legal_entity_id,
+        project_id=payload.project_id,
+        department_id=payload.department_id,
+        location_id=payload.location_id,
     )
+    if payload.kind in ("in_out_activities", "monthly_summary", "ytd"):
+        # The old HRMS's report layouts: always Excel, whatever file type was sent.
+        exported = await attendance_reports.export_report(
+            session,
+            user,
+            start=payload.start,
+            end=payload.end,
+            kind=payload.kind,
+            filters=filters,
+            employee_ids=payload.employee_ids,
+            request=request,
+        )
+    else:
+        exported = await attendance_export.export_attendance(
+            session,
+            user,
+            start=payload.start,
+            end=payload.end,
+            kind=payload.kind,
+            filters=filters,
+            employee_ids=payload.employee_ids,
+            file_type=payload.file_type,
+            request=request,
+        )
     await session.commit()
     return Response(
         content=exported.content,

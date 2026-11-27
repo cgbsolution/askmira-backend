@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
-from app.models.payroll import ComponentType, EmployeeSalary
+from app.models.payroll import PAID_WHEN_EARNED_CODES, ComponentType, EmployeeSalary
 from app.models.user import User
 
 __all__ = ["build_annexure", "letter_label"]
@@ -183,6 +183,17 @@ async def build_annexure(
     deductions = total(employee_rows)
     employer_total = total(employer_rows)
     ctc_annual = Decimal(str(salary.ctc_annual))
+    # The sales incentive is in the CTC but paid only when earned, so it is in
+    # no month's lines: the fixed CTC is what the rows above add up to.
+    variable = sum(
+        (
+            Decimal(str(c.annual_amount))
+            for c in salary.components
+            if c.component_code in PAID_WHEN_EARNED_CODES
+        ),
+        start=ZERO,
+    )
+    fixed_annual = ctc_annual - variable
 
     return {
         **header,
@@ -195,5 +206,7 @@ async def build_annexure(
         "employer": employer_rows,
         "employer_total": employer_total,
         "ctc": (_whole(ctc_annual / TWELVE), _whole(ctc_annual)),
+        "fixed_ctc": (_whole(fixed_annual / TWELVE), _whole(fixed_annual)),
+        "variable_annual": _whole(variable),
         "review_flags": list(month.review_flags),
     }

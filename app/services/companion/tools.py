@@ -770,12 +770,14 @@ TOOLS: dict[str, Tool] = {
             key="save_lead",
             group="actions_sales",
             product="saleinx",
-            title="Lead",
+            title="Prospect or lead",
             kind="action",
             needs_ai=True,
             description=(
-                f"Prepares a new lead in {_SALES} from what the person said or pasted, or an "
-                "update to an existing one, and offers it; the person confirms. For a new lead: "
+                f"Prepares a new company for {_SALES}'s Prospect Board from what the person said "
+                "or pasted, or an update to an existing lead, and offers it; the person confirms. "
+                "A new company goes on the Prospect Board at Dump, not in as a lead: it becomes a "
+                "lead when someone promotes it there, so call it a prospect. For a new one: "
                 "`company`, `contact_name`, `contact_title`, `contact_email`, `contact_phone`, "
                 "`deal_name` (what they want in a few words, such as 'SafeOps360 for 3 plants'; "
                 "not the company's or the contact's name: Saleinx shows it after the company's), "
