@@ -169,6 +169,8 @@ def _project_read(
         "billable": p.billable,
         "active": p.active,
         "legal_entity_id": str(p.legal_entity_id) if p.legal_entity_id else None,
+        # Keeps its own holiday calendar from this date (Time → Setup → Holidays).
+        "own_holidays_from": p.own_holidays_from.isoformat() if p.own_holidays_from else None,
         "tasks": [_task_read(t) for t in tasks or []],
         # People on it who have not left; HR's list only.
         "headcount": headcount,
@@ -430,13 +432,14 @@ async def update_project(
 
 
 def _project_references() -> list[tuple[type, Any]]:
-    """Every (model, column) beyond employees and the project's own tasks naming a project."""
+    """Every (model, column) naming a project, beyond employees and what goes
+    with the project: its tasks and its own holiday calendar."""
     from app.models.base import Base
 
     found: list[tuple[type, Any]] = []
     for mapper in Base.registry.mappers:
         table = mapper.local_table
-        if table.name in ("employees", "project_tasks", "projects"):
+        if table.name in ("employees", "project_tasks", "projects", "holidays"):
             continue
         for column in table.columns:
             if any(
@@ -508,7 +511,18 @@ async def delete_project(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"{row.name} cannot be deleted: " + "; ".join(reasons) + "." + tail,
         )
+    from app.models.leave import Holiday
+
     snapshot = _project_read(row)
+    # Its own holidays go with it (ON DELETE CASCADE); nobody is on it to lose them.
+    snapshot["holidays_removed"] = (
+        await session.scalar(
+            tenant_scoped(
+                select(func.count(Holiday.id)).where(Holiday.project_id == row.id), Holiday, user
+            )
+        )
+        or 0
+    )
     await session.delete(row)
     await audit.record(
         session,

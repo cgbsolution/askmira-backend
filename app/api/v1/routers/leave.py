@@ -25,6 +25,10 @@ from app.schemas.leave import (
     CompOffCreate,
     CompOffDecision,
     CompOffRead,
+    HolidayCalendarRead,
+    HolidayCalendarUpdate,
+    HolidayCopyRequest,
+    HolidayCopyResult,
     HolidayCreate,
     HolidayRead,
     HolidayUpdate,
@@ -184,14 +188,53 @@ async def list_holidays(
     user: CurrentUser,
     session: DbSession,
     year: int = Query(default_factory=_this_year, ge=2000, le=2100),
-    scope: Literal["mine", "all"] = "mine",
+    scope: Literal["mine", "all", "company"] = "mine",
     state_code: str | None = Query(default=None, max_length=4),
+    project_id: uuid.UUID | None = None,
 ) -> list[HolidayRead]:
-    """A year's holidays: yours by default, every one with `scope=all`, or a
-    state's (with the national ones) with `state_code`."""
+    """A year's holidays: yours by default, every one with `scope=all`, the
+    company calendar alone with `scope=company`, a state's (with the national
+    ones) with `state_code`, or a project's calendar with `project_id`."""
     return await holiday_calendar.list_holidays(
-        session, user, year=year, scope=scope, state_code=state_code
+        session, user, year=year, scope=scope, state_code=state_code, project_id=project_id
     )
+
+
+@router.get("/holiday-calendars", response_model=list[HolidayCalendarRead], dependencies=HR_ONLY)
+async def list_holiday_calendars(
+    user: CurrentUser,
+    session: DbSession,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+) -> list[HolidayCalendarRead]:
+    """The company calendar and each project's, with what each holds in the year."""
+    return await holiday_calendar.list_calendars(session, user, year=year)
+
+
+@router.put(
+    "/holiday-calendars/{project_id}",
+    response_model=HolidayCalendarRead,
+    dependencies=HR_ONLY,
+)
+async def set_holiday_calendar(
+    project_id: uuid.UUID,
+    payload: HolidayCalendarUpdate,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+    year: int = Query(default_factory=_this_year, ge=2000, le=2100),
+) -> HolidayCalendarRead:
+    """A project keeps its own holiday calendar from a date, or follows the company's."""
+    return await holiday_calendar.set_calendar(
+        session, user, project_id, payload, year=year, request=request
+    )
+
+
+@router.post("/holidays/copy", response_model=HolidayCopyResult, dependencies=HR_ONLY)
+async def copy_holidays(
+    payload: HolidayCopyRequest, user: CurrentUser, session: DbSession, request: Request
+) -> HolidayCopyResult:
+    """Copy a year's holidays from the company calendar or a project's onto a project's."""
+    return await holiday_calendar.copy_holidays(session, user, payload, request=request)
 
 
 @router.post(

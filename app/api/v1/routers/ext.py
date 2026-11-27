@@ -244,6 +244,8 @@ async def holidays(
             "name": h.name,
             "state_code": h.state_code,
             "location_id": str(h.location_id) if h.location_id else None,
+            # One project's calendar only; null for the company calendar.
+            "project_id": str(h.project_id) if h.project_id else None,
             "optional": h.is_optional,
         }
         for h in rows

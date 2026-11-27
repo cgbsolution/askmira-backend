@@ -33,6 +33,7 @@ from app.core.deps import tenant_scoped
 from app.models.audit import AuditAction
 from app.models.employee import Employee, EmploymentStatus
 from app.models.leave import (
+    DAY_OFF_TYPES,
     LeaveBalance,
     LeavePolicy,
     LeaveRequest,
@@ -240,6 +241,47 @@ async def comp_off_type(session: AsyncSession, user: User) -> LeaveType | None:
             user,
         )
     )
+
+
+#: Codes tried in turn for a type the workspace gets by default, in case a
+#: code is already taken by one of its own leave types.
+_DEFAULT_CODES: dict[str, tuple[str, ...]] = {
+    "holiday": ("HO", "HOL", "HOLIDAY"),
+    "week_off": ("WO", "WOFF", "WEEKOFF"),
+    "comp_off": ("CO", "COFF", "COMPOFF"),
+}
+
+
+async def ensure_day_off_types(session: AsyncSession, user: User) -> list[LeaveType]:
+    """Give the workspace what the Request time off list always offers besides
+    its leave: Holiday, Week off and Comp off. Flushed, not committed.
+
+    Holiday and Week off are created when missing (`LeaveType.marks_day_as`).
+    Comp off is created only when no type takes comp-off credits — an
+    existing one is never replaced. Returns what was created.
+    """
+    existing = (await session.scalars(tenant_scoped(select(LeaveType), LeaveType, user))).all()
+    codes = {t.code for t in existing}
+    kinds = {t.marks_day_as for t in existing if t.marks_day_as}
+    wanted: list[tuple[str, str, dict[str, Any]]] = [
+        (kind, name, {"marks_day_as": kind, "allows_half_day": False})
+        for kind, (name, _) in DAY_OFF_TYPES.items()
+        if kind not in kinds
+    ]
+    if not any(t.is_comp_off and t.is_active for t in existing):
+        wanted.append(("comp_off", "Comp off", {"is_comp_off": True, "allows_half_day": True}))
+    created: list[LeaveType] = []
+    for key, name, flags in wanted:
+        code = next((c for c in _DEFAULT_CODES[key] if c not in codes), None)
+        if code is None:
+            continue
+        codes.add(code)
+        row = LeaveType(tenant_id=user.tenant_id, name=name, code=code, is_paid=True, **flags)
+        session.add(row)
+        created.append(row)
+    if created:
+        await session.flush()
+    return created
 
 
 async def get_settings(session: AsyncSession, user: User) -> LeaveSettingsRead:
@@ -832,10 +874,15 @@ async def _assess(
     except engine.LeaveRuleError as exc:
         raise _unprocessable(str(exc)) from exc
 
-    if policy is not None:
+    day_off = leave_type.marks_day_as is not None
+    if day_off:
+        # A Holiday or Week off request: not leave, so no policy and no
+        # balance. The approver decides; approval marks the days in attendance.
+        rules: engine.PolicyRules | None = engine.PolicyRules()
+    elif policy is not None:
         # `policy.allows_negative_balance` is no longer honoured: leave is
         # applied only against a balance (see `engine.assess_request`).
-        rules: engine.PolicyRules | None = engine.PolicyRules(
+        rules = engine.PolicyRules(
             min_notice_days=policy.min_notice_days,
             max_consecutive_days=policy.max_consecutive_days,
         )
@@ -850,7 +897,7 @@ async def _assess(
     balance: engine.Balance | None = None
     projected = engine.ZERO
     # Unpaid leave too: it is applied only against days HR has given.
-    if rules is not None:
+    if rules is not None and not day_off:
         balance, projected = await live_balance(
             session, user, employee, leave_type, year, today, until=payload.start_date
         )
@@ -892,7 +939,14 @@ async def _assess(
         rules=rules,
         balance=balance,
         overlapping=overlapping,
+        needs_balance=not day_off,
     )
+    if day_off:
+        assessment.warnings.append(
+            f"Once approved, these days are marked {leave_type.name} in attendance and paid. "
+            "No leave balance is used."
+        )
+        return count, assessment, None, leave_type, engine.ZERO
     probation_until = probation_until_for(
         employee, leave_type, await probation_months(session, user), today
     )
@@ -1107,7 +1161,9 @@ async def decide(
     now = datetime.now(UTC)
     today = await today_for(session, user, employee)
 
-    if approve:
+    # A Holiday or Week off request has no balance to check or take.
+    day_off = leave_type.marks_day_as is not None
+    if approve and not day_off:
         # Leave is taken only against a balance, at approval as at applying:
         # an HR debit, an encashment or a request from before this rule can
         # leave too little since it was raised.
@@ -1141,7 +1197,7 @@ async def decide(
         leave.decided_by_user_id = user.id
         leave.decided_at = now
         leave.decision_note = note
-    if outcome == "approved":
+    if outcome == "approved" and not day_off:
         await _post_to_ledger(
             session,
             user,
@@ -1250,7 +1306,7 @@ async def cancel(
             told.add(applicant)
     told.discard(user.id)
 
-    if was_approved:
+    if was_approved and leave_type.marks_day_as is None:
         await _post_to_ledger(
             session,
             user,
@@ -1839,6 +1895,15 @@ async def update_type(
 ) -> LeaveType:
     leave_type = await _any_leave_type(session, user, leave_type_id)
     changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if leave_type.marks_day_as is not None and (
+        changes.get("is_paid") is False
+        or changes.get("allows_half_day")
+        or changes.get("is_comp_off")
+    ):
+        raise _unprocessable(
+            f"{leave_type.name} is a paid, full day off: it cannot be made unpaid, taken as a "
+            "half day or used for comp-off. Its name and description can be changed."
+        )
     before = {key: getattr(leave_type, key) for key in changes}
     for key, value in changes.items():
         setattr(leave_type, key, value)
@@ -1956,7 +2021,11 @@ async def create_policy(
     outright — that is a correction, and leaving it open meant the old rules
     silently kept winning.
     """
-    await _leave_type(session, user, payload.leave_type_id)
+    leave_type = await _leave_type(session, user, payload.leave_type_id)
+    if leave_type.marks_day_as is not None:
+        raise _unprocessable(
+            f"{leave_type.name} is not leave: it needs no balance, so it takes no policy."
+        )
     if payload.location_id is not None:
         location = await session.scalar(
             tenant_scoped(

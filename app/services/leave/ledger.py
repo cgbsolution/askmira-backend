@@ -149,6 +149,11 @@ async def adjust(
         raise permissions.forbidden("You cannot adjust your own leave balance.")
     employee = await core._employee(session, user, payload.employee_id)
     leave_type = await core._any_leave_type(session, user, payload.leave_type_id)
+    if leave_type.marks_day_as is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{leave_type.name} is not leave and has no balance to adjust.",
+        )
     today = await core.today_for(session, user, employee)
 
     if payload.kind == "opening":
@@ -462,7 +467,14 @@ async def close_year(
     ).all()
     leave_types = (
         await session.scalars(
-            tenant_scoped(select(LeaveType).where(LeaveType.is_active.is_(True)), LeaveType, user)
+            tenant_scoped(
+                # Holiday and Week off take no balance, so there is nothing to close.
+                select(LeaveType).where(
+                    LeaveType.is_active.is_(True), LeaveType.marks_day_as.is_(None)
+                ),
+                LeaveType,
+                user,
+            )
         )
     ).all()
     policies = await core._policies(session, user)

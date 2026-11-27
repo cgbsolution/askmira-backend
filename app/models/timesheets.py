@@ -71,6 +71,12 @@ class Project(Base, UUIDMixin, TenantMixin, TimestampMixin):
         ForeignKey("legal_entities.id", ondelete="SET NULL", name="fk_projects_legal_entity_id"),
         nullable=True,
     )
+    #: From this date the project keeps its own holiday calendar: the company's
+    #: holidays on or after it do not apply to its people, only the project's
+    #: own (`Holiday.project_id`). Before it they still do, so a month already
+    #: worked out keeps the holidays it was paid for. Null: the company calendar,
+    #: plus any holidays added for the project.
+    own_holidays_from: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class ProjectTask(Base, UUIDMixin, TenantMixin, TimestampMixin):

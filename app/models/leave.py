@@ -56,7 +56,20 @@ class LeaveType(Base, UUIDMixin, TenantMixin, TimestampMixin):
     """A kind of leave: Earned, Casual, Sick, Maternity, Comp-off, and so on."""
 
     __tablename__ = "leave_types"
-    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_leave_types_tenant_code"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_leave_types_tenant_code"),
+        CheckConstraint(
+            "marks_day_as IS NULL OR marks_day_as IN ('holiday', 'week_off')",
+            name="ck_leave_types_marks_day_as",
+        ),
+        Index(
+            "uq_leave_types_tenant_marks_day_as",
+            "tenant_id",
+            "marks_day_as",
+            unique=True,
+            postgresql_where=text("marks_day_as IS NOT NULL"),
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     code: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -73,8 +86,21 @@ class LeaveType(Base, UUIDMixin, TenantMixin, TimestampMixin):
     is_comp_off: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
     )
+    #: Not leave but another kind of day off, asked for the same way: "holiday"
+    #: or "week_off". A request needs no balance and takes none; once approved,
+    #: its days are marked Holiday or Week off in attendance — a paid day off.
+    #: One of each per tenant (`DAY_OFF_TYPES`), and no policy covers them.
+    marks_day_as: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+#: The day-off "types" every workspace offers next to its leave types:
+#: `marks_day_as` → (name, code). Codes follow the old HRMS's day codes.
+DAY_OFF_TYPES: dict[str, tuple[str, str]] = {
+    "holiday": ("Holiday", "HO"),
+    "week_off": ("Week off", "WO"),
+}
 
 
 class LeavePolicy(Base, UUIDMixin, TenantMixin, TimestampMixin):
@@ -268,6 +294,16 @@ class Holiday(Base, UUIDMixin, TenantMixin, TimestampMixin):
     legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("legal_entities.id", ondelete="CASCADE", name="fk_holidays_legal_entity_id"),
+        nullable=True,
+        index=True,
+    )
+
+    #: One project's people only — a client's holiday for the people deployed
+    #: to it. Null: the company calendar. Combines with the scope above
+    #: ("DXC INET, Karnataka only"). Goes with its project.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE", name="fk_holidays_project_id"),
         nullable=True,
         index=True,
     )

@@ -203,7 +203,10 @@ async def team_balances(
     leave_types = (
         await session.scalars(
             tenant_scoped(
-                select(LeaveType).where(LeaveType.is_active.is_(True)).order_by(LeaveType.name),
+                # Holiday and Week off take no balance: no column.
+                select(LeaveType)
+                .where(LeaveType.is_active.is_(True), LeaveType.marks_day_as.is_(None))
+                .order_by(LeaveType.name),
                 LeaveType,
                 user,
             )

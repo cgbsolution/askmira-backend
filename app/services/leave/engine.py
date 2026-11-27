@@ -581,6 +581,7 @@ def assess_request(
     rules: PolicyRules | None,
     balance: Balance | None,
     overlapping: int,
+    needs_balance: bool = True,
 ) -> Assessment:
     """Every rule a request is held to, in the order a person would fix them.
 
@@ -588,6 +589,9 @@ def assess_request(
     enough available days after pending requests, and none can go below zero.
     Somebody with nothing left cannot apply; a day they do not work is absent,
     which attendance and payroll treat as loss of pay.
+
+    `needs_balance=False` is for a Holiday or Week off request: not leave, so
+    there is no balance to check — the approver decides.
     """
     result = Assessment()
 
@@ -626,7 +630,7 @@ def assess_request(
             f"At most {rules.max_consecutive_days} consecutive days can be taken at once."
         )
 
-    if count.total > ZERO:
+    if count.total > ZERO and needs_balance:
         left = balance.available_after_pending if balance is not None else ZERO
         if left <= ZERO:
             result.problems.append(

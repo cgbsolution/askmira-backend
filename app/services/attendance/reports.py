@@ -811,7 +811,9 @@ async def _leave_by_day(
                 by_day.setdefault((employee_id, cursor), code)
                 cursor += timedelta(days=1)
     used = set(by_day.values())
-    codes = [t.code for t in types if t.is_active or t.code in used]
+    # Holiday and Week off requests are not leave: their days are counted in
+    # the Holiday and Week off columns, from the day's status.
+    codes = [t.code for t in types if t.marks_day_as is None and (t.is_active or t.code in used)]
     return by_day, list(dict.fromkeys(codes))
 
 

@@ -61,6 +61,9 @@ class LeaveTypeRead(BaseModel):
     requires_document: bool
     is_statutory: bool
     is_comp_off: bool
+    #: "holiday" or "week_off": not leave but a paid day off of that kind,
+    #: asked for the same way, with no balance. Null for every leave type.
+    marks_day_as: Literal["holiday", "week_off"] | None = None
     is_active: bool
 
 
@@ -129,6 +132,8 @@ class HolidayCreate(BaseModel):
     location_id: uuid.UUID | None = None
     #: One company of the group only; null for every legal entity.
     legal_entity_id: uuid.UUID | None = None
+    #: One project's people only; null for the company calendar.
+    project_id: uuid.UUID | None = None
     is_optional: bool = False
     #: Unpaid: a day off that is loss of pay unless worked.
     is_paid: bool = True
@@ -150,6 +155,8 @@ class HolidayUpdate(BaseModel):
     location_id: uuid.UUID | None = None
     #: Send null to make it apply to every legal entity again.
     legal_entity_id: uuid.UUID | None = None
+    #: Send null to move it to the company calendar.
+    project_id: uuid.UUID | None = None
     is_optional: bool | None = None
     is_paid: bool | None = None
 
@@ -164,6 +171,9 @@ class HolidayRead(BaseModel):
     scope: HolidayScope
     legal_entity_id: uuid.UUID | None = None
     legal_entity_name: str | None = None
+    #: The project whose calendar it is on; null for the company calendar.
+    project_id: uuid.UUID | None = None
+    project_name: str | None = None
     is_optional: bool
     is_paid: bool = True
     #: Whether this holiday is in scope for the caller's own work location.
@@ -177,6 +187,62 @@ class OptionalHolidaysRead(BaseModel):
     quota: int
     chosen: int
     holidays: list[HolidayRead]
+
+
+class HolidayCopyResult(BaseModel):
+    copied: int
+    #: The target calendar already has a holiday on that date for that place.
+    already_there: int
+    #: Dates already passed: attendance and payroll may already reflect them.
+    past: int
+    #: For another company of the group than the one the project belongs to.
+    other_company: int
+
+
+class HolidayCalendarRead(BaseModel):
+    """One holiday calendar: the company's, or a project's."""
+
+    #: Null for the company calendar.
+    project_id: uuid.UUID | None = None
+    code: str | None = None
+    name: str
+    client: str | None = None
+    active: bool = True
+    #: The company of the group that staffs the project.
+    legal_entity_id: uuid.UUID | None = None
+    #: People on the project who have not left; null for the company calendar.
+    headcount: int | None = None
+    #: The project keeps its own calendar from this date; null when it follows
+    #: the company's (plus any holidays of its own).
+    own_holidays_from: date | None = None
+    #: Holidays on this calendar in the year asked for, the company's included
+    #: where they apply.
+    holiday_count: int = 0
+    #: Of those, the ones added for this project only.
+    own_count: int = 0
+    #: After a save that started the calendar with the company's holidays.
+    copied: HolidayCopyResult | None = None
+
+
+class HolidayCalendarUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: From this date the project keeps its own calendar; null to follow the
+    #: company's again. Today or later: a past day has already been worked out.
+    own_holidays_from: date | None = None
+    #: Turning the own calendar on: start it with the company's holidays from
+    #: that date, so HR only changes what the client does differently.
+    copy_company_holidays: bool = False
+
+
+class HolidayCopyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    year: int = Field(ge=2000, le=2100)
+    #: The project whose calendar gets the holidays.
+    to_project_id: uuid.UUID
+    #: Where they come from: a project's calendar, or null for the company's.
+    from_project_id: uuid.UUID | None = None
 
 
 #: What happens to comp-off nobody used by the end of the leave year: carried

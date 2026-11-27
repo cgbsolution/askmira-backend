@@ -20,7 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import permissions
@@ -96,6 +96,37 @@ def _narrowing(table: Any, today: date) -> list[Any]:
     if table.name == "holidays":
         return [table.c.holiday_date >= today - timedelta(days=31)]
     return []
+
+
+async def _own_holiday_calendar(session: AsyncSession, user: User, table: Any) -> list[Any]:
+    """The requester's own holiday calendar: the company's and their project's.
+
+    Never another project's — a client's holidays are not everyone's — and not
+    the company's from the day the requester's project keeps its own.
+    """
+    from app.models.timesheets import Project
+
+    project_id, own_from = None, None
+    if user.employee_id is not None:
+        row = (
+            await session.execute(
+                tenant_scoped(
+                    select(Employee.project_id, Project.own_holidays_from)
+                    .outerjoin(Project, Project.id == Employee.project_id)
+                    .where(Employee.id == user.employee_id),
+                    Employee,
+                    user,
+                )
+            )
+        ).first()
+        if row is not None:
+            project_id, own_from = row
+    company = table.c.project_id.is_(None)
+    if own_from is not None:
+        company = and_(company, table.c.holiday_date < own_from)
+    if project_id is None:
+        return [company]
+    return [or_(company, table.c.project_id == project_id)]
 
 
 def _bad_request(detail: str) -> HTTPException:
@@ -246,6 +277,7 @@ async def _fetch(
     for condition in _narrowing(table, date.today()):
         stmt = stmt.where(condition)
     if source == "holidays":
+        stmt = stmt.where(*await _own_holiday_calendar(session, user, table))
         stmt = stmt.order_by(table.c.holiday_date)
 
     if subject_column and subject_column in table.c:
