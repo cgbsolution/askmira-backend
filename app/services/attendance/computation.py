@@ -39,7 +39,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
-from itertools import pairwise
 
 from app.models.attendance import (
     AttendanceStatus,
@@ -250,38 +249,6 @@ def _pair_punches(
     return _minutes(stretches), first_in, last_out, has_unpaired
 
 
-def _shift_span_minutes(shift: Shift) -> int:
-    """Start to end of the shift, break included."""
-    start = datetime.combine(date(2000, 1, 1), shift.start_time)
-    end = datetime.combine(date(2000, 1, 1), shift.end_time)
-    if shift.is_night_shift or shift.end_time <= shift.start_time:
-        end += timedelta(days=1)
-    return int((end - start).total_seconds() // 60)
-
-
-def _break_to_deduct(shift: Shift | None, stretches: list[tuple[datetime, datetime]]) -> int:
-    """How much of the shift's break to take off the worked time.
-
-    * Someone who worked only one half of the shift (in after lunch, or out
-      before it) never took the break. Taking 60 minutes off a 14:29-18:57
-      afternoon left 3h 28m, under the 4h half-day line — absent for a break
-      they did not have. So a day no longer than half the shift loses nothing.
-    * Someone who punched out for lunch and back in already has the break as a
-      gap between stretches; only what the gaps fall short of the break is
-      taken off, so it is never counted twice.
-    """
-    if shift is None or not shift.break_minutes or not stretches:
-        return 0
-    gross = _minutes(stretches)
-    if gross <= _shift_span_minutes(shift) // 2:
-        return 0
-    gaps = sum(
-        (start - prev_end for (_, prev_end), (start, _) in pairwise(stretches)),
-        timedelta(),
-    )
-    return max(0, shift.break_minutes - int(gaps.total_seconds() // 60))
-
-
 def compute_day(inputs: DayInputs) -> ComputedDay:
     """Compute one employee-day.
 
@@ -380,8 +347,8 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
             ),
         )
 
-    # Break time is not worked time — when the person was in through it.
-    worked_minutes = max(0, worked_minutes - _break_to_deduct(shift, stretches))
+    # The shift's break is working time: nothing is taken off what the punches
+    # show. 10:15 in to 18:30 out is 8h 15m worked, not 7h 15m.
 
     # ── 5. Thresholds ───────────────────────────────────────────────────────
     if worked_minutes >= shift.full_day_threshold_minutes:
@@ -442,18 +409,16 @@ def _rest_day(
         stretches, first_in, last_out, has_unpaired = _stretches(inputs.punches)
         worked = _minutes(stretches)
         if not has_unpaired and worked > 0:
-            worked = max(0, worked - _break_to_deduct(inputs.shift, stretches))
-            if worked > 0:
-                return ComputedDay(
-                    attendance_date=inputs.attendance_date,
-                    status=rest_status,
-                    payable_fraction=Decimal(1),
-                    worked_minutes=worked,
-                    first_in=first_in,
-                    last_out=last_out,
-                    overtime_minutes=worked if paid else 0,
-                    note=f"{note} — worked {worked} minutes",
-                )
+            return ComputedDay(
+                attendance_date=inputs.attendance_date,
+                status=rest_status,
+                payable_fraction=Decimal(1),
+                worked_minutes=worked,
+                first_in=first_in,
+                last_out=last_out,
+                overtime_minutes=worked if paid else 0,
+                note=f"{note} — worked {worked} minutes",
+            )
     return ComputedDay(
         attendance_date=inputs.attendance_date,
         status=rest_status,
@@ -463,12 +428,12 @@ def _rest_day(
 
 
 def scheduled_minutes(shift: Shift) -> int:
-    """The shift's working minutes: start to end, less the break."""
+    """The shift's working minutes: start to end. The break is working time."""
     start = datetime.combine(date(2000, 1, 1), shift.start_time)
     end = datetime.combine(date(2000, 1, 1), shift.end_time)
     if shift.is_night_shift or shift.end_time <= shift.start_time:
         end += timedelta(days=1)
-    return max(0, int((end - start).total_seconds() // 60) - shift.break_minutes)
+    return int((end - start).total_seconds() // 60)
 
 
 def _overtime(shift: Shift, worked_minutes: int) -> int:
@@ -533,7 +498,6 @@ def _regularised(inputs: DayInputs) -> ComputedDay:
     shift = inputs.shift
     if first_in is not None and last_out is not None and last_out > first_in:
         worked = int((last_out - first_in).total_seconds() // 60)
-        worked = max(0, worked - _break_to_deduct(shift, [(first_in, last_out)]))
     if shift is not None and status in {AttendanceStatus.PRESENT, AttendanceStatus.HALF_DAY}:
         late_by, early_by = _late_and_early(shift, day, first_in, last_out, inputs.timezone)
         if status is AttendanceStatus.PRESENT:

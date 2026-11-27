@@ -210,7 +210,7 @@ async def test_an_approved_missed_punch_applies_the_corrected_time(
     assert day.status is AttendanceStatus.PRESENT
     assert day.first_in == _ist(MONDAY, "09:40")
     assert day.last_out == _ist(MONDAY, "18:45")
-    assert day.worked_minutes == 485  # 09:40-18:45 less the hour's break
+    assert day.worked_minutes == 545  # 09:40-18:45; the break is working time
     assert day.is_regularised
 
 

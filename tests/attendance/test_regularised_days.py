@@ -36,8 +36,8 @@ def test_missed_punch_out_takes_the_corrected_time_and_keeps_the_real_punch_in()
     assert result.payable_fraction == Decimal(1)
     assert result.first_in == at(DAY, "09:04")
     assert result.last_out == at(DAY, "18:30")
-    # 09:04 to 18:30 is 566 minutes, less the 60-minute break.
-    assert result.worked_minutes == 506
+    # 09:04 to 18:30 is 566 minutes; the break is working time.
+    assert result.worked_minutes == 566
     assert result.is_regularised
     assert "Missed punch" in result.note
 
@@ -103,8 +103,8 @@ def test_a_roster_off_day_is_a_week_off_not_loss_of_pay():
 
 
 def test_overtime_is_work_beyond_the_scheduled_hours():
-    general = shift()  # 09:00-18:00 with an hour's break: 480 scheduled minutes
-    assert scheduled_minutes(general) == 480
+    general = shift()  # 09:00-18:00, the hour's break included: 540 scheduled minutes
+    assert scheduled_minutes(general) == 540
     result = compute_day(
         DayInputs(
             employee_id=None,
@@ -117,12 +117,12 @@ def test_overtime_is_work_beyond_the_scheduled_hours():
         )
     )
     assert result.status is AttendanceStatus.PRESENT
-    assert result.worked_minutes == 600
+    assert result.worked_minutes == 660
     assert result.overtime_minutes == 120
 
 
 def test_a_night_shift_schedules_across_midnight():
-    assert scheduled_minutes(shift(start="22:00", end="06:00", night=True)) == 420
+    assert scheduled_minutes(shift(start="22:00", end="06:00", night=True)) == 480
 
 
 def test_no_overtime_on_a_half_day():
