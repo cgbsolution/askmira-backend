@@ -10,8 +10,9 @@ So each source mirrors its module's own rule:
 
 - the role gate on the module's decide endpoint (an HR-ops user is not shown a
   loan, because approving a loan is admin-only);
-- the module's visibility rule through `app.core.permissions` (a manager sees
-  regularisations from their reporting line and nobody else's);
+- the module's visibility rule through `app.core.permissions` (an attendance
+  correction waits on the person's direct manager; HR sees it only when that
+  manager cannot act);
 - the workspace's enabled modules (no payroll items where payroll is off);
 - and self-exclusion, because nobody decides their own request.
 
@@ -38,7 +39,7 @@ from app.core.deps import tenant_scoped
 from app.models.attendance import AttendanceRegularisation, RegularisationStatus
 from app.models.autonomy import AgentProposal, ProposalStatusEnum
 from app.models.dpdp import DataPrincipalRequest, DprRequestStatus
-from app.models.employee import Employee
+from app.models.employee import Employee, EmploymentStatus
 from app.models.exit_workflow import Settlement, SettlementStatus
 from app.models.expenses import (
     ExpenseClaim,
@@ -117,6 +118,27 @@ def _not_own(stmt: Select, column: Any, user: User) -> Select:
     return stmt
 
 
+async def _managers_who_can_act(
+    session: AsyncSession, user: User, manager_ids: set[Any]
+) -> set[Any]:
+    """The managers among `manager_ids` who are still employed and can sign in."""
+    manager_ids = {m for m in manager_ids if m is not None}
+    if not manager_ids:
+        return set()
+    stmt = tenant_scoped(
+        select(Employee.id)
+        .join(User, User.employee_id == Employee.id)
+        .where(
+            Employee.id.in_(manager_ids),
+            Employee.status.not_in((EmploymentStatus.EXITED, EmploymentStatus.PRE_JOINING)),
+            User.is_active.is_(True),
+        ),
+        Employee,
+        user,
+    )
+    return set((await session.scalars(stmt)).all())
+
+
 def _humanise(value: str) -> str:
     return value.replace("_", " ").capitalize()
 
@@ -152,15 +174,41 @@ async def _regularisations(session: AsyncSession, user: User) -> list[dict[str, 
     )
     stmt = _not_own(stmt, AttendanceRegularisation.employee_id, user)
     rows = (await session.execute(stmt.order_by(AttendanceRegularisation.created_at))).all()
-    if not permissions.is_hr(user):
-        line = set(await permissions.reporting_line(session, user))
-        acting = {str(a) for a in await rules.acting_for(session, user)}
-        rows = [
-            (reg, emp)
-            for reg, emp in rows
-            if (reg.approval_chain and rules.waiting_on(reg.approval_chain, acting))
-            or (not reg.approval_chain and reg.employee_id in line)
-        ]
+
+    # A correction is the line manager's call, not every admin's. Without an
+    # approval chain it waits on the person's direct manager (or whoever that
+    # manager has delegated to). HR only sees the ones nobody else can decide:
+    # no manager, or a manager who has left or cannot sign in.
+    acting_users = await rules.acting_for(session, user)
+    acting = {str(a) for a in acting_users}
+    acting_as = set(
+        (
+            await session.scalars(
+                tenant_scoped(
+                    select(User.employee_id).where(
+                        User.id.in_(acting_users), User.employee_id.is_not(None)
+                    ),
+                    User,
+                    user,
+                )
+            )
+        ).all()
+    )
+    hr = permissions.is_hr(user)
+    reachable = (
+        await _managers_who_can_act(session, user, {emp.manager_id for _, emp in rows})
+        if hr
+        else set()
+    )
+    rows = [
+        (reg, emp)
+        for reg, emp in rows
+        if (
+            rules.waiting_on(reg.approval_chain, acting)
+            if reg.approval_chain
+            else emp.manager_id in acting_as or (hr and emp.manager_id not in reachable)
+        )
+    ]
     return [
         {
             "id": reg.id,

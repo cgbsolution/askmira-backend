@@ -68,8 +68,7 @@ def context(**overrides) -> MergeContext:
         (10000000, "Rupees One Crore Only"),
         (
             12345678,
-            "Rupees One Crore Twenty Three Lakh Forty Five Thousand "
-            "Six Hundred Seventy Eight Only",
+            "Rupees One Crore Twenty Three Lakh Forty Five Thousand Six Hundred Seventy Eight Only",
         ),
         (
             999999999,
@@ -354,3 +353,57 @@ def test_rendering_is_deterministic() -> None:
     assert render_template(body_html=body, context=context()) == render_template(
         body_html=body, context=context()
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# {{#if field}} ... {{/if}} — passages printed only for some people
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_passage_is_kept_when_its_field_has_a_value() -> None:
+    body = "<p>Fixed{{#if salary.variable_annual}} and INR {{salary.variable_annual}}{{/if}}</p>"
+    ctx = context(salary={"variable_annual": Decimal("200000")})
+    assert render_template(body_html=body, context=ctx) == "<p>Fixed and INR 2,00,000</p>"
+
+
+@pytest.mark.parametrize("blank", [None, "", Decimal(0)])
+def test_a_passage_is_dropped_when_its_field_is_blank_or_zero(blank) -> None:
+    body = "<p>Fixed{{#if salary.variable_annual}} and INR {{salary.variable_annual}}{{/if}}</p>"
+    ctx = context(salary={"variable_annual": blank})
+    assert render_template(body_html=body, context=ctx) == "<p>Fixed</p>"
+
+
+def test_a_marker_alone_in_a_paragraph_leaves_no_empty_paragraph() -> None:
+    body = (
+        "<p>A</p><p>{{#if manual.target}}</p><p>Target {{manual.target}}</p><p>{{/if}}</p><p>B</p>"
+    )
+    assert render_template(body_html=body, context=context(manual={})) == "<p>A</p><p>B</p>"
+    kept = render_template(body_html=body, context=context(manual={"target": "1.5 Cr"}))
+    assert kept == "<p>A</p><p>Target 1.5 Cr</p><p>B</p>"
+
+
+def test_every_field_in_a_kept_passage_is_required() -> None:
+    """A printed passage about variable pay must not have a blank in it."""
+    body = "{{#if manual.target}}Revenue {{manual.target}} from {{manual.period}}{{/if}}"
+    with pytest.raises(LetterMergeError) as exc:
+        render_template(
+            body_html=body, context=context(manual={"target": "1.5 Cr"}), required_tokens=set()
+        )
+    assert exc.value.empty_tokens == ["manual.period"]
+
+
+def test_fields_in_a_dropped_passage_are_not_asked_for() -> None:
+    body = "<p>Hi</p>{{#if manual.target}}{{manual.period}}{{/if}}"
+    out = render_template(body_html=body, context=context(manual={}), required_tokens=None)
+    assert out == "<p>Hi</p>"
+
+
+def test_the_field_a_passage_tests_is_checked_when_saved() -> None:
+    from app.services.documents.letter_merge import template_token_problems
+
+    assert "salary.variable_annual" in extract_tokens("{{#if salary.variable_annual}}x{{/if}}")
+    assert template_token_problems("{{#if salary.variable_annual}}x{{/if}}") == []
+    assert template_token_problems("{{#if salary.varible}}x{{/if}}")
+    assert template_token_problems("{{#if manual.a}}x")
+    assert template_token_problems("x{{/if}}")
+    assert template_token_problems("{{#if manual.a}}{{#if manual.b}}x{{/if}}{{/if}}")

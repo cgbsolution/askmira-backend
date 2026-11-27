@@ -145,6 +145,7 @@ async def test_the_standard_setup_creates_wage_types_and_a_working_structure(
         ("Uniform Allowance", "regular_earning"),
         ("BONUS", "variable_earning"),
         ("LEAVE ENCASHMENT", "variable_earning"),
+        ("SALES INCENTIVE", "variable_earning"),
         ("FUEL REIMBURSEMENT", "reimbursement"),
         ("MEDICAL REIMBURSEMENT", "reimbursement"),
         ("ESIC EMPLOYEE CONTRIBUTION MANUAL", "statutory_deduction"),
@@ -360,6 +361,8 @@ THEIR_HEADERS = [
 
 #: Standard wage types their sheet has no column for: the employer's PF / ESIC overrides.
 EMPLOYER_MANUAL = ["PF EMPLOYER CONTRIBUTION MANUAL", "ESIC EMPLOYER CONTRIBUTION MANUAL"]
+#: Standard wage types the user's sheet has no column for, after its own columns.
+NOT_IN_THEIR_SHEET = ["SALES INCENTIVE", *EMPLOYER_MANUAL]
 
 
 def _row(**values) -> list:
@@ -394,7 +397,7 @@ async def test_the_template_is_the_employee_salary_master_layout(
     # Their columns first, as they were; then the employer's MANUAL rows, which
     # their sheet has no column for; then ours.
     assert headers[len(THEIR_HEADERS) :] == [
-        *EMPLOYER_MANUAL,
+        *NOT_IN_THEIR_SHEET,
         "Salary Structure",
         "Reason",
         "Employee Name",
@@ -894,7 +897,7 @@ async def test_the_export_has_every_detail_of_the_chosen_peoples_present_salary(
     headers, rows = _sheet_rows(response.content)
     # Their sheet, column for column, then the employer's MANUAL rows it has no
     # column for (so an exported sheet uploads back without losing them).
-    assert headers == [*THEIR_HEADERS, *EMPLOYER_MANUAL]
+    assert headers == [*THEIR_HEADERS, *NOT_IN_THEIR_SHEET]
     assert [r["Employee Code"] for r in rows] == ["ACM001", "ACM002"]  # only the chosen
     anita, ravi = rows
     assert anita["Pay Basis"] == "Monthly"
@@ -928,7 +931,7 @@ async def test_the_export_has_every_detail_of_the_chosen_peoples_present_salary(
     assert rules["list"].formula1 == '"Yearly,Monthly,Weekly,Daily,Hourly"'
     assert "C2" in rules["list"].sqref and "B2" in rules["date"].sqref
     sample = book["Sample"]
-    assert [c.value for c in sample[1]] == [*THEIR_HEADERS, *EMPLOYER_MANUAL]
+    assert [c.value for c in sample[1]] == [*THEIR_HEADERS, *NOT_IN_THEIR_SHEET]
     assert sample["A2"].value is None and sample["E2"].value == "CTC TOTAL"
     assert sample["E2"].fill.fgColor.rgb.endswith("90EE90")
 

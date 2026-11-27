@@ -8,7 +8,7 @@ A template is a salary structure whose wage types each carry one rule:
 - ``balance``: whatever the CTC leaves (exactly one line, an earning);
 - ``slab``: an amount by slab of a monthly figure (Professional Tax by gross).
 
-A rule may cap its base (employer PF on PF wages up to ₹15,000) and may apply
+A rule may cap its base (employer PF on PF wages up to ₹25,000) and may apply
 only while a monthly figure is up to, or above, an amount (ESI only while ESI
 wages are up to ₹21,000; a tax only above an amount).
 

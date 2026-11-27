@@ -29,6 +29,7 @@ from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from app.models.payroll import (
+    PAID_WHEN_EARNED_CODES,
     STATUTORY_OVERRIDE_CODES,
     ComponentType,
     EmployeeSalary,
@@ -378,6 +379,16 @@ def _rule(rule_set: PayrollRuleSet, key: str) -> Decimal:
     return Decimal(str(rule_set.rules[key]))
 
 
+#: What an ESI rule set's `wage_base` may say ESI wages are.
+ESI_WAGE_BASES = frozenset({"esi_wage_types", "pf_wages"})
+
+
+def esi_wage_basis(rules: dict) -> str:
+    """ "pf_wages" (the PF wage base, as the Code on Social Security defines
+    wages) or "esi_wage_types" (the wage types flagged for ESI, the default)."""
+    return "pf_wages" if rules.get("wage_base") == "pf_wages" else "esi_wage_types"
+
+
 @contextmanager
 def _statutory_errors() -> Iterator[None]:
     """Surface a statutory configuration problem as a payroll rule error.
@@ -497,6 +508,10 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
             )
             prorated[component.component_code] = _ZERO
             continue
+        if component.component_code in PAID_WHEN_EARNED_CODES:
+            # In the CTC, paid when earned (Adjustments), never as monthly pay.
+            prorated[component.component_code] = _ZERO
+            continue
         full = Decimal(str(component.monthly_amount))
         if component.pro_rate_on_lop and unpaid_days > 0:
             amount = _money(full * lop_factor)
@@ -536,6 +551,30 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     )
     esi_wage_base = sum(
         (prorated[c.component_code] for c in salary.components if c.counts_toward_esi),
+        start=Decimal(0),
+    )
+    # Under the Code on Social Security, PF and ESI are charged on the same
+    # "wages". An ESI rule set with `wage_base: "pf_wages"` says so: coverage and
+    # contributions are then decided on the PF wage base (Basic + DA), not on the
+    # wage types flagged for ESI.
+    esi_rules_for_base = payroll_input.rule_sets.get("esi")
+    esi_on_pf_wages = (
+        esi_rules_for_base is not None and esi_wage_basis(esi_rules_for_base.rules) == "pf_wages"
+    )
+    if esi_on_pf_wages:
+        esi_wage_base = pf_wage_base
+    # ESI coverage is decided on the rate of wages for a full month, never on a
+    # part month: somebody who joins on the 24th at Basic 50,000 is not covered
+    # because a week's pay is under the ceiling, nor is a month's loss of pay a
+    # reason to start deducting. Contributions are charged on what is paid.
+    esi_rate_base = sum(
+        (
+            Decimal(str(c.monthly_amount))
+            for c in salary.components
+            if (c.counts_toward_pf if esi_on_pf_wages else c.counts_toward_esi)
+            and c.component_code not in STATUTORY_OVERRIDE_CODES
+            and c.component_code not in PAID_WHEN_EARNED_CODES
+        ),
         start=Decimal(0),
     )
 
@@ -595,7 +634,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
     # ── 4. ESI, only below the eligibility threshold ────────────────────────
     esi_employee = Decimal(0)
     esi_employer = Decimal(0)
-    esi_eligibility_base = _ZERO if supplementary is not None else esi_wage_base
+    esi_eligibility_base = _ZERO if supplementary is not None else esi_rate_base
     contribution_base = _ZERO
     esi_rules = payroll_input.rule_sets.get("esi")
     if esi_rules is not None:
@@ -610,7 +649,7 @@ def compute_payroll(payroll_input: PayrollInput) -> PayrollComputation:
         else:
             threshold = _rule(esi_rules, "wage_threshold")
             applies, _ = _esi_applies(
-                wage_base=esi_wage_base,
+                wage_base=esi_rate_base,
                 threshold=threshold,
                 month=payroll_input.period_start.month,
                 rules=esi_rules.rules,
@@ -1140,7 +1179,11 @@ def _month_figures(
 
     for component in salary.components:
         now = prorated[component.component_code]
-        full = _money(Decimal(str(component.monthly_amount)))
+        full = (
+            _ZERO
+            if component.component_code in PAID_WHEN_EARNED_CODES
+            else _money(Decimal(str(component.monthly_amount)))
+        )
         if component.component_type is ComponentType.EARNING and component.taxable:
             taxable_now += now
             taxable_full += full

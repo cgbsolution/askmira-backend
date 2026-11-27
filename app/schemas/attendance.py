@@ -46,6 +46,12 @@ class PunchCreate(BaseModel):
     device_id: str | None = Field(default=None, max_length=128)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    #: How accurate the browser or phone says the location is, in metres.
+    #: Checked against the workspace's `location_accuracy_metres`.
+    accuracy_metres: float | None = Field(default=None, ge=0, le=1_000_000)
+    #: The phone flagged the location as coming from a mock-location (fake GPS)
+    #: app. Such a punch is refused.
+    is_mocked: bool = False
     #: A JPEG or PNG taken now, base64 (a data URL is fine). Where the workspace asks.
     photo: str | None = Field(default=None, max_length=900_000)
 
@@ -95,6 +101,12 @@ class AttendanceSettings(BaseModel):
     location_mode: LocationMode = "required"
     #: off: no photo; optional: asked for; required: a self-service punch needs one.
     photo_mode: LocationMode = "off"
+    #: How close the location must be (metres, as the browser or phone reports
+    #: its accuracy) before a punch or a visit is accepted; the punch and visit
+    #: buttons stay off until a fix this good arrives. None (the default): off,
+    #: any location is accepted however rough (office desktops have no GPS and
+    #: often report 100 m to a few km).
+    location_accuracy_metres: int | None = Field(default=None, ge=10, le=5000)
     #: Every Nth late mark in a calendar month is a half day: the Nth, the 2Nth
     #: and so on, never the first. None: late marks cost nothing.
     late_marks_per_half_day: int | None = Field(default=None, ge=2, le=31)
@@ -105,6 +117,9 @@ class AttendanceSettings(BaseModel):
     #: may ask for per calendar month. None: no limit. HR's own corrections and
     #: on-duty / work-from-home requests do not count.
     monthly_correction_limit: int | None = Field(default=None, ge=1, le=31)
+    #: Email each person the absent and missed-punch days they still have to
+    #: regularise (the "absent report"): when a new day joins the list, else weekly.
+    absent_report_emails: bool = True
 
 
 class WorkLocationPin(BaseModel):
@@ -119,6 +134,77 @@ class WorkLocationPin(BaseModel):
 class AttendanceSettingsRead(AttendanceSettings):
     #: Active work locations, so the punch screen can draw them on its map.
     work_locations: list[WorkLocationPin] = Field(default_factory=list)
+
+
+# ── Field visits ────────────────────────────────────────────────────────────
+
+VisitSource = Literal["web", "mobile"]
+
+
+class _VisitPoint(BaseModel):
+    """Where the person is: always required for a visit, with its accuracy."""
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_metres: float = Field(ge=0, le=1_000_000)
+    source: VisitSource = "web"
+    #: The phone flagged the location as coming from a mock-location (fake GPS) app.
+    is_mocked: bool = False
+
+
+class VisitStart(_VisitPoint):
+    """Visit in: who or where. No selfie is asked for (2026-11-26)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_name: str = Field(min_length=1, max_length=160)
+    #: Optional: a JPEG or PNG taken now, base64 (a data URL is fine). The
+    #: screens no longer ask for one; an older app build may still send it.
+    photo: str | None = Field(default=None, min_length=1, max_length=900_000)
+
+    @field_validator("client_name")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Say who or where you are visiting.")
+        return cleaned
+
+
+class VisitEnd(_VisitPoint):
+    """Visit out: where the person is as they leave."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FieldVisitRead(BaseModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_code: str | None = None
+    employee_name: str | None = None
+    client_name: str
+    started_at: datetime
+    start_latitude: float
+    start_longitude: float
+    start_accuracy_metres: int | None
+    start_source: str
+    start_address: str | None = None
+    has_photo: bool
+    ended_at: datetime | None
+    end_latitude: float | None
+    end_longitude: float | None
+    end_accuracy_metres: int | None
+    end_source: str | None
+    end_address: str | None = None
+    #: Minutes from visit in to visit out; None while the visit is open.
+    duration_minutes: int | None
+
+
+class FieldVisitList(BaseModel):
+    visits: list[FieldVisitRead]
+    #: Visits in the list, and how many people made them.
+    total: int
+    people: int
 
 
 class PunchImportRow(BaseModel):
@@ -366,7 +452,18 @@ class AttendanceExportRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["in_out", "punches", "daily", "summary"] = "in_out"
+    kind: Literal[
+        "in_out",
+        "punches",
+        "daily",
+        "summary",
+        # The old HRMS's own layouts (Excel only), for cross-checking.
+        "in_out_activities",
+        "monthly_summary",
+        "ytd",
+        # One row per field visit.
+        "visits",
+    ] = "in_out"
     start: date
     end: date
     file_type: Literal["xlsx", "csv"] = "xlsx"

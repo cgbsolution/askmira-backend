@@ -903,16 +903,25 @@ async def _decided(
 
 
 async def confirm_offer(
-    session: AsyncSession, user: User, action_id: uuid.UUID, *, request: Request | None
+    session: AsyncSession,
+    user: User,
+    action_id: uuid.UUID,
+    *,
+    request: Request | None,
+    choice: str | None = None,
 ) -> dict[str, Any]:
-    """The person pressed Confirm: carry the offer out through the module's own service."""
+    """The person pressed Confirm (or answered the card's question with `choice`):
+    carry the offer out through the module's own service."""
     action = await actions.confirm(
-        session, user, action_id, owner_id=user.id, via="button", request=request
+        session, user, action_id, owner_id=user.id, via="button", request=request, choice=choice
     )
     result = action.result or {}
     text = str(result.get("text") or ("Done." if action.status.value == "done" else ""))
     if action.status.value == "failed":
         text = f"That could not be done: {text}"
+    asked = (action.summary or {}).get("choice")
+    if action.status.value == "proposed" and asked:
+        text = f"{asked.get('message')} Pick one on the card."
     return await _decided(session, user, action, text)
 
 

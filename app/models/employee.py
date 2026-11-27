@@ -144,6 +144,10 @@ class Employee(Base, UUIDMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     )
     date_of_joining: Mapped[date | None] = mapped_column(Date, nullable=True)
     date_of_exit: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: How somebody who has left left: an `ExitType` value ("absconding",
+    #: "resignation"…), shown as "Absconding" instead of "Exited". Only set while
+    #: the status is exited; blank for a leaver recorded without a reason.
+    exit_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     probation_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     notice_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

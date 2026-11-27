@@ -23,7 +23,7 @@ from app.main import app
 from app.models.audit import AuditLog
 from app.models.disbursement import EmployeeBankAccount
 from app.models.employee import CustomFieldDefinition, Employee, EmploymentStatus
-from app.models.exit_workflow import ClearanceTemplate, ExitRecord
+from app.models.exit_workflow import ClearanceTemplate, ExitRecord, ExitStatus
 from app.models.notifications import Notification
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -629,6 +629,85 @@ async def test_a_resignation_is_submitted_withdrawn_and_accepted(
     assert (
         await client.get(f"/api/v1/exits/{exit_id}/clearance", headers=_auth(other))
     ).status_code == 404
+
+
+@requires_db
+async def test_the_overview_last_working_day_follows_the_exit(
+    client, session, tenant, hr_user
+) -> None:
+    """The record's last working day: asked for, then agreed, then gone with a
+    withdrawal; the date of exit for somebody with no exit record. The person,
+    HR and the line manager see it; a peer does not, nor the private contacts."""
+    boss = await _person(session, tenant, "LWBOSS")
+    boss_login = await _login(session, tenant, boss, UserRole.EMPLOYEE, "lwboss")
+    leaver = await _person(
+        session,
+        tenant,
+        "LWD1",
+        manager_id=boss.id,
+        notice_period_days=30,
+        personal_email="lwd1@home.test",
+        phone="9876543210",
+    )
+    me = await _login(session, tenant, leaver, UserRole.EMPLOYEE, "lwd1")
+    peer = await _login(
+        session,
+        tenant,
+        await _person(session, tenant, "LWPEER", manager_id=boss.id),
+        UserRole.EMPLOYEE,
+        "lwpeer",
+    )
+
+    async def read(viewer: User) -> dict:
+        response = await client.get(f"/api/v1/employees/{leaver.id}", headers=_auth(viewer))
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert (await read(hr_user))["last_working_day"] is None
+
+    asked = date.today() + timedelta(days=25)
+    submitted = await client.post(
+        "/api/v1/exits/resign",
+        headers=_auth(me),
+        json={"reason": "Relocating", "requested_last_working_day": asked.isoformat()},
+    )
+    assert submitted.status_code == 201, submitted.text
+    for viewer in (hr_user, me, boss_login):
+        assert (await read(viewer))["last_working_day"] == asked.isoformat()
+    seen_by_peer = await read(peer)
+    assert seen_by_peer["last_working_day"] is None
+    assert seen_by_peer["personal_email"] is None and seen_by_peer["phone"] is None
+    by_hr = await read(hr_user)
+    assert by_hr["personal_email"] == "lwd1@home.test" and by_hr["phone"] == "9876543210"
+
+    agreed = date.today() + timedelta(days=30)
+    accepted = await client.post(
+        f"/api/v1/exits/{submitted.json()['id']}/accept",
+        headers=_auth(boss_login),
+        json={"approved_last_working_day": agreed.isoformat()},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert (await read(hr_user))["last_working_day"] == agreed.isoformat()
+
+    # Cancelled: nothing is due to end any more.
+    record = await session.get(ExitRecord, submitted.json()["id"])
+    assert record is not None
+    record.status = ExitStatus.CANCELLED
+    await session.commit()
+    assert (await read(hr_user))["last_working_day"] is None
+
+    # Imported as already gone: only the date of exit is known.
+    gone = await _person(
+        session,
+        tenant,
+        "LWGONE",
+        status=EmploymentStatus.EXITED,
+        date_of_joining=date(2024, 1, 1),
+        date_of_exit=date(2025, 3, 31),
+    )
+    response = await client.get(f"/api/v1/employees/{gone.id}", headers=_auth(hr_user))
+    assert response.status_code == 200, response.text
+    assert response.json()["last_working_day"] == "2025-03-31"
 
 
 @requires_db

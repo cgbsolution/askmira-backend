@@ -62,12 +62,14 @@ async def require_photo_if_configured(
         )
 
 
-async def store_photo(user: User, encoded: str) -> str:
+async def store_photo(user: User, encoded: str, *, folder: str = "punch-photos") -> str:
     """Decode a base64 image (a data URL is fine), check it is one, and store it."""
-    return await store_photo_for(user.tenant_id, encoded)
+    return await store_photo_for(user.tenant_id, encoded, folder=folder)
 
 
-async def store_photo_for(tenant_id: uuid.UUID, encoded: str) -> str:
+async def store_photo_for(
+    tenant_id: uuid.UUID, encoded: str, *, folder: str = "punch-photos"
+) -> str:
     """As `store_photo`, for a kiosk punch, where nobody is signed in."""
     payload = encoded.split(",", 1)[1] if encoded.startswith("data:") else encoded
     try:
@@ -86,7 +88,7 @@ async def store_photo_for(tenant_id: uuid.UUID, encoded: str) -> str:
         )
     except FileRejectedError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    key = f"{tenant_id}/punch-photos/{uuid.uuid4()}{accepted.kind.extension}"
+    key = f"{tenant_id}/{folder}/{uuid.uuid4()}{accepted.kind.extension}"
     await get_storage().put(key, accepted.data)
     return key
 

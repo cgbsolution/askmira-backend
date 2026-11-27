@@ -545,3 +545,60 @@ class PunchAddress(Base, UUIDMixin, TenantMixin, TimestampMixin):
     lat_key: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     lng_key: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
     address: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+# ── Field visits ────────────────────────────────────────────────────────────
+
+
+class FieldVisit(Base, UUIDMixin, TenantMixin, TimestampMixin):
+    """One visit away from the office: a sales call, a client meeting, a site.
+
+    Visit in records where and when the person arrived, who or what the place
+    is; visit out records where and when they left.
+    A location is always required, whatever the workspace's punch rule, and
+    it must be as accurate as the workspace asks (`location_accuracy_metres`).
+
+    A visit is not an attendance punch: it never changes a day's status or
+    hours. A person has at most one open visit (enforced by a partial unique
+    index). The only change after visit in is filling in the visit out.
+    """
+
+    __tablename__ = "field_visits"
+    __table_args__ = (
+        Index("ix_field_visits_tenant_employee_started", "tenant_id", "employee_id", "started_at"),
+        Index(
+            "uq_field_visits_one_open",
+            "employee_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Who or where: "Tata Motors, Pimpri", "Sharma Traders".
+    client_name: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    start_latitude: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    start_longitude: Mapped[Decimal] = mapped_column(Numeric(10, 7), nullable=False)
+    start_accuracy_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: "web" or "mobile": where visit in was pressed.
+    start_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: A photo at visit in, only where an older app build sent one (no longer
+    #: asked for since 2026-11-26). Private storage.
+    start_photo_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    end_longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)
+    end_accuracy_metres: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    @property
+    def has_photo(self) -> bool:
+        return self.start_photo_key is not None
+
+    def __repr__(self) -> str:
+        return f"<FieldVisit {self.client_name} @ {self.started_at}>"

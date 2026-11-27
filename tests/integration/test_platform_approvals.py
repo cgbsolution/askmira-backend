@@ -109,18 +109,72 @@ async def test_a_manager_sees_only_their_reporting_line(session, org):
     assert other.get("attendance_regularisation", []) == []
 
 
-async def test_hr_ops_sees_everyone_but_not_admin_only_decisions(session, org):
+async def test_hr_ops_sees_only_corrections_nobody_else_can_decide(session, org):
+    # Ravi's correction is his line manager's call, so HR is not shown it; the
+    # two with no manager fall to HR.
     inbox = _by_source(await approvals.inbox(session, org["sub_admin"]))
     names = sorted(r.subject_name for r in inbox["attendance_regularisation"])
-    assert names == ["Asha Admin", "Ravi Report", "Sita Other"]
+    assert names == ["Asha Admin", "Sita Other"]
     assert "lifecycle_event" not in inbox
 
 
 async def test_nobody_sees_their_own_request(session, org):
     inbox = _by_source(await approvals.inbox(session, org["admin"]))
     names = sorted(r.subject_name for r in inbox["attendance_regularisation"])
-    assert names == ["Ravi Report", "Sita Other"]
+    assert names == ["Sita Other"]
     assert [e.subject_name for e in inbox["lifecycle_event"]] == ["Ravi Report"]
+
+
+async def test_a_correction_goes_to_the_direct_manager_only(session, tenant, org):
+    # Ravi reports to Kavya, who reports to Dev. Dev is a skip-level manager and
+    # an admin; neither makes the correction his to decide.
+    from app.models import Employee
+
+    dev = await make_person(session, tenant, role=UserRole.ADMIN, name="Dev Director")
+    boss_emp = await session.get(Employee, org["boss"].employee_id)
+    boss_emp.manager_id = dev.employee_id
+    await session.commit()
+    await as_caller(session, dev)
+
+    dev_inbox = _by_source(await approvals.inbox(session, dev))
+    names = sorted(r.subject_name for r in dev_inbox.get("attendance_regularisation", []))
+    assert "Ravi Report" not in names
+    kavya = _by_source(await approvals.inbox(session, org["boss"]))
+    assert [r.subject_name for r in kavya["attendance_regularisation"]] == ["Ravi Report"]
+
+
+async def test_hr_steps_in_when_the_manager_has_left(session, tenant, org):
+    from app.models import Employee, EmploymentStatus
+
+    boss_emp = await session.get(Employee, org["boss"].employee_id)
+    boss_emp.status = EmploymentStatus.EXITED
+    await session.commit()
+    inbox = _by_source(await approvals.inbox(session, org["admin"]))
+    assert "Ravi Report" in [r.subject_name for r in inbox["attendance_regularisation"]]
+
+
+async def test_hr_steps_in_when_the_manager_cannot_sign_in(session, tenant, org):
+    org["boss"].is_active = False
+    await session.commit()
+    inbox = _by_source(await approvals.inbox(session, org["sub_admin"]))
+    assert "Ravi Report" in [r.subject_name for r in inbox["attendance_regularisation"]]
+
+
+async def test_a_managers_delegate_sees_the_correction(session, tenant, org):
+    from app.models import ApprovalDelegation
+
+    session.add(
+        ApprovalDelegation(
+            tenant_id=tenant.id,
+            from_user_id=org["boss"].id,
+            to_user_id=org["stranger"].id,
+            starts_on=date(2020, 1, 1),
+            ends_on=date(2099, 12, 31),
+        )
+    )
+    await session.commit()
+    inbox = _by_source(await approvals.inbox(session, org["stranger"]))
+    assert [r.subject_name for r in inbox["attendance_regularisation"]] == ["Ravi Report"]
 
 
 async def test_another_tenant_sees_nothing(session, org, other_hr_user):

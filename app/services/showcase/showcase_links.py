@@ -626,8 +626,12 @@ async def decide(
     action_id: uuid.UUID,
     confirm: bool,
     request: Request,
+    answer: str | None = None,
 ) -> dict[str, Any]:
-    """Confirm or Cancel on an offer Ask Miraa made in this visitor's chat, and only there."""
+    """Confirm or Cancel on an offer Ask Miraa made in this visitor's chat, and only there.
+
+    `answer` is the visitor's pick when the card asks a question.
+    """
     throttle(request, STEP)
     link, run = await _run_for(session, code, run_id, key)
     user = await _acting(session, link, request)
@@ -642,5 +646,7 @@ async def decide(
     if not offered:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "That offer is not in this chat.")
     if confirm:
-        return await companion.confirm_offer(session, user, action_id, request=request)
+        return await companion.confirm_offer(
+            session, user, action_id, request=request, choice=answer
+        )
     return await companion.cancel_offer(session, user, action_id, request=request)

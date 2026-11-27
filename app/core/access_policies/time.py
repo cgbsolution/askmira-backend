@@ -246,6 +246,18 @@ ENDPOINTS: dict[str, str] = {
         "permissions: only the person the regularisation is about may withdraw it."
     ),
     "GET /attendance/locks": "reference: which payroll periods are locked.",
+    "POST /attendance/visits": (
+        "own: visit in for the caller's own employee record, from the token; the server "
+        "stamps the time."
+    ),
+    "POST /attendance/visits/{visit_id}/end": (
+        "scoped:_own_employee: visit out only on a visit whose employee is the caller's own."
+    ),
+    "GET /attendance/visits/mine": "own: the caller's own visits, by the token's employee.",
+    "GET /attendance/visits/{visit_id}/photo": (
+        "scoped:require_manager_or_hr: the person's own visit selfie, or their manager "
+        "line and HR."
+    ),
     "GET /attendance/settings": (
         "reference: the workspace's punch-location rule, about nobody in particular."
     ),

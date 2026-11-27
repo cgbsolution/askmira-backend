@@ -16,7 +16,7 @@ Two further rules live here:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -234,6 +234,7 @@ _DIRECTORY_COLUMNS = (
     Employee.dotted_line_manager_id,
     Employee.photo_url,
     Employee.status,
+    Employee.exit_type,
     Employee.deleted_at,
 )
 
@@ -530,6 +531,7 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
       person's date of birth, phone, personal email, gender or custom fields.
     """
     record = EmployeeRead.model_validate(employee)
+    record.last_working_day = await _last_working_day(session, user, employee)
     if user.employee_id is not None and employee.id == user.employee_id:
         return record.model_copy(
             update={
@@ -573,8 +575,41 @@ async def employee_view(session: AsyncSession, user: User, employee: Employee) -
             "probation_end_date": None,
             "notice_period_days": None,
             "date_of_exit": None,
+            "last_working_day": None,
         }
     return record.model_copy(update=hidden)
+
+
+async def _last_working_day(session: AsyncSession, user: User, employee: Employee) -> date | None:
+    """The day this person's employment ends, if one is known.
+
+    The latest open exit's approved last working day, else the one they asked
+    for, else the recorded date of exit (people imported as already gone have
+    only that). The same rule as the attendance year-to-date report.
+    """
+    from app.models.exit_workflow import ExitRecord, ExitStatus
+
+    row = (
+        await session.execute(
+            tenant_scoped(
+                select(
+                    ExitRecord.approved_last_working_day,
+                    ExitRecord.requested_last_working_day,
+                )
+                .where(
+                    ExitRecord.employee_id == employee.id,
+                    ExitRecord.status != ExitStatus.CANCELLED,
+                )
+                .order_by(ExitRecord.resignation_date.desc(), ExitRecord.created_at.desc())
+                .limit(1),
+                ExitRecord,
+                user,
+            )
+        )
+    ).first()
+    if row is not None and (row[0] or row[1]):
+        return row[0] or row[1]
+    return employee.date_of_exit
 
 
 async def create_employee(
@@ -776,11 +811,33 @@ async def update_employee(
     for key in _NOT_NULL:
         if key in changes and changes[key] is None:
             raise _unprocessable(f"'{key}' cannot be cleared.")
-    if (
-        changes.get("status") is EmploymentStatus.EXITED
-        and employee.status is not EmploymentStatus.EXITED
-    ):
-        raise _unprocessable(_EXIT_THROUGH_EXITS)
+    # Marking somebody Exited (or Absconding) here is HR recording that they have
+    # gone, at once. Clearance and the settlement, where needed, stay under
+    # People > Exits; the login goes now, as it does when an exit revokes access.
+    final_status = changes.get("status", employee.status)
+    leaving = (
+        final_status is EmploymentStatus.EXITED and employee.status is not EmploymentStatus.EXITED
+    )
+    returning = (
+        employee.status is EmploymentStatus.EXITED and final_status is not EmploymentStatus.EXITED
+    )
+    if changes.get("exit_type") is not None:
+        if final_status is not EmploymentStatus.EXITED:
+            raise _unprocessable("How somebody left is recorded only with the status Exited.")
+        changes["exit_type"] = changes["exit_type"].value
+    if final_status is not EmploymentStatus.EXITED and employee.exit_type is not None:
+        changes["exit_type"] = None
+    if leaving:
+        from app.services.attendance.service import local_today
+
+        last_day = changes.get("date_of_exit", employee.date_of_exit)
+        if last_day is None:
+            raise _unprocessable("Give the last working day (Date of exit) to mark them as left.")
+        if last_day > await local_today(session, user):
+            raise _unprocessable(
+                "The last working day is still ahead. Set the status to On notice now, and to "
+                "Exited on or after that day."
+            )
 
     new_kind = changes.get("employment_type")
     if new_kind is EmploymentType.CONSULTANT and not is_consultant(employee):
@@ -935,6 +992,27 @@ async def update_employee(
     for key, value in changes.items():
         setattr(employee, key, value)
 
+    summary = f"Updated employee {employee.employee_code}"
+    if leaving:
+        # Their login stops with them. Not every employee has one.
+        accounts = (
+            await session.scalars(
+                tenant_scoped(select(User).where(User.employee_id == employee.id), User, user)
+            )
+        ).all()
+        for account in accounts:
+            account.is_active = False
+        employee.is_active = False
+        diff["logins_deactivated"] = {"from": "0", "to": str(len(accounts))}
+        summary = (
+            f"Marked {employee.employee_code} as "
+            f"{'absconding' if employee.exit_type == 'absconding' else 'exited'} "
+            f"(last working day {employee.date_of_exit})"
+        )
+    elif returning:
+        # Back on the books; a login, if they need one, is switched on under Users.
+        employee.is_active = True
+
     await audit.record(
         session,
         tenant_id=user.tenant_id,
@@ -943,7 +1021,7 @@ async def update_employee(
         entity_id=employee.id,
         actor=user,
         changes=diff,
-        summary=f"Updated employee {employee.employee_code}",
+        summary=summary,
         request=request,
     )
     await session.commit()

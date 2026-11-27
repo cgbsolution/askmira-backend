@@ -19,6 +19,7 @@ from app.core.deps import CurrentUser, DbSession, require_roles
 from app.core.step_up import confirmation
 from app.models.payroll import PayrollRunStatus
 from app.models.user import UserRole
+from app.schemas.challan_files import ChallanOptions, ChallanPreview, ChallanRequest
 from app.schemas.common import Page
 from app.schemas.payroll_inputs import LedgerMappingRead, LedgerMappingSave
 from app.schemas.payroll_run import (
@@ -36,6 +37,7 @@ from app.schemas.payroll_run import (
     VarianceAcknowledge,
 )
 from app.services.connections import zoho_books
+from app.services.payroll import challan_files as challan_service
 from app.services.payroll import journal as journal_service
 from app.services.payroll import payslips as payslip_service
 from app.services.payroll import register_xlsx as register_xlsx_service
@@ -376,6 +378,44 @@ async def run_register_xlsx(
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.get("/runs/{run_id}/challan-files/options", response_model=ChallanOptions)
+async def challan_file_options(
+    run_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> ChallanOptions:
+    """What the locked run's people can be filtered by for the PF / ESI challan files."""
+    return await challan_service.options(session, user, run_id)
+
+
+@router.post("/runs/{run_id}/challan-files/preview", response_model=ChallanPreview)
+async def challan_file_preview(
+    run_id: uuid.UUID, payload: ChallanRequest, user: CurrentUser, session: DbSession
+) -> ChallanPreview:
+    """How many rows the file will hold, its totals, and who is left out and why."""
+    return await challan_service.preview(session, user, run_id, payload.kind, payload.filters)
+
+
+@router.post("/runs/{run_id}/challan-files/download", response_model=None)
+async def challan_file_download(
+    run_id: uuid.UUID,
+    payload: ChallanRequest,
+    user: CurrentUser,
+    session: DbSession,
+    request: Request,
+) -> Response:
+    """The ESIC MC template (.xls) or PF ECR (.csv / .txt) for the chosen people."""
+    filename, content, media_type = await challan_service.download(
+        session, user, run_id, payload.kind, payload.filters, request
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "private, no-store",

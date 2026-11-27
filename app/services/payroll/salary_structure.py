@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 
 from app.models.payroll import (
+    PAID_WHEN_EARNED_CODES,
     CalculationType,
     ComponentType,
     RoundingMode,
@@ -156,6 +157,7 @@ class SalaryBreakdown:
                 c.monthly_amount
                 for c in self.components
                 if c.component_type is ComponentType.EARNING
+                and c.code not in PAID_WHEN_EARNED_CODES
             ),
             start=Decimal(0),
         )

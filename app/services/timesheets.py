@@ -193,6 +193,30 @@ async def project_headcounts(session: AsyncSession, user: User) -> dict[uuid.UUI
     return {project_id: count for project_id, count in rows.all()}
 
 
+# People who are working today: joined and not gone. A project with none of
+# them is left out of the "Project" filters, so a filter never offers an empty
+# project.
+_WORKING = (EmploymentStatus.ACTIVE, EmploymentStatus.ON_NOTICE, EmploymentStatus.ON_LEAVE)
+
+
+async def staffed_project_ids(session: AsyncSession, user: User) -> set[uuid.UUID]:
+    """Projects with at least one working (active, on notice or on leave) person."""
+    rows = await session.scalars(
+        tenant_scoped(
+            select(Employee.project_id)
+            .where(
+                Employee.project_id.is_not(None),
+                Employee.deleted_at.is_(None),
+                Employee.status.in_(_WORKING),
+            )
+            .distinct(),
+            Employee,
+            user,
+        )
+    )
+    return set(rows.all())
+
+
 async def _check_entity(session: AsyncSession, user: User, entity_id: uuid.UUID | None) -> None:
     if entity_id is None:
         return
@@ -231,8 +255,15 @@ async def list_projects(
         session, user, {p.id for p in projects}, include_inactive=everything
     )
     counts = await project_headcounts(session, user) if permissions.is_hr(user) else None
+    staffed = await staffed_project_ids(session, user)
     return [
-        _project_read(p, tasks.get(p.id), counts.get(p.id, 0) if counts is not None else None)
+        {
+            **_project_read(
+                p, tasks.get(p.id), counts.get(p.id, 0) if counts is not None else None
+            ),
+            # Someone working is on it: the Project filters offer only these.
+            "staffed": p.id in staffed,
+        }
         for p in projects
     ]
 

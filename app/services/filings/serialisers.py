@@ -25,6 +25,7 @@ layout.
 from __future__ import annotations
 
 import hashlib
+import io
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from app.services.filings.records import (
@@ -40,7 +41,9 @@ __all__ = [
     "content_hash",
     "serialise_arrear_ecr",
     "serialise_ecr",
+    "serialise_ecr_upload_csv",
     "serialise_esic",
+    "serialise_esic_mc_xls",
     "serialise_pt_challan",
     "serialise_tds_24q",
 ]
@@ -147,6 +150,52 @@ def serialise_ecr(ecr: EcrReturn) -> str:
     return "\r\n".join(lines) + ("\r\n" if lines else "")
 
 
+#: The header of the ECR upload sheet HR keeps in Excel and converts with the
+#: EPFO's tool ("CHALLAN UPLOAD.csv"): the same eleven fields as the text file,
+#: named the way that sheet names them.
+ECR_UPLOAD_CSV_HEADER = (
+    "UAN",
+    "MEMBER_NAME",
+    "GROSS_WAGES",
+    "EPF_WAGES",
+    "EPS_WAGES",
+    "EDLI_WAGES",
+    "EPF_CONTRI_REMITTED",
+    "EPS_CONTRI_REMITTED",
+    "EPF_EPS_DIFF_REMITTED",
+    "NCP_DAYS",
+    "REFUND_OF_ADVANCES",
+)
+
+
+def serialise_ecr_upload_csv(ecr: EcrReturn) -> str:
+    """The ECR as the upload CSV: a header row, then the text file's fields comma-separated.
+
+    EPF_CONTRI_REMITTED is the member's share, EPS_CONTRI_REMITTED the pension
+    share and EPF_EPS_DIFF_REMITTED the employer's EPF share, as in the ECR.
+    """
+    rows = [",".join(ECR_UPLOAD_CSV_HEADER)]
+    for line in ecr.lines:
+        rows.append(
+            ",".join(
+                [
+                    line.uan,
+                    _csv_safe(line.member_name),
+                    _whole(line.gross_wages),
+                    _whole(line.epf_wages),
+                    _whole(line.eps_wages),
+                    _whole(line.edli_wages),
+                    _whole(line.employee_share),
+                    _whole(line.eps_contribution),
+                    _whole(line.employer_epf_share),
+                    _ncp(line.ncp_days),
+                    _whole(line.refund_of_advances),
+                ]
+            )
+        )
+    return "\r\n".join(rows) + "\r\n"
+
+
 # The EPFO's arrear ECR line, in order: the arrear wages and shares only, in
 # the same delimiter. Eight fields.
 ARREAR_ECR_COLUMNS = (
@@ -236,6 +285,158 @@ def _csv_safe(value: str) -> str:
         escaped = value.replace('"', '""')
         return f'"{escaped}"'
     return value
+
+
+# ── ESIC MC template — the portal's own Excel 97-2003 upload sheet ──────────
+
+#: The portal's "MC_Template.xls" headings, word for word, spaces and line
+#: breaks included: the uploader reads the first sheet by position, and HR
+#: compares the file with the template they downloaded from the portal.
+ESIC_MC_HEADINGS = (
+    "IP Number ",
+    "IP Name\n( Only alphabets and space )",
+    "No of Days for which wages paid/payable during the month",
+    "Total Monthly Wages",
+    " Reason Code for Zero workings days(numeric only; provide 0 for all other reasons- "
+    "Click on the link for reference)",
+    " Last Working Day\n( Format DD/MM/YYYY  or DD-MM-YYYY)",
+)
+#: The template's column widths, in Excel's 1/256-character units.
+ESIC_MC_WIDTHS = (4398, 8075, 7214, 6609, 7819, 7098)
+
+#: The template's second sheet: the reason codes and when a last working day goes in.
+ESIC_REASON_CODES: tuple[tuple[str, int, str], ...] = (
+    ("Without Reason", 0, "Leave last working day as blank"),
+    ("On Leave", 1, "Leave last working day as blank"),
+    (
+        "Left Service",
+        2,
+        "Please provide last working day (dd/mm/yyyy). IP will not appear from next wage period",
+    ),
+    (
+        "Retired",
+        3,
+        "Please provide last working day (dd/mm/yyyy). IP will not appear from next wage period",
+    ),
+    (
+        "Out of Coverage",
+        4,
+        "Please provide last working day (dd/mm/yyyy). IP will not appear from next "
+        "contribution period. This option is valid only if Wage Period is April/October. In "
+        "case any other month then IP will continue to appear in the list",
+    ),
+    (
+        "Expired",
+        5,
+        "Please provide last working day (dd/mm/yyyy). IP will not appear from next wage period",
+    ),
+    ("Non Implemented area", 6, "Please provide last working day (dd/mm/yyyy). "),
+    ("Compliance by Immediate Employer", 7, "Leave last working day as blank"),
+    ("Suspension of work", 8, "Leave last working day as blank"),
+    ("Strike/Lockout", 9, "Leave last working day as blank"),
+    (
+        "Retrenchment",
+        10,
+        "Please provide last working day (dd/mm/yyyy). IP will not appear from next wage period",
+    ),
+    ("No Work", 11, "Leave last working day as blank"),
+    ("Doesnt Belong To This Employer", 12, "Leave last working day as blank"),
+    ("Duplicate IP", 13, "Leave last working day as blank"),
+)
+ESIC_MC_INSTRUCTIONS = (
+    "Instructions to fill in the excel file: ",
+    "1. Enter the IP number,  IP name, No. of Days, Total Monthly Wages, Reason for 0 "
+    "wages(If Wages '0') & Last Working Day( only if employee has left service, Retired, Out "
+    "of coverage, Expired, Non-Implemented area or Retrenchment. For other reasons,  last "
+    "working day  must be left  BLANK).  ",
+    "2. Number of days must me a whole number.  Fractions should be rounded up to next "
+    "higher whole number/integer",
+    "3. Excel sheet upload will lead to successful transaction only when all the Employees' "
+    "(who are currently mapped in the system) details are entered perfectly in the excel sheet",
+    "4. Reasons are to be assigned numeric code  and date has to be provided as mentioned in "
+    "the table above",
+    "5. Once  0 wages given and last working day is mentioned as in reason codes (2,3,4,5,10)  "
+    "IP will be removed from the employer's record. Subsequent months will not have this IP "
+    "listed under the employer. Last working day should be mentioned only if 'Number of days "
+    "wages paid/payable' is '0'.",
+    "6. In case IP has worked for part of the month(i.e. atleast 1 day wage is paid/payable) "
+    "and left in between of the month, then last working day shouldn't be mentioned.",
+    "7. Calculations - IP Contribution and Employer contribution calculation will be "
+    "automatically done by the system",
+    "8. Date  column format is  dd/mm/yyyy or dd-mm-yyyy.  Pad single digit dates with 0.  "
+    "Eg:- 2/5/2010  or  2-May-2010 is NOT acceptable.  Correct format  is 02/05/2010  or "
+    "02-05-2010",
+    "9. Excel file should be saved in .xls format (Excel 97-2003)",
+    "10. Note that all the column including date column should be in 'Text' format",
+)
+
+
+def _days_up(value: Decimal) -> int:
+    """The template's rule 2: a fraction of a day rounds up to the next whole day."""
+    return int(value.quantize(Decimal(1), rounding=ROUND_CEILING))
+
+
+def serialise_esic_mc_xls(esic: EsicReturn) -> bytes:
+    """The ESIC monthly contribution upload, as the portal's MC_Template.xls.
+
+    Excel 97-2003 (.xls), which is all the portal takes. Sheet 1 is the data in
+    the template's six columns, every cell in Text format (rule 10) with days
+    and wages as numbers, as the template itself holds them. The reason code
+    and last working day are written only for an IP with no days that month:
+    the template's rules 5 and 6 say a last working day goes in only then, and
+    an IP paid for part of the month is left blank there. Sheet 2 is the
+    template's reason-code table and instructions.
+    """
+    import xlwt  # Imported here: only this download needs the .xls writer.
+
+    book = xlwt.Workbook(encoding="utf-8")
+    sheet = book.add_sheet("Sheet1")
+    text = xlwt.easyxf(num_format_str="@")
+    heading = xlwt.easyxf(
+        "font: bold on; align: wrap on, vert top; "
+        "borders: left thin, right thin, top thin, bottom thin",
+        num_format_str="@",
+    )
+    for column, (title, width) in enumerate(zip(ESIC_MC_HEADINGS, ESIC_MC_WIDTHS, strict=True)):
+        sheet.write(0, column, title, heading)
+        sheet.col(column).width = width
+    sheet.row(0).height_mismatch = True
+    sheet.row(0).height = 256 * 4
+
+    for row, line in enumerate(esic.lines, start=1):
+        days = _days_up(line.days_worked)
+        sheet.write(row, 0, line.ip_number, text)
+        sheet.write(row, 1, line.ip_name, text)
+        sheet.write(row, 2, days, text)
+        sheet.write(row, 3, int(_whole(line.wages_paid)), text)
+        if days == 0:
+            sheet.write(row, 4, line.reason_code, text)
+            if line.last_working_day is not None:
+                sheet.write(row, 5, line.last_working_day.strftime("%d/%m/%Y"), text)
+
+    guide = book.add_sheet("Instructions & Reason Codes")
+    bold = xlwt.easyxf("font: bold on")
+    for column, title in enumerate(("Reason", "Code", "Note")):
+        guide.write(1, column, title, bold)
+    for row, (reason, code, note) in enumerate(ESIC_REASON_CODES, start=2):
+        guide.write(row, 0, reason)
+        guide.write(row, 1, code)
+        guide.write(row, 2, note)
+    first = 2 + len(ESIC_REASON_CODES) + 3
+    wrap = xlwt.easyxf("align: wrap on, vert top")
+    for offset, instruction in enumerate(ESIC_MC_INSTRUCTIONS):
+        row = first + offset
+        guide.write_merge(row, row, 0, 6, instruction, bold if offset == 0 else wrap)
+        if offset:
+            guide.row(row).height_mismatch = True
+            guide.row(row).height = 256 * 2
+    guide.col(0).width = 6190
+    guide.col(1).width = 2350
+    guide.col(2).width = 20666
+
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

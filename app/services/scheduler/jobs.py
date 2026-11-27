@@ -446,6 +446,13 @@ async def _attendance_reminders(session: AsyncSession, ctx: JobContext) -> dict[
     )
 
 
+async def _absent_reports(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
+    from app.services.attendance import reminders
+
+    assert ctx.actor is not None
+    return await reminders.send_absent_reports(session, ctx.actor, today=ctx.today, now=ctx.now)
+
+
 async def _timesheet_reminders(session: AsyncSession, ctx: JobContext) -> dict[str, Any]:
     from app.services import timesheets
 
@@ -624,6 +631,19 @@ JOBS: tuple[Job, ...] = (
         cadence=Cadence.daily(hour=10),
         handler=_attendance_reminders,
         source="app.services.attendance.reminders.send_attendance_reminders",
+        module="leave",
+    ),
+    Job(
+        key="attendance.absent_report",
+        name="Absent report emails",
+        description=(
+            "Emails each person the absent and missed-punch days of the open month(s) they "
+            "have not yet regularised or applied leave for: when a new day appears, else "
+            "weekly. Switched off in the attendance settings."
+        ),
+        cadence=Cadence.daily(hour=10),
+        handler=_absent_reports,
+        source="app.services.attendance.reminders.send_absent_reports",
         module="leave",
     ),
     Job(

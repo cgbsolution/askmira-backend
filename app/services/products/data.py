@@ -43,11 +43,45 @@ class ProductUnavailableError(Exception):
     """The product can't answer this person now. The message is safe to show.
 
     `status` is the product's own HTTP status when it answered, else None.
+    `choice` is a question the product asked instead of acting (Saleinx's lead.save:
+    "a company like this is already there: use it, or create a new one?"), as
+    `needs_choice` from docs/askmira/lead-save-choices.md in Saleinx, checked.
     """
 
-    def __init__(self, message: str, *, status: int | None = None):
+    def __init__(
+        self, message: str, *, status: int | None = None, choice: dict[str, Any] | None = None
+    ):
         super().__init__(message)
         self.status = status
+        self.choice = choice
+
+
+def _choice(exc: client.ProductError) -> dict[str, Any] | None:
+    """The product's question in a 409, kept only when it is well formed."""
+    raw = (exc.payload or {}).get("needs_choice") if exc.status == 409 else None
+    if not isinstance(raw, dict):
+        return None
+    answer_with = raw.get("answer_with")
+    if answer_with not in ("company_choice", "contact_choice"):
+        return None
+    options = [
+        {
+            "id": str(o["id"])[:64],
+            "label": str(o.get("label") or "")[:200],
+            "detail": str(o["detail"])[:200] if o.get("detail") else None,
+        }
+        for o in (raw.get("options") or [])[:5]
+        if isinstance(o, dict) and o.get("id")
+    ]
+    if not options:
+        return None
+    return {
+        "field": "contact" if raw.get("field") == "contact" else "company",
+        "message": str(raw.get("message") or exc.detail or "Which one?")[:500],
+        "options": options,
+        "can_create_new": raw.get("can_create_new") is not False,
+        "answer_with": answer_with,
+    }
 
 
 async def role_in(session: AsyncSession, user: User, product_key: str) -> str | None:
@@ -165,7 +199,9 @@ async def ask(
             params=params,
         )
     except client.ProductError as exc:
-        raise ProductUnavailableError(_explain(product.brand, exc), status=exc.status) from exc
+        raise ProductUnavailableError(
+            _explain(product.brand, exc), status=exc.status, choice=_choice(exc)
+        ) from exc
     if data.get("kind") != kind:
         raise ProductUnavailableError(f"{product.brand} answered a different question. Try again.")
     return data
@@ -194,7 +230,9 @@ async def act(
             params=params,
         )
     except client.ProductError as exc:
-        raise ProductUnavailableError(_explain(product.brand, exc), status=exc.status) from exc
+        raise ProductUnavailableError(
+            _explain(product.brand, exc), status=exc.status, choice=_choice(exc)
+        ) from exc
     if data.get("kind") != kind:
         raise ProductUnavailableError(f"{product.brand} answered something else. Try again.")
     return data

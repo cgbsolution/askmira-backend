@@ -32,7 +32,7 @@ from app.core import access_control, hr_scope, permissions
 from app.core.deps import tenant_scoped
 from app.models.employee import Employee, EmploymentStatus
 from app.models.org import Department, Location
-from app.models.payroll import ComponentType, EmployeeSalary
+from app.models.payroll import PAID_WHEN_EARNED_CODES, ComponentType, EmployeeSalary
 from app.models.user import User, UserRole
 from app.services.documents.indian_numbers import format_inr
 
@@ -387,7 +387,12 @@ async def _salary_card(
         )
 
     components = sorted(current.components, key=lambda c: (c.display_order, c.component_code))
-    earnings = [c for c in components if ComponentType(c.component_type) is ComponentType.EARNING]
+    earnings = [
+        c
+        for c in components
+        if ComponentType(c.component_type) is ComponentType.EARNING
+        and c.component_code not in PAID_WHEN_EARNED_CODES
+    ]
     if current.gross_amount is not None:
         gross_annual, gross_monthly = to_period_amounts(
             _money(current.gross_amount), current.gross_basis or "monthly"

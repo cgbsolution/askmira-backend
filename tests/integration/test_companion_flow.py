@@ -637,6 +637,59 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def test_agreeing_in_the_chat_turns_on_ai_and_pictures(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    tenant: Tenant,
+    hr_user: User,
+    employee: Employee,
+) -> None:
+    """Most employees have not agreed to the AI assistant (it is opt-in), so the
+    chat asks them in place, through the same consent route as My privacy. The
+    screen relies on: `no_consent` before, `ai` straight after, back on withdraw."""
+    user = User(
+        tenant_id=tenant.id,
+        email="anita@acme.test",
+        password_hash="x",
+        full_name="Anita Sharma",
+        role=UserRole.EMPLOYEE,
+        is_active=True,
+        employee_id=employee.id,
+    )
+    session.add(user)
+    await session.commit()
+    await _ai_on(session, hr_user)
+    with use_backend(FakeModel()):
+        before = (await client.get("/api/v1/companion/status", headers=_bearer(user))).json()
+        assert (before["mode"], before["reason"]) == ("direct", "no_consent")
+
+        agreed = await client.post(
+            "/api/v1/dpdp/me/consent",
+            json={"purpose_key": "ai_assistance", "granted": True},
+            headers=_bearer(user),
+        )
+        assert agreed.status_code == 201, agreed.text
+        after = (await client.get("/api/v1/companion/status", headers=_bearer(user))).json()
+        assert (after["mode"], after["reason"]) == ("ai", None)
+
+        withdrawn = await client.post(
+            "/api/v1/dpdp/me/consent/ai_assistance/withdraw", headers=_bearer(user)
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        again = (await client.get("/api/v1/companion/status", headers=_bearer(user))).json()
+        assert (again["mode"], again["reason"]) == ("direct", "no_consent")
+    record = (
+        await session.scalars(
+            select(ConsentRecord).where(
+                ConsentRecord.principal_id == employee.id,
+                ConsentRecord.purpose_key == "ai_assistance",
+                ConsentRecord.granted.is_(True),
+            )
+        )
+    ).all()
+    assert len(record) == 1 and record[0].captured_via == ConsentCapturedVia.SELF_SERVICE
+
+
 async def test_the_chat_over_http(client: httpx.AsyncClient, me: User, hr_user: User) -> None:
     model = FakeModel(plan(reply="Hi Anita, how can I help?"))
     with use_backend(model):

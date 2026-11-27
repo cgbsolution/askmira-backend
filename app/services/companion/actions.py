@@ -83,6 +83,7 @@ KINDS = (
     "expense_decision",
     # In a linked product, through its own rules, as the person (sales_tools.py).
     "saleinx_lead",
+    "saleinx_prospect",
     "saleinx_stage",
     "saleinx_decision",
     "saleinx_activity",
@@ -96,6 +97,7 @@ KINDS = (
 _PRODUCT_KINDS = frozenset(
     {
         "saleinx_lead",
+        "saleinx_prospect",
         "saleinx_stage",
         "saleinx_decision",
         "saleinx_activity",
@@ -114,6 +116,7 @@ _PRODUCT_OF = {
     "expense_claim": "ExpenseGenie",
     "expense_decision": "ExpenseGenie",
     "saleinx_lead": "Saleinx",
+    "saleinx_prospect": "Saleinx",
     "saleinx_stage": "Saleinx",
     "saleinx_decision": "Saleinx",
     "saleinx_activity": "Saleinx",
@@ -412,6 +415,10 @@ async def propose_leave(
     usable = [b for b in balances if not b.is_statutory]
     wanted = str(inputs.get("leave_type") or "").strip()
     matches = _match_type(usable, wanted) if wanted else []
+    if len(usable) == 1 and len(matches) != 1:
+        # A workspace with one leave type ("Leave"): "casual leave", "a day off"
+        # or no type at all can only mean that one.
+        matches = usable
     used = {"from": start.isoformat(), "to": end.isoformat(), "leave_type": wanted}
     if len(matches) != 1:
         if not usable:
@@ -1014,6 +1021,47 @@ async def _run(
     raise HTTPException(status_code=422, detail="This offer cannot be carried out.")
 
 
+class NeedsChoiceError(Exception):
+    """A product asked a question instead of acting; nothing was done there.
+
+    `choice` is the question as the card shows it: field, message, options
+    ({id, label, detail}), can_create_new, and answer_with (the payload key the
+    answer goes back under).
+    """
+
+    def __init__(self, choice: dict[str, Any]):
+        super().__init__(str(choice.get("message") or "Which one?"))
+        self.choice = choice
+
+
+def _answer_choice(action: CompanionAction, choice: str | None) -> None:
+    """Put the person's answer to the card's question into the offer, or refuse it."""
+    asked = (action.summary or {}).get("choice")
+    if choice is None:
+        if asked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{asked.get('message') or 'There is a question on this offer.'} "
+                    "The person answers it with the buttons on the card."
+                ),
+            )
+        return
+    if not asked:
+        raise HTTPException(status_code=409, detail="This offer has no question to answer.")
+    choice = choice.strip()
+    if choice.lower() == "new":
+        if not asked.get("can_create_new"):
+            raise HTTPException(
+                status_code=422, detail="A new one can't be made here: pick one of the options."
+            )
+        choice = "new"
+    elif choice not in {str(option.get("id")) for option in asked.get("options") or []}:
+        raise HTTPException(status_code=422, detail="Pick one of the options on the card.")
+    action.payload = {**(action.payload or {}), str(asked["answer_with"]): choice}
+    action.summary = {k: v for k, v in (action.summary or {}).items() if k != "choice"}
+
+
 async def confirm(
     session: AsyncSession,
     user: User,
@@ -1023,11 +1071,17 @@ async def confirm(
     via: str,
     request: Request | None,
     ctx: ToolContext | None = None,
+    choice: str | None = None,
 ) -> CompanionAction:
     """Carry out an offer the person agreed to. Refused if it was decided, expired or not theirs.
 
     With `ctx` (a typed yes, through the model) it must also be an offer from an
     earlier turn of this conversation, and the person's message must read as a yes.
+
+    A product may ask instead of acting (Saleinx: "a company like this is already
+    there: use it, or create a new one?"). The offer then stays open with the
+    question on its card (`summary["choice"]`), and `choice` is the person's
+    answer from that card: an option's id, or "new".
     """
     action = await _locked(session, user, action_id, owner_id=owner_id)
     if ctx is not None:
@@ -1073,6 +1127,7 @@ async def confirm(
                 or "This is held until the approval it waits for is given."
             ),
         )
+    _answer_choice(action, choice)
 
     # Marked done before the service runs: its commit then saves this together
     # with the change and the service's own audit row. On failure it is rolled
@@ -1081,9 +1136,22 @@ async def confirm(
     action.decided_at = datetime.now(UTC)
     action.decided_via = via
     user.decided_via = "ask_mira"
+    payload = dict(action.payload or {})
     savepoint = await session.begin_nested()
     try:
         result = await _run(session, user, action, request)
+    except NeedsChoiceError as asked:
+        # Nothing was done there: the offer stays open, now asking the product's
+        # question. Answers given so far stay in its payload for the next call.
+        await _undo(session, user, savepoint)
+        action = await _locked(session, user, action_id, owner_id=owner_id)
+        action.status = CompanionActionStatus.PROPOSED
+        action.decided_at = None
+        action.decided_via = None
+        action.payload = payload
+        action.summary = {**(action.summary or {}), "choice": asked.choice}
+        await session.commit()
+        return action
     except (HTTPException, ValueError, ArithmeticError, SQLAlchemyError) as exc:
         # A refusal in the service's own words; anything else (a value a check refused,
         # the database) is said plainly and logged, and nothing is left half-done.
