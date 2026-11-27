@@ -272,6 +272,10 @@ async def create_workspace(
         )
     )
     await session.flush()
+    # Request time off offers Holiday, Week off and Comp off from day one.
+    from app.services.leave.service import ensure_day_off_types
+
+    await ensure_day_off_types(session, user)
     return tenant, user
 
 

@@ -29,6 +29,7 @@ a week off is a holiday, and approved leave beats a stray punch:
     1. Holiday calendar for the employee's location  → HOLIDAY
     2. Weekly off from shift or roster               → WEEK_OFF
     3. Approved leave for that date                  → ON_LEAVE
+       (an approved Holiday or Week off request      → HOLIDAY / WEEK_OFF)
     4. Pair punches, compute worked minutes
     5. Apply thresholds                              → PRESENT / HALF_DAY / ABSENT
     6. Apply grace periods before marking late/early
@@ -88,6 +89,9 @@ class DayInputs:
     on_approved_leave: bool = False
     leave_is_half_day: bool = False
     leave_is_paid: bool = True
+    #: The approved request was for a Holiday or Week off rather than leave:
+    #: the day is that, and paid (`LeaveType.marks_day_as`).
+    leave_marks_day_as: AttendanceStatus | None = None
     # An approved regularisation overriding the derived status, and the in and
     # out times it corrected, when it was fixing a missed punch.
     regularised_status: AttendanceStatus | None = None
@@ -288,6 +292,18 @@ def compute_day(inputs: DayInputs) -> ComputedDay:
     # Someone on approved leave who walks in and badges is still on leave. The
     # approval is the authority; the punch is noise.
     if inputs.on_approved_leave:
+        if inputs.leave_marks_day_as is not None:
+            # An approved Holiday or Week off request: a paid day off of that
+            # kind. Like leave, a punch on it is noise — not overtime, which
+            # would earn comp-off for a day the person asked to have off.
+            holiday = inputs.leave_marks_day_as is AttendanceStatus.HOLIDAY
+            kind = "Holiday" if holiday else "Week off"
+            return ComputedDay(
+                attendance_date=day,
+                status=inputs.leave_marks_day_as,
+                payable_fraction=Decimal(1),
+                note=f"{kind} (approved request)",
+            )
         if inputs.leave_is_half_day:
             # A half day on *paid* leave is a fully payable day: the employee
             # works one half and the leave balance covers the other. On

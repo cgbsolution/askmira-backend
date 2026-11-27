@@ -12,6 +12,12 @@ work location itself — and, when it names a legal entity, only to that
 company's people. An optional (restricted) holiday applies only to the people
 who opted in to it (`OptionalHolidaySelection`), and only where it would
 otherwise apply to them.
+
+Projects have calendars too. A holiday that names a project applies only to
+the people on it. A project that keeps its own calendar
+(`Project.own_holidays_from`) drops the company's holidays from that date:
+its people then have the project's holidays only. The company's holidays
+before that date still apply, so a month already worked out is unchanged.
 """
 
 from __future__ import annotations
@@ -27,9 +33,29 @@ from app.core.deps import tenant_scoped
 from app.models.employee import Employee
 from app.models.leave import Holiday, OptionalHolidaySelection
 from app.models.org import Location
+from app.models.timesheets import Project
 from app.models.user import User
 
-__all__ = ["holiday_applies", "holiday_records_for_employees", "holidays_for_employees"]
+__all__ = [
+    "holiday_applies",
+    "holiday_records_for_employees",
+    "holidays_for_employees",
+    "in_project_calendar",
+]
+
+
+def in_project_calendar(
+    holiday: Holiday, *, project_id: uuid.UUID | None, own_holidays_from: date | None
+) -> bool:
+    """Whether a holiday is on the calendar of the people of this project (or of
+    nobody's project, with `project_id` None).
+
+    A project's own holidays are; another project's never are; the company's
+    are, unless the project keeps its own calendar from on or before that day.
+    """
+    if holiday.project_id is not None:
+        return holiday.project_id == project_id
+    return own_holidays_from is None or holiday.holiday_date < own_holidays_from
 
 
 def holiday_applies(
@@ -38,15 +64,19 @@ def holiday_applies(
     state_code: str | None,
     location_id: uuid.UUID | None,
     legal_entity_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    own_holidays_from: date | None = None,
     include_optional: bool = False,
 ) -> bool:
-    """Whether a holiday covers someone at this state and location.
+    """Whether a holiday covers someone at this state and location, on this project.
 
     Optional holidays never apply by place alone; pass `include_optional` to
     ask only "is this person's place in its scope" (to offer it, or to honour
     an opt-in).
     """
     if holiday.is_optional and not include_optional:
+        return False
+    if not in_project_calendar(holiday, project_id=project_id, own_holidays_from=own_holidays_from):
         return False
     if holiday.legal_entity_id is not None and holiday.legal_entity_id != legal_entity_id:
         return False
@@ -94,9 +124,15 @@ async def holiday_records_for_employees(
         await session.execute(
             tenant_scoped(
                 select(
-                    Employee.id, Employee.location_id, Location.state_code, Employee.legal_entity_id
+                    Employee.id,
+                    Employee.location_id,
+                    Location.state_code,
+                    Employee.legal_entity_id,
+                    Employee.project_id,
+                    Project.own_holidays_from,
                 )
                 .outerjoin(Location, Location.id == Employee.location_id)
+                .outerjoin(Project, Project.id == Employee.project_id)
                 .where(Employee.id.in_(employee_ids)),
                 Employee,
                 user,
@@ -141,7 +177,7 @@ async def holiday_records_for_employees(
         }
 
     result: dict[uuid.UUID, dict[date, Holiday]] = defaultdict(dict)
-    for employee_id, location_id, state_code, legal_entity_id in places:
+    for employee_id, location_id, state_code, legal_entity_id, project_id, own_from in places:
         for holiday in holidays:
             if holiday.is_optional:
                 applies = (employee_id, holiday.id) in chosen and holiday_applies(
@@ -149,6 +185,8 @@ async def holiday_records_for_employees(
                     state_code=state_code,
                     location_id=location_id,
                     legal_entity_id=legal_entity_id,
+                    project_id=project_id,
+                    own_holidays_from=own_from,
                     include_optional=True,
                 )
             else:
@@ -157,6 +195,8 @@ async def holiday_records_for_employees(
                     state_code=state_code,
                     location_id=location_id,
                     legal_entity_id=legal_entity_id,
+                    project_id=project_id,
+                    own_holidays_from=own_from,
                 )
             if not applies:
                 continue

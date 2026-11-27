@@ -369,8 +369,9 @@ class UnpaidLeaveSpan:
 
 async def _leave_days_for(
     session: AsyncSession, user: User, employee_id: uuid.UUID, start: date, end: date
-) -> tuple[dict[date, tuple[bool, bool]], list[UnpaidLeaveSpan]]:
-    """Approved leave by date → `(is_half_day, is_paid)`, and the unpaid spans.
+) -> tuple[dict[date, tuple[bool, bool]], list[UnpaidLeaveSpan], dict[date, AttendanceStatus]]:
+    """Approved leave by date → `(is_half_day, is_paid)`, the unpaid spans, and
+    the dates an approved Holiday or Week off request marks as such.
 
     Two half days on one date (a first half and a second half) are one full
     day: on leave if both halves are paid, loss of pay if neither is, and a
@@ -390,7 +391,20 @@ async def _leave_days_for(
     )
     result: dict[date, tuple[bool, bool]] = {}
     unpaid: list[UnpaidLeaveSpan] = []
+    marked: dict[date, AttendanceStatus] = {}
     for leave, leave_type in (await session.execute(stmt)).all():
+        if leave_type.marks_day_as is not None:
+            status = (
+                AttendanceStatus.HOLIDAY
+                if leave_type.marks_day_as == "holiday"
+                else AttendanceStatus.WEEK_OFF
+            )
+            cursor = max(leave.start_date, start)
+            while cursor <= min(leave.end_date, end):
+                marked[cursor] = status
+                result.setdefault(cursor, (False, True))
+                cursor += timedelta(days=1)
+            continue
         if not leave_type.is_paid and not leave.is_half_day:
             unpaid.append(
                 UnpaidLeaveSpan(
@@ -416,7 +430,7 @@ async def _leave_days_for(
                     entry = (False, False)
             result[cursor] = entry
             cursor += timedelta(days=1)
-    return result, unpaid
+    return result, unpaid, marked
 
 
 def _sandwiched_unpaid_days(spans: list[UnpaidLeaveSpan], is_off: Any) -> set[date]:
@@ -558,7 +572,9 @@ async def recompute_range(
             continue
         zone = zones.get(employee_id, UTC)
 
-        leave, unpaid_spans = await _leave_days_for(session, user, employee_id, first, last)
+        leave, unpaid_spans, marked_off = await _leave_days_for(
+            session, user, employee_id, first, last
+        )
         regularisations = await _regularisations_for(session, user, employee_id, first, last)
         employee_holidays = holidays.get(employee_id, {})
 
@@ -643,6 +659,9 @@ async def recompute_range(
                     on_approved_leave=leave_entry is not None,
                     leave_is_half_day=leave_entry[0] if leave_entry else False,
                     leave_is_paid=leave_entry[1] if leave_entry else True,
+                    # Overlapping requests are refused, so a marked date has
+                    # no leave of its own.
+                    leave_marks_day_as=marked_off.get(day),
                     regularised_status=(
                         regularisation.requested_status if regularisation else None
                     ),
